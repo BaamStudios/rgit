@@ -463,6 +463,7 @@ dependencies = [
  "rgit-difftest",
  "rgit-fs",
  "rgit-options",
+ "rgit-refs",
  "rgit-repo",
 ]
 
@@ -561,6 +562,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-refs"
+version = "0.1.0"
+dependencies = [
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-repo"
 version = "0.1.0"
 dependencies = [
@@ -595,6 +606,14 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "libc",
+]
+
+[[package]]
+name = "rgit-transport"
+version = "0.1.0"
+dependencies = [
+ "rgit-protocol",
+ "thiserror",
 ]
 
 [[package]]
