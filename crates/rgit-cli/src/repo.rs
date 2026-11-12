@@ -33,8 +33,19 @@ pub fn command_line(ctx: &Context) -> CommandLine {
 
 /// Set up the repository, change into [`Setup::cwd`] and return the setup.
 pub fn setup(ctx: &Context, mode: Mode) -> Result<Setup, Die> {
+    setup_with(ctx, mode, rgit_repo::format::Support::default())
+}
+
+/// [`setup`] for a command that can handle the repository formats in
+/// `support` (e.g. SHA-256).
+pub fn setup_with(
+    ctx: &Context,
+    mode: Mode,
+    support: rgit_repo::format::Support,
+) -> Result<Setup, Die> {
     let env = SystemEnv::default();
     let mut opts = SetupOptions::from_process().map_err(die)?;
+    opts.support = support;
     if let Some(d) = &ctx.git_dir {
         opts.git_dir = Some(d.into());
     }
