@@ -1,0 +1,235 @@
+# SPDX-License-Identifier: MIT
+#
+# Calls replayed against the reference test-tool and rgit-test-tool by
+# tests/parse_options.rs. One call per line: optional VAR=value words, then
+# the arguments. Double quotes group words; "" is an empty argument.
+# GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS defaults to true, as in test-lib.sh.
+parse-options -h
+parse-options --help-all
+parse-options --expect="boolean: 1" --yes
+parse-options --expect="boolean: 1" --no-doubt
+parse-options --expect="boolean: 1" -D
+parse-options --expect="boolean: 1" --no-fear
+parse-options --expect="boolean: 1" -B
+parse-options --expect="boolean: 1" --yes --yes
+parse-options --expect="boolean: 1" -DB
+parse-options --expect="boolean: 0" -D --no-yes
+parse-options --expect="boolean: 0" -D --no-no-doubt
+parse-options --fear
+parse-options --no-no-fear
+parse-options --expect="boolean: 0" -D --doubt
+parse-options --expect="integer: -4xyz" -i -4xyz
+parse-options --expect="integer: 17408" -i 17k
+parse-options --expect="integer: -17408" -i -17k
+parse-options --expect="unsigned: 7654xyz" -u 7654xyz
+parse-options --expect="unsigned: 17408" -u 17k
+parse-options --expect="unsigned: 3145728" -u 3m
+parse-options --expect="unsigned: 2147483648" -u 2g
+parse-options --expect="unsigned: 3221225472" -u 3g
+parse-options -sabc -b -i 4242 -u 16k -b -vv -n -F a.txt
+parse-options --boolean --integer 4242 --i16 8000 --unsigned 16k --u16 16k --boolean --string2=xyz --verbose --verbose --no-dry-run --abbrev=10 --file b.txt --obsolete
+parse-options --abbrev=100
+parse-options -s
+parse-options --string
+parse-options --file
+parse-options --yes=hi
+parse-options --no-yes=hi
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --ye=hi
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --no-ye=hi
+parse-options --mode1=hi
+parse-options p1 --string abc p2 --boolean -j 13 -- --boolean
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --int 2 --boolean --no-bo
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --expect="integer: 2" --int=2
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --strin abc
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --expect="string: abc" --st abc
+parse-options --alias-source abc
+parse-options --alias-target abc
+parse-options --alias
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --alias abc
+parse-options -boolean
+parse-options -ambiguous
+parse-options --length=seven -b -4
+parse-options --no-length
+parse-options --set23 -bbbbb --no-or4
+parse-options --set23 -bbbbb --neg-or4
+parse-options --expect="boolean: 6" -bb --or4
+parse-options --expect="boolean: 6" -bb --no-neg-or4
+parse-options --expect="integer: 1" --mode1
+parse-options --expect="integer: 3" --mode34=3
+parse-options --mode1 --mode2
+parse-options --set23 --mode2
+parse-options --mode2 --set23
+parse-options --mode2 --mode34=3
+parse-options --expect="boolean: 6" + + + + + +
+parse-options --expect="integer: 14xyz" -14xyz
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --no-ambig
+parse-options --list one --list=two --list=three
+parse-options --list=other --list=irrelevant --list=options --no-list --list=one --list=two --list=three
+parse-options --expect="quiet: 3" -q -q -q
+parse-options --expect="verbose: 3" -v -v -v
+parse-options --expect="quiet: 0" --no-quiet
+parse-options --expect="quiet: 0" -q -q -q --no-quiet
+parse-options --expect="verbose: 0" --no-verbose
+parse-options --expect="verbose: 0" -v -v -v --no-verbose
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false parse-options --ye
+GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=true parse-options --ye
+parse-options --expect="verbose: -1" --expect="arg 00: --verbose" --end-of-options --verbose
+parse-options-flags --keep-dashdash cmd --opt=1 -- --opt=2 --unknown
+parse-options-flags --keep-argv0 cmd arg0 --opt=3
+parse-options-flags --stop-at-non-option cmd --opt=4 arg0 --opt=5 --unknown
+parse-options-flags --keep-unknown-opt cmd --unknown=1 --opt=6 -u2
+parse-options-flags --no-internal-help cmd -h
+parse-options-flags --no-internal-help cmd --help
+parse-options-flags --no-internal-help cmd --help-all
+parse-options-flags --keep-unknown-opt --no-internal-help cmd -h --help --help-all
+parse-subcommand cmd
+parse-subcommand cmd -- subcmd-one
+parse-subcommand cmd --end-of-options subcmd-one
+parse-subcommand cmd nope
+parse-subcommand cmd subcmd-o
+parse-subcommand cmd no-subcmd-one
+parse-subcommand cmd subcmd-two
+parse-subcommand cmd --opt=1 subcmd-two subcmd-one --opt=2
+parse-subcommand --keep-argv0 cmd subcmd-two
+parse-subcommand --subcommand-optional cmd
+parse-subcommand --subcommand-optional cmd subcmd-two branch file
+parse-subcommand --subcommand-optional cmd branch file
+parse-subcommand --subcommand-optional cmd --subcommand-opt
+parse-subcommand --subcommand-optional --keep-unknown-opt cmd --subcommand-opt
+parse-subcommand --subcommand-optional --keep-unknown-opt cmd --subcommand-opt subcmd-two
+parse-subcommand --subcommand-optional --keep-unknown-opt cmd --subcommand-opt branch --opt=1
+parse-subcommand --subcommand-optional --keep-unknown-opt --keep-argv0 cmd --subcommand-opt branch
+parse-subcommand --subcommand-optional --keep-unknown-opt --keep-dashdash cmd -- --subcommand-opt file
+parse-subcommand cmd --git-completion-helper
+parse-subcommand --stop-at-non-option cmd subcmd-one
+parse-subcommand --keep-unknown-opt cmd subcmd-two
+parse-subcommand --keep-dashdash cmd subcmd-two
+parse-options --unsigned -1
+parse-options --unsigned m
+parse-options --i16 32767
+parse-options --i16 32768
+parse-options --i16 -32768
+parse-options --i16 -32769
+parse-options --u16 65535
+parse-options --u16 65536
+parse-options -L x -L yy
+parse-options -L x --expect="integer: 1"
+parse-options --expect="Callback: 1" -L x
+parse-options --expect="one: 1"
+parse-options --expect="boolean: 1" --expect="integer: 2"
+parse-options --expect="boolean: 0" --no-expect
+parse-options --expect="list: a" --list a --list b
+parse-options --expect="arg 01: y" x y
+parse-options --expect="arg 00: y" x y
+parse-options --expect="boolean:1"
+parse-options --expect=":"
+parse-options -F /abs
+parse-options -F ""
+parse-options --no-file
+parse-options -1b
+parse-options -p2
+parse-options -12 -3
+parse-options -s ""
+parse-options --no-string
+parse-options --doubt
+parse-options -bD4
+parse-options --boolean=x
+parse-options -h --bogus
+parse-options --bogus
+parse-options -
+parse-options --
+parse-options --git-completion-helper
+parse-options --git-completion-helper-all
+parse-options --list=a --expect="list: a"
+parse-options --expect="boolean: 1" --expect="boolean: 1" --yes
+parse-options --expect="boolean: 2" --expect="integer: 3" --yes
+parse-options --expect="boolean: 1" --expect="boolean: 2" --yes
+parse-options --expect="a" --expect="a"
+parse-options x --list a y --list b -L q
+parse-options --expect="boolean: 1" --expect="string: x" --expect="list: a" -s y --list b --list c
+parse-options-flags
+parse-options-flags cmd
+parse-options-flags cmd -h
+parse-options-flags cmd --opt
+parse-options-flags cmd --opt=x
+parse-options-flags --bogus cmd
+parse-options-flags cmd --no-opt
+parse-options-flags --keep-unknown-opt --stop-at-non-option cmd
+parse-options-flags --subcommand-optional cmd a
+parse-options-flags -h cmd
+parse-options-flags --keep-argv0
+parse-options-flags notcmd
+parse-options-flags cmd --opt=1 -- --opt=2
+parse-options-flags cmd --git-completion-helper
+parse-options-flags cmd --o=3
+parse-subcommand
+parse-subcommand cmd -h
+parse-subcommand cmd subcmd-one
+parse-subcommand cmd subcmd-one -h
+parse-subcommand cmd --opt=7 subcmd-one x
+parse-subcommand x subcmd-one
+parse-subcommand --keep-dashdash --subcommand-optional cmd -- a
+parse-subcommand --stop-at-non-option --keep-unknown-opt cmd subcmd-two
+parse-subcommand --stop-at-non-option --keep-unknown-opt --subcommand-optional cmd subcmd-two
+parse-subcommand --no-internal-help cmd -h
+parse-subcommand --keep-unknown-opt --stop-at-non-option cmd
+parse-options-flags --stop-at-non-option --keep-unknown-opt cmd a
+parse-options -F -
+parse-options --file=
+parse-options -F a -F ""
+parse-options --abbrev=
+parse-options --abbrev=40
+parse-options --abbrev=41
+parse-options --abbrev=4x
+parse-options -i 5 --no-integer -j 7
+parse-options --expect="dry run: yes" -n
+parse-options --expect="dry run:yes" -n
+parse-options --expect="arg 00: x" -- x
+parse-options --u16 -1
+parse-options --mode1 --mode34=3
+parse-options --mode1 --set23
+parse-options --set23 --mode1
+parse-options --mode34=3 --mode34=3
+parse-options --mode34=3 --no-mode34
+parse-options -b -4 --expect="boolean: 5" --expect="integer: 0" --expect="string: (not set)"
+parse-options --no-yes=x
+parse-options --yes --no-yes --boolean --no-boolean
+parse-options -bbb --no-boolean
+parse-options --no-neg-or4
+parse-options --neg-or4
+parse-options -4 --neg-or4
+parse-options --or4 --expect="boolean: 4"
+parse-options -L
+parse-options --length=
+parse-options -A
+parse-options --no-alias-target
+parse-options --alias-t x
+parse-options --hidden-integer 3 --hidden
+parse-options --hidden-bool=1
+parse-options -0
+parse-options -00
+parse-options -1 -2 --expect="integer: 2"
+parse-options -1x
+parse-options -17654xyz901
+parse-options --expect="integer: 5" --mode1 -i 5
+parse-options --expect="integer: 5" -i 5 --mode1
+parse-options --expect="integer: 5" --set23 --no-set23
+parse-options --expect="integer: 5" --set23 -i 5
+parse-options --expect="integer: 5" -i 5 --set23
+parse-options --expect="integer: 5" -i 5 -i 6
+parse-options --expect="integer: 5" --mode1 -L abc
+parse-options --expect="integer: 5" -L abc --mode1
+parse-options --expect="integer: 5" --mode1 -7
+parse-options --expect="integer: 5" -7 --mode1
+parse-options --expect="integer: 5" --mode1 -k 3
+parse-options --expect="integer: 5" --set23 --mode1 --set23
+parse-options --expect="integer: 5" --mode1 --no-set23
+parse-options --expect="integer: 5" --no-set23 --mode1
+parse-options --expect="integer: 5" --mode1 --mode1
+parse-options --expect="integer: 5" --set23 --set23
+parse-options --expect="integer: 5" --set23 -i 23 --mode1
+parse-options --expect="integer: 5" -i 1 --mode1
+parse-options --expect="integer: 5" --mode1 -i 1
+parse-options --expect="integer: 5" --mode2 --no-mode34
+parse-options --expect="integer: 5" --no-mode34 --mode2
+parse-options --expect="integer: 5" --no-mode34 --set23

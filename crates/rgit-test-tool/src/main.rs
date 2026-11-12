@@ -25,6 +25,12 @@ type Tool = (&'static str, fn(&[String]) -> i32);
 
 /// Implemented subcommands, in the order the usage lists them.
 const TOOLS: &[Tool] = &[
+    ("parse-options", cmd::parse_options::parse_options),
+    (
+        "parse-options-flags",
+        cmd::parse_options::parse_options_flags,
+    ),
+    ("parse-subcommand", cmd::parse_options::parse_subcommand),
     ("sha1", cmd::sha::sha1),
     ("sha1-is-sha1dc", cmd::sha::sha1_is_sha1dc),
     ("sha256", cmd::sha::sha256),
