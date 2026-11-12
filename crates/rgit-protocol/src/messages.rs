@@ -53,6 +53,50 @@ pub fn unexpected(what: &str) -> String {
     format!("protocol error: unexpected '{what}'")
 }
 
+/// Protocol v2 `fetch`: the first response section is not the expected
+/// one (`acknowledgments` while negotiating, `packfile` after `done`).
+pub fn expected_section(expected: &str, received: &str) -> String {
+    format!("expected '{expected}', received '{received}'")
+}
+
+/// Protocol v2 `fetch`: a line in the `acknowledgments` section that is not
+/// `ACK <oid>`, `NAK` or `ready`.
+pub fn unexpected_ack_line(line: &str) -> String {
+    format!("unexpected acknowledgment line: '{line}'")
+}
+
+/// Protocol v2 `fetch`: `ready` was not followed by a delimiter packet.
+pub const PACK_AFTER_READY: &str = "expected packfile to be sent after 'ready'";
+
+/// Protocol v2 `fetch`: more sections after an `acknowledgments` section
+/// without `ready`.
+pub const NO_SECTIONS_WITHOUT_READY: &str =
+    "expected no other sections to be sent after no 'ready'";
+
+/// Protocol v2 `fetch`: a bad line in the `shallow-info` section.
+pub fn bad_shallow_line(line: &str) -> String {
+    format!("expected shallow/unshallow, got {line}")
+}
+
+/// Protocol v2 `ls-refs`: a line that does not parse.
+pub fn invalid_ls_refs_response(line: &str) -> String {
+    format!("invalid ls-refs response: {line}")
+}
+
+/// The local repository and the server use different hash algorithms.
+pub fn mismatched_algorithms(client: &str, server: &str) -> String {
+    format!("mismatched algorithms: client {client}; server {server}")
+}
+
+/// Shallow or deepen arguments for a server without the `shallow` feature
+/// of `fetch`.
+pub const SHALLOW_NOT_SUPPORTED: &str = "Server does not support shallow requests";
+
+/// Warning (printed by the caller with `warning: `) when a filter was asked
+/// for but the server does not advertise the `filter` feature of `fetch`;
+/// the filter is then not sent.
+pub const FILTER_NOT_RECOGNIZED: &str = "filtering not recognized by server, ignoring";
+
 // The following texts are rgit's own wording: git reports these situations
 // through internal checks whose texts are not observable from its behaviour.
 
@@ -69,3 +113,32 @@ pub fn sideband_fatal(msg: &str) -> String {
 
 /// A v2 capability advertisement that does not start with `version 2`.
 pub const EXPECTED_VERSION_2: &str = "protocol error: expected 'version 2'";
+
+/// A server that answered with protocol v0 or v1; only v2 is implemented.
+pub fn not_v2(version: u8) -> String {
+    format!(
+        "protocol error: server answered with protocol version {version}; \
+         rgit only speaks version 2 so far"
+    )
+}
+
+/// The server advertised an `object-format` rgit does not know.
+pub fn unknown_object_format(name: &str) -> String {
+    format!("protocol error: unknown object format '{name}'")
+}
+
+/// The server does not advertise a v2 command.
+pub fn command_not_supported(command: &str) -> String {
+    format!("protocol error: server does not support the '{command}' command")
+}
+
+/// A line in the `wanted-refs` section that does not parse.
+pub fn bad_wanted_ref(line: &str) -> String {
+    format!("protocol error: bad wanted-ref line '{line}'")
+}
+
+/// A request line given by the caller that cannot be sent (it contains LF
+/// or does not fit into a pkt-line).
+pub fn bad_request_line(line: &str) -> String {
+    format!("protocol error: invalid request line '{line}'")
+}

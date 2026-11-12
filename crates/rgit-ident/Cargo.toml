@@ -1,0 +1,21 @@
+[package]
+name = "rgit-ident"
+description = "Author/committer identity, editor and pager selection for rgit (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
+jiff = "0.2.35"
+rgit-config = { path = "../rgit-config" }
+rgit-date = { path = "../rgit-date" }
+
+[target.'cfg(unix)'.dependencies]
+# Safe getuid(2) and uname(2) for the guessed identity.
+rustix = { version = "1", default-features = false, features = ["std", "process", "system"] }
+
+[dev-dependencies]
+tempfile = "3"
