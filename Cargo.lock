@@ -465,7 +465,9 @@ dependencies = [
  "rgit-index",
  "rgit-options",
  "rgit-pathspec",
+ "rgit-refs",
  "rgit-repo",
+ "rgit-version",
  "rgit-worktree",
 ]
 
@@ -558,8 +560,18 @@ name = "rgit-protocol"
 version = "0.1.0"
 dependencies = [
  "rgit-trace",
- "rustix",
+ "rgit-version",
  "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-refs"
+version = "0.1.0"
+dependencies = [
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
  "thiserror",
 ]
 
@@ -598,6 +610,21 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "libc",
+]
+
+[[package]]
+name = "rgit-transport"
+version = "0.1.0"
+dependencies = [
+ "rgit-protocol",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-version"
+version = "0.1.0"
+dependencies = [
+ "rustix",
 ]
 
 [[package]]

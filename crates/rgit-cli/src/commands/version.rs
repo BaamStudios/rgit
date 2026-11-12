@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! `git version` (Documentation/git-version.adoc).
 
-use crate::context::version_number;
 use crate::messages::NOT_OFFICIAL_GIT;
 use crate::prelude::*;
 
@@ -18,7 +17,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     )
     .parse(argv)?;
 
-    println!("git version {}", version_number());
+    println!("{}", rgit_version::version_line());
     if !ctx.invoked_as_git {
         println!("{NOT_OFFICIAL_GIT}");
     }
@@ -31,7 +30,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         println!("sizeof-long: {}", size_of::<std::ffi::c_long>());
         println!("sizeof-size_t: {}", size_of::<usize>());
         println!("shell-path: /bin/sh");
-        println!("rgit: {}", env!("CARGO_PKG_VERSION"));
+        println!("rgit: {}", rgit_version::RGIT_VERSION);
         println!("default-ref-format: files");
         println!("default-hash: sha1");
     }

@@ -4,14 +4,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// Compatibility base of the version string (see CLEANROOM.md).
-pub const GIT_COMPAT_VERSION: &str = "2.56.1";
-
-/// `git version 2.56.1.rgit.<crate version>` without the `git version ` part.
-pub fn version_number() -> String {
-    format!("{GIT_COMPAT_VERSION}.rgit.{}", env!("CARGO_PKG_VERSION"))
-}
-
 /// Everything the global options (`git [<global options>] <command>`)
 /// determine. Nothing is written to the process environment (that needs
 /// `unsafe` in edition 2024); child processes get [`Context::child_env`].

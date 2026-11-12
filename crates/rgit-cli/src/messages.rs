@@ -94,11 +94,6 @@ pub fn not_a_symbolic_ref(name: &str) -> String {
     format!("ref {name} is not a symbolic ref")
 }
 
-/// rgit wording: a part of symbolic-ref that is not implemented yet.
-pub fn symbolic_ref_not_supported(what: &str) -> String {
-    format!("rgit symbolic-ref: {what} is not supported yet")
-}
-
 /// rgit wording: a rev-parse argument that is not implemented yet.
 pub fn rev_parse_not_supported(arg: &str) -> String {
     format!("rgit rev-parse: '{arg}' is not supported yet")
