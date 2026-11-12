@@ -71,3 +71,13 @@ pub(crate) fn alias_of(target: &str) -> String {
 }
 
 pub(crate) const NOOP_HELP: &str = "no-op (backward compatibility)";
+
+// Programming errors, printed as `BUG: <text>` when a caller combines
+// incompatible parse flags.
+pub(crate) const BUG_STOP_AND_KEEP_UNKNOWN: &str =
+    "STOP_AT_NON_OPTION and KEEP_UNKNOWN_OPT don't go together";
+pub(crate) const BUG_SUBCOMMAND_STOP: &str =
+    "subcommands are incompatible with PARSE_OPT_STOP_AT_NON_OPTION";
+pub(crate) const BUG_SUBCOMMAND_KEEP_UNKNOWN: &str = "subcommands are incompatible with PARSE_OPT_KEEP_UNKNOWN_OPT unless in combination with PARSE_OPT_SUBCOMMAND_OPTIONAL";
+pub(crate) const BUG_SUBCOMMAND_KEEP_DASHDASH: &str = "subcommands are incompatible with PARSE_OPT_KEEP_DASHDASH unless in combination with PARSE_OPT_SUBCOMMAND_OPTIONAL";
+pub(crate) const BUG_MULTIPLE_NUMBER_OPTIONS: &str = "more than one number option";

@@ -26,7 +26,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         println!("cpu: {}", std::env::consts::ARCH);
         match option_env!("RGIT_BUILD_COMMIT") {
             Some(c) if !c.is_empty() => println!("built from commit: {c}"),
-            _ => println!("no commit associated with this build"),
+            _ => println!("{}", crate::messages::NO_BUILD_COMMIT),
         }
         println!("sizeof-long: {}", size_of::<std::ffi::c_long>());
         println!("sizeof-size_t: {}", size_of::<usize>());

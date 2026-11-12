@@ -14,9 +14,7 @@ permissions:
 jobs:
   simcheck:
     runs-on: ubuntu-latest
-    # Non-blocking while the thresholds settle; findings still show up as a
-    # failed (but allowed-to-fail) job and in the step summary.
-    continue-on-error: true
+    # Blocking: findings fail the job (resolve them as described in CLEANROOM.md).
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

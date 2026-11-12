@@ -86,7 +86,8 @@ fn push_line(out: &mut String, sign: char, line: &str) {
     out.push(sign);
     out.push_str(line);
     if !line.ends_with('\n') {
-        out.push_str("\n\\ No newline at end of file\n");
+        out.push('\n');
+        out.push_str(crate::messages::NO_NEWLINE_AT_EOF);
     }
 }
 

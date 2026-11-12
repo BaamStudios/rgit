@@ -89,6 +89,7 @@
 mod diff;
 pub mod env;
 mod fixture;
+mod messages;
 mod normalize;
 mod state;
 
