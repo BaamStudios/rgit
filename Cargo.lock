@@ -462,10 +462,13 @@ dependencies = [
  "rgit-date",
  "rgit-difftest",
  "rgit-fs",
+ "rgit-index",
  "rgit-options",
+ "rgit-pathspec",
  "rgit-refs",
  "rgit-repo",
  "rgit-version",
+ "rgit-worktree",
 ]
 
 [[package]]
@@ -636,6 +639,17 @@ name = "rgit-version"
 version = "0.1.0"
 dependencies = [
  "rustix",
+]
+
+[[package]]
+name = "rgit-worktree"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rgit-difftest",
+ "rgit-hash",
+ "rgit-index",
+ "rgit-pathspec",
 ]
 
 [[package]]

@@ -17,10 +17,13 @@ bstr = { version = "1.13", default-features = false, features = ["std"] }
 rgit-config = { path = "../rgit-config" }
 rgit-date = { path = "../rgit-date" }
 rgit-fs = { path = "../rgit-fs" }
+rgit-index = { path = "../rgit-index" }
 rgit-options = { path = "../rgit-options" }
+rgit-pathspec = { path = "../rgit-pathspec" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-repo = { path = "../rgit-repo" }
 rgit-version = { path = "../rgit-version" }
+rgit-worktree = { path = "../rgit-worktree" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
