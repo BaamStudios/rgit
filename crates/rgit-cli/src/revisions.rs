@@ -3,21 +3,18 @@
 //! adapters from refs, objects, index, configuration and work tree to its
 //! lookup traits, plus the settings it reads from the configuration.
 //!
-//! Objects come from `rgit-odb` (loose) plus the packs of `rgit-pack`,
-//! plugged into the database here until it has a pack store of its own.
+//! Objects come from `rgit-odb` (loose objects, packs and alternates).
 //! Reflogs are read from `logs/` directly until #30 provides them.
 
 use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 use rgit_config::{ConfigSet, Origin};
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_index::{Index, ReadOptions, Stage};
 use rgit_object::ObjectKind;
-use rgit_odb::{LooseOptions, ObjectDatabase, ObjectStore, RawObject};
-use rgit_pack::{DeltaBaseCache, PackSet};
+use rgit_odb::{LooseOptions, ObjectDatabase};
 use rgit_refs::files::FilesStore;
 use rgit_refs::{IterItem, IterOptions, RefStore};
 use rgit_repo::Setup;
@@ -28,67 +25,9 @@ use rgit_revwalk::revision::{
 
 use crate::Die;
 
-/// Packs as an [`ObjectStore`] of the object database (`rgit-odb` has only
-/// the loose store so far).
-#[derive(Debug)]
-struct PackStore {
-    packs: PackSet,
-    cache: Mutex<DeltaBaseCache>,
-}
-
-fn pack_kind(k: rgit_pack::ObjectKind) -> ObjectKind {
-    match k {
-        rgit_pack::ObjectKind::Commit => ObjectKind::Commit,
-        rgit_pack::ObjectKind::Tree => ObjectKind::Tree,
-        rgit_pack::ObjectKind::Blob => ObjectKind::Blob,
-        rgit_pack::ObjectKind::Tag => ObjectKind::Tag,
-    }
-}
-
-impl ObjectStore for PackStore {
-    fn hash_kind(&self) -> HashKind {
-        self.packs.hash_kind()
-    }
-
-    fn contains(&self, oid: &ObjectId) -> bool {
-        self.packs.contains(oid)
-    }
-
-    fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, rgit_odb::Error> {
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        match self.packs.read(oid, &mut cache, &mut |_| {}) {
-            Ok(Some(o)) => Ok(Some(RawObject {
-                kind: pack_kind(o.kind),
-                data: o.data,
-            })),
-            Ok(None) => Ok(None),
-            Err(e) => Err(rgit_odb::Error::Store(Box::new(e))),
-        }
-    }
-
-    fn for_each_prefix_match(
-        &self,
-        prefix: &Prefix,
-        f: &mut dyn FnMut(ObjectId),
-    ) -> Result<(), rgit_odb::Error> {
-        for id in self.packs.lookup_prefix(prefix, usize::MAX) {
-            f(id);
-        }
-        Ok(())
-    }
-
-    fn for_each_object(&self, f: &mut dyn FnMut(ObjectId)) -> Result<(), rgit_odb::Error> {
-        for id in self.packs.all_ids() {
-            f(id);
-        }
-        Ok(())
-    }
-}
-
 /// The object database (loose objects and packs) for the revision parser.
 pub struct Objects {
     odb: ObjectDatabase,
-    packs: Arc<PackStore>,
     dir: PathBuf,
     count: OnceCell<u64>,
     shallow: HashSet<ObjectId>,
@@ -97,15 +36,7 @@ pub struct Objects {
 impl Objects {
     /// The objects in `dir`; `shallow` is the repository's `shallow` file.
     pub fn new(dir: PathBuf, kind: HashKind, shallow: &std::path::Path) -> Objects {
-        let mut odb = ObjectDatabase::open(&dir, kind, LooseOptions::default());
-        let packs = Arc::new(PackStore {
-            packs: PackSet::open(dir.join("pack"), kind),
-            cache: Mutex::new(DeltaBaseCache::new(
-                rgit_pack::DEFAULT_DELTA_BASE_CACHE_LIMIT,
-            )),
-        });
-        // git looks in packs before loose objects.
-        odb.insert_store(0, packs.clone());
+        let odb = ObjectDatabase::open_with_packs(&dir, kind, LooseOptions::default());
         let shallow = std::fs::read_to_string(shallow)
             .unwrap_or_default()
             .lines()
@@ -113,7 +44,6 @@ impl Objects {
             .collect();
         Objects {
             odb,
-            packs,
             dir,
             count: OnceCell::new(),
             shallow,
@@ -168,9 +98,10 @@ impl ObjectLookup for Objects {
     fn approximate_count(&self) -> u64 {
         *self.count.get_or_init(|| {
             let mut n: u64 = self
-                .packs
-                .packs
+                .odb
                 .packs()
+                .map(|p| p.set().packs())
+                .unwrap_or_default()
                 .iter()
                 .map(|p| u64::from(p.index().len()))
                 .sum();

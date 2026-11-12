@@ -346,3 +346,15 @@ impl rgit_pack::write::ObjectSource for ObjectDatabase {
         Ok(self.header(id)?.map(|h| h.kind))
     }
 }
+
+/// `index-pack` looks up objects (collision checks, thin pack bases)
+/// through the database.
+impl rgit_pack::index_pack::ObjectDb for ObjectDatabase {
+    fn contains(&self, id: &ObjectId) -> bool {
+        id.kind() == self.hash && ObjectDatabase::contains(self, id)
+    }
+
+    fn read(&self, id: &ObjectId) -> Result<Option<RawObject>, String> {
+        ObjectDatabase::read(self, id).map_err(|e| e.to_string())
+    }
+}
