@@ -83,3 +83,53 @@ pub fn die(e: Error) -> Die {
     }
     Die::Exit(rgit_options::EXIT_FATAL)
 }
+
+/// The configuration of the repository (all scopes plus `-c`), or as much
+/// of it as can be read.
+pub fn config(ctx: &Context, setup: &Setup) -> rgit_config::ConfigSet {
+    let env = SystemEnv::default();
+    let opts = rgit_config::LoadOptions {
+        env: &env,
+        repo: None,
+        includes: true,
+    };
+    let repo_cfg = rgit_config::sources::RepoConfig {
+        common_dir: setup.common_dir.clone(),
+        git_dir: setup.git_dir.clone(),
+        worktree_config: None,
+    };
+    let mut set = rgit_config::ConfigSet::new();
+    let _ = rgit_config::sources::load_standard(
+        opts,
+        Some(&repo_cfg),
+        &command_line(ctx),
+        rgit_config::sources::ScopeFilter::default(),
+        &mut set,
+    );
+    set
+}
+
+/// The object database of the repository: packs, loose objects and
+/// alternates ([`rgit_odb::ObjectDatabase::open_for_repo`]). This is how
+/// commands read objects. Configuration warnings are printed; an invalid
+/// setting is fatal, as in git. Corrupt copies skipped during lookups are
+/// printed as `error: ...` by the database.
+#[allow(dead_code)] // for the commands that read objects (cat-file, log, ls-tree, ...)
+pub fn odb(ctx: &Context, setup: &Setup) -> Result<rgit_odb::ObjectDatabase, Die> {
+    odb_with_config(setup, &config(ctx, setup))
+}
+
+/// [`odb`] with an already loaded configuration.
+pub fn odb_with_config(
+    setup: &Setup,
+    config: &rgit_config::ConfigSet,
+) -> Result<rgit_odb::ObjectDatabase, Die> {
+    let mut warnings = Vec::new();
+    let odb = rgit_odb::ObjectDatabase::open_for_repo(setup, config, &mut warnings)
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut err = std::io::stderr();
+    for w in warnings {
+        let _ = writeln!(err, "warning: {w}");
+    }
+    Ok(odb)
+}
