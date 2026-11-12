@@ -95,15 +95,30 @@ impl PreparedTransaction for Prepared<'_> {
                 }
             }
         }
-        if let Some((mut lock, packed)) = self.packed.take() {
-            let path = lock.lock_path().to_owned();
-            let result = lock
-                .write_all(&packed.serialize())
-                .and_then(|()| lock.commit());
+        if let Some((lock, packed)) = self.packed.take() {
+            // Like git, the new contents go to `packed-refs.new` (created
+            // exclusively) and are renamed over `packed-refs` while the lock
+            // is held.
+            let path = self.store.git_dir.join("packed-refs.new");
+            let mut created = false;
+            let result = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .and_then(|mut f| {
+                    created = true;
+                    f.write_all(&packed.serialize())
+                })
+                .and_then(|()| std::fs::rename(&path, self.store.packed_refs_path()));
             if let Err(source) = result {
+                if created {
+                    let _ = std::fs::remove_file(&path);
+                }
+                lock.rollback();
                 self.rollback();
                 return Err(TransactionError::Io { path, source });
             }
+            lock.rollback();
         }
         let mut first_error = None;
         for item in std::mem::take(&mut self.items) {
@@ -498,6 +513,15 @@ impl State<'_, '_> {
             self.lock(&q.name).map_err(cannot_lock)?
         };
         let item = self.push_item(&q.name, q.update, locked.lock);
+        // A broken loose file can be deleted, but not overwritten.
+        if !u.is_delete()
+            && matches!(
+                self.store.read_raw_with(&q.name, &self.packed),
+                Err(Error::Broken(_))
+            )
+        {
+            return Err(cannot_lock(LockReason::BrokenRef(q.name.clone())));
+        }
         let current = self
             .read(&q.name)
             .map_err(|e| cannot_lock(LockReason::Read(e)))?;

@@ -95,6 +95,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             no_deref: no_deref.get(),
             next_no_deref: false,
             input: input.lock(),
+            symlinks: matches!(config.bool("core.prefersymlinkrefs"), Ok(Some(true))),
+            symrefs: Vec::new(),
         };
         return session.run(&mut hooks);
     }
@@ -175,6 +177,10 @@ struct Session<'a, R: BufRead> {
     no_deref: bool,
     next_no_deref: bool,
     input: R,
+    /// `core.preferSymlinkRefs`: write symbolic references as symlinks.
+    symlinks: bool,
+    /// Symbolic references written by the open transaction.
+    symrefs: Vec<(String, String)>,
 }
 
 fn fatal(m: String) -> Die {
@@ -264,6 +270,7 @@ impl<R: BufRead> Session<'_, R> {
                 "commit" => {
                     let t = std::mem::replace(&mut tx, Transaction::new(store));
                     t.commit(hooks).map_err(|e| fatal(e.to_string()))?;
+                    self.write_symlinks();
                     phase = Phase::Closed;
                     let _ = writeln!(out, "{}", msg::ok("commit"));
                     let _ = out.flush();
@@ -271,6 +278,7 @@ impl<R: BufRead> Session<'_, R> {
                 "abort" => {
                     let t = std::mem::replace(&mut tx, Transaction::new(store));
                     t.abort(hooks);
+                    self.symrefs.clear();
                     phase = Phase::Closed;
                     let _ = writeln!(out, "{}", msg::ok("abort"));
                     let _ = out.flush();
@@ -289,8 +297,11 @@ impl<R: BufRead> Session<'_, R> {
                 }
                 _ => {
                     let update = self.parse_update(cmd, rest)?;
-                    if matches!(update.new, Some(rgit_refs::NewValue::Symbolic(_))) {
+                    if let Some(rgit_refs::NewValue::Symbolic(t)) = &update.new {
                         hooks.mark_symbolic(&update.name);
+                        if update.no_deref {
+                            self.symrefs.push((update.name.clone(), t.clone()));
+                        }
                     }
                     self.next_no_deref = false;
                     tx.push(update).map_err(|e| fatal(e.to_string()))?;
@@ -301,12 +312,34 @@ impl<R: BufRead> Session<'_, R> {
             Phase::Implicit => {
                 if tx.state() == TransactionState::Open {
                     tx.commit(hooks).map_err(|e| fatal(e.to_string()))?;
+                    self.write_symlinks();
                 }
             }
             Phase::Started | Phase::Prepared => tx.abort(hooks),
             Phase::Closed => {}
         }
         Ok(0)
+    }
+
+    /// With `core.preferSymlinkRefs`, replaces the symbolic references just
+    /// written by symbolic links (deprecated in git, which warns).
+    fn write_symlinks(&mut self) {
+        let symrefs = std::mem::take(&mut self.symrefs);
+        if !self.symlinks || symrefs.is_empty() {
+            return;
+        }
+        eprint!("{}", msg::PREFER_SYMLINK_REFS_WARNING);
+        #[cfg(unix)]
+        for (name, target) in symrefs {
+            let path = self.store.ref_path(&name);
+            let expected = format!("ref: {target}\n");
+            if std::fs::read(&path).is_ok_and(|c| c == expected.as_bytes()) {
+                let tmp = path.with_extension("symlink.tmp");
+                if std::os::unix::fs::symlink(&target, &tmp).is_ok() {
+                    let _ = std::fs::rename(&tmp, &path);
+                }
+            }
+        }
     }
 
     /// Parses one update command; `rest` follows `<cmd> `.

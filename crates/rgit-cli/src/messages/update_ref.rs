@@ -20,6 +20,19 @@ pub const EMPTY_MESSAGE: &str = "Refusing to perform update with empty message."
 pub const EMPTY_COMMAND: &str = "empty command in input";
 pub const PREPARED_ONLY_CLOSE: &str = "prepared transactions can only be closed";
 pub const CANNOT_RESTART: &str = "cannot restart ongoing transaction";
+/// Warning and advice when `core.preferSymlinkRefs` makes rgit write a
+/// symbolic link.
+pub const PREFER_SYMLINK_REFS_WARNING: &str = "\
+warning: 'core.preferSymlinkRefs=true' is nominated for removal.
+hint: The use of symbolic links for symbolic refs is deprecated
+hint: and will be removed in Git 3.0. The configuration that
+hint: tells Git to use them is thus going away. You can unset
+hint: it with:
+hint:
+hint:\tgit config unset core.preferSymlinkRefs
+hint:
+hint: Git will then use the textual symref format instead.
+";
 pub const TRANSACTION_CLOSED: &str = "transaction is closed";
 
 /// rgit wording: `--batch-updates` is not implemented yet.

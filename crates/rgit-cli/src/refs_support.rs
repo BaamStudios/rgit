@@ -42,8 +42,14 @@ pub fn ref_store(setup: &Setup, config: &ConfigSet) -> FilesStore {
         None if setup.is_bare() => LogAllRefUpdates::False,
         None => LogAllRefUpdates::True,
     };
+    if let Ok(Some(ms)) = config.int("core.packedrefstimeout") {
+        options.packed_refs_timeout = rgit_fs::Timeout::from_millis(ms);
+    }
+    if let Ok(Some(ms)) = config.int("core.filesreflocktimeout") {
+        options.ref_lock_timeout = rgit_fs::Timeout::from_millis(ms);
+    }
     FilesStore::with_options(
-        setup.cwd.join(&setup.common_dir),
+        setup.common_dir.clone(),
         setup.format.object_format,
         options,
     )
@@ -60,7 +66,7 @@ impl Objects {
     /// Opens the object directory of `setup`.
     pub fn open(setup: &Setup) -> Objects {
         let hash = setup.format.object_format;
-        let dir = rgit_odb::objects_dir(&setup.cwd.join(&setup.common_dir));
+        let dir = rgit_odb::objects_dir(&setup.common_dir);
         Objects::at(&dir, hash)
     }
 
@@ -233,8 +239,8 @@ impl<'a> UpdateHooks<'a> {
             })
             .map(|id| Committer::new(&id.name, &id.email, id.time, id.tz));
         let logs = FilesReflog::new(
-            setup.absolute_git_dir(),
-            setup.cwd.join(&setup.common_dir),
+            setup.git_dir.clone(),
+            setup.common_dir.clone(),
             setup.format.object_format,
         );
         UpdateHooks {
