@@ -9,12 +9,48 @@ use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::ObjectKind;
 
 /// A failure of a backend (corrupt object, unreadable ref, ...).
-///
-/// The text is printed as the reason (after `fatal: `) when it ends the
-/// command.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct LookupError(pub String);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupError {
+    /// Lines git prints as `error: ` (e.g. for a corrupt loose object).
+    pub errors: Vec<String>,
+    /// The `fatal: ` text if the failure ends the command; `None` if only
+    /// this object is unusable.
+    pub fatal: Option<String>,
+}
+
+impl LookupError {
+    /// A failure that ends the command with `fatal: <msg>`.
+    pub fn fatal(msg: impl Into<String>) -> LookupError {
+        LookupError {
+            errors: Vec::new(),
+            fatal: Some(msg.into()),
+        }
+    }
+
+    /// An unusable object, reported with `error: ` lines.
+    pub fn corrupt(errors: Vec<String>) -> LookupError {
+        LookupError {
+            errors,
+            fatal: None,
+        }
+    }
+
+    /// The main message: the fatal text or the last error line.
+    pub fn message(&self) -> String {
+        self.fatal
+            .clone()
+            .or_else(|| self.errors.last().cloned())
+            .unwrap_or_default()
+    }
+}
+
+impl std::fmt::Display for LookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message())
+    }
+}
+
+impl std::error::Error for LookupError {}
 
 /// Read access to the object database.
 pub trait ObjectLookup {

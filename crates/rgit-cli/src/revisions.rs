@@ -3,21 +3,20 @@
 //! adapters from refs, objects, index, configuration and work tree to its
 //! lookup traits, plus the settings it reads from the configuration.
 //!
-//! The object lookup reads loose objects and packs directly; it is a
-//! stopgap until the object database crate (#14, PR #207) lands, which will
-//! replace [`Objects`]. Reflogs are read from `logs/` the same way until
-//! #30 provides them.
+//! Objects come from `rgit-odb` (loose) plus the packs of `rgit-pack`,
+//! plugged into the database here until it has a pack store of its own.
+//! Reflogs are read from `logs/` directly until #30 provides them.
 
 use std::cell::OnceCell;
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::io::Read;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use rgit_config::{ConfigSet, Origin};
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_index::{Index, ReadOptions, Stage};
 use rgit_object::ObjectKind;
+use rgit_odb::{LooseOptions, ObjectDatabase, ObjectStore, RawObject};
 use rgit_pack::{DeltaBaseCache, PackSet};
 use rgit_refs::files::FilesStore;
 use rgit_refs::{IterItem, IterOptions, RefStore};
@@ -29,85 +28,12 @@ use rgit_revwalk::revision::{
 
 use crate::Die;
 
-/// Loose objects and packs of one object directory.
-pub struct Objects {
-    dir: PathBuf,
-    kind: HashKind,
+/// Packs as an [`ObjectStore`] of the object database (`rgit-odb` has only
+/// the loose store so far).
+#[derive(Debug)]
+struct PackStore {
     packs: PackSet,
-    cache: RefCell<DeltaBaseCache>,
-    count: OnceCell<u64>,
-    shallow: HashSet<ObjectId>,
-}
-
-impl Objects {
-    /// The objects in `dir`; `shallow` is the repository's `shallow` file.
-    pub fn new(dir: PathBuf, kind: HashKind, shallow: &std::path::Path) -> Objects {
-        let packs = PackSet::open(dir.join("pack"), kind);
-        let shallow = std::fs::read_to_string(shallow)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| ObjectId::from_hex(kind, l.trim().as_bytes()).ok())
-            .collect();
-        Objects {
-            dir,
-            kind,
-            packs,
-            cache: RefCell::new(DeltaBaseCache::new(
-                rgit_pack::DEFAULT_DELTA_BASE_CACHE_LIMIT,
-            )),
-            count: OnceCell::new(),
-            shallow,
-        }
-    }
-
-    fn loose_path(&self, oid: &ObjectId) -> PathBuf {
-        let hex = oid.to_hex();
-        self.dir.join(&hex[..2]).join(&hex[2..])
-    }
-
-    fn read_loose(&self, oid: &ObjectId) -> Result<Option<(ObjectKind, Vec<u8>)>, LookupError> {
-        let path = self.loose_path(oid);
-        let file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => return Ok(None),
-        };
-        let mut raw = Vec::new();
-        flate2::read::ZlibDecoder::new(file)
-            .read_to_end(&mut raw)
-            .map_err(|_| LookupError(format!("unable to unpack {} header", oid.to_hex())))?;
-        let nul = raw
-            .iter()
-            .position(|&b| b == 0)
-            .ok_or_else(|| LookupError(format!("unable to unpack {} header", oid.to_hex())))?;
-        let header = &raw[..nul];
-        let sp = header
-            .iter()
-            .position(|&b| b == b' ')
-            .unwrap_or(header.len());
-        let kind = ObjectKind::from_name(&header[..sp])
-            .ok_or_else(|| LookupError("invalid object type".to_string()))?;
-        Ok(Some((kind, raw[nul + 1..].to_vec())))
-    }
-
-    fn loose_prefix(&self, prefix: &Prefix) -> Vec<ObjectId> {
-        let hex = prefix.as_id().to_hex_with_len(prefix.hex_len());
-        let mut out = Vec::new();
-        let Ok(dir) = std::fs::read_dir(self.dir.join(&hex[..2])) else {
-            return out;
-        };
-        for e in dir.flatten() {
-            let name = e.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if !name.starts_with(&hex[2..]) {
-                continue;
-            }
-            let full = format!("{}{name}", &hex[..2]);
-            if let Ok(oid) = ObjectId::from_hex(self.kind, full.as_bytes()) {
-                out.push(oid);
-            }
-        }
-        out
-    }
+    cache: Mutex<DeltaBaseCache>,
 }
 
 fn pack_kind(k: rgit_pack::ObjectKind) -> ObjectKind {
@@ -119,26 +45,119 @@ fn pack_kind(k: rgit_pack::ObjectKind) -> ObjectKind {
     }
 }
 
+impl ObjectStore for PackStore {
+    fn hash_kind(&self) -> HashKind {
+        self.packs.hash_kind()
+    }
+
+    fn contains(&self, oid: &ObjectId) -> bool {
+        self.packs.contains(oid)
+    }
+
+    fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, rgit_odb::Error> {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        match self.packs.read(oid, &mut cache, &mut |_| {}) {
+            Ok(Some(o)) => Ok(Some(RawObject {
+                kind: pack_kind(o.kind),
+                data: o.data,
+            })),
+            Ok(None) => Ok(None),
+            Err(e) => Err(rgit_odb::Error::Store(Box::new(e))),
+        }
+    }
+
+    fn for_each_prefix_match(
+        &self,
+        prefix: &Prefix,
+        f: &mut dyn FnMut(ObjectId),
+    ) -> Result<(), rgit_odb::Error> {
+        for id in self.packs.lookup_prefix(prefix, usize::MAX) {
+            f(id);
+        }
+        Ok(())
+    }
+
+    fn for_each_object(&self, f: &mut dyn FnMut(ObjectId)) -> Result<(), rgit_odb::Error> {
+        for id in self.packs.all_ids() {
+            f(id);
+        }
+        Ok(())
+    }
+}
+
+/// The object database (loose objects and packs) for the revision parser.
+pub struct Objects {
+    odb: ObjectDatabase,
+    packs: Arc<PackStore>,
+    dir: PathBuf,
+    count: OnceCell<u64>,
+    shallow: HashSet<ObjectId>,
+}
+
+impl Objects {
+    /// The objects in `dir`; `shallow` is the repository's `shallow` file.
+    pub fn new(dir: PathBuf, kind: HashKind, shallow: &std::path::Path) -> Objects {
+        let mut odb = ObjectDatabase::open(&dir, kind, LooseOptions::default());
+        let packs = Arc::new(PackStore {
+            packs: PackSet::open(dir.join("pack"), kind),
+            cache: Mutex::new(DeltaBaseCache::new(
+                rgit_pack::DEFAULT_DELTA_BASE_CACHE_LIMIT,
+            )),
+        });
+        // git looks in packs before loose objects.
+        odb.insert_store(0, packs.clone());
+        let shallow = std::fs::read_to_string(shallow)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| ObjectId::from_hex(kind, l.trim().as_bytes()).ok())
+            .collect();
+        Objects {
+            odb,
+            packs,
+            dir,
+            count: OnceCell::new(),
+            shallow,
+        }
+    }
+}
+
+/// An object database error as git reports it: an invalid type ends the
+/// command, other corruption makes only this object unusable.
+fn odb_error(e: rgit_odb::Error) -> LookupError {
+    match e {
+        rgit_odb::Error::InvalidType { .. } | rgit_odb::Error::Config(_) => {
+            LookupError::fatal(e.to_string())
+        }
+        e => LookupError::corrupt(e.git_lines()),
+    }
+}
+
 impl ObjectLookup for Objects {
     fn hash_kind(&self) -> HashKind {
-        self.kind
+        self.odb.hash_kind()
     }
 
     fn read(&self, oid: &ObjectId) -> Result<Option<(ObjectKind, Vec<u8>)>, LookupError> {
-        if let Some(o) = self.read_loose(oid)? {
-            return Ok(Some(o));
+        match self.odb.read(oid) {
+            Ok(r) => Ok(r.map(|r| (r.kind, r.data))),
+            Err(e) => Err(odb_error(e)),
         }
-        let mut cache = self.cache.borrow_mut();
-        match self.packs.read(oid, &mut cache, &mut |_| {}) {
-            Ok(Some(o)) => Ok(Some((pack_kind(o.kind), o.data))),
-            Ok(None) => Ok(None),
-            Err(e) => Err(LookupError(e.to_string())),
+    }
+
+    fn kind(&self, oid: &ObjectId) -> Result<Option<ObjectKind>, LookupError> {
+        match self.odb.header(oid) {
+            Ok(h) => Ok(h.map(|h| h.kind)),
+            Err(e) => Err(odb_error(e)),
         }
     }
 
     fn prefix_matches(&self, prefix: &Prefix) -> Result<Vec<ObjectId>, LookupError> {
-        let mut out = self.loose_prefix(prefix);
-        out.extend(self.packs.lookup_prefix(prefix, usize::MAX));
+        let mut out = Vec::new();
+        for store in self.odb.stores() {
+            store
+                .for_each_prefix_match(prefix, &mut |id| out.push(id))
+                .map_err(odb_error)?;
+        }
         Ok(out)
     }
 
@@ -149,6 +168,7 @@ impl ObjectLookup for Objects {
     fn approximate_count(&self) -> u64 {
         *self.count.get_or_init(|| {
             let mut n: u64 = self
+                .packs
                 .packs
                 .packs()
                 .iter()
@@ -197,7 +217,7 @@ impl Refs {
 }
 
 fn lookup_err(e: impl std::fmt::Display) -> LookupError {
-    LookupError(e.to_string())
+    LookupError::fatal(e.to_string())
 }
 
 /// One reflog line: `<old> <new> <ident> <time> <tz>\t<message>`.

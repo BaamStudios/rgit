@@ -6,7 +6,7 @@ use rgit_date::{DateMode, DateStyle, show_date};
 use rgit_hash::{ObjectId, Prefix};
 use rgit_object::{Commit, ObjectKind, Tag};
 
-use super::{Error, Flags, Hint, Level, Resolver, messages};
+use super::{Error, Flags, Hint, Level, LookupError, Resolver, messages};
 
 /// The shortest abbreviation git accepts.
 pub const MINIMUM_ABBREV: usize = 4;
@@ -34,14 +34,15 @@ fn common_hex_len(a: &ObjectId, b: &ObjectId) -> usize {
     n
 }
 
-/// Sort rank for the candidate list: tags, commits, trees, blobs, bad.
+/// Sort rank for the candidate list: unreadable objects, tags, commits,
+/// trees, blobs.
 fn kind_rank(k: Option<ObjectKind>) -> u8 {
     match k {
-        Some(ObjectKind::Tag) => 0,
-        Some(ObjectKind::Commit) => 1,
-        Some(ObjectKind::Tree) => 2,
-        Some(ObjectKind::Blob) => 3,
-        None => 4,
+        None => 0,
+        Some(ObjectKind::Tag) => 1,
+        Some(ObjectKind::Commit) => 2,
+        Some(ObjectKind::Tree) => 3,
+        Some(ObjectKind::Blob) => 4,
     }
 }
 
@@ -165,17 +166,37 @@ impl Resolver<'_> {
         Err(Error::NotFound)
     }
 
+    /// Read for the candidate list: corrupt objects are reported and shown
+    /// as `[bad object]`; a fatal error ends the lookup.
+    fn read_candidate(&self, oid: &ObjectId) -> Result<Option<(ObjectKind, Vec<u8>)>, Error> {
+        match self.repo.objects.read(oid) {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                for line in &e.errors {
+                    self.push_diag(Level::Error, line.clone());
+                }
+                if e.fatal.is_some() {
+                    return Err(Error::Lookup(LookupError::fatal(e.message())));
+                }
+                Ok(None)
+            }
+        }
+    }
+
     fn report_ambiguous(&self, hex: &str, candidates: &[ObjectId]) -> Result<(), Error> {
         self.push_diag(Level::Error, messages::short_id_ambiguous(hex));
+        // Like git, the objects are read once to sort and once to describe
+        // them (so problems are reported twice).
         let mut rows = Vec::new();
         for c in candidates {
-            let read = self.repo.objects.read(c).ok().flatten();
-            rows.push((kind_rank(read.as_ref().map(|r| r.0)), *c, read));
+            let kind = self.read_candidate(c)?.map(|r| r.0);
+            rows.push((kind_rank(kind), *c));
         }
-        rows.sort_by_key(|a| (a.0, a.1));
+        rows.sort();
         let abbrev = self.default_abbrev();
         let mut lines = vec![messages::CANDIDATES.to_string()];
-        for (_, oid, read) in rows {
+        for (_, oid) in rows {
+            let read = self.read_candidate(&oid)?;
             let short = self.unique_abbrev(&oid, abbrev)?;
             lines.push(format!("  {short} {}", self.describe_candidate(read)));
         }

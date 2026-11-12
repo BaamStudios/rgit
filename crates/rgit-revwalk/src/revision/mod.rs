@@ -287,7 +287,7 @@ impl<'a> Resolver<'a> {
         };
         match self.get_oid(name, flags) {
             Err(Error::Fatal(msg)) => Some(msg),
-            Err(Error::Lookup(e)) => Some(e.0),
+            Err(Error::Lookup(e)) => Some(e.message()),
             _ => None,
         }
     }

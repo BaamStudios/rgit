@@ -244,7 +244,7 @@ impl State<'_, '_> {
                     let d = match self.resolver.dwim_ref(name) {
                         Ok(d) => d,
                         Err(RevError::Fatal(m)) => return Err(self.resolver_fatal(m)),
-                        Err(RevError::Lookup(e)) => return Err(self.die(e.0)),
+                        Err(e @ RevError::Lookup(_)) => return Err(self.rev_error(e)),
                         Err(RevError::NotFound) => return Ok(()),
                     };
                     match d.count {
@@ -386,7 +386,7 @@ impl State<'_, '_> {
                 found.push((name.to_string(), *oid));
             });
         if let Err(e) = r {
-            return Err(self.die(e.0));
+            return Err(self.rev_error(RevError::Lookup(e)));
         }
         let excludes = std::mem::take(&mut self.excludes);
         for (name, oid) in found {
@@ -429,7 +429,7 @@ impl State<'_, '_> {
                 }
                 Ok(())
             }
-            Err(e) => Err(self.die(e.0)),
+            Err(e) => Err(self.rev_error(RevError::Lookup(e))),
         }
     }
 
@@ -601,7 +601,16 @@ impl State<'_, '_> {
             RevError::Fatal(m) => self.resolver_fatal(m),
             RevError::Lookup(e) => {
                 self.drain_diags();
-                self.die(e.0)
+                for line in &e.errors {
+                    messages::print_error(line);
+                }
+                match e.fatal {
+                    Some(m) => self.die(m),
+                    None => {
+                        self.flush();
+                        Die::Exit(rgit_options::EXIT_FATAL)
+                    }
+                }
             }
             RevError::NotFound => self.die_no_single_rev(),
         }
