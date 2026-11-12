@@ -8,6 +8,7 @@ pub mod for_each_ref;
 pub mod init;
 pub mod pack_objects;
 pub mod pack_refs;
+pub mod reflog;
 pub mod show_ref;
 pub mod update_ref;
 pub mod var;

@@ -39,6 +39,11 @@ impl ObjectKind {
         }
     }
 
+    /// Same as [`ObjectKind::name`].
+    pub const fn as_str(self) -> &'static str {
+        self.name()
+    }
+
     /// Parse a type name (exact, case-sensitive match).
     pub fn from_name(name: &[u8]) -> Option<ObjectKind> {
         match name {

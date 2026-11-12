@@ -47,3 +47,30 @@ fn symbolic_ref_create_and_delete() {
             .run();
     }
 }
+
+#[test]
+fn symbolic_ref_short() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .git(["commit", "-q", "--allow-empty", "-m", "c"])
+        .git(["update-ref", "refs/heads/x", "HEAD"])
+        .git(["update-ref", "refs/remotes/x", "HEAD"])
+        .git(["update-ref", "refs/remotes/origin/HEAD", "HEAD"])
+        .git(["symbolic-ref", "TEST_A", "refs/heads/x"])
+        .git(["symbolic-ref", "TEST_B", "refs/remotes/origin/HEAD"])
+        .git(["symbolic-ref", "TEST_C", "refs/tags/t"]);
+    if fx.is_skipped() {
+        return;
+    }
+    for name in ["HEAD", "TEST_A", "TEST_B", "TEST_C"] {
+        fx.compare(["symbolic-ref", "--short", name])
+            .checks([Check::ExitCode, Check::Stdout, Check::Stderr])
+            .run();
+    }
+    // A branch `origin` makes `origin` ambiguous.
+    let mut fx = fx.git(["update-ref", "refs/heads/origin", "HEAD"]);
+    fx.compare(["symbolic-ref", "--short", "TEST_B"])
+        .checks([Check::ExitCode, Check::Stdout, Check::Stderr])
+        .run();
+}

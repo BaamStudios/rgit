@@ -8,6 +8,7 @@ mod commands;
 mod context;
 mod global;
 mod messages;
+mod objects;
 mod refs_support;
 mod repo;
 mod revisions;
