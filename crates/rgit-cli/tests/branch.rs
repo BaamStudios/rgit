@@ -77,7 +77,11 @@ fn force_delete() {
     let mut fx = fixture();
     all_same(
         &mut fx,
-        &[&["branch", "-D", "feature"], &["branch", "-D", "nosuch"]],
+        &[
+            &["branch", "-D", "feature"],
+            &["branch", "-D", "nosuch"],
+            &["branch", "-D", "main"],
+        ],
     );
 }
 

@@ -67,6 +67,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mut code = 0;
         for name in &args {
             let refname = format!("refs/heads/{name}");
+            if current.as_deref() == Some(name.as_str()) {
+                let path = setup
+                    .work_tree
+                    .as_deref()
+                    .unwrap_or(&setup.git_dir)
+                    .display()
+                    .to_string();
+                eprintln!("error: {}", msg::cannot_delete_checked_out(name, &path));
+                code = 1;
+                continue;
+            }
             let oid = match store.read_raw(&refname) {
                 Ok(Some(Target::Object(oid))) => oid,
                 _ => {

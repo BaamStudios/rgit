@@ -41,6 +41,10 @@ pub fn not_found(name: &str) -> String {
     format!("branch '{name}' not found")
 }
 
+pub fn cannot_delete_checked_out(name: &str, path: &str) -> String {
+    format!("cannot delete branch '{name}' used by worktree at '{path}'")
+}
+
 pub fn deleted(name: &str, abbrev: &str) -> String {
     format!("Deleted branch {name} (was {abbrev}).")
 }
