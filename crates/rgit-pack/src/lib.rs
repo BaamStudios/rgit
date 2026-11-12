@@ -13,6 +13,9 @@
 //! - [`PackSet`]: all packs of a directory, newest first, with rescan on a
 //!   miss and fallback to another copy when one copy is corrupt.
 //! - [`apply_delta`]: the delta format on its own.
+//! - [`index_pack`]: index a pack stream (`git index-pack`): object ids,
+//!   parallel delta resolution, thin pack completion, `.idx` and `.rev`
+//!   output.
 //!
 //! Objects come back as [`Object`]: the type and the raw content bytes,
 //! without parsing. SHA-1 and SHA-256 repositories are supported; the hash
@@ -27,6 +30,7 @@ mod data;
 mod delta;
 mod error;
 mod index;
+pub mod index_pack;
 pub mod messages;
 mod mmap;
 mod pack;

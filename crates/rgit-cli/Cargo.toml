@@ -19,6 +19,10 @@ rgit-ident = { path = "../rgit-ident" }
 rgit-date = { path = "../rgit-date" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-index = { path = "../rgit-index" }
+rgit-hash = { path = "../rgit-hash" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+rgit-pack = { path = "../rgit-pack" }
 rgit-options = { path = "../rgit-options" }
 rgit-pathspec = { path = "../rgit-pathspec" }
 rgit-refs = { path = "../rgit-refs" }
