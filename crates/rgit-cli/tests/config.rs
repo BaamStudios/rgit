@@ -550,3 +550,49 @@ fn include_if_worktree_with_nonexistent_git_dir() {
         .checks(CHECKS)
         .run();
 }
+
+#[test]
+fn unusable_repository_is_no_repository() {
+    // Unsafe owner: `config` does not check ownership, it just runs
+    // without a repository.
+    let mut fx = fixture()
+        .git(["init", "-q", "r"])
+        .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1");
+    all_same(
+        &mut fx,
+        &[
+            &["-C", "r", "config", "--global", "a.b", "c"],
+            &["-C", "r", "config", "core.bare"],
+            &["-C", "r", "config", "--local", "core.bare"],
+            &["-C", "r", "config", "x.y", "z"],
+        ],
+    );
+    // Unsupported format: warning, then no repository.
+    let mut fx = fixture().git(["init", "-q", "r"]).git([
+        "config",
+        "-f",
+        "r/.git/config",
+        "core.repositoryformatversion",
+        "99",
+    ]);
+    all_same(
+        &mut fx,
+        &[
+            &["-C", "r", "config", "core.repositoryformatversion"],
+            &["-C", "r", "config", "--local", "core.bare"],
+        ],
+    );
+    // A bare repository that safe.bareRepository forbids.
+    let mut fx = fixture().git(["init", "-q", "--bare", "b"]);
+    all_same(
+        &mut fx,
+        &[&[
+            "-C",
+            "b",
+            "-c",
+            "safe.bareRepository=explicit",
+            "config",
+            "core.bare",
+        ]],
+    );
+}
