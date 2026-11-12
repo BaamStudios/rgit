@@ -4,6 +4,7 @@
 
 pub mod check_ignore;
 pub mod config;
+pub mod for_each_ref;
 pub mod pack_objects;
 pub mod show_ref;
 pub mod update_ref;
