@@ -32,7 +32,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 /// One request as the server saw it.
 #[derive(Debug, Clone)]
@@ -85,14 +86,12 @@ impl Server {
         let port = listener.local_addr().unwrap().port();
 
         let (cert_pem, server_config) = if tls {
-            let ck = rcgen::generate_simple_self_signed(vec![
-                "localhost".to_string(),
-                "127.0.0.1".to_string(),
-            ])
-            .unwrap();
-            let cert_der: CertificateDer<'static> = ck.cert.der().clone();
-            let key =
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der()));
+            // Self-signed P-256 certificate for localhost and 127.0.0.1,
+            // valid for 100 years (made with `openssl req -x509`).
+            const CERT: &str = include_str!("../fixtures/cert.pem");
+            const KEY: &str = include_str!("../fixtures/key.pem");
+            let cert_der = CertificateDer::from_pem_slice(CERT.as_bytes()).unwrap();
+            let key = PrivateKeyDer::from_pem_slice(KEY.as_bytes()).unwrap();
             let provider = Arc::new(rustls::crypto::ring::default_provider());
             let cfg = rustls::ServerConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
@@ -100,7 +99,7 @@ impl Server {
                 .with_no_client_auth()
                 .with_single_cert(vec![cert_der], key)
                 .unwrap();
-            (ck.cert.pem(), Some(Arc::new(cfg)))
+            (CERT.to_string(), Some(Arc::new(cfg)))
         } else {
             (String::new(), None)
         };
