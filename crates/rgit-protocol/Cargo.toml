@@ -1,0 +1,19 @@
+[package]
+name = "rgit-protocol"
+description = "pkt-line framing, sideband and capabilities of the git wire protocol for rgit (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-trace = { path = "../rgit-trace" }
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+# Safe uname(2) for the operating system part of the agent string.
+rustix = { version = "1", default-features = false, features = ["std", "system"] }
+
+[dev-dependencies]
+tempfile = "3"
