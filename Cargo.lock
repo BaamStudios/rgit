@@ -737,8 +737,11 @@ dependencies = [
  "rgit-date",
  "rgit-difftest",
  "rgit-hash",
+ "rgit-ident",
  "rgit-options",
  "rgit-pathspec",
+ "rgit-refs",
+ "rgit-repo",
 ]
 
 [[package]]

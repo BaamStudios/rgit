@@ -189,3 +189,61 @@ pub fn timestamp_tz_too_large(time: u64, tz: i32) -> String {
 pub fn before_epoch(time: u64, tz: i32) -> String {
     format!("Timestamp before Unix epoch: {time} {tz:04}")
 }
+
+// ----- ref-store --------------------------------------------------------
+
+/// A missing argument (`ref store`, `refname`, `flags`, ...).
+pub fn required(what: &str) -> String {
+    format!("{what} required")
+}
+
+/// `<store>` is neither `main` nor `worktree:<id>`.
+pub fn unknown_backend(spec: &str) -> String {
+    format!("unknown backend {spec}")
+}
+
+/// `worktree:<id>` names no worktree.
+pub fn no_such_worktree(id: &str) -> String {
+    format!("no such worktree: {id}")
+}
+
+/// `submodule:<path>` (not supported here).
+pub const NO_REF_STORE: &str = "no ref store";
+
+/// Unknown function name.
+pub fn unknown_function(name: &str) -> String {
+    format!("unknown function {name}")
+}
+
+/// A flag name that is not accepted.
+pub fn unknown_flag(name: &str) -> String {
+    format!("unknown flag \"{name}\"")
+}
+
+/// An object id argument that does not parse.
+pub fn cannot_parse_sha1(text: &str) -> String {
+    format!("cannot parse {text} as sha1")
+}
+
+/// `update-ref` failed.
+pub fn update_ref_failed(name: &str, err: &str) -> String {
+    format!("update_ref failed for ref '{name}': {err}")
+}
+
+/// `delete-refs`: one reference could not be deleted.
+pub fn could_not_delete(name: &str, err: &str) -> String {
+    format!("warning: could not delete reference {name}: {err}")
+}
+
+/// `rename-ref` of a missing reference.
+pub fn refname_not_found(name: &str) -> String {
+    format!("refname {name} not found")
+}
+
+/// `rename-ref` of a symbolic reference.
+pub fn rename_symref(name: &str) -> String {
+    format!("refname {name} is a symbolic ref, renaming it is not supported")
+}
+
+/// `for-each-ref` with a prefix that does not end in `/`.
+pub const BUG_TRAILING_SLASH: &str = "BUG: ref pattern must end in a trailing slash when trimming";
