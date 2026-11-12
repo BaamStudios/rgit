@@ -128,12 +128,7 @@ impl Store {
     }
 
     fn log_all(&self) -> LogAllRefUpdates {
-        self.config
-            .string("core.logallrefupdates")
-            .ok()
-            .flatten()
-            .and_then(|v| LogAllRefUpdates::parse(&v.to_string()))
-            .unwrap_or(LogAllRefUpdates::default_for(self.bare))
+        log_all_ref_updates(&self.config, self.bare)
     }
 
     fn committer(&self) -> Result<Committer, Fatal> {
@@ -233,6 +228,16 @@ fn load_config(setup: &Setup, git_dir: &std::path::Path) -> Result<ConfigSet, Fa
     Ok(set)
 }
 
+/// `core.logAllRefUpdates`, defaulting by whether the repository is bare.
+fn log_all_ref_updates(config: &ConfigSet, bare: bool) -> LogAllRefUpdates {
+    config
+        .string("core.logallrefupdates")
+        .ok()
+        .flatten()
+        .and_then(|v| LogAllRefUpdates::parse(&v.to_string()))
+        .unwrap_or(LogAllRefUpdates::default_for(bare))
+}
+
 fn open_store(setup: &Setup, spec: &str) -> Result<Store, Fatal> {
     let common = setup.absolute_common_dir();
     let own = setup.absolute_git_dir();
@@ -258,12 +263,7 @@ fn open_store(setup: &Setup, spec: &str) -> Result<Store, Fatal> {
     let config = load_config(setup, &git_dir)?;
     let bare = setup.is_bare();
     let kind = setup.format.object_format;
-    let log_all = config
-        .string("core.logallrefupdates")
-        .ok()
-        .flatten()
-        .and_then(|v| LogAllRefUpdates::parse(&v.to_string()))
-        .unwrap_or(LogAllRefUpdates::default_for(bare));
+    let log_all = log_all_ref_updates(&config, bare);
     let options = FilesOptions {
         log_all_ref_updates: log_all,
         ..FilesOptions::default()
