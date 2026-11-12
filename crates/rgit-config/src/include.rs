@@ -177,12 +177,16 @@ pub(crate) fn prepare_path_pattern(
 }
 
 /// Make `p` absolute against the current directory without resolving links.
-pub(crate) fn absolute(p: &Path) -> PathBuf {
+///
+/// The current directory is taken from `$PWD` when that names the same
+/// directory, so a path reached through a symbolic link keeps the spelling
+/// the user typed (`includeIf "gitdir:<link>/"` matches).
+pub fn absolute(p: &Path) -> PathBuf {
     if p.is_absolute() {
         return p.to_path_buf();
     }
-    match std::env::current_dir() {
-        Ok(cwd) => {
+    match logical_cwd() {
+        Some(cwd) => {
             let mut out = cwd;
             for c in p.components() {
                 match c {
@@ -192,8 +196,33 @@ pub(crate) fn absolute(p: &Path) -> PathBuf {
             }
             out
         }
-        Err(_) => p.to_path_buf(),
+        None => p.to_path_buf(),
     }
+}
+
+/// The current directory, spelled as `$PWD` if that is the same directory.
+fn logical_cwd() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    if let Some(pwd) = std::env::var_os("PWD").map(PathBuf::from) {
+        if pwd.is_absolute() && pwd != cwd && same_dir(&pwd, &cwd) {
+            return Some(pwd);
+        }
+    }
+    Some(cwd)
+}
+
+#[cfg(unix)]
+fn same_dir(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_dir(_: &Path, _: &Path) -> bool {
+    false
 }
 
 /// Does `path` (as given and with links resolved) match one of the patterns?

@@ -108,6 +108,14 @@ pub enum Error {
     /// A configuration value is invalid (fatal in git).
     #[error("{0}")]
     Config(String),
+    /// A copy of an object in a pack cannot be read (reported for each
+    /// copy while looking further).
+    #[error(transparent)]
+    Pack(rgit_pack::Error),
+    /// No copy of an object in the packs can be read; the reasons were
+    /// reported before as [`Error::Pack`].
+    #[error(transparent)]
+    PackSummary(rgit_pack::Error),
     /// Some other store reported a problem (for example a pack backend).
     #[error(transparent)]
     Store(Box<dyn std::error::Error + Send + Sync>),
@@ -136,6 +144,18 @@ impl Error {
         !matches!(self, Error::Config(_) | Error::Collision(_))
     }
 
+    /// The lines git prints (each to be prefixed with `error: `) when it
+    /// skips this broken copy of an object and goes on to another copy:
+    /// for a broken zlib stream only `inflate: data stream error (...)`
+    /// (`unable to unpack <oid> header` only follows when no copy is
+    /// left), otherwise [`Error::git_lines`].
+    pub fn skipped_copy_lines(&self) -> Vec<String> {
+        match self {
+            Error::InflateHeader { zlib, .. } => vec![messages::inflate_data_error(zlib)],
+            _ => self.git_lines(),
+        }
+    }
+
     /// All lines git prints for this problem (each to be prefixed with
     /// `error: `), in order. For example a broken zlib stream gives
     /// `inflate: data stream error (incorrect header check)` followed by
@@ -148,6 +168,7 @@ impl Error {
             Error::InflateContent { oid, .. } => {
                 vec![self.to_string(), messages::corrupt_loose_object(oid)]
             }
+            Error::Pack(e) | Error::PackSummary(e) => e.chain(),
             _ => vec![self.to_string()],
         }
     }

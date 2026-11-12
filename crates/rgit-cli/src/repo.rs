@@ -33,19 +33,36 @@ pub fn command_line(ctx: &Context) -> CommandLine {
 
 /// Set up the repository, change into [`Setup::cwd`] and return the setup.
 pub fn setup(ctx: &Context, mode: Mode) -> Result<Setup, Die> {
+    setup_with(ctx, mode, rgit_repo::format::Support::default())
+}
+
+/// [`setup`] for a command that can handle the repository formats in
+/// `support` (e.g. SHA-256).
+pub fn setup_with(
+    ctx: &Context,
+    mode: Mode,
+    support: rgit_repo::format::Support,
+) -> Result<Setup, Die> {
     // A required setup returns a repository or an error.
-    setup_inner(ctx, mode == Mode::Required, true)?.ok_or(Die::Exit(rgit_options::EXIT_FATAL))
+    setup_inner(ctx, support, mode == Mode::Required, true)?
+        .ok_or(Die::Exit(rgit_options::EXIT_FATAL))
 }
 
 /// Like [`setup`], for commands that also work outside a repository
 /// (`RUN_SETUP_GENTLY`): `None` when there is none.
 pub fn setup_gently(ctx: &Context) -> Result<Option<Setup>, Die> {
-    setup_inner(ctx, true, false)
+    setup_inner(ctx, rgit_repo::format::Support::default(), true, false)
 }
 
-fn setup_inner(ctx: &Context, trace: bool, required: bool) -> Result<Option<Setup>, Die> {
+fn setup_inner(
+    ctx: &Context,
+    support: rgit_repo::format::Support,
+    trace: bool,
+    required: bool,
+) -> Result<Option<Setup>, Die> {
     let env = SystemEnv::default();
     let mut opts = SetupOptions::from_process().map_err(die)?;
+    opts.support = support;
     if let Some(d) = &ctx.git_dir {
         opts.git_dir = Some(d.into());
     }
@@ -89,4 +106,54 @@ pub fn die(e: Error) -> Die {
         let _ = writeln!(err, "{} {msg}", level.prefix());
     }
     Die::Exit(rgit_options::EXIT_FATAL)
+}
+
+/// The configuration of the repository (all scopes plus `-c`), or as much
+/// of it as can be read.
+pub fn config(ctx: &Context, setup: &Setup) -> rgit_config::ConfigSet {
+    let env = SystemEnv::default();
+    let opts = rgit_config::LoadOptions {
+        env: &env,
+        repo: None,
+        includes: true,
+    };
+    let repo_cfg = rgit_config::sources::RepoConfig {
+        common_dir: setup.common_dir.clone(),
+        git_dir: setup.git_dir.clone(),
+        worktree_config: None,
+    };
+    let mut set = rgit_config::ConfigSet::new();
+    let _ = rgit_config::sources::load_standard(
+        opts,
+        Some(&repo_cfg),
+        &command_line(ctx),
+        rgit_config::sources::ScopeFilter::default(),
+        &mut set,
+    );
+    set
+}
+
+/// The object database of the repository: packs, loose objects and
+/// alternates ([`rgit_odb::ObjectDatabase::open_for_repo`]). This is how
+/// commands read objects. Configuration warnings are printed; an invalid
+/// setting is fatal, as in git. Corrupt copies skipped during lookups are
+/// printed as `error: ...` by the database.
+#[allow(dead_code)] // for the commands that read objects (cat-file, log, ls-tree, ...)
+pub fn odb(ctx: &Context, setup: &Setup) -> Result<rgit_odb::ObjectDatabase, Die> {
+    odb_with_config(setup, &config(ctx, setup))
+}
+
+/// [`odb`] with an already loaded configuration.
+pub fn odb_with_config(
+    setup: &Setup,
+    config: &rgit_config::ConfigSet,
+) -> Result<rgit_odb::ObjectDatabase, Die> {
+    let mut warnings = Vec::new();
+    let odb = rgit_odb::ObjectDatabase::open_for_repo(setup, config, &mut warnings)
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut err = std::io::stderr();
+    for w in warnings {
+        let _ = writeln!(err, "warning: {w}");
+    }
+    Ok(odb)
 }

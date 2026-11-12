@@ -390,7 +390,7 @@ impl Pack {
                 }
             }
             let obj = self.read_at(offset, cache, &mut |_| None)?;
-            match hash_object(kind, obj.kind.as_str(), &obj.data) {
+            match hash_object(kind, obj.kind.name(), &obj.data) {
                 Ok(h) if h == id => {}
                 _ => {
                     return Err(Error::HashMismatch {
