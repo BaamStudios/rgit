@@ -211,10 +211,11 @@ impl Resolver<'_> {
             },
             Some((ObjectKind::Tag, data)) => match Tag::parse(hash, &data) {
                 Ok(t) => {
+                    // The tag's own time zone is not used for tags.
                     let date = t
                         .tagger()
                         .and_then(|s| s.time())
-                        .map(|t| self.short_date(t.seconds, t.offset_minutes))
+                        .map(|t| self.short_date(t.seconds, 0))
                         .unwrap_or_default();
                     let name = t
                         .name()

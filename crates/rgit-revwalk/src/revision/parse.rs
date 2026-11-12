@@ -6,7 +6,7 @@ use rgit_hash::ObjectId;
 use rgit_object::{ObjectKind, TreeIter};
 
 use super::abbrev::looks_hex;
-use super::refname::{Interpreted, Tracking, parse_previous, plausible_refname, split_tracking};
+use super::refname::{Interpreted, parse_previous, plausible_refname, tracking_keyword};
 use super::{Error, Flags, Hint, Level, Resolver, messages};
 
 /// What `^{...}` asks for.
@@ -110,9 +110,14 @@ impl Resolver<'_> {
 
     /// git's `get_oid_1`: suffixes, then names.
     fn get_oid_1(&self, name: &str, flags: Flags) -> Result<ObjectId, Error> {
+        // A failed `^{...}` falls through to the other forms (as in git,
+        // where the whole name may still parse as `<ref>@{<date>}`).
         if name.ends_with('}') {
             if let Some(pos) = name.rfind("^{") {
-                return self.peel_suffix(name, pos, flags);
+                match self.peel_suffix(name, pos, flags) {
+                    Err(Error::NotFound) => {}
+                    other => return other,
+                }
             }
         }
         if let Some((base, op, digits)) = split_ancestry(name) {
@@ -121,12 +126,14 @@ impl Resolver<'_> {
             } else {
                 digits.parse().map_err(|_| Error::NotFound)?
             };
+            // git looks the base up with fresh flags: neither quiet nor
+            // diagnosing.
             let base_flags = Flags {
                 hint: Hint::Committish,
-                ..flags
+                ..Flags::default()
             };
             let oid = self.get_oid_1(base, base_flags)?;
-            let commit = self.peel_to_commit(&oid, flags.quiet)?;
+            let commit = self.peel_to_commit(&oid)?;
             if op == b'^' {
                 if n == 0 {
                     return Ok(commit);
@@ -190,7 +197,7 @@ impl Resolver<'_> {
             },
             Peel::NonTag => self.peel_tags(&oid)?.map(|p| p.0).ok_or(Error::NotFound),
             Peel::Search(re) => {
-                let commit = self.peel_to_commit(&oid, flags.quiet)?;
+                let commit = self.peel_to_commit(&oid)?;
                 if re.is_empty() {
                     return Ok(commit);
                 }
@@ -213,7 +220,8 @@ impl Resolver<'_> {
                     match next {
                         Some(n) => cur = n,
                         None => {
-                            if !flags.quiet && matches!(kind, ObjectKind::Tree | ObjectKind::Blob) {
+                            // Reported even in quiet lookups, like git.
+                            if matches!(kind, ObjectKind::Tree | ObjectKind::Blob) {
                                 self.push_diag(
                                     Level::Error,
                                     messages::expected_type(name, want.name(), kind.name()),
@@ -251,8 +259,19 @@ impl Resolver<'_> {
         if let Some(inner) = name.strip_suffix('}') {
             if let Some(at) = inner.rfind("@{") {
                 let content = &inner[at + 2..];
-                if let Some((branch, kind)) = split_tracking(name) {
-                    return self.resolve_tracking(branch, kind);
+                if let Some((kind, kw_len)) = tracking_keyword(&name[at + 2..]) {
+                    // git takes `@{u}` even when more follows the `}`; the
+                    // rest is then left over and the name does not resolve.
+                    let full = self.branch_tracking(&name[..at], kind)?;
+                    if at + 2 + kw_len + 1 != name.len() {
+                        return Err(Error::NotFound);
+                    }
+                    return self
+                        .repo
+                        .refs
+                        .resolve(&full)?
+                        .and_then(|v| v.oid)
+                        .ok_or(Error::NotFound);
                 }
                 if content.starts_with('-') {
                     if at == 0 {
@@ -286,15 +305,6 @@ impl Resolver<'_> {
             return self.short_oid(name, flags);
         }
         Err(Error::NotFound)
-    }
-
-    fn resolve_tracking(&self, branch: &str, kind: Tracking) -> Result<ObjectId, Error> {
-        let full = self.branch_tracking(branch, kind)?;
-        self.repo
-            .refs
-            .resolve(&full)?
-            .and_then(|v| v.oid)
-            .ok_or(Error::NotFound)
     }
 
     /// `<ref>@{<n>}` and `<ref>@{<date>}`.
@@ -332,7 +342,7 @@ impl Resolver<'_> {
             return Ok(e.new);
         }
         let first = &log[0];
-        if !flags.quiet {
+        if !flags.quiet && !flags.diagnose {
             let mode = DateMode::new(DateStyle::Rfc2822);
             let date = show_date(first.time, first.tz, &mode, &self.opts.date).unwrap_or_default();
             self.push_diag(

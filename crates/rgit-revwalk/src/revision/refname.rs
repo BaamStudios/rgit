@@ -224,6 +224,20 @@ pub(crate) enum Tracking {
     Push,
 }
 
+/// `u}`, `upstream}` or `push}` (any case) at the start of `s` (the text
+/// after `@{`): the kind and the keyword length.
+pub(crate) fn tracking_keyword(s: &str) -> Option<(Tracking, usize)> {
+    let end = s.find('}')?;
+    let kw = &s[..end];
+    if kw.eq_ignore_ascii_case("u") || kw.eq_ignore_ascii_case("upstream") {
+        Some((Tracking::Upstream, end))
+    } else if kw.eq_ignore_ascii_case("push") {
+        Some((Tracking::Push, end))
+    } else {
+        None
+    }
+}
+
 /// `<branch>@{upstream}`, `<branch>@{u}`, `<branch>@{push}` (any case),
 /// split into branch part and kind.
 pub(crate) fn split_tracking(name: &str) -> Option<(&str, Tracking)> {

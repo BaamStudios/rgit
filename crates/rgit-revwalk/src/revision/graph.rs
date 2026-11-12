@@ -36,9 +36,12 @@ impl Resolver<'_> {
         let tree = c
             .tree()
             .map_err(|e| Error::Fatal(format!("bad commit {}: {e}", oid.to_hex())))?;
-        let parents = c
-            .parents()
-            .map_err(|e| Error::Fatal(format!("bad commit {}: {e}", oid.to_hex())))?;
+        let parents = if self.repo.objects.is_shallow(oid) {
+            Vec::new()
+        } else {
+            c.parents()
+                .map_err(|e| Error::Fatal(format!("bad commit {}: {e}", oid.to_hex())))?
+        };
         let time = c
             .committer()
             .and_then(|s| s.time())
@@ -86,15 +89,17 @@ impl Resolver<'_> {
     }
 
     /// Peel to a commit (git's `lookup_commit_reference`): reports
-    /// "object X is a Y, not a commit" for other types.
-    pub(crate) fn peel_to_commit(&self, oid: &ObjectId, quiet: bool) -> Result<ObjectId, Error> {
+    /// "object X is a Y, not a commit" for other types, naming `oid` itself
+    /// (also in quiet lookups, like git).
+    pub(crate) fn peel_to_commit(&self, oid: &ObjectId) -> Result<ObjectId, Error> {
         match self.peel_tags(oid)? {
             None => Err(Error::NotFound),
             Some((c, ObjectKind::Commit)) => Ok(c),
-            Some((o, k)) => {
-                if !quiet {
-                    self.push_diag(Level::Error, messages::not_a_commit(&o.to_hex(), k.name()));
-                }
+            Some((_, k)) => {
+                self.push_diag(
+                    Level::Error,
+                    messages::not_a_commit(&oid.to_hex(), k.name()),
+                );
                 Err(Error::NotFound)
             }
         }

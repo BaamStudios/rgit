@@ -60,10 +60,7 @@ impl Resolver<'_> {
                 RevItem::new(a_oid, true, Some(a.to_string())),
             ]));
         }
-        let (Ok(ca), Ok(cb)) = (
-            self.peel_to_commit(&a_oid, flags.quiet),
-            self.peel_to_commit(&b_oid, flags.quiet),
-        ) else {
+        let (Ok(ca), Ok(cb)) = (self.peel_to_commit(&a_oid), self.peel_to_commit(&b_oid)) else {
             return Ok(None);
         };
         let mut items = vec![
@@ -119,7 +116,7 @@ impl Resolver<'_> {
             Err(Error::NotFound) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let commit = match self.peel_to_commit(&oid, flags.quiet) {
+        let commit = match self.peel_to_commit(&oid) {
             Ok(c) => c,
             Err(Error::NotFound) => return Ok(None),
             Err(e) => return Err(e),

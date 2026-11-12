@@ -14,15 +14,21 @@ path = "src/main.rs"
 
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 rgit-config = { path = "../rgit-config" }
 rgit-ident = { path = "../rgit-ident" }
 rgit-date = { path = "../rgit-date" }
 rgit-fs = { path = "../rgit-fs" }
+rgit-hash = { path = "../rgit-hash" }
 rgit-index = { path = "../rgit-index" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
 rgit-options = { path = "../rgit-options" }
+rgit-pack = { path = "../rgit-pack" }
 rgit-pathspec = { path = "../rgit-pathspec" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-repo = { path = "../rgit-repo" }
+rgit-revwalk = { path = "../rgit-revwalk" }
 rgit-version = { path = "../rgit-version" }
 rgit-worktree = { path = "../rgit-worktree" }
 

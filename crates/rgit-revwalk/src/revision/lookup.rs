@@ -35,6 +35,12 @@ pub trait ObjectLookup {
 
     /// An estimate of the number of objects, used for `core.abbrev=auto`.
     fn approximate_count(&self) -> u64;
+
+    /// Whether `oid` is a shallow boundary (listed in `$GIT_DIR/shallow`):
+    /// its parents are treated as absent.
+    fn is_shallow(&self, _oid: &ObjectId) -> bool {
+        false
+    }
 }
 
 /// The value of a reference after following symbolic references.
