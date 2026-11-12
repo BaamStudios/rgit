@@ -14,6 +14,7 @@ pub mod mktree;
 pub mod objects;
 pub mod pack_objects;
 pub mod reflog;
+pub mod rev_list;
 pub mod update_index;
 pub mod var;
 

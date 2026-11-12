@@ -13,3 +13,6 @@ rgit-hash = { path = "../rgit-hash" }
 rgit-object = { path = "../rgit-object" }
 regex = { version = "1.13", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 thiserror = "2"
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
