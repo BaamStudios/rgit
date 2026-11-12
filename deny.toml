@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: MIT
+#
+# cargo-deny configuration for rgit (issue #83).
+# Run locally with: cargo deny check
+#
+# rgit is MIT-licensed and must stay free of copyleft code. The allowlist below
+# may only be extended through a reviewed pull request. The ported git test suite
+# (GPL-2.0) lives in the separate repository rgit-conformance and is not part of
+# this dependency graph.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "ISC",
+    "Unicode-3.0",
+]
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+# Path dependencies between workspace members carry no version; that is fine.
+wildcards = "warn"
+allow-wildcard-paths = true
+# ADR 0002: rgit implements every subsystem itself. No libgit2, no gitoxide.
+# cargo-deny has no name globs, so the gix-* crates are listed one by one;
+# scripts/check-banned-deps.sh additionally rejects any `gix-*` name in Cargo.lock.
+deny = [
+    { crate = "git2", reason = "ADR 0002: no libgit2" },
+    { crate = "libgit2-sys", reason = "ADR 0002: no libgit2" },
+    { crate = "gix", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-actor", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-archive", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-attributes", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-bitmap", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-blame", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-chunk", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-command", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-commitgraph", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-config", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-config-value", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-credentials", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-date", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-diff", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-dir", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-discover", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-encoding", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-error", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-features", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-fetchhead", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-filter", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-fs", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-fsck", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-glob", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-hash", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-hashtable", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-ignore", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-imara-diff", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-index", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-lfs", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-lock", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-macros", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-mailmap", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-merge", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-negotiate", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-note", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-object", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-odb", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-pack", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-packetline", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-packetline-blocking", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-parallel", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-path", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-pathspec", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-prompt", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-protocol", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-quote", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-rebase", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-ref", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-refspec", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-revision", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-revwalk", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-sec", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-sequencer", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-shallow", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-status", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-submodule", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-tempfile", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-trace", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-transport", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-traverse", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-url", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-utils", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-validate", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-worktree", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-worktree-state", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-worktree-stream", reason = "ADR 0002: no gitoxide dependency" },
+    { crate = "gix-zlib", reason = "ADR 0002: no gitoxide dependency" },
+]
+
+[sources]
+# crates.io only, no git or alternative registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
