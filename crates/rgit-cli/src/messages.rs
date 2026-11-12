@@ -4,7 +4,9 @@
 
 pub mod check_ignore;
 pub mod config;
+pub mod ls_files;
 pub mod ls_tree;
+pub mod update_index;
 pub mod var;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
@@ -108,4 +110,20 @@ pub fn cannot_chdir(dir: &str, reason: &str) -> String {
 /// `<rev>^{<type>}` reached an object of another type.
 pub fn peel_mismatch(spec: &str, expected: &str, found: &str) -> String {
     format!("{spec}: expected {expected} type, but the object dereferences to {found} type")
+}
+
+pub fn bad_format_open(cmd: &str, element: &str) -> String {
+    format!("bad {cmd} format: element '{element}' does not start with '('")
+}
+
+pub fn bad_format_close(cmd: &str, element: &str) -> String {
+    format!("bad {cmd} format: element '{element}' does not end in ')'")
+}
+
+pub fn bad_format_field(cmd: &str, field: &str) -> String {
+    format!("bad {cmd} format: %{field}")
+}
+
+pub fn abbrev_not_numeric(opt: &str) -> String {
+    format!("option `{opt}' expects a numerical value")
 }

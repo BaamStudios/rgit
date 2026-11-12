@@ -24,22 +24,6 @@ pub fn not_valid_object_name(name: &str) -> String {
     format!("Not a valid object name {name}")
 }
 
-pub fn bad_format_open(element: &str) -> String {
-    format!("bad ls-tree format: element '{element}' does not start with '('")
-}
-
-pub fn bad_format_close(element: &str) -> String {
-    format!("bad ls-tree format: element '{element}' does not end in ')'")
-}
-
-pub fn bad_format_field(field: &str) -> String {
-    format!("bad ls-tree format: %{field}")
-}
-
-pub fn abbrev_not_numeric(opt: &str) -> String {
-    format!("option `{opt}' expects a numerical value")
-}
-
 pub fn could_not_read(id: &str) -> String {
     format!("Could not read {id}")
 }
