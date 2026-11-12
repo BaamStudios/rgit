@@ -53,7 +53,7 @@ fn usage_error() -> Die {
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let args = &argv[1..];
-    if args.len() == 1 && args[0] == "-h" {
+    if args.len() == 1 && (args[0] == "-h" || args[0] == "--help-all") {
         println!("{}", msg::USAGE);
         return Ok(0);
     }

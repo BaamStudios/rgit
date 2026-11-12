@@ -422,6 +422,8 @@ fn usage() {
     for args in [
         &["var"][..],
         &["var", "-h"],
+        &["var", "--help-all"],
+        &["var", "-h", "-h"],
         &["var", "GIT_FOO"],
         &["var", "-l", "GIT_EDITOR"],
         &["var", "a", "b"],
