@@ -631,3 +631,61 @@ fn sha256_repository() {
     }
     finish(failures);
 }
+
+/// `<ref>@{<date>}` before, inside and after a hand-written reflog with a
+/// gap, and after its end when the ref moved without an entry (t1400).
+#[test]
+fn reflog_dates_with_gap() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    for i in 1..=5 {
+        fx = fx
+            .write("f", format!("{i}\n"))
+            .git(["add", "f"])
+            .git(["commit", "-q", "-m", &format!("c{i}")])
+            .tick();
+    }
+    if fx.is_skipped() {
+        return;
+    }
+    let ids: Vec<String> = (0..5)
+        .rev()
+        .map(|n| {
+            let out = fx.git_stdout(["rev-parse", &format!("HEAD~{n}")]);
+            String::from_utf8(out).unwrap().trim().to_string()
+        })
+        .collect();
+    let z = "0".repeat(40);
+    let line = |o: &str, n: &str, t: u64| format!("{o} {n} A U Thor <a@example.com> {t} -0500\n");
+    // A, A->B, (gap) C->D, D->E; the ref then points at C without an entry.
+    let log = [
+        line(&z, &ids[0], 1117150320),
+        line(&ids[0], &ids[1], 1117150380),
+        line(&ids[2], &ids[3], 1117150580),
+        line(&ids[3], &ids[4], 1117150680),
+    ]
+    .concat();
+    let fx = fx
+        .git(["update-ref", "--no-deref", "refs/heads/main", &ids[2]])
+        .write(".git/logs/refs/heads/main", log);
+    let p = Pair::new(&fx);
+    let dir = fx.work_dir();
+    let mut failures = Vec::new();
+    for date in [
+        "2005-05-25",
+        "May 26 2005 23:32:00",
+        "2005-05-26 23:33:01",
+        "2005-05-26 23:36:20",
+        "2005-05-26 23:38:00",
+        "2005-05-26 23:38:01",
+        "2005-05-28",
+    ] {
+        let spec = format!("main@{{{date}}}");
+        p.check(&dir, &["rev-parse", "--verify", &spec], &mut failures);
+        p.check(&dir, &["rev-parse", "--verify", "-q", &spec], &mut failures);
+        let blob = format!("{spec}:f");
+        p.check(&dir, &["cat-file", "blob", &blob], &mut failures);
+    }
+    finish(failures);
+}

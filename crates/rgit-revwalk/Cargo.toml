@@ -11,6 +11,7 @@ rust-version.workspace = true
 rgit-date = { path = "../rgit-date" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-object = { path = "../rgit-object" }
+rgit-refs = { path = "../rgit-refs" }
 regex = { version = "1.13", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 thiserror = "2"
 
