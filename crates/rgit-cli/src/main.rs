@@ -9,7 +9,11 @@ mod context;
 mod global;
 mod messages;
 mod objects;
+mod quote;
+mod refs;
 mod repo;
+mod repo_objects;
+mod revision;
 mod revisions;
 
 use std::io::Write;

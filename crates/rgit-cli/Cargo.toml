@@ -31,6 +31,7 @@ rgit-revwalk = { path = "../rgit-revwalk" }
 rgit-transport = { path = "../rgit-transport" }
 rgit-version = { path = "../rgit-version" }
 rgit-worktree = { path = "../rgit-worktree" }
+regex = { version = "1.13", default-features = false, features = ["std", "perf"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
