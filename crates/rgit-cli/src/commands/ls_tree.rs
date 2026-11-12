@@ -18,18 +18,9 @@ use crate::messages::ls_tree as msg;
 use crate::prelude::*;
 use crate::quote::{relative_to, write_quoted};
 use crate::repo::Mode;
-use crate::repository::{MIN_ABBREV, Repo};
-
-/// What `--abbrev` asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Abbrev {
-    /// Full object names (no option, `--no-abbrev`, `--abbrev=0`).
-    Full,
-    /// `--abbrev` without a value: `core.abbrev` or the automatic length.
-    Configured,
-    /// `--abbrev=<n>`.
-    Digits(usize),
-}
+use crate::repository::Repo;
+use crate::abbrev::Abbrev;
+use crate::format;
 
 /// The format-altering options; only one may be given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,68 +53,18 @@ enum Field {
     Path,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Piece {
-    Literal(Vec<u8>),
-    Field(Field),
-}
+type Piece = format::Piece<Field>;
 
-/// Parse a `--format` string. The error is the complete message.
-fn parse_format(fmt: &str) -> Result<Vec<Piece>, String> {
-    let mut out = Vec::new();
-    let mut lit = Vec::new();
-    let b = fmt.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] != b'%' {
-            lit.push(b[i]);
-            i += 1;
-            continue;
-        }
-        let rest = &fmt[i + 1..];
-        let rb = rest.as_bytes();
-        if rb.first() == Some(&b'%') {
-            lit.push(b'%');
-            i += 2;
-            continue;
-        }
-        if rb.first() == Some(&b'n') {
-            lit.push(b'\n');
-            i += 2;
-            continue;
-        }
-        if rb.len() >= 3 && rb[0] == b'x' && rb[1].is_ascii_hexdigit() && rb[2].is_ascii_hexdigit()
-        {
-            let v = u8::from_str_radix(&rest[1..3], 16).expect("two hex digits");
-            lit.push(v);
-            i += 4;
-            continue;
-        }
-        if !rest.starts_with('(') {
-            return Err(msg::bad_format_open(rest));
-        }
-        let Some(close) = rest.find(')') else {
-            return Err(msg::bad_format_close(rest));
-        };
-        let field = match &rest[1..close] {
-            "objectmode" => Field::Mode,
-            "objecttype" => Field::Type,
-            "objectname" => Field::Name,
-            "objectsize" => Field::Size,
-            "objectsize:padded" => Field::SizePadded,
-            "path" => Field::Path,
-            _ => return Err(msg::bad_format_field(&rest[..=close])),
-        };
-        if !lit.is_empty() {
-            out.push(Piece::Literal(std::mem::take(&mut lit)));
-        }
-        out.push(Piece::Field(field));
-        i += 1 + close + 1;
-    }
-    if !lit.is_empty() {
-        out.push(Piece::Literal(lit));
-    }
-    Ok(out)
+fn field_named(name: &str) -> Option<Field> {
+    Some(match name {
+        "objectmode" => Field::Mode,
+        "objecttype" => Field::Type,
+        "objectname" => Field::Name,
+        "objectsize" => Field::Size,
+        "objectsize:padded" => Field::SizePadded,
+        "path" => Field::Path,
+        _ => return None,
+    })
 }
 
 /// Everything that decides what is printed.
@@ -341,22 +282,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag(None, "full-name", &full_name, msg::HELP_FULL_NAME),
             Opt::flag(None, "full-tree", &full_tree, msg::HELP_FULL_TREE),
             Opt::string(None, "format", &format, "format", msg::HELP_FORMAT).noneg(),
-            Opt::callback(None, "abbrev", Some("n"), msg::HELP_ABBREV, |arg, neg| {
-                let choice = match (neg, arg) {
-                    (true, _) => Abbrev::Full,
-                    (false, None) => Abbrev::Configured,
-                    (false, Some(v)) => match v.parse::<i64>() {
-                        Ok(n) if n <= 0 => Abbrev::Full,
-                        Ok(n) => Abbrev::Digits(usize::try_from(n).unwrap_or(usize::MAX)),
-                        Err(_) => {
-                            return Err(CallbackError::Error(msg::abbrev_not_numeric("abbrev")));
-                        }
-                    },
-                };
-                abbrev.set(choice);
-                Ok(())
-            })
-            .optional(None),
+            Abbrev::option(&abbrev, msg::HELP_ABBREV),
         ],
     );
     let args = parser.parse(argv)?.args;
@@ -403,11 +329,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         patterns.push(prefix.clone());
     }
 
-    let abbrev = match abbrev.get() {
-        Abbrev::Full => 0,
-        Abbrev::Configured => repo.default_abbrev(),
-        Abbrev::Digits(n) => n.max(MIN_ABBREV),
-    };
+    let abbrev = abbrev.get().length(&repo);
     let fmt = format.borrow().clone();
     let mut lister = Lister {
         repo: &repo,
@@ -421,39 +343,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         prefix,
         abbrev,
         output: Output::from_cmdmode(mode.get()),
-        format: fmt.map(|f| parse_format(&f)),
+        format: fmt.map(|f| format::parse(&f, "ls-tree", field_named)),
         out: Vec::new(),
     };
     let result = lister.walk(&tree, b"");
     lister.flush();
     result.map(|()| 0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats() {
-        assert_eq!(
-            parse_format("%(path)%x09%%").unwrap(),
-            vec![
-                Piece::Field(Field::Path),
-                Piece::Literal(b"\t%".to_vec())
-            ]
-        );
-        assert_eq!(
-            parse_format("%x0|%(bogus)").unwrap_err(),
-            msg::bad_format_open("x0|%(bogus)")
-        );
-        assert_eq!(
-            parse_format("%(objectname").unwrap_err(),
-            msg::bad_format_close("(objectname")
-        );
-        assert_eq!(
-            parse_format("%(objectname x)").unwrap_err(),
-            msg::bad_format_field("(objectname x)")
-        );
-        assert_eq!(parse_format("a%").unwrap_err(), msg::bad_format_open(""));
-    }
 }

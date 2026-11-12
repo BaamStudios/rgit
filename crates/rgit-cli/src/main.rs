@@ -4,8 +4,10 @@
 //! Behaves as `git` when installed under that name; when invoked as
 //! `git-<cmd>` (e.g. `git-upload-pack`) it runs `<cmd>` directly.
 
+mod abbrev;
 mod commands;
 mod context;
+mod format;
 mod global;
 mod history;
 mod messages;
