@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! Differential test of sideband demultiplexing against `git fetch`.
 //!
-//! A scripted upload-pack (`--upload-pack="cat <file>; :"`) sends a ref
-//! advertisement with `side-band-64k`, `NAK`, and then sideband packets:
+//! A scripted upload-pack (`--upload-pack="cat <adv>; <read request>; cat
+//! <response>; :"`) sends a ref advertisement with `side-band-64k`, waits
+//! for the client's request, then answers `NAK` and sideband packets:
 //! progress split over packets, `\r`, empty lines, and the pack split over
 //! several channel 1 packets. The reference git's stderr (not a terminal)
 //! and its `sideband` trace lines must equal what [`SidebandReader`]
@@ -100,17 +101,30 @@ fn sideband_matches_git_fetch() {
         }
         sideband.extend_from_slice(b"0000");
 
-        let mut input = Vec::new();
-        input.extend(
+        let mut adv = Vec::new();
+        adv.extend(
             encode(format!("{oid} HEAD\0side-band-64k ofs-delta agent=foo/1\n").as_bytes())
                 .unwrap(),
         );
-        input.extend(encode(format!("{oid} refs/heads/main\n").as_bytes()).unwrap());
-        input.extend_from_slice(b"0000");
-        input.extend(encode(b"NAK\n").unwrap());
-        input.extend_from_slice(&sideband);
-        let input_path = home.join(format!("input-{n}"));
-        std::fs::write(&input_path, &input).unwrap();
+        adv.extend(encode(format!("{oid} refs/heads/main\n").as_bytes()).unwrap());
+        adv.extend_from_slice(b"0000");
+        let adv_path = home.join(format!("adv-{n}"));
+        std::fs::write(&adv_path, &adv).unwrap();
+        let mut response = Vec::new();
+        response.extend(encode(b"NAK\n").unwrap());
+        response.extend_from_slice(&sideband);
+        let response_path = home.join(format!("response-{n}"));
+        std::fs::write(&response_path, &response).unwrap();
+        // The scripted server answers only after it has read the client's
+        // whole request (up to `done`), like a real upload-pack. Answering
+        // up front and exiting races with the client's writes and makes
+        // `git fetch` fail with EPIPE ("Broken pipe", #225). `read` consumes
+        // a pipe byte by byte, so nothing past `done` is swallowed.
+        let upload_pack = format!(
+            "cat '{}'; while read -r l; do case \"$l\" in *done) break;; esac; done; cat '{}'; :",
+            adv_path.display(),
+            response_path.display()
+        );
 
         // Reference.
         let clone = home.join(format!("clone-{n}"));
@@ -125,7 +139,7 @@ fn sideband_matches_git_fetch() {
             .arg(&clone)
             .arg("fetch")
             .arg("-q")
-            .arg(format!("--upload-pack=cat '{}'; :", input_path.display()))
+            .arg(format!("--upload-pack={upload_pack}"))
             .arg(&repo)
             .arg("main");
         let out = common::run(c);

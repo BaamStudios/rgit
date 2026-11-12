@@ -13,6 +13,7 @@ mod quote;
 mod refs;
 mod repo;
 mod revision;
+mod revisions;
 
 use std::io::Write;
 
