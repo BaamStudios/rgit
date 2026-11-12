@@ -127,3 +127,70 @@ pub(crate) fn unsupported(what: impl Display) -> String {
 pub(crate) const BARE_AND_WORKTREE: &str = "core.bare and core.worktree do not make sense";
 pub(crate) const INVALID_WORKTREE_CONFIG: &str = "unable to set up work tree using invalid config";
 pub(crate) const MUST_RUN_IN_WORK_TREE: &str = "this operation must be run in a work tree";
+
+// `git init` (see `init`).
+
+pub(crate) fn templates_not_found(path: impl Display) -> String {
+    format!("templates not found in {path}")
+}
+
+pub(crate) fn not_copying_templates(path: impl Display, reason: impl Display) -> String {
+    format!("not copying templates from '{path}': {reason}")
+}
+
+/// rgit wording: copying one template file or directory failed.
+pub(crate) fn cannot_copy_template(
+    from: impl Display,
+    to: impl Display,
+    reason: impl Display,
+) -> String {
+    format!("cannot copy '{from}' to '{to}': {reason}")
+}
+
+pub(crate) fn reinit_ignored_branch(name: impl Display) -> String {
+    format!("re-init: ignored --initial-branch={name}")
+}
+
+pub(crate) fn invalid_initial_branch(name: impl Display) -> String {
+    format!("invalid initial branch name: '{name}'")
+}
+
+pub(crate) fn invalid_default_branch(name: impl Display) -> String {
+    format!("invalid branch name: init.defaultBranch = {name}")
+}
+
+pub(crate) fn unknown_hash(name: impl Display) -> String {
+    format!("unknown hash algorithm '{name}'")
+}
+
+pub(crate) fn unknown_ref_format(name: impl Display) -> String {
+    format!("unknown ref storage format '{name}'")
+}
+
+pub(crate) const REINIT_DIFFERENT_HASH: &str =
+    "attempt to reinitialize repository with different hash";
+
+pub(crate) const REINIT_DIFFERENT_REF_FORMAT: &str =
+    "attempt to reinitialize repository with different reference storage format";
+
+pub(crate) const SEPARATE_GIT_DIR_BARE: &str =
+    "--separate-git-dir incompatible with bare repository";
+
+pub(crate) fn unable_to_move(from: impl Display, to: impl Display, reason: impl Display) -> String {
+    format!("unable to move {from} to {to}: {reason}")
+}
+
+pub(crate) fn cannot_mkdir(path: impl Display, reason: impl Display) -> String {
+    format!("cannot mkdir {path}: {reason}")
+}
+
+/// rgit wording: a file of the new repository could not be written.
+pub(crate) fn cannot_write(path: impl Display, reason: impl Display) -> String {
+    format!("unable to write '{path}': {reason}")
+}
+
+/// rgit wording (git creates such repositories): the new repository would
+/// need a format rgit cannot handle yet.
+pub(crate) fn init_unsupported(what: impl Display) -> String {
+    format!("cannot create a repository with {what}, which rgit does not support yet")
+}

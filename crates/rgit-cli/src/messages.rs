@@ -6,6 +6,7 @@ pub mod cat_file;
 pub mod check_ignore;
 pub mod config;
 pub mod hash_object;
+pub mod init;
 pub mod mktag;
 pub mod mktree;
 pub mod objects;

@@ -694,6 +694,7 @@ dependencies = [
  "bstr",
  "rgit-config",
  "rgit-difftest",
+ "rgit-fs",
  "rgit-hash",
  "rgit-trace",
  "rustix",
