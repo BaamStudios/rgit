@@ -71,6 +71,7 @@ fn explore() {
     let opts = DiffOptions {
         indent_heuristic: !nh,
         context: var("FUZZ_CTX", "3").parse().unwrap(),
+        interhunk_context: var("FUZZ_IHC", "0").parse().unwrap(),
         ..DiffOptions::default()
     };
     let mut extra: Vec<&str> = if nh {

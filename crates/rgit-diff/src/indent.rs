@@ -138,7 +138,7 @@ fn measure(lines: &[&[u8]], s: usize) -> Split {
 
 /// Indent assumed for the line above a split when only blank lines were
 /// found within [`MAX_BLANKS`].
-const PRE_CAP_INDENT: i64 = -1;
+const PRE_CAP_INDENT: i64 = 0;
 
 /// Returns `(penalty, effective indent)` of a split.
 fn score_split(m: &Split) -> (i64, i64) {

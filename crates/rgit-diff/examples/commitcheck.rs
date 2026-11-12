@@ -62,6 +62,23 @@ impl CatFile {
     }
 }
 
+/// Removes the function-name text after `@@ ... @@` (for repositories whose
+/// attributes select language-specific hunk headers).
+fn strip_funcnames(patch: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(patch.len());
+    for line in patch.split_inclusive(|&c| c == b'\n') {
+        if line.starts_with(b"@@ -") {
+            if let Some(p) = line[3..].windows(3).position(|w| w == b" @@") {
+                out.extend_from_slice(&line[..3 + p + 3]);
+                out.push(b'\n');
+                continue;
+            }
+        }
+        out.extend_from_slice(line);
+    }
+    out
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let repo = Path::new(&args[1]);
@@ -161,6 +178,12 @@ fn main() {
             Some(p) => &want[p..],
             None => &want[want.len()..],
         };
+        let strip = std::env::var_os("STRIP_FUNCNAME").is_some();
+        let (got, want_body) = if strip {
+            (strip_funcnames(&got), strip_funcnames(want_body))
+        } else {
+            (got, want_body.to_vec())
+        };
         if got == want_body {
             ok += 1;
         } else {
@@ -168,7 +191,7 @@ fn main() {
             println!("MISMATCH {c}");
             if let Some(d) = out_dir {
                 std::fs::create_dir_all(d).unwrap();
-                std::fs::write(d.join(format!("{c}.git")), want_body).unwrap();
+                std::fs::write(d.join(format!("{c}.git")), &want_body).unwrap();
                 std::fs::write(d.join(format!("{c}.rgit")), &got).unwrap();
             }
         }

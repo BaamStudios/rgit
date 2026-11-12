@@ -50,8 +50,8 @@ pub(crate) fn diff(a: &[u32], b: &[u32], classes: usize, minimal: bool) -> (Vec<
     for &x in b {
         count_b[x as usize] += 1;
     }
-    let ia = select(a, ra, &count_b, &mut ca);
-    let ib = select(b, rb, &count_a, &mut cb);
+    let ia = select(a, ra, &count_b, &mut ca, minimal);
+    let ib = select(b, rb, &count_a, &mut cb, minimal);
 
     let sa: Vec<u32> = ia.iter().map(|&i| a[i]).collect();
     let sb: Vec<u32> = ib.iter().map(|&j| b[j]).collect();
@@ -118,8 +118,14 @@ fn select(
     range: std::ops::Range<usize>,
     count_other: &[u32],
     changed: &mut [bool],
+    minimal: bool,
 ) -> Vec<usize> {
-    let limit = many_limit(x.len());
+    // A minimal diff keeps lines with many partners.
+    let limit = if minimal {
+        u32::MAX
+    } else {
+        many_limit(x.len())
+    };
     let class: Vec<Class> = x[range.clone()]
         .iter()
         .map(|&id| {
@@ -149,14 +155,18 @@ fn select(
     keep
 }
 
+/// Lines looked at on each side by [`surrounded`].
+const SURROUND_SCAN: usize = 100;
+
 /// Decides whether a [`Class::Many`] line at `p` lies in a stretch of mostly
 /// discarded lines: the stretches before and after it (up to the nearest
-/// kept line) must each contain a discarded line, and the discarded lines
+/// kept line, at most [`SURROUND_SCAN`] lines) must each contain a discarded
+/// line, and the discarded lines
 /// must outnumber the many-partner lines (counting two extra) by more than
 /// three to one.
 fn surrounded(class: &[Class], p: usize) -> bool {
     let (mut dis_before, mut many) = (0usize, 0usize);
-    for &c in class[..p].iter().rev() {
+    for &c in class[..p].iter().rev().take(SURROUND_SCAN) {
         match c {
             Class::Keep => break,
             Class::Discard => dis_before += 1,
@@ -167,7 +177,7 @@ fn surrounded(class: &[Class], p: usize) -> bool {
         return false;
     }
     let mut dis_after = 0usize;
-    for &c in &class[p + 1..] {
+    for &c in class[p + 1..].iter().take(SURROUND_SCAN) {
         match c {
             Class::Keep => break,
             Class::Discard => dis_after += 1,
