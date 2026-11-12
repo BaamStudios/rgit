@@ -462,8 +462,13 @@ dependencies = [
  "rgit-date",
  "rgit-difftest",
  "rgit-fs",
+ "rgit-index",
  "rgit-options",
+ "rgit-pathspec",
+ "rgit-refs",
  "rgit-repo",
+ "rgit-version",
+ "rgit-worktree",
 ]
 
 [[package]]
@@ -524,7 +529,21 @@ dependencies = [
 name = "rgit-object"
 version = "0.1.0"
 dependencies = [
+ "rgit-difftest",
  "rgit-hash",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-odb"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "rgit-config",
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
+ "rgit-object",
  "thiserror",
 ]
 
@@ -555,8 +574,18 @@ name = "rgit-protocol"
 version = "0.1.0"
 dependencies = [
  "rgit-trace",
- "rustix",
+ "rgit-version",
  "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-refs"
+version = "0.1.0"
+dependencies = [
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
  "thiserror",
 ]
 
@@ -607,6 +636,32 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "libc",
+]
+
+[[package]]
+name = "rgit-transport"
+version = "0.1.0"
+dependencies = [
+ "rgit-protocol",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-version"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
+name = "rgit-worktree"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rgit-difftest",
+ "rgit-hash",
+ "rgit-index",
+ "rgit-pathspec",
 ]
 
 [[package]]

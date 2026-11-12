@@ -1,0 +1,21 @@
+[package]
+name = "rgit-odb"
+description = "Object database for rgit: loose objects and the store interface shared with packs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-config = { path = "../rgit-config" }
+rgit-fs = { path = "../rgit-fs" }
+rgit-hash = { path = "../rgit-hash" }
+rgit-object = { path = "../rgit-object" }
+# zlib-rs backend: a Rust port of zlib (Zlib license) that reports zlib's own
+# error texts, which git prints ("inflate: data stream error (...)").
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
+thiserror = "2.0.18"
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
