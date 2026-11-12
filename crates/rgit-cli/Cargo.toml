@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
 rgit-config = { path = "../rgit-config" }
+rgit-ident = { path = "../rgit-ident" }
 rgit-date = { path = "../rgit-date" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-index = { path = "../rgit-index" }
@@ -30,3 +31,4 @@ libc = "0.2.186"
 
 [dev-dependencies]
 rgit-difftest = { path = "../rgit-difftest" }
+tempfile = "3"
