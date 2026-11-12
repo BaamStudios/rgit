@@ -679,3 +679,37 @@ fn blob_reads() {
     ];
     all_same(&mut fx, cases);
 }
+
+/// `--config-env` keys containing `=` reach repository setup unsplit
+/// (#210, t1300 "git --config-env with arbitrary environment variables").
+#[test]
+fn config_env_key_with_equals() {
+    let mut fx = fixture().git(["init", "-q", "r"]).env("ENVVAR", "value");
+    all_same(
+        &mut fx,
+        &[
+            &[
+                "-C",
+                "r",
+                "--config-env=x=y.z=ENVVAR",
+                "rev-parse",
+                "--git-dir",
+            ],
+            &["-C", "r", "--config-env=x=y.z=ENVVAR", "config", "x=y.z"],
+            &[
+                "-C",
+                "r",
+                "--config-env=section.subsection=with=equals.key=ENVVAR",
+                "rev-parse",
+                "--git-dir",
+            ],
+            &[
+                "-C",
+                "r",
+                "--config-env=section.subsection=with=equals.key=ENVVAR",
+                "config",
+                "section.subsection=with=equals.key",
+            ],
+        ],
+    );
+}

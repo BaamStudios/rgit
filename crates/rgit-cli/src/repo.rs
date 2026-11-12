@@ -20,15 +20,21 @@ pub enum Mode {
 }
 
 /// The `-c` / `--config-env` settings as a configuration command line.
+///
+/// The entries are already split into key and value (`-c` at the first `=`,
+/// `--config-env` at the last), so they are taken over as they are: splitting
+/// `key=value` again would break keys that contain `=`.
 pub fn command_line(ctx: &Context) -> CommandLine {
-    let mut cl = CommandLine::default();
-    for (k, v) in &ctx.config_parameters {
-        match v {
-            Some(v) => cl.push_c(format!("{k}={v}")),
-            None => cl.push_c(k),
-        }
+    CommandLine {
+        parameters: ctx
+            .config_parameters
+            .iter()
+            .map(|(k, v)| rgit_config::cmdline::Parameter {
+                key: k.as_str().into(),
+                value: v.as_deref().map(Into::into),
+            })
+            .collect(),
     }
-    cl
 }
 
 /// Read the `-c` / `--config-env` / `GIT_CONFIG_*` settings the way git's
