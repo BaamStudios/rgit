@@ -1,0 +1,23 @@
+[package]
+name = "rgit-test-tool"
+description = "MIT stand-ins for the test-tool helpers that exercise git internals, built on rgit's crates (used by rgit-conformance)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "rgit-test-tool"
+path = "src/main.rs"
+
+[dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-config = { path = "../rgit-config" }
+rgit-date = { path = "../rgit-date" }
+rgit-hash = { path = "../rgit-hash" }
+rgit-options = { path = "../rgit-options" }
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }

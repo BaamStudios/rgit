@@ -456,9 +456,15 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "rgit-cli"
 version = "0.1.0"
 dependencies = [
+ "bstr",
  "libc",
+ "rgit-config",
+ "rgit-date",
  "rgit-difftest",
+ "rgit-fs",
  "rgit-options",
+ "rgit-refs",
+ "rgit-repo",
 ]
 
 [[package]]
@@ -466,6 +472,8 @@ name = "rgit-config"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "regex",
+ "rgit-fs",
  "thiserror",
 ]
 
@@ -568,8 +576,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-refs"
+version = "0.1.0"
+dependencies = [
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-repo"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
+ "rgit-difftest",
+ "rgit-hash",
+ "rgit-trace",
+ "rustix",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-simcheck"
 version = "0.1.0"
+
+[[package]]
+name = "rgit-test-tool"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
+ "rgit-date",
+ "rgit-difftest",
+ "rgit-hash",
+ "rgit-options",
+]
 
 [[package]]
 name = "rgit-trace"
@@ -577,6 +620,14 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "libc",
+]
+
+[[package]]
+name = "rgit-transport"
+version = "0.1.0"
+dependencies = [
+ "rgit-protocol",
+ "thiserror",
 ]
 
 [[package]]
