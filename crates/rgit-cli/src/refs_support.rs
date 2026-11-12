@@ -238,6 +238,9 @@ pub struct UpdateHooks<'a> {
     git_dir: std::path::PathBuf,
     ident: Option<Vec<u8>>,
     store: FilesStore,
+    /// References that become symbolic: their entry is written even when
+    /// the resolved value stays the same.
+    symbolic: std::collections::HashSet<String>,
 }
 
 impl<'a> UpdateHooks<'a> {
@@ -257,7 +260,13 @@ impl<'a> UpdateHooks<'a> {
             git_dir: setup.cwd.join(&setup.common_dir),
             ident,
             store: ref_store(setup, config),
+            symbolic: Default::default(),
         }
+    }
+
+    /// Notes that `name` is made a symbolic reference.
+    pub fn mark_symbolic(&mut self, name: &str) {
+        self.symbolic.insert(name.to_owned());
     }
 }
 
@@ -293,6 +302,7 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
         }
         // An unchanged value is not rewritten, so it gets no entry.
         if update.old == update.new
+            && !self.symbolic.contains(&update.name)
             && matches!(self.store.read_raw(&update.name), Ok(Some(rgit_refs::Target::Object(o))) if o == update.old)
         {
             return Ok(());

@@ -19,6 +19,7 @@ pub const HELP_BATCH: &str = "batch reference updates";
 pub const EMPTY_MESSAGE: &str = "Refusing to perform update with empty message.";
 pub const EMPTY_COMMAND: &str = "empty command in input";
 pub const PREPARED_ONLY_CLOSE: &str = "prepared transactions can only be closed";
+pub const CANNOT_RESTART: &str = "cannot restart ongoing transaction";
 pub const TRANSACTION_CLOSED: &str = "transaction is closed";
 
 /// rgit wording: `--batch-updates` is not implemented yet.

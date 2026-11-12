@@ -245,6 +245,9 @@ impl<R: BufRead> Session<'_, R> {
             }
             match cmd {
                 "start" => {
+                    if phase == Phase::Started {
+                        return Err(fatal(msg::CANNOT_RESTART.to_owned()));
+                    }
                     if phase == Phase::Closed {
                         tx = Transaction::new(store);
                     }
@@ -286,6 +289,9 @@ impl<R: BufRead> Session<'_, R> {
                 }
                 _ => {
                     let update = self.parse_update(cmd, rest)?;
+                    if matches!(update.new, Some(rgit_refs::NewValue::Symbolic(_))) {
+                        hooks.mark_symbolic(&update.name);
+                    }
                     self.next_no_deref = false;
                     tx.push(update).map_err(|e| fatal(e.to_string()))?;
                 }
@@ -384,10 +390,7 @@ impl<R: BufRead> Session<'_, R> {
             "symref-update" => {
                 let target = self.required_target(cmd, &name, &mut rest, "<new-target>")?;
                 let old = match self.next_field(&mut rest)? {
-                    Field::Missing => None,
-                    Field::Eof => {
-                        return Err(fatal(msg::unexpected_eof(cmd, &name, "<old-target>")));
-                    }
+                    Field::Missing | Field::Eof => None,
                     Field::Value(kind) if kind == "ref" => {
                         let t = self.required_target(cmd, &name, &mut rest, "<old-target>")?;
                         Some(OldValue::Symbolic(t))
@@ -456,10 +459,10 @@ impl<R: BufRead> Session<'_, R> {
         rest: &mut &str,
         field: &str,
     ) -> Result<Option<String>, Die> {
+        let _ = (cmd, name, field);
         match self.next_field(rest)? {
             Field::Value(v) if !v.is_empty() => Ok(Some(v)),
-            Field::Value(_) | Field::Missing => Ok(None),
-            Field::Eof => Err(fatal(msg::unexpected_eof(cmd, name, field))),
+            Field::Value(_) | Field::Missing | Field::Eof => Ok(None),
         }
     }
 
