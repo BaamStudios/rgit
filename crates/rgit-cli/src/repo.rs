@@ -66,6 +66,23 @@ pub fn setup_with(
     mode: Mode,
     support: rgit_repo::format::Support,
 ) -> Result<Setup, Die> {
+    // A required setup returns a repository or an error.
+    setup_inner(ctx, support, mode == Mode::Required, true)?
+        .ok_or(Die::Exit(rgit_options::EXIT_FATAL))
+}
+
+/// Like [`setup`], for commands that also work outside a repository
+/// (`RUN_SETUP_GENTLY`): `None` when there is none.
+pub fn setup_gently(ctx: &Context) -> Result<Option<Setup>, Die> {
+    setup_inner(ctx, rgit_repo::format::Support::default(), true, false)
+}
+
+fn setup_inner(
+    ctx: &Context,
+    support: rgit_repo::format::Support,
+    trace: bool,
+    required: bool,
+) -> Result<Option<Setup>, Die> {
     check_command_line(ctx)?;
     let env = SystemEnv::default();
     let mut opts = SetupOptions::from_process().map_err(die)?;
@@ -80,7 +97,14 @@ pub fn setup_with(
         opts.implicit_work_tree = false;
     }
     let mut protected = StandardProtectedConfig::new(&env, command_line(ctx));
-    let setup = rgit_repo::setup(&opts, &mut protected).map_err(die)?;
+    let setup = if required {
+        rgit_repo::setup(&opts, &mut protected).map_err(die)?
+    } else {
+        match rgit_repo::discover(&opts, &mut protected).map_err(die)? {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        }
+    };
     let mut err = std::io::stderr();
     for w in &setup.warnings {
         let _ = writeln!(err, "warning: {w}");
@@ -93,10 +117,10 @@ pub fn setup_with(
             ))
         })?;
     }
-    if mode == Mode::Required {
+    if trace {
         setup.trace();
     }
-    Ok(setup)
+    Ok(Some(setup))
 }
 
 /// The configuration of the repository set up by [`setup`] (system,

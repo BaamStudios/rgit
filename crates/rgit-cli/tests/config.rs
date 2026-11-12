@@ -624,3 +624,58 @@ fn global_reads_one_file() {
     std::fs::remove_file(fx.home_dir().join(".gitconfig")).unwrap();
     all_same(&mut fx, reads);
 }
+
+/// `--blob`: reading a blob by revision, and git's errors for unresolvable
+/// names, non-blobs, syntax errors and writes.
+#[test]
+fn blob_reads() {
+    let fx = fixture()
+        .git(["init", "-q", "r"])
+        .write("r/d/cfg", "[a]\n\tb = c\n[s \"x\"]\n\tk = 1\n")
+        .write("r/bad", "[bad\n")
+        .git(["-C", "r", "add", "."])
+        .git(["-C", "r", "commit", "-q", "-m", "x"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx;
+    let cases: &[&[&str]] = &[
+        &["-C", "r", "config", "--blob=HEAD:d/cfg", "--list"],
+        &["-C", "r", "config", "--blob", "HEAD:d/cfg", "a.b"],
+        &[
+            "-C",
+            "r",
+            "config",
+            "--blob=HEAD:d/cfg",
+            "--show-origin",
+            "--show-scope",
+            "-l",
+        ],
+        &[
+            "-C",
+            "r",
+            "config",
+            "get",
+            "--blob=HEAD:d/cfg",
+            "--all",
+            "s.x.k",
+        ],
+        &["-C", "r/d", "config", "--blob=HEAD:./cfg", "--list"],
+        &["-C", "r", "config", "--blob=HEAD", "--list"],
+        &["-C", "r", "config", "--blob=HEAD:d", "--list"],
+        &["-C", "r", "config", "--blob=HEAD:bad", "--list"],
+        &["-C", "r", "config", "--blob=nosuch", "--list"],
+        &["-C", "r", "config", "--blob=HEAD:d/cfg", "a.b", "x"],
+        &["-C", "r", "config", "--blob=HEAD:d/cfg", "--unset", "a.b"],
+        &[
+            "-C",
+            "r",
+            "config",
+            "--blob=HEAD:d/cfg",
+            "--file=x",
+            "--list",
+        ],
+        &["config", "--blob=HEAD:d/cfg", "--list"],
+    ];
+    all_same(&mut fx, cases);
+}

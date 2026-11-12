@@ -7,9 +7,8 @@
 //! Reading uses `rgit_config`'s loader, writing its in-place editor
 //! (`rgit_config::edit`) through `config.lock`.
 //!
-//! Not implemented yet (they need other subsystems): `--blob` (object
-//! database and revision syntax, #14/#32), `--type=color`, `--get-color`,
-//! `--get-colorbool` (#75) and `--type=expiry-date` on reading (#74).
+//! Not implemented yet (they need other subsystems): `--type=color`,
+//! `--get-color`, `--get-colorbool` (#75) and `--type=expiry-date` on reading (#74).
 
 use std::cell::{Cell, RefCell};
 use std::io::Write;
@@ -26,6 +25,7 @@ use rgit_config::{
 use rgit_fs::{LockOptions, Timeout};
 
 use crate::prelude::*;
+use crate::revisions::BlobLookup;
 
 use crate::messages::config as msg;
 
@@ -706,6 +706,8 @@ enum Location {
     Local,
     Worktree,
     File(String),
+    /// `--blob=<name>`, resolved when the command starts.
+    Blob(String, BlobLookup),
 }
 
 /// A repository found from the current directory.
@@ -815,6 +817,12 @@ fn current_branch(git_dir: &Path) -> Option<BString> {
     Some(r.trim_ascii_end().into())
 }
 
+/// A `--blob` that cannot be read: git's two lines, exit 128.
+fn blob_error(m: String) -> Die {
+    print_report(&[(Level::Error, m), (Level::Fatal, msg::ERROR_PROCESSING.into())]);
+    Die::Exit(128)
+}
+
 fn io_text(e: &std::io::Error) -> String {
     let s = e.to_string();
     match s.find(" (os error") {
@@ -862,10 +870,14 @@ impl<'o> Cmd<'o> {
         if count > 1 {
             return Err(Die::Error(msg::ONE_FILE.into(), 129));
         }
-        if o.blob.borrow().is_some() {
-            return Err(Die::Fatal(msg::not_implemented("--blob")));
-        }
         let (repo, prefix) = discover(ctx)?;
+        if let Some(name) = o.blob.borrow().clone() {
+            if repo.is_none() {
+                return Err(Die::Fatal(msg::inside_repo_only("--blob")));
+            }
+            let found = crate::revisions::read_blob(ctx, &name, &prefix);
+            location = Location::Blob(name, found);
+        }
         if let Location::File(f) = &mut location {
             if f != "-" && !Path::new(f.as_str()).is_absolute() && !prefix.is_empty() {
                 *f = format!("{prefix}{f}");
@@ -914,6 +926,7 @@ impl<'o> Cmd<'o> {
         Ok(Some(match &self.location {
             Location::Default => return Ok(None),
             Location::File(f) => (vec![PathBuf::from(f)], Scope::Command),
+            Location::Blob(..) => (Vec::new(), Scope::Command),
             Location::Global => {
                 if self.env.var("GIT_CONFIG_GLOBAL").is_some() {
                     return Ok(Some((sources::global_config_paths(&self.env), Scope::Global)));
@@ -969,6 +982,7 @@ impl<'o> Cmd<'o> {
                     msg::NOT_IN_GIT_DIR.into()
                 }));
             }
+            Location::Blob(..) => return Err(Die::Fatal(msg::WRITE_BLOB.into())),
             Location::File(f) => PathBuf::from(f),
             Location::System => self
                 .env
@@ -1002,10 +1016,10 @@ impl<'o> Cmd<'o> {
 
     fn includes(&self) -> bool {
         match self.o.includes.get() {
-            // Off for an explicit file, but standard input counts as
+            // Off for an explicit file; standard input and blobs count as
             // "no specific file".
             -1 => match &self.location {
-                Location::Default => true,
+                Location::Default | Location::Blob(..) => true,
                 Location::File(f) => f == "-",
                 _ => false,
             },
@@ -1057,6 +1071,40 @@ impl<'o> Cmd<'o> {
                     scope: Scope::Command,
                 });
                 loader.load_into(&mut set)
+            }
+            Some(_) if matches!(self.location, Location::Blob(..)) => {
+                let Location::Blob(name, found) = &self.location else {
+                    unreachable!()
+                };
+                let data = match found {
+                    BlobLookup::Blob(data) => data.clone(),
+                    BlobLookup::NotBlob => return Err(blob_error(msg::not_a_blob(name))),
+                    BlobLookup::Unresolved => {
+                        return Err(blob_error(msg::unable_to_resolve_blob(name)));
+                    }
+                };
+                let mut loader = Loader::new(opts);
+                loader.add(SourceSpec::Bytes {
+                    data,
+                    origin: Origin::Blob(name.as_str().into()),
+                    scope: Scope::Command,
+                });
+                // git reports problems in a blob as an error followed by
+                // "error processing config file(s)".
+                if let Err(e) = loader.load_into(&mut set) {
+                    if strict {
+                        self.print_entries(set.entries());
+                    }
+                    let mut lines: Vec<(Level, String)> = e
+                        .report()
+                        .into_iter()
+                        .map(|(l, m)| (if l == Level::Fatal { Level::Error } else { l }, m))
+                        .collect();
+                    lines.push((Level::Fatal, msg::ERROR_PROCESSING.into()));
+                    print_report(&lines);
+                    return Err(Die::Exit(128));
+                }
+                Ok(())
             }
             Some((paths, scope)) => {
                 if strict && !paths.iter().any(|p| p.is_file()) {
@@ -1561,6 +1609,9 @@ impl<'o> Cmd<'o> {
     }
 
     fn edit(&mut self) -> CmdResult {
+        if matches!(self.location, Location::Blob(..)) {
+            return Err(Die::Fatal(msg::EDIT_BLOB.into()));
+        }
         if matches!(&self.location, Location::File(f) if f == "-") {
             return Err(Die::Fatal(if self.repo.is_some() {
                 msg::EDIT_STDIN.into()
