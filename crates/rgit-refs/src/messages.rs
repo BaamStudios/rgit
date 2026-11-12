@@ -7,6 +7,10 @@
 
 use std::fmt::Display;
 
+/// First line of `packed-refs` as git writes it (on-disk text, observed in
+/// files written by the reference git; readers and tests depend on it).
+pub const PACKED_REFS_HEADER: &str = "# pack-refs with: peeled fully-peeled sorted \n";
+
 /// `refusing to update ref with bad name '<name>'`
 pub fn bad_name(name: &str) -> String {
     format!("refusing to update ref with bad name '{name}'")
@@ -128,6 +132,22 @@ usage: git check-ref-format [--normalize] [<options>] <refname>
 /// `'<name>' is not a valid branch name` (`check-ref-format --branch`).
 pub fn invalid_branch_name(name: &str) -> String {
     format!("'{name}' is not a valid branch name")
+}
+
+/// `symbolic-ref HEAD <target>` with a target outside `refs/`.
+pub const HEAD_OUTSIDE_REFS: &str = "Refusing to point HEAD outside of refs/";
+
+/// `symbolic-ref <name> <target>` with a malformed target.
+pub fn invalid_symref_target(name: &str, target: &str) -> String {
+    format!("Refusing to set '{name}' to invalid ref '{target}'")
+}
+
+/// `symbolic-ref -d HEAD`.
+pub const DELETING_HEAD: &str = "deleting 'HEAD' is not allowed";
+
+/// `symbolic-ref -d <name>` for something that is not a symbolic reference.
+pub fn cannot_delete_not_symref(name: &str) -> String {
+    format!("Cannot delete {name}, not a symbolic ref")
 }
 
 /// The transaction was used after commit or abort.

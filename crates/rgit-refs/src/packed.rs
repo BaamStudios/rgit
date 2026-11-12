@@ -21,7 +21,7 @@ use rgit_hash::{HashKind, ObjectId};
 use crate::target::Peeled;
 
 /// Header git writes when it rewrites `packed-refs`.
-pub const HEADER: &str = "# pack-refs with: peeled fully-peeled sorted \n";
+pub const HEADER: &str = crate::messages::PACKED_REFS_HEADER;
 
 /// One entry of `packed-refs`.
 #[derive(Clone, Debug, PartialEq, Eq)]

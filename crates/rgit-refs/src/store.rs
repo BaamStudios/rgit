@@ -54,6 +54,9 @@ pub struct RefUpdate {
     pub message: String,
     /// Create the reflog even if `core.logAllRefUpdates` would not.
     pub create_reflog: bool,
+    /// Do not check `name` against the reference name rules (`git
+    /// symbolic-ref` writes any name it is given).
+    pub skip_name_check: bool,
 }
 
 impl RefUpdate {
@@ -65,6 +68,7 @@ impl RefUpdate {
             no_deref: false,
             message: String::new(),
             create_reflog: false,
+            skip_name_check: false,
         }
     }
 
@@ -149,6 +153,12 @@ impl RefUpdate {
     /// Sets `create_reflog`.
     pub fn create_reflog(mut self, yes: bool) -> Self {
         self.create_reflog = yes;
+        self
+    }
+
+    /// Sets `skip_name_check`.
+    pub fn skip_name_check(mut self, yes: bool) -> Self {
+        self.skip_name_check = yes;
         self
     }
 
@@ -475,7 +485,8 @@ impl Drop for Transaction<'_> {
 /// Checks that the name and the symbolic target (if any) of `update` are
 /// well-formed.
 pub fn check_update_name(update: &RefUpdate) -> Result<(), TransactionError> {
-    if !is_valid_refname(update.name.as_bytes(), RefNameFlags::ONELEVEL) {
+    if !update.skip_name_check && !is_valid_refname(update.name.as_bytes(), RefNameFlags::ONELEVEL)
+    {
         return Err(TransactionError::BadName(update.name.clone()));
     }
     if let Some(NewValue::Symbolic(t)) = &update.new {
