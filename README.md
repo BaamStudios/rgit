@@ -24,7 +24,8 @@ written from git's public documentation and from the observable behaviour of the
 
 | Path | Contents |
 |---|---|
-| `crates/rgit-cli/` | The `rgit` binary (command-line front end) |
+| `crates/rgit-cli/` | The `rgit` binary (command-line front end); one file per command in `src/commands/` |
+| `crates/rgit-options/` | Option parser with git's parse-options semantics |
 | `crates/` | Library crates, one per subsystem (objects, packs, refs, index, protocol, ...) |
 | `conformance.lock` | Pinned commit of the conformance suite ([rgit-conformance](https://github.com/BaamStudios/rgit-conformance), GPL-2.0, separate repository) |
 | `docs/` | Design notes and architecture decision records |

@@ -313,7 +313,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "rgit-cli"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rgit-difftest",
+ "rgit-options",
 ]
 
 [[package]]
@@ -340,6 +342,10 @@ dependencies = [
  "sha2",
  "thiserror",
 ]
+
+[[package]]
+name = "rgit-options"
+version = "0.1.0"
 
 [[package]]
 name = "rgit-trace"
