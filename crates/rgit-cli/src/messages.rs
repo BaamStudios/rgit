@@ -9,6 +9,7 @@ pub mod for_each_ref;
 pub mod hash_object;
 pub mod init;
 pub mod ls_files;
+pub mod ls_remote;
 pub mod ls_tree;
 pub mod mktag;
 pub mod mktree;
