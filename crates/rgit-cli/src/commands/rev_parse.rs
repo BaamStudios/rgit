@@ -24,9 +24,7 @@ const SUPPORTED: &[&str] = &[
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let args = &argv[1.min(argv.len())..];
     if let Some(a) = args.iter().find(|a| !SUPPORTED.contains(&a.as_str())) {
-        return Err(Die::Fatal(format!(
-            "rgit rev-parse: '{a}' is not supported yet"
-        )));
+        return Err(Die::Fatal(crate::messages::rev_parse_not_supported(a)));
     }
     let setup = repo::setup(ctx, Mode::RequiredQuiet)?;
     let mut out = std::io::stdout().lock();

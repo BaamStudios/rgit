@@ -113,11 +113,13 @@ pub(crate) fn invalid_extension_value(name: impl Display, value: impl Display) -
     format!("invalid value for '{name}': '{value}'")
 }
 
+/// rgit wording: git aborts with an internal BUG() here instead.
 pub(crate) fn same_compat_format() -> &'static str {
     "extensions.compatObjectFormat must differ from extensions.objectFormat"
 }
 
-/// rgit's own message: the repository uses something rgit cannot handle yet.
+/// rgit wording (git has no such message): the repository uses a known
+/// extension rgit cannot handle yet.
 pub(crate) fn unsupported(what: impl Display) -> String {
     format!("this repository uses {what}, which rgit does not support yet")
 }

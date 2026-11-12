@@ -52,10 +52,9 @@ pub fn setup(ctx: &Context, mode: Mode) -> Result<Setup, Die> {
     }
     if setup.cwd != opts.cwd {
         std::env::set_current_dir(&setup.cwd).map_err(|e| {
-            Die::Fatal(format!(
-                "cannot chdir to '{}': {}",
-                setup.cwd.display(),
-                crate::global::strerror(&e)
+            Die::Fatal(crate::messages::cannot_chdir(
+                &setup.cwd.display().to_string(),
+                &crate::global::strerror(&e),
             ))
         })?;
     }

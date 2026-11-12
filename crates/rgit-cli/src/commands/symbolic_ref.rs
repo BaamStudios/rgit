@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::messages as msg;
 use crate::prelude::*;
 use crate::repo::{self, Mode};
 
@@ -17,22 +18,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let recurse = Cell::new(true);
     let reason = RefCell::new(None);
     let mut parser = Parser::new(
-        &[
-            "git symbolic-ref [-m <reason>] <name> <ref>",
-            "git symbolic-ref [-q] [--short] [--no-recurse] <name>",
-            "git symbolic-ref --delete [-q] <name>",
-        ],
+        msg::SYMBOLIC_REF_USAGE,
         vec![
-            Opt::flag(
-                'q',
-                "quiet",
-                &quiet,
-                "suppress error message for non-symbolic (detached) refs",
-            ),
-            Opt::flag('d', "delete", &delete, "delete symbolic ref"),
-            Opt::flag(None, "short", &short, "shorten ref output"),
-            Opt::flag(None, "recurse", &recurse, "recursively dereference (default)"),
-            Opt::string('m', None, &reason, "reason", "reason of the update"),
+            Opt::flag('q', "quiet", &quiet, msg::SYMBOLIC_REF_HELP_QUIET),
+            Opt::flag('d', "delete", &delete, msg::SYMBOLIC_REF_HELP_DELETE),
+            Opt::flag(None, "short", &short, msg::SYMBOLIC_REF_HELP_SHORT),
+            Opt::flag(None, "recurse", &recurse, msg::SYMBOLIC_REF_HELP_RECURSE),
+            Opt::string('m', None, &reason, "reason", msg::SYMBOLIC_REF_HELP_REASON),
         ],
     );
     let args = parser.parse(argv)?.args;
@@ -40,11 +32,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if args.len() != 1 {
             return Err(parser.usage_error().into());
         }
-        return Err(Die::Fatal(not_supported("deleting symbolic refs")));
+        return Err(Die::Fatal(msg::symbolic_ref_not_supported("deleting symbolic refs")));
     }
     match args.len() {
         1 => {}
-        2 => return Err(Die::Fatal(not_supported("creating symbolic refs"))),
+        2 => return Err(Die::Fatal(msg::symbolic_ref_not_supported("creating symbolic refs"))),
         _ => return Err(parser.usage_error().into()),
     }
     let setup = repo::setup(ctx, Mode::Required)?;
@@ -70,12 +62,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Ok(0)
         }
         None if quiet.get() => Ok(1),
-        None => Err(Die::Fatal(format!("ref {name} is not a symbolic ref"))),
+        None => Err(Die::Fatal(msg::not_a_symbolic_ref(name))),
     }
-}
-
-fn not_supported(what: &str) -> String {
-    format!("rgit symbolic-ref: {what} is not supported yet")
 }
 
 /// Refs that live in the work tree's own git directory rather than the

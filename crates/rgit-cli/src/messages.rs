@@ -70,3 +70,33 @@ pub const NO_BUILD_COMMIT: &str = "no commit associated with this build";
 
 /// Second line of `version` when not invoked as `git`.
 pub const NOT_OFFICIAL_GIT: &str = "rgit is an independent reimplementation, not the official git.";
+
+/// `git symbolic-ref` usage lines.
+pub const SYMBOLIC_REF_USAGE: &[&str] = &[
+    "git symbolic-ref [-m <reason>] <name> <ref>",
+    "git symbolic-ref [-q] [--short] [--no-recurse] <name>",
+    "git symbolic-ref --delete [-q] <name>",
+];
+pub const SYMBOLIC_REF_HELP_QUIET: &str = "suppress error message for non-symbolic (detached) refs";
+pub const SYMBOLIC_REF_HELP_DELETE: &str = "delete symbolic ref";
+pub const SYMBOLIC_REF_HELP_SHORT: &str = "shorten ref output";
+pub const SYMBOLIC_REF_HELP_RECURSE: &str = "recursively dereference (default)";
+pub const SYMBOLIC_REF_HELP_REASON: &str = "reason of the update";
+
+pub fn not_a_symbolic_ref(name: &str) -> String {
+    format!("ref {name} is not a symbolic ref")
+}
+
+/// rgit wording: a part of symbolic-ref that is not implemented yet.
+pub fn symbolic_ref_not_supported(what: &str) -> String {
+    format!("rgit symbolic-ref: {what} is not supported yet")
+}
+
+/// rgit wording: a rev-parse argument that is not implemented yet.
+pub fn rev_parse_not_supported(arg: &str) -> String {
+    format!("rgit rev-parse: '{arg}' is not supported yet")
+}
+
+pub fn cannot_chdir(dir: &str, reason: &str) -> String {
+    format!("cannot chdir to '{dir}': {reason}")
+}
