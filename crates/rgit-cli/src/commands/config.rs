@@ -27,88 +27,7 @@ use rgit_fs::{LockOptions, Timeout};
 
 use crate::prelude::*;
 
-/// User-visible messages of this command (CLEANROOM.md: verbatim where
-/// scripts depend on them).
-mod msg {
-    pub const USAGE: &[&str] = &[
-        "git config list [<file-option>] [<display-option>] [--includes]",
-        "git config get [<file-option>] [<display-option>] [--includes] [--all] [--regexp] [--value=<pattern>] [--fixed-value] [--default=<default>] [--url=<url>] <name>",
-        "git config set [<file-option>] [--type=<type>] [--all] [--value=<pattern>] [--fixed-value] <name> <value>",
-        "git config unset [<file-option>] [--all] [--value=<pattern>] [--fixed-value] <name>",
-        "git config rename-section [<file-option>] <old-name> <new-name>",
-        "git config remove-section [<file-option>] <name>",
-        "git config edit [<file-option>]",
-        "git config [<file-option>] --get-colorbool <name> [<stdout-is-tty>]",
-    ];
-    pub const USAGE_LIST: &str =
-        "git config list [<file-option>] [<display-option>] [--includes]";
-    pub const USAGE_GET: &str = "git config get [<file-option>] [<display-option>] [--includes] [--all] [--regexp=<regexp>] [--value=<pattern>] [--fixed-value] [--default=<default>] <name>";
-    pub const USAGE_SET: &str = "git config set [<file-option>] [--type=<type>] [--comment=<message>] [--all] [--value=<pattern>] [--fixed-value] <name> <value>";
-    pub const USAGE_UNSET: &str =
-        "git config unset [<file-option>] [--all] [--value=<pattern>] [--fixed-value] <name>";
-    pub const USAGE_RENAME: &str = "git config rename-section [<file-option>] <old-name> <new-name>";
-    pub const USAGE_REMOVE: &str = "git config remove-section [<file-option>] <name>";
-    pub const USAGE_EDIT: &str = "git config edit [<file-option>]";
-
-    pub const NO_ACTION: &str = "no action specified";
-    pub const ONE_FILE: &str = "only one config file at a time";
-    pub const ONE_TYPE: &str = "only one type at a time";
-    pub const NOT_IN_GIT_DIR: &str = "not in a git directory";
-    pub const HOME_NOT_SET: &str = "$HOME not set";
-    pub const WRITE_STDIN: &str = "writing to stdin is not supported";
-    pub const EDIT_STDIN: &str = "editing stdin is not supported";
-    pub const NAME_ONLY: &str = "--name-only is only applicable to --list or --get-regexp";
-    pub const SHOW_ORIGIN: &str =
-        "--show-origin is only applicable to --get, --get-all, --get-regexp, and --list";
-    pub const DEFAULT_ONLY_GET: &str = "--default is only applicable to --get";
-    pub const COMMENT_ONLY_WRITE: &str =
-        "--comment is only applicable to add/set/replace operations";
-    pub const FIXED_VALUE_LEGACY: &str = "--fixed-value only applies with 'value-pattern'";
-    pub const FIXED_VALUE_NEW: &str = "--fixed-value only applies with --value=<pattern>";
-    pub const APPEND_VALUE: &str = "--append cannot be used with --value=<pattern>";
-    pub const DEFAULT_ALL: &str = "--default= cannot be used with --all or --url=";
-    pub const WORKTREE_MULTIPLE: &str = "--worktree cannot be used with multiple working trees unless the config\nextension worktreeConfig is enabled. Please read \"CONFIGURATION FILE\"\nsection in \"git help worktree\" for details";
-    pub const GLOBAL_TEMPLATE_HEAD: &str = "# This is Git's per-user configuration file.\n[user]\n# Please adapt and uncomment the following lines:\n";
-
-    pub fn wrong_args(min: usize, max: usize) -> String {
-        if min == max {
-            format!("wrong number of arguments, should be {min}")
-        } else {
-            format!("wrong number of arguments, should be from {min} to {max}")
-        }
-    }
-    pub fn unrecognized_type(t: &str) -> String {
-        format!("unrecognized --type argument, {t}")
-    }
-    pub fn inside_repo_only(opt: &str) -> String {
-        format!("{opt} can only be used inside a git repository")
-    }
-    pub fn invalid_key_pattern(p: &str) -> String {
-        format!("invalid key pattern: {p}")
-    }
-    pub fn unable_to_read(path: &str, err: &str) -> String {
-        format!("unable to read config file '{path}': {err}")
-    }
-    pub fn unable_to_access(path: &str, err: &str) -> String {
-        format!("unable to access '{path}': {err}")
-    }
-    pub fn missing_value(key: &str, valid: bool) -> String {
-        if valid {
-            format!("missing value to set to the variable '{key}'")
-        } else {
-            format!("missing value to set to a variable with an invalid name '{key}'")
-        }
-    }
-    pub fn did_you_mean(key: &str, value: &str) -> String {
-        format!("did you mean \"git config set {key} {value}\"?")
-    }
-    pub fn editor_problem(editor: &str) -> String {
-        format!("there was a problem with the editor '{editor}'")
-    }
-    pub fn not_implemented(what: &str) -> String {
-        format!("rgit: {what} is not implemented yet")
-    }
-}
+use crate::messages::config as msg;
 
 /// `--type` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,44 +134,44 @@ impl Opts {
 
     fn file_opts(&self) -> Vec<Opt<'_>> {
         vec![
-            Opt::group("Config file location"),
-            Opt::flag(None, "global", &self.global, "use global config file"),
-            Opt::flag(None, "system", &self.system, "use system config file"),
-            Opt::flag(None, "local", &self.local, "use repository config file"),
-            Opt::flag(None, "worktree", &self.worktree, "use per-worktree config file"),
-            Opt::string('f', "file", &self.file, "file", "use given config file"),
+            Opt::group(msg::H_CONFIG_FILE_LOCATION),
+            Opt::flag(None, "global", &self.global, msg::H_USE_GLOBAL_CONFIG_FILE),
+            Opt::flag(None, "system", &self.system, msg::H_USE_SYSTEM_CONFIG_FILE),
+            Opt::flag(None, "local", &self.local, msg::H_USE_REPOSITORY_CONFIG_FILE),
+            Opt::flag(None, "worktree", &self.worktree, msg::H_USE_PER_WORKTREE_CONFIG_FILE),
+            Opt::string('f', "file", &self.file, "file", msg::H_USE_GIVEN_CONFIG_FILE),
             Opt::string(
                 None,
                 "blob",
                 &self.blob,
                 "blob-id",
-                "read config from given blob object",
+                msg::H_READ_CONFIG_FROM_GIVEN_BLOB,
             ),
         ]
     }
 
     fn display_opts(&self) -> Vec<Opt<'_>> {
         vec![
-            Opt::group("Display options"),
-            Opt::flag('z', "null", &self.null, "terminate values with NUL byte"),
-            Opt::flag(None, "name-only", &self.name_only, "show variable names only"),
+            Opt::group(msg::H_DISPLAY_OPTIONS),
+            Opt::flag('z', "null", &self.null, msg::H_TERMINATE_VALUES_WITH_NUL_BYTE),
+            Opt::flag(None, "name-only", &self.name_only, msg::H_SHOW_VARIABLE_NAMES_ONLY),
             Opt::flag(
                 None,
                 "show-origin",
                 &self.show_origin,
-                "show origin of config (file, standard input, blob, command line)",
+                msg::H_SHOW_ORIGIN_OF_CONFIG_FILE,
             ),
             Opt::flag(
                 None,
                 "show-scope",
                 &self.show_scope,
-                "show scope of config (worktree, local, global, system, command)",
+                msg::H_SHOW_SCOPE_OF_CONFIG_WORKTREE,
             ),
             Opt::bool(
                 None,
                 "show-names",
                 &self.show_names,
-                "show config keys in addition to their values",
+                msg::H_SHOW_CONFIG_KEYS_IN_ADDITION,
             ),
         ]
     }
@@ -277,7 +196,7 @@ impl Opts {
         };
         vec![
             Opt::group("Type"),
-            Opt::callback('t', "type", Some("type"), "value is given this type", move |arg, neg| {
+            Opt::callback('t', "type", Some("type"), msg::H_VALUE_IS_GIVEN_THIS_TYPE, move |arg, neg| {
                 if neg {
                     ty.set(None);
                     return Ok(());
@@ -288,12 +207,12 @@ impl Opts {
                     None => Err(CallbackError::Fatal(msg::unrecognized_type(arg))),
                 }
             }),
-            fixed("bool", Type::Bool, "value is \"true\" or \"false\""),
-            fixed("int", Type::Int, "value is decimal number"),
-            fixed("bool-or-int", Type::BoolOrInt, "value is --bool or --int"),
-            fixed("bool-or-str", Type::BoolOrStr, "value is --bool or string"),
-            fixed("path", Type::Path, "value is a path (file or directory name)"),
-            fixed("expiry-date", Type::ExpiryDate, "value is an expiry date"),
+            fixed("bool", Type::Bool, msg::H_VALUE_IS_TRUE_OR_FALSE),
+            fixed("int", Type::Int, msg::H_VALUE_IS_DECIMAL_NUMBER),
+            fixed("bool-or-int", Type::BoolOrInt, msg::H_VALUE_IS_BOOL_OR_INT),
+            fixed("bool-or-str", Type::BoolOrStr, msg::H_VALUE_IS_BOOL_OR_STRING),
+            fixed("path", Type::Path, msg::H_VALUE_IS_A_PATH_FILE),
+            fixed("expiry-date", Type::ExpiryDate, msg::H_VALUE_IS_AN_EXPIRY_DATE),
         ]
     }
 
@@ -302,7 +221,7 @@ impl Opts {
             None,
             "includes",
             &self.includes,
-            "respect include directives on lookup",
+            msg::H_RESPECT_INCLUDE_DIRECTIVES_ON_LOOKUP,
         )
     }
 
@@ -311,7 +230,7 @@ impl Opts {
             None,
             "fixed-value",
             &self.fixed_value,
-            "use string equality when comparing values to value pattern",
+            msg::H_USE_STRING_EQUALITY_WHEN_COMPARING,
         )
     }
 
@@ -321,7 +240,7 @@ impl Opts {
             "comment",
             &self.comment,
             "value",
-            "human-readable comment string (# will be prepended as needed)",
+            msg::H_HUMAN_READABLE_COMMENT_STRING_WILL,
         )
     }
 
@@ -330,60 +249,60 @@ impl Opts {
         let mut v = self.file_opts();
         v.extend([
             Opt::group("Action"),
-            Opt::cmdmode(None, "get", a, "get value: name [<value-pattern>]", action::GET),
-            Opt::cmdmode(None, "get-all", a, "get all values: key [<value-pattern>]", action::GET_ALL),
+            Opt::cmdmode(None, "get", a, msg::H_GET_VALUE_NAME_VALUE_PATTERN, action::GET),
+            Opt::cmdmode(None, "get-all", a, msg::H_GET_ALL_VALUES_KEY_VALUE, action::GET_ALL),
             Opt::cmdmode(
                 None,
                 "get-regexp",
                 a,
-                "get values for regexp: name-regex [<value-pattern>]",
+                msg::H_GET_VALUES_FOR_REGEXP_NAME,
                 action::GET_REGEXP,
             ),
             Opt::cmdmode(
                 None,
                 "get-urlmatch",
                 a,
-                "get value specific for the URL: section[.var] URL",
+                msg::H_GET_VALUE_SPECIFIC_FOR_THE,
                 action::GET_URLMATCH,
             ),
             Opt::cmdmode(
                 None,
                 "replace-all",
                 a,
-                "replace all matching variables: name value [<value-pattern>]",
+                msg::H_REPLACE_ALL_MATCHING_VARIABLES_NAME,
                 action::REPLACE_ALL,
             ),
-            Opt::cmdmode(None, "add", a, "add a new variable: name value", action::ADD),
-            Opt::cmdmode(None, "unset", a, "remove a variable: name [<value-pattern>]", action::UNSET),
+            Opt::cmdmode(None, "add", a, msg::H_ADD_A_NEW_VARIABLE_NAME, action::ADD),
+            Opt::cmdmode(None, "unset", a, msg::H_REMOVE_A_VARIABLE_NAME_VALUE, action::UNSET),
             Opt::cmdmode(
                 None,
                 "unset-all",
                 a,
-                "remove all matches: name [<value-pattern>]",
+                msg::H_REMOVE_ALL_MATCHES_NAME_VALUE,
                 action::UNSET_ALL,
             ),
             Opt::cmdmode(
                 None,
                 "rename-section",
                 a,
-                "rename section: old-name new-name",
+                msg::H_RENAME_SECTION_OLD_NAME_NEW,
                 action::RENAME_SECTION,
             ),
-            Opt::cmdmode(None, "remove-section", a, "remove a section: name", action::REMOVE_SECTION),
+            Opt::cmdmode(None, "remove-section", a, msg::H_REMOVE_A_SECTION_NAME, action::REMOVE_SECTION),
             Opt::cmdmode('l', "list", a, "list all", action::LIST),
-            Opt::cmdmode('e', "edit", a, "open an editor", action::EDIT),
+            Opt::cmdmode('e', "edit", a, msg::H_OPEN_AN_EDITOR, action::EDIT),
             Opt::cmdmode(
                 None,
                 "get-color",
                 a,
-                "find the color configured: slot [<default>]",
+                msg::H_FIND_THE_COLOR_CONFIGURED_SLOT,
                 action::GET_COLOR,
             ),
             Opt::cmdmode(
                 None,
                 "get-colorbool",
                 a,
-                "find the color setting: slot [<stdout-is-tty>]",
+                msg::H_FIND_THE_COLOR_SETTING_SLOT,
                 action::GET_COLORBOOL,
             ),
         ]);
@@ -396,7 +315,7 @@ impl Opts {
                 "default",
                 &self.default,
                 "value",
-                "with --get, use default value when missing entry",
+                msg::H_WITH_GET_USE_DEFAULT_VALUE,
             ),
             self.comment_opt(),
             self.fixed_value_opt(),
@@ -457,28 +376,28 @@ fn run_subcommand(ctx: &mut Context, sub: &str, argv: &[String]) -> CmdResult {
         "get" => {
             let mut v = o.file_opts();
             v.extend([
-                Opt::group("Filter options"),
+                Opt::group(msg::H_FILTER_OPTIONS),
                 Opt::flag(
                     None,
                     "all",
                     &o.all,
-                    "return all values for multi-valued config options",
+                    msg::H_RETURN_ALL_VALUES_FOR_MULTI,
                 ),
                 Opt::flag(
                     None,
                     "regexp",
                     &o.regexp,
-                    "interpret the name as a regular expression",
+                    msg::H_INTERPRET_THE_NAME_AS_A,
                 ),
                 Opt::string(
                     None,
                     "value",
                     &o.value,
                     "pattern",
-                    "show config with values matching the pattern",
+                    msg::H_SHOW_CONFIG_WITH_VALUES_MATCHING,
                 ),
                 o.fixed_value_opt(),
-                Opt::string(None, "url", &o.url, "URL", "show config matching the given URL"),
+                Opt::string(None, "url", &o.url, "URL", msg::H_SHOW_CONFIG_MATCHING_THE_GIVEN),
             ]);
             v.extend(o.display_opts());
             v.extend(o.type_opts());
@@ -490,7 +409,7 @@ fn run_subcommand(ctx: &mut Context, sub: &str, argv: &[String]) -> CmdResult {
                     "default",
                     &o.default,
                     "value",
-                    "use default value when missing entry",
+                    msg::H_USE_DEFAULT_VALUE_WHEN_MISSING,
                 ),
             ]);
             (msg::USAGE_GET, v)
@@ -504,14 +423,14 @@ fn run_subcommand(ctx: &mut Context, sub: &str, argv: &[String]) -> CmdResult {
                     None,
                     "all",
                     &o.all,
-                    "replace multi-valued config option with new value",
+                    msg::H_REPLACE_MULTI_VALUED_CONFIG_OPTION,
                 ),
                 Opt::string(
                     None,
                     "value",
                     &o.value,
                     "pattern",
-                    "show config with values matching the pattern",
+                    msg::H_SHOW_CONFIG_WITH_VALUES_MATCHING,
                 ),
                 o.fixed_value_opt(),
                 Opt::group("Other"),
@@ -520,7 +439,7 @@ fn run_subcommand(ctx: &mut Context, sub: &str, argv: &[String]) -> CmdResult {
                     None,
                     "append",
                     &o.append,
-                    "add a new line without altering any existing values",
+                    msg::H_ADD_A_NEW_LINE_WITHOUT,
                 ),
             ]);
             (msg::USAGE_SET, v)
@@ -529,13 +448,13 @@ fn run_subcommand(ctx: &mut Context, sub: &str, argv: &[String]) -> CmdResult {
             let mut v = o.file_opts();
             v.extend([
                 Opt::group("Filter"),
-                Opt::flag(None, "all", &o.all, "unset all multi-valued config options"),
+                Opt::flag(None, "all", &o.all, msg::H_UNSET_ALL_MULTI_VALUED_CONFIG),
                 Opt::string(
                     None,
                     "value",
                     &o.value,
                     "pattern",
-                    "unset multi-valued config options with matching values",
+                    msg::H_UNSET_MULTI_VALUED_CONFIG_OPTIONS,
                 ),
                 o.fixed_value_opt(),
             ]);
@@ -566,6 +485,12 @@ fn run_subcommand(ctx: &mut Context, sub: &str, argv: &[String]) -> CmdResult {
             }
             if let Some(url) = o.url.borrow().clone() {
                 return cmd.get_url(&args[0], &url);
+            }
+            if args[0].is_empty() && o.ty.get() == Some(Type::Color) {
+                // `get --type=color --default=<color> ""` is `--get-color`.
+                if let Some(d) = o.default.borrow().clone() {
+                    return cmd.get_color("", Some(&d));
+                }
             }
             let show_names = o.show_names.get() == 1;
             cmd.get(&args[0], pattern.as_deref(), o.all.get(), o.regexp.get(), show_names)
@@ -744,7 +669,14 @@ fn run_legacy(ctx: &mut Context, argv: &[String]) -> CmdResult {
             wrong_args(n, 2, 2)?;
             cmd.get_url(&args[0], &args[1])
         }
-        _ => Err(Die::Fatal(msg::not_implemented("--get-color/--get-colorbool"))),
+        GET_COLOR => {
+            wrong_args(n, 1, 2)?;
+            cmd.get_color(&args[0], args.get(1).map(String::as_str))
+        }
+        _ => {
+            wrong_args(n, 1, 2)?;
+            cmd.get_colorbool(&args[0], args.get(1).map(String::as_str))
+        }
     }
 }
 
@@ -799,107 +731,66 @@ fn join(dir: &Path, name: &str) -> PathBuf {
     }
 }
 
-fn is_git_dir(p: &Path) -> bool {
-    p.join("HEAD").is_file()
-        && (p.join("commondir").is_file() || (p.join("objects").is_dir() && p.join("refs").is_dir()))
-}
-
-/// Read a `.git` file (`gitdir: <path>`).
-fn read_gitfile(file: &Path) -> Option<PathBuf> {
-    let data = std::fs::read_to_string(file).ok()?;
-    let target = data.lines().next()?.strip_prefix("gitdir: ")?.trim_end();
-    let p = PathBuf::from(target);
-    Some(if p.is_absolute() {
-        p
-    } else {
-        file.parent()?.join(p)
-    })
-}
-
-fn common_dir(git_dir: &Path) -> PathBuf {
-    match std::fs::read_to_string(git_dir.join("commondir")) {
-        Ok(s) => {
-            let p = PathBuf::from(s.trim_end_matches('\n'));
-            if p.is_absolute() { p } else { git_dir.join(p) }
-        }
-        Err(_) => git_dir.to_path_buf(),
+/// Find the repository like git's gentle setup: no repository is fine.
+/// Moves to the top of the work tree and returns the prefix of the
+/// original directory.
+fn discover(ctx: &Context) -> Result<(Option<Repo>, String), Die> {
+    let env = SystemEnv::default();
+    let mut opts = rgit_repo::SetupOptions::from_process().map_err(crate::repo::die)?;
+    if let Some(d) = &ctx.git_dir {
+        opts.git_dir = Some(d.into());
     }
-}
-
-/// Minimal repository discovery (`GIT_DIR`, `--git-dir`, `.git` upwards
-/// with `GIT_CEILING_DIRECTORIES`, bare repositories). Moves to the top of
-/// the working tree like git does and returns the prefix of the original
-/// directory. Full discovery is #26.
-fn discover(ctx: &Context) -> (Option<Repo>, String) {
-    let explicit = ctx
-        .git_dir
-        .clone()
-        .or_else(|| std::env::var("GIT_DIR").ok().filter(|s| !s.is_empty()));
-    if let Some(d) = explicit {
-        let git_dir = PathBuf::from(d);
-        let common = common_dir(&git_dir);
-        let worktree = std::env::current_dir().ok();
-        return (
-            Some(Repo {
-                git_dir,
-                common_dir: common,
-                worktree,
-            }),
-            String::new(),
-        );
+    if let Some(w) = &ctx.work_tree {
+        opts.work_tree = Some(w.into());
     }
-    let Ok(cwd) = std::env::current_dir() else {
-        return (None, String::new());
+    if ctx.bare {
+        opts.implicit_work_tree = false;
+    }
+    // `config` touches neither objects nor refs: every format is fine.
+    opts.support = rgit_repo::format::Support {
+        sha256: true,
+        compat_object_format: true,
+        reftable: true,
     };
-    let ceilings: Vec<PathBuf> = std::env::var_os("GIT_CEILING_DIRECTORIES")
-        .map(|v| {
-            std::env::split_paths(&v)
-                .filter(|p| p.is_absolute())
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut dir = cwd.clone();
-    loop {
-        let dotgit = dir.join(".git");
-        let found = if dotgit.is_dir() && is_git_dir(&dotgit) {
-            Some((PathBuf::from(".git"), Some(dir.clone())))
-        } else if dotgit.is_file() {
-            read_gitfile(&dotgit).map(|g| (g, Some(dir.clone())))
-        } else if is_git_dir(&dir) {
-            let g = if dir == cwd {
-                PathBuf::from(".")
-            } else {
-                dir.clone()
-            };
-            Some((g, None))
-        } else {
-            None
-        };
-        if let Some((git_dir, worktree)) = found {
-            let mut prefix = String::new();
-            if let Some(top) = &worktree {
-                if *top != cwd {
-                    if let Ok(rest) = cwd.strip_prefix(top) {
-                        prefix = format!("{}/", rest.display());
-                    }
-                    let _ = std::env::set_current_dir(top);
-                }
-            }
-            let common = common_dir(&git_dir);
-            return (
+    let mut protected =
+        rgit_repo::StandardProtectedConfig::new(&env, crate::repo::command_line(ctx));
+    let setup = match rgit_repo::discover(&opts, &mut protected) {
+        // `git --git-dir=<not a repository> config` still reads (and
+        // writes) `<dir>/config` without complaint.
+        Err(_) if opts.git_dir.is_some() => {
+            let dir = opts.git_dir.clone().unwrap_or_default();
+            return Ok((
                 Some(Repo {
-                    git_dir,
-                    common_dir: common,
-                    worktree,
+                    git_dir: dir.clone(),
+                    common_dir: dir,
+                    worktree: Some(opts.cwd.clone()),
                 }),
-                prefix,
-            );
+                String::new(),
+            ));
         }
-        match dir.parent() {
-            Some(parent) if !ceilings.iter().any(|c| c == parent) => dir = parent.to_path_buf(),
-            _ => return (None, String::new()),
-        }
+        Err(e) => return Err(crate::repo::die(e)),
+        Ok(Err(_)) => return Ok((None, String::new())),
+        Ok(Ok(setup)) => setup,
+    };
+    for w in &setup.warnings {
+        eprintln!("warning: {w}");
     }
+    if setup.cwd != opts.cwd {
+        let _ = std::env::set_current_dir(&setup.cwd);
+    }
+    let prefix = setup
+        .prefix
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok((
+        Some(Repo {
+            git_dir: setup.git_dir,
+            common_dir: setup.common_dir,
+            worktree: setup.work_tree,
+        }),
+        prefix,
+    ))
 }
 
 /// The current branch from `HEAD`, for `includeIf.onbranch`.
@@ -959,14 +850,11 @@ impl<'o> Cmd<'o> {
         if o.blob.borrow().is_some() {
             return Err(Die::Fatal(msg::not_implemented("--blob")));
         }
-        let (repo, prefix) = discover(ctx);
+        let (repo, prefix) = discover(ctx)?;
         if let Location::File(f) = &mut location {
             if f != "-" && !Path::new(f.as_str()).is_absolute() && !prefix.is_empty() {
                 *f = format!("{prefix}{f}");
             }
-        }
-        if matches!(o.ty.get(), Some(Type::Color)) {
-            return Err(Die::Fatal(msg::not_implemented("--type=color")));
         }
         let mut command_line = CommandLine::default();
         for (k, v) in &ctx.config_parameters {
@@ -1181,7 +1069,7 @@ impl<'o> Cmd<'o> {
 
     /// Format a value for output according to `--type`. `Ok(None)`: skip
     /// (a missing `:(optional)` path).
-    fn format(&self, e: &Entry) -> Result<Option<BString>, rgit_config::ValueError> {
+    fn format(&self, e: &Entry) -> Result<Option<BString>, Bad> {
         Ok(Some(match self.o.ty.get() {
             None => e.value.clone().unwrap_or_default(),
             Some(Type::Bool) => value::format_bool(e.bool()?).into(),
@@ -1200,7 +1088,20 @@ impl<'o> Cmd<'o> {
                 Some(p) => path_bytes(&p),
                 None => return Ok(None),
             },
-            Some(Type::ExpiryDate) | Some(Type::Color) => e.value.clone().unwrap_or_default(),
+            Some(Type::ExpiryDate) => {
+                let v = e.string()?.to_string();
+                match rgit_date::parse_expiry_date(&v, &rgit_date::DateContext::from_env()) {
+                    Ok(t) => t.to_string().into(),
+                    Err(_) => return Err(Bad::Timestamp(v)),
+                }
+            }
+            Some(Type::Color) => {
+                let v = e.string()?.to_string();
+                match rgit_config::color::parse_color(&v) {
+                    Some(seq) => seq.into(),
+                    None => return Err(Bad::Color(v)),
+                }
+            }
         }))
     }
 
@@ -1238,9 +1139,6 @@ impl<'o> Cmd<'o> {
     }
 
     fn list(&mut self) -> CmdResult {
-        if matches!(self.o.ty.get(), Some(Type::ExpiryDate)) {
-            return Err(Die::Fatal(msg::not_implemented("--type=expiry-date")));
-        }
         let set = self.load(true)?;
         self.print_entries(set.entries());
         Ok(0)
@@ -1254,9 +1152,6 @@ impl<'o> Cmd<'o> {
         regexp: bool,
         show_names: bool,
     ) -> CmdResult {
-        if matches!(self.o.ty.get(), Some(Type::ExpiryDate)) {
-            return Err(Die::Fatal(msg::not_implemented("--type=expiry-date")));
-        }
         let name_match: Box<dyn Fn(&BStr) -> bool> = if regexp {
             let re = rgit_config::edit::compile_ere(name.as_bytes())
                 .ok_or_else(|| Die::Error(msg::invalid_key_pattern(name), 6))?;
@@ -1378,15 +1273,78 @@ impl<'o> Cmd<'o> {
         Ok(0)
     }
 
+    /// `--get-color <slot> [<default>]`: the escape sequence, without a
+    /// line end.
+    fn get_color(&mut self, slot: &str, default: Option<&str>) -> CmdResult {
+        let set = self.load(false)?;
+        let entry = rgit_config::key::canonicalize(slot)
+            .ok()
+            .and_then(|k| set.entries().iter().rev().find(|e| e.name == k));
+        let seq = match entry {
+            Some(e) => {
+                let v = e.string().map_err(|err| value_error(e, err.into()))?.to_string();
+                match rgit_config::color::parse_color(&v) {
+                    Some(seq) => seq,
+                    None => return Err(value_error(e, Bad::Color(v))),
+                }
+            }
+            None => match default {
+                None => String::new(),
+                Some(d) => match rgit_config::color::parse_color(d) {
+                    Some(seq) => seq,
+                    None => {
+                        eprintln!("error: {}", msg::invalid_color(d));
+                        return Err(Die::Error(msg::BAD_DEFAULT_COLOR.into(), 255));
+                    }
+                },
+            },
+        };
+        let _ = std::io::stdout().lock().write_all(seq.as_bytes());
+        Ok(0)
+    }
+
+    /// `--get-colorbool <name> [<stdout-is-tty>]`.
+    fn get_colorbool(&mut self, name: &str, stdout_is_tty: Option<&str>) -> CmdResult {
+        use rgit_config::color::{ColorBool, parse_colorbool};
+        let set = self.load(false)?;
+        let last = |key: &str| {
+            let k = rgit_config::key::canonicalize(key).ok()?;
+            set.entries().iter().rev().find(|e| e.name == k)
+        };
+        let setting = match last(name).or_else(|| last("color.ui")) {
+            Some(e) => parse_colorbool(e.value.as_deref().map(|v| v.as_bytes())).ok_or_else(|| {
+                let v = e.value.clone().unwrap_or_default().to_string();
+                Die::Fatal(msg::bad_boolean(&v, &e.name.to_string()))
+            })?,
+            None => ColorBool::Auto,
+        };
+        let tty = match stdout_is_tty {
+            Some(t) => value::parse_bool(Some(t.as_bytes())).unwrap_or(false),
+            None => std::io::IsTerminal::is_terminal(&std::io::stdout()),
+        };
+        let color = match setting {
+            ColorBool::Always => true,
+            ColorBool::Never => false,
+            ColorBool::Auto => {
+                tty && self
+                    .env
+                    .var("TERM")
+                    .is_some_and(|t| !t.is_empty() && t != "dumb")
+            }
+        };
+        if stdout_is_tty.is_some() {
+            println!("{color}");
+            return Ok(0);
+        }
+        Ok(if color { 0 } else { 1 })
+    }
+
     /// `--default` run through `--type`.
     fn format_default(&self, name: &str, v: &str) -> Result<BString, Die> {
         let bad_int = |e: rgit_config::IntError| {
-            Die::Fatal(format!(
-                "bad numeric config value '{v}' for '{name}': {}",
-                e.reason()
-            ))
+            Die::Fatal(msg::bad_numeric(v, name, e.reason()))
         };
-        let bad_bool = || Die::Fatal(format!("bad boolean config value '{v}' for '{name}'"));
+        let bad_bool = || Die::Fatal(msg::bad_boolean(v, name));
         Ok(match self.o.ty.get() {
             Some(Type::Bool) => value::parse_bool(Some(v.as_bytes()))
                 .map(|b| value::format_bool(b).into())
@@ -1408,10 +1366,26 @@ impl<'o> Cmd<'o> {
                 Ok(Some(p)) => path_bytes(&p),
                 Ok(None) => BString::default(),
                 Err(value::PathError::UserDir(p)) => {
-                    return Err(Die::Fatal(format!("failed to expand user dir in: '{p}'")));
+                    return Err(Die::Fatal(msg::expand_user_dir(&p.to_string())));
                 }
             },
-            _ => v.into(),
+            Some(Type::ExpiryDate) => {
+                match rgit_date::parse_expiry_date(v, &rgit_date::DateContext::from_env()) {
+                    Ok(t) => t.to_string().into(),
+                    Err(_) => {
+                        eprintln!("error: {}", msg::invalid_timestamp(v, name));
+                        return Err(Die::Fatal(msg::bad_default(v)));
+                    }
+                }
+            }
+            Some(Type::Color) => match rgit_config::color::parse_color(v) {
+                Some(seq) => seq.into(),
+                None => {
+                    eprintln!("error: {}", msg::invalid_color(v));
+                    return Err(Die::Fatal(msg::bad_default(v)));
+                }
+            },
+            None => v.into(),
         })
     }
 
@@ -1431,34 +1405,33 @@ impl<'o> Cmd<'o> {
             Some(Type::Bool) => match value::parse_bool(Some(v.as_bytes())) {
                 Some(b) => value::format_bool(b).to_string(),
                 None => {
-                    return Err(Die::Fatal(format!(
-                        "bad boolean config value '{v}' for '{key}'"
-                    )));
+                    return Err(Die::Fatal(msg::bad_boolean(v, key)));
                 }
             },
             Some(Type::Int) => match value::parse_int(v.as_bytes(), IntWidth::I64) {
                 Ok(i) => i.to_string(),
                 Err(e) => {
-                    return Err(Die::Fatal(format!(
-                        "bad numeric config value '{v}' for '{key}': {}",
-                        e.reason()
-                    )));
+                    return Err(Die::Fatal(msg::bad_numeric(v, key, e.reason())));
                 }
             },
             Some(Type::BoolOrInt) => match value::parse_bool_or_int(Some(v.as_bytes())) {
                 Ok(BoolOrInt::Bool(b)) => value::format_bool(b).to_string(),
                 Ok(BoolOrInt::Int(i)) => i.to_string(),
                 Err(e) => {
-                    return Err(Die::Fatal(format!(
-                        "bad numeric config value '{v}' for '{key}': {}",
-                        e.reason()
-                    )));
+                    return Err(Die::Fatal(msg::bad_numeric(v, key, e.reason())));
                 }
             },
             Some(Type::BoolOrStr) => match value::parse_bool(Some(v.as_bytes())) {
                 Some(b) => value::format_bool(b).to_string(),
                 None => v.to_string(),
             },
+            Some(Type::Color) => {
+                if rgit_config::color::parse_color(v).is_none() {
+                    eprintln!("error: {}", msg::invalid_color(v));
+                    return Err(Die::Fatal(msg::cannot_parse_color(v)));
+                }
+                v.to_string()
+            }
             _ => v.to_string(),
         })
     }
@@ -1535,7 +1508,7 @@ impl<'o> Cmd<'o> {
                 {
                     lines.push((
                         Level::Error,
-                        cannot_overwrite(key.as_bstr(), new_syntax),
+                        msg::cannot_overwrite(&key.to_string(), new_syntax),
                     ));
                 }
                 Err(report_write_error(&e, lines))
@@ -1569,12 +1542,7 @@ impl<'o> Cmd<'o> {
         }
         let path = self.write_file()?;
         if matches!(self.location, Location::Global) && !path.exists() {
-            let template = format!(
-                "{}#\tname = {}\n#\temail = {}\n",
-                msg::GLOBAL_TEMPLATE_HEAD,
-                default_name(),
-                default_email(&self.env)
-            );
+            let template = msg::global_template(&default_name(), &default_email(&self.env));
             if let Err(e) = std::fs::write(&path, template) {
                 return Err(Die::Error(io_text(&e), 255));
             }
@@ -1616,28 +1584,42 @@ impl<'o> Cmd<'o> {
     }
 }
 
+/// A value that does not fit `--type`.
+enum Bad {
+    Value(rgit_config::ValueError),
+    /// `--type=expiry-date`: not a date.
+    Timestamp(String),
+    /// `--type=color`: not a color.
+    Color(String),
+}
+
+impl From<rgit_config::ValueError> for Bad {
+    fn from(e: rgit_config::ValueError) -> Self {
+        Bad::Value(e)
+    }
+}
+
 /// Report a value that does not fit `--type`. A value-less key where a
 /// path is needed is reported with its line, like git does.
-fn value_error(e: &Entry, err: rgit_config::ValueError) -> Die {
+fn value_error(e: &Entry, err: Bad) -> Die {
+    let err = match err {
+        Bad::Value(v) => v,
+        Bad::Color(v) => {
+            eprintln!("error: {}", msg::invalid_color(&v));
+            return Die::Fatal(msg::bad_config_line(e.line, &e.source.origin.describe()));
+        }
+        Bad::Timestamp(v) => {
+            eprintln!("error: {}", msg::invalid_timestamp(&v, &e.name.to_string()));
+            return Die::Fatal(msg::bad_config_line(e.line, &e.source.origin.describe()));
+        }
+    };
     if err.kind == rgit_config::ValueErrorKind::Missing {
         eprintln!("error: {err}");
-        return Die::Fatal(format!(
-            "bad config line {} in {}",
-            e.line,
-            e.source.origin.describe()
-        ));
+        return Die::Fatal(msg::bad_config_line(e.line, &e.source.origin.describe()));
     }
     Die::Fatal(err.to_string())
 }
 
-fn cannot_overwrite(key: &BStr, new_syntax: bool) -> String {
-    let hint = if new_syntax {
-        "Use --value=<pattern>, --append or --all"
-    } else {
-        "Use a regexp, --add or --replace-all"
-    };
-    format!("cannot overwrite multiple values with a single value\n       {hint} to change {key}.")
-}
 
 fn report_write_error(e: &WriteError, lines: Vec<(Level, String)>) -> Die {
     print_report(&lines);

@@ -459,6 +459,7 @@ dependencies = [
  "bstr",
  "libc",
  "rgit-config",
+ "rgit-date",
  "rgit-difftest",
  "rgit-fs",
  "rgit-options",

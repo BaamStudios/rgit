@@ -466,3 +466,33 @@ fn url_match() {
         ],
     );
 }
+
+#[test]
+fn colors_and_dates() {
+    let content = "[c]\n\ta = bold red blue\n\tb = #f1b\n\tbad = foo\n\tui = auto\n[d]\n\tx = 2017/11/11 11:11:11PM\n\tn = never\n\tbad = abc\n";
+    let mut fx = fixture().write("c", content);
+    let f = ["config", "-f", "c"];
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["--get", "--type=color", "c.a"],
+        vec!["--get", "--type=color", "c.bad"],
+        vec!["-l", "--type=color"],
+        vec!["--get-color", "c.b"],
+        vec!["--get-color", "c.nope", "reverse ul 196"],
+        vec!["--get-color", "c.nope", "bogus"],
+        vec!["--type=color", "c.new", "bogus"],
+        vec!["--type=color", "c.new", "nobold green"],
+        vec!["--get-colorbool", "c.ui", "true"],
+        vec!["--get-colorbool", "c.ui", "false"],
+        vec!["--get-colorbool", "c.nope"],
+        vec!["--get", "--expiry-date", "d.x"],
+        vec!["--get", "--expiry-date", "d.n"],
+        vec!["--get", "--expiry-date", "d.bad"],
+        vec!["-l", "--type=expiry-date"],
+    ];
+    let full: Vec<Vec<&str>> = cases
+        .iter()
+        .map(|c| f.iter().chain(c.iter()).copied().collect())
+        .collect();
+    let refs: Vec<&[&str]> = full.iter().map(|c| c.as_slice()).collect();
+    all_same(&mut fx, &refs);
+}

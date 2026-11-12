@@ -2,6 +2,8 @@
 //! User-visible messages of the front end, in one place for review
 //! (see CLEANROOM.md, "User-visible messages").
 
+pub mod config;
+
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
 /// tests compare it).
 pub const GIT_USAGE: &str = "\

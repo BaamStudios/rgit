@@ -813,23 +813,30 @@ mod tests {
             rename_section(d.as_bytes(), o.as_bytes(), n.map(str::as_bytes))
                 .map(|v| String::from_utf8(v).unwrap())
         };
-        assert_eq!(
-            r("[s] ; hc\n\ta=1\n", "s", Some("new.Sub")).unwrap(),
-            "[new \"Sub\"]\n\t; hc\n\ta=1\n"
-        );
-        assert_eq!(r("[s]   \n", "s", Some("t")).unwrap(), "[t]\n");
-        assert_eq!(r("[s] # c", "s", Some("y")).unwrap(), "[y]\n\t# c");
-        assert_eq!(r("[S]\n[s]\n", "s", Some("t")).unwrap(), "[S]\n[t]\n");
-        assert_eq!(r("[t]\nx=1 \\\n[s]\n", "s", None).unwrap(), "[t]\nx=1 \\\n");
-        assert_eq!(r("[s]\na=1\n\n   \n  [u]\n", "s", None).unwrap(), "  [u]\n");
-        assert!(matches!(
-            r("[s]\n", "q", None),
-            Err(EditError::NoSuchSection(_))
-        ));
-        assert!(matches!(
-            r("[s]\n", "s", Some("a b")),
-            Err(EditError::InvalidSectionName(_))
-        ));
-        assert_eq!(r("[s]\n", "s", Some("a.")).unwrap(), "[a \"\"]\n");
+        let ok: &[(&str, &str, Option<&str>, &str)] = &[
+            (
+                "[s] ; hc\n\ta=1\n",
+                "s",
+                Some("new.Sub"),
+                "[new \"Sub\"]\n\t; hc\n\ta=1\n",
+            ),
+            ("[s]   \n", "s", Some("t"), "[t]\n"),
+            ("[s] # c", "s", Some("y"), "[y]\n\t# c"),
+            ("[S]\n[s]\n", "s", Some("t"), "[S]\n[t]\n"),
+            ("[t]\nx=1 \\\n[s]\n", "s", None, "[t]\nx=1 \\\n"),
+            ("[s]\na=1\n\n   \n  [u]\n", "s", None, "  [u]\n"),
+            ("[s]\n", "s", Some("a."), "[a \"\"]\n"),
+        ];
+        for (input, old, new, want) in ok {
+            assert_eq!(
+                r(input, old, *new).ok().as_deref(),
+                Some(*want),
+                "{input:?}"
+            );
+        }
+        let missing = r("[s]\n", "q", None);
+        assert!(matches!(missing, Err(EditError::NoSuchSection(_))));
+        let invalid = r("[s]\n", "s", Some("a b"));
+        assert!(matches!(invalid, Err(EditError::InvalidSectionName(_))));
     }
 }

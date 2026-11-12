@@ -15,6 +15,7 @@
 //!   `GIT_CONFIG_COUNT`.
 //! - [`sources`]: the standard stack (system, global, local, worktree,
 //!   command line).
+//! - [`color`]: the `color` value type and color booleans.
 //! - [`urlmatch`]: `<section>.<url>.<key>` lookups (`http.<url>.*`).
 //! - [`edit`], [`write`]: set/add/replace-all/unset/unset-all and
 //!   rename/remove-section, keeping everything else in the file as it was,
@@ -24,6 +25,7 @@
 //! "CONFIGURATION FILE") and was checked against the `git` binary.
 
 pub mod cmdline;
+pub mod color;
 pub mod edit;
 pub mod env;
 mod error;
