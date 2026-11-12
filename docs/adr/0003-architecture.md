@@ -26,6 +26,18 @@ dispatches.
 | `rgit-server` | upload-pack, receive-pack, http-backend (M5) |
 | `rgit-cli` | The `rgit` binary |
 
+Infrastructure crates added in wave 1 (2026-11-12):
+
+| Crate | Responsibility |
+|---|---|
+| `rgit-options` | parse-options-compatible option parser |
+| `rgit-fs` | Lock files, temp files, atomic replacement, signal cleanup |
+| `rgit-trace` | `GIT_TRACE*` output |
+| `rgit-date` | Date parsing and formatting |
+| `rgit-difftest` | Differential test helper (dev only, not published) |
+| `rgit-simcheck` | Similarity check against git's source (CI only, not published) |
+| `rgit-test-tool` | MIT replacements for `test-tool` internals (tests only, not published) |
+
 Crates are created when the first issue needs them, not up front.
 Dependencies point downwards only (hash → object → odb/pack → repo → …).
 
@@ -45,7 +57,9 @@ Dependencies point downwards only (hash → object → odb/pack → repo → …
 ## Other rules
 
 - MSRV = `rust-version` in the workspace `Cargo.toml`.
-- `unsafe` only for memory mapping, isolated and commented.
+- `unsafe` only for memory mapping and minimal OS signal/fd FFI (e.g. resetting
+  SIGPIPE, writing to a user-given fd), isolated and commented. Prefer safe
+  wrappers such as `rustix` where they exist. (Amended 2026-11-12.)
 - Object ids generic over the hash algorithm from the start (SHA-256 later).
 - Every user-visible output must be byte-identical to git (checked by the
   conformance suite).
