@@ -24,6 +24,7 @@ pub mod rev_list;
 pub mod rm;
 pub mod show_ref;
 pub mod status;
+pub mod switch;
 pub mod update_index;
 pub mod update_ref;
 pub mod var;
