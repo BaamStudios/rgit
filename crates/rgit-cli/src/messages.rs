@@ -4,6 +4,7 @@
 
 pub mod check_ignore;
 pub mod config;
+pub mod pack_objects;
 pub mod reflog;
 pub mod var;
 
