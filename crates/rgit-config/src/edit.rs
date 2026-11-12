@@ -431,8 +431,8 @@ impl<'f> Doc<'f> {
             _ => false,
         };
         let mut start = self.bom_len();
-        for j in (0..h).rev() {
-            match &self.items[j] {
+        for (j, item) in self.items[..h].iter().enumerate().rev() {
+            match item {
                 Item::Trivia(_) if has_comment(j) => return None,
                 Item::Trivia(_) => {}
                 Item::Section(_) if same(j) => {}
@@ -444,8 +444,8 @@ impl<'f> Doc<'f> {
             }
         }
         let mut end = self.data.len();
-        for j in h + 1..self.items.len() {
-            match &self.items[j] {
+        for (j, item) in self.items.iter().enumerate().skip(h + 1) {
+            match item {
                 Item::Trivia(_) if has_comment(j) => return None,
                 Item::Trivia(_) => {}
                 Item::Section(_) if same(j) => {}
