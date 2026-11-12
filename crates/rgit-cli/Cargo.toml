@@ -22,6 +22,7 @@ rgit-options = { path = "../rgit-options" }
 rgit-pathspec = { path = "../rgit-pathspec" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-repo = { path = "../rgit-repo" }
+rgit-transport = { path = "../rgit-transport" }
 rgit-version = { path = "../rgit-version" }
 rgit-worktree = { path = "../rgit-worktree" }
 
