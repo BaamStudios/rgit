@@ -17,3 +17,9 @@ pub const HELP_EXIT_CODE: &str = "exit with exit code 2 if no matching refs are 
 pub const HELP_SYMREF: &str = "show underlying ref in addition to the object pointed by it";
 pub const HELP_SERVER_OPTION: &str = "option to transmit";
 pub const NO_REMOTE: &str = "No remote configured to list refs from.";
+pub const HELP_SORT: &str = "field name to sort on";
+
+/// rgit-specific: `--sort` is not implemented yet.
+pub fn unsupported_sort(key: &str) -> String {
+    format!("rgit: ls-remote --sort={key} is not supported yet")
+}

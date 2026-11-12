@@ -25,6 +25,8 @@ fn ls_remote_same_as_git() {
         &["--symref", "--refs", "r"],
         &["--tags", "r"],
         &["--heads", "r"],
+        &["-h", "r"],
+        &["-h"],
         &["-b", "r", "main"],
         &["r", "v1"],
         &["r", "refs/heads/*"],

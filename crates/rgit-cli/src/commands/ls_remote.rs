@@ -39,8 +39,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let get_url = Cell::new(false);
     let exit_code = Cell::new(false);
     let symref = Cell::new(false);
+    let sort: RefCell<Option<String>> = RefCell::new(None);
     let upload_pack: RefCell<Option<String>> = RefCell::new(None);
     let server_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let help_only = argv.last().is_some_and(|a| a == "-h") && argv.len() <= 2;
+    let heads_short = if help_only { None } else { Some('h') };
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -55,9 +58,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string(None, "exec", &upload_pack, "exec", msg::HELP_UPLOAD_PACK).hidden(),
             Opt::flag('t', "tags", &tags, msg::HELP_TAGS),
             Opt::flag('b', "branches", &branches, msg::HELP_BRANCHES),
-            Opt::flag('h', "heads", &branches, msg::HELP_BRANCHES).hidden(),
+            // `-h` means `--heads` unless it is the only argument (usage).
+            Opt::flag(heads_short, "heads", &branches, msg::HELP_BRANCHES).hidden(),
             Opt::flag(None, "refs", &refs_only, msg::HELP_REFS),
             Opt::flag(None, "get-url", &get_url, msg::HELP_GET_URL),
+            Opt::string(None, "sort", &sort, "key", msg::HELP_SORT),
             Opt::flag(None, "exit-code", &exit_code, msg::HELP_EXIT_CODE),
             Opt::flag(None, "symref", &symref, msg::HELP_SYMREF),
             Opt::string_list(
@@ -113,6 +118,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ls.ref_prefixes.push("refs/tags/".into());
     }
     let refs: Vec<RemoteRef> = client.ls_refs(&ls).map_err(|e| fatal(&e))?;
+    // Sorting (peeled entries sort as refs of their own) is not done yet.
+    if let Some(k) = sort.borrow().as_deref() {
+        return Err(Die::Fatal(msg::unsupported_sort(k)));
+    }
     client.close().map_err(|e| fatal(&e))?;
     client.into_inner().close().map_err(|e| fatal(&e))?;
 
