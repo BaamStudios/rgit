@@ -4,6 +4,7 @@
 
 pub mod check_ignore;
 pub mod config;
+pub mod ls_tree;
 pub mod var;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
@@ -102,4 +103,9 @@ pub fn rev_parse_not_supported(arg: &str) -> String {
 
 pub fn cannot_chdir(dir: &str, reason: &str) -> String {
     format!("cannot chdir to '{dir}': {reason}")
+}
+
+/// `<rev>^{<type>}` reached an object of another type.
+pub fn peel_mismatch(spec: &str, expected: &str, found: &str) -> String {
+    format!("{spec}: expected {expected} type, but the object dereferences to {found} type")
 }
