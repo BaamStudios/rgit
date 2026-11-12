@@ -18,6 +18,7 @@ pub mod pack_refs;
 pub mod reflog;
 pub mod rev_list;
 pub mod show_ref;
+pub mod status;
 pub mod update_index;
 pub mod update_ref;
 pub mod var;

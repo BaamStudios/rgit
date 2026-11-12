@@ -49,7 +49,7 @@ fn field_named(name: &str) -> Option<Field> {
 
 /// An exclude source, in command line order.
 #[derive(Debug, Clone)]
-enum ExcludeArg {
+pub(crate) enum ExcludeArg {
     Pattern(String),
     File(String),
     PerDirectory(Option<String>),
@@ -812,7 +812,7 @@ fn walk_start(lister: &Lister<'_>) -> Vec<u8> {
     lister.pathspec.common_prefix().to_vec()
 }
 
-fn build_excludes(repo: &Repo, args: &[ExcludeArg]) -> Result<Excludes, Die> {
+pub(crate) fn build_excludes(repo: &Repo, args: &[ExcludeArg]) -> Result<Excludes, Die> {
     let root = repo
         .setup
         .work_tree
