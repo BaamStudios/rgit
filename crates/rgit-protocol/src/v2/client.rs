@@ -2,14 +2,15 @@
 //! The client side of protocol v2 (`Documentation/gitprotocol-v2.adoc`):
 //! capability advertisement, `ls-refs` and `fetch`.
 //!
-//! [`Client`] works on a pair of byte streams. On a stateful connection
-//! (`file://`, `ssh://`, `git://`) both streams belong to one long-running
-//! `upload-pack`. On a stateless connection (smart HTTP) every request is
-//! answered separately: the transport has to send what was written so far
-//! as one request when the writer is flushed ([`Write::flush`]; the client
-//! flushes after every request) and then let the reader return that
-//! request's response. The client itself behaves the same in both modes,
-//! because every v2 command is self-contained; the differences are:
+//! [`Client`] works on a [`Duplex`] connection, the same request/response
+//! contract as `rgit_transport::Connection`: the advertisement is readable
+//! first; the client writes one complete request and calls
+//! [`Duplex::end_request`], then reads the response. On a stateful
+//! connection (`file://`, `ssh://`, `git://`) everything goes to one
+//! long-running `upload-pack`; on a stateless one (smart HTTP) every
+//! request is answered separately. [`Pipe`] makes a connection from two
+//! streams. The client behaves the same in both modes, because every v2
+//! command is self-contained; the differences are:
 //!
 //! - stateless: a `# service=git-upload-pack` header before the
 //!   advertisement is skipped, response-end packets (`0002`) in front of a
@@ -57,6 +58,69 @@ use super::negotiate::{INITIAL_HAVES, MAX_IN_VAIN, Negotiator, next_have_count};
 /// The first line of a smart HTTP advertisement in front of the protocol
 /// data.
 const SERVICE_HEADER: &[u8] = b"# service=git-upload-pack";
+
+/// A connection to `upload-pack` as the client uses it.
+///
+/// `rgit_transport::Connection` has the same shape; a transport connection
+/// is used through a small wrapper that forwards these calls.
+pub trait Duplex: Read + Write {
+    /// Whether every request is answered independently (smart HTTP).
+    fn is_stateless(&self) -> bool;
+
+    /// The request written so far is complete: stateful connections flush,
+    /// stateless ones send it and make its response readable.
+    fn end_request(&mut self) -> io::Result<()> {
+        self.flush()
+    }
+}
+
+/// A [`Duplex`] made of a read and a write stream, e.g. the stdout and
+/// stdin of an `upload-pack` child process. A request ends with a flush of
+/// the write stream.
+#[derive(Debug)]
+pub struct Pipe<R, W> {
+    read: R,
+    write: W,
+    stateless: bool,
+}
+
+impl<R, W> Pipe<R, W> {
+    /// Join `read` and `write`.
+    pub fn new(read: R, write: W, stateless: bool) -> Pipe<R, W> {
+        Pipe {
+            read,
+            write,
+            stateless,
+        }
+    }
+
+    /// The two streams.
+    pub fn into_parts(self) -> (R, W) {
+        (self.read, self.write)
+    }
+}
+
+impl<R: Read, W> Read for Pipe<R, W> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.read.read(buf)
+    }
+}
+
+impl<R, W: Write> Write for Pipe<R, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.write.flush()
+    }
+}
+
+impl<R: Read, W: Write> Duplex for Pipe<R, W> {
+    fn is_stateless(&self) -> bool {
+        self.stateless
+    }
+}
 
 /// Arguments of `ls-refs`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -201,22 +265,23 @@ impl Pkt {
 
 /// A protocol v2 client.
 #[derive(Debug)]
-pub struct Client<R, W> {
-    reader: Reader<R>,
-    writer: Writer<W>,
+pub struct Client<C> {
+    reader: Reader<C>,
+    /// The request being built; sent by `end_request`.
+    request: Writer<Vec<u8>>,
     stateless: bool,
     caps: Capabilities,
     format: HashKind,
     agent: String,
 }
 
-impl<R: Read, W: Write> Client<R, W> {
-    /// Read the capability advertisement from `read`. `name` is the program
+impl<C: Duplex> Client<C> {
+    /// Read the capability advertisement from `conn`. `name` is the program
     /// name used in packet traces (`fetch`, `clone`, `ls-remote`). A server
     /// that answers with protocol v0 or v1 is an [`Error::NotV2`].
-    pub fn connect(read: R, write: W, stateless: bool, name: &'static str) -> Result<Self> {
-        let mut reader = Reader::new(read, name);
-        let writer = Writer::new(write, name);
+    pub fn connect(conn: C, name: &'static str) -> Result<Self> {
+        let stateless = conn.is_stateless();
+        let mut reader = Reader::new(conn, name);
         if stateless && matches!(reader.peek()?, Some(Packet::Data(d)) if d == SERVICE_HEADER) {
             reader.read()?;
             match reader.read()? {
@@ -229,16 +294,14 @@ impl<R: Read, W: Write> Client<R, W> {
             ProtocolVersion::V1 => return Err(Error::NotV2(1)),
             ProtocolVersion::V0 => return Err(Error::NotV2(0)),
         };
-        Client::with_capabilities(reader, writer, caps, stateless)
+        Client::with_capabilities(reader, caps)
     }
 
-    /// A client for a connection whose advertisement was already read.
-    pub fn with_capabilities(
-        reader: Reader<R>,
-        writer: Writer<W>,
-        caps: Capabilities,
-        stateless: bool,
-    ) -> Result<Self> {
+    /// A client for a connection whose advertisement was already read
+    /// through `reader` (its trace name is used for requests too).
+    pub fn with_capabilities(reader: Reader<C>, caps: Capabilities) -> Result<Self> {
+        let stateless = reader.get_ref().is_stateless();
+        let name = reader.tracer().name().to_owned();
         let format = match caps.object_format() {
             None => HashKind::Sha1,
             Some(name) => HashKind::from_name(name)
@@ -246,7 +309,7 @@ impl<R: Read, W: Write> Client<R, W> {
         };
         Ok(Client {
             reader,
-            writer,
+            request: Writer::new(Vec::new(), name),
             stateless,
             caps,
             format,
@@ -285,19 +348,14 @@ impl<R: Read, W: Write> Client<R, W> {
         self.caps.has_feature("fetch", "shallow")
     }
 
-    /// The packet reader.
-    pub fn reader_mut(&mut self) -> &mut Reader<R> {
+    /// The packet reader over the connection.
+    pub fn reader_mut(&mut self) -> &mut Reader<C> {
         &mut self.reader
     }
 
-    /// The packet writer.
-    pub fn writer_mut(&mut self) -> &mut Writer<W> {
-        &mut self.writer
-    }
-
-    /// The packet reader and writer.
-    pub fn into_parts(self) -> (Reader<R>, Writer<W>) {
-        (self.reader, self.writer)
+    /// The connection.
+    pub fn into_inner(self) -> C {
+        self.reader.into_inner()
     }
 
     /// End the session: a flush packet on a stateful connection, nothing on
@@ -305,8 +363,7 @@ impl<R: Read, W: Write> Client<R, W> {
     /// after a `fetch` that received a pack it just closes the connection.
     pub fn close(&mut self) -> Result<()> {
         if !self.stateless {
-            self.writer.flush_pkt()?;
-            self.writer.flush_io()?;
+            self.end_request()?;
         }
         Ok(())
     }
@@ -315,7 +372,7 @@ impl<R: Read, W: Write> Client<R, W> {
         if line.contains('\n') {
             return Err(Error::BadRequestLine(line.to_owned()));
         }
-        self.writer.write_line(line)
+        self.request.write_line(line)
     }
 
     /// `command=`, the capability list and the delimiter.
@@ -337,12 +394,17 @@ impl<R: Read, W: Write> Client<R, W> {
                 self.line(&format!("server-option={o}"))?;
             }
         }
-        self.writer.delim_pkt()
+        self.request.delim_pkt()
     }
 
+    /// Finish the request with a flush packet and send it.
     fn end_request(&mut self) -> Result<()> {
-        self.writer.flush_pkt()?;
-        self.writer.flush_io()
+        self.request.flush_pkt()?;
+        let bytes = std::mem::take(self.request.get_mut());
+        let conn = self.reader.get_mut();
+        conn.write_all(&bytes)?;
+        conn.end_request()?;
+        Ok(())
     }
 
     fn next(&mut self) -> Result<Pkt> {
@@ -460,20 +522,20 @@ impl<R: Read, W: Write> Client<R, W> {
         loop {
             self.write_fetch_args(args)?;
             for id in &outcome.common {
-                self.writer.write_line(&format!("have {id}"))?;
+                self.request.write_line(&format!("have {id}"))?;
             }
             let mut added = 0;
             while added < count {
                 let Some(id) = negotiator.next_have() else {
                     break;
                 };
-                self.writer.write_line(&format!("have {id}"))?;
+                self.request.write_line(&format!("have {id}"))?;
                 added += 1;
             }
             in_vain += added;
             let done = added == 0 || (seen_ack && in_vain >= MAX_IN_VAIN);
             if done {
-                self.writer.write_line("done")?;
+                self.request.write_line("done")?;
             }
             self.end_request()?;
             outcome.rounds += 1;

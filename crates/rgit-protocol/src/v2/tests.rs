@@ -62,10 +62,13 @@ impl Script {
     }
 }
 
-type TestClient = Client<Cursor<Vec<u8>>, Vec<u8>>;
+type TestClient = Client<Pipe<Cursor<Vec<u8>>, Vec<u8>>>;
 
 fn connect(script: Script, stateless: bool) -> Result<TestClient> {
-    Client::connect(Cursor::new(script.0), Vec::new(), stateless, "test")
+    Client::connect(
+        Pipe::new(Cursor::new(script.0), Vec::new(), stateless),
+        "test",
+    )
 }
 
 fn client(script: Script) -> TestClient {
@@ -76,8 +79,7 @@ fn client(script: Script) -> TestClient {
 
 /// The packets written, `0000`/`0001` for special packets.
 fn sent(c: TestClient) -> Vec<String> {
-    let (_, w) = c.into_parts();
-    let bytes = w.into_inner();
+    let (_, bytes) = c.into_inner().into_parts();
     let mut r = Reader::new(&bytes[..], "t");
     r.chomp_newline(false);
     let mut out = Vec::new();

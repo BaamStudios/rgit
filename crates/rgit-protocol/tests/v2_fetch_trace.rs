@@ -31,10 +31,10 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout};
 
-use rgit_protocol::v2::{Client, FetchArgs, FetchOutcome, LsRefsArgs};
+use rgit_protocol::v2::{Client, FetchArgs, FetchOutcome, LsRefsArgs, Pipe};
 use v2common::{Env, Plan, USER_AGENT, drive, fetch_args, oid};
 
-type PipeClient = Client<ChildStdout, ChildStdin>;
+type PipeClient = Client<Pipe<ChildStdout, ChildStdin>>;
 
 /// Run the reference git with packet tracing; returns the trace lines of
 /// the client process.
@@ -71,9 +71,11 @@ fn ref_prefixes(trace: &str) -> Vec<String> {
 fn connect(env: &Env, server: &Path, name: &'static str) -> (Child, PipeClient) {
     let mut child = env.upload_pack(server);
     let client = Client::connect(
-        child.stdout.take().unwrap(),
-        child.stdin.take().unwrap(),
-        false,
+        Pipe::new(
+            child.stdout.take().unwrap(),
+            child.stdin.take().unwrap(),
+            false,
+        ),
         name,
     )
     .unwrap();

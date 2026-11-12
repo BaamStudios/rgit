@@ -15,7 +15,8 @@ use std::rc::Rc;
 
 use rgit_hash::ObjectId;
 use rgit_protocol::v2::{
-    Client, CommitInfo, ConsecutiveNegotiator, FetchArgs, FetchOutcome, LsRefsArgs, RemoteRef,
+    Client, CommitInfo, ConsecutiveNegotiator, Duplex, FetchArgs, FetchOutcome, LsRefsArgs,
+    RemoteRef,
 };
 use rgit_protocol::{Progress, ProgressStyle};
 
@@ -283,9 +284,9 @@ pub struct Result {
 /// `refs/heads/` whose objects are missing locally (clone: all listed refs);
 /// advertised tips present locally are known common; the walk starts at
 /// all local refs.
-pub fn drive<R: Read, W: Write>(
+pub fn drive<C: Duplex>(
     env: &Env,
-    client: &mut Client<R, W>,
+    client: &mut Client<C>,
     local: Option<&Path>,
     plan: &Plan,
 ) -> Result {

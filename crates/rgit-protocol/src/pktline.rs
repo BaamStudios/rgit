@@ -174,6 +174,16 @@ impl<R: Read> Reader<R> {
         &mut self.tracer
     }
 
+    /// The tracing state.
+    pub fn tracer(&self) -> &Tracer {
+        &self.tracer
+    }
+
+    /// The underlying stream.
+    pub fn get_ref(&self) -> &R {
+        &self.inner
+    }
+
     /// The underlying stream.
     pub fn get_mut(&mut self) -> &mut R {
         &mut self.inner
