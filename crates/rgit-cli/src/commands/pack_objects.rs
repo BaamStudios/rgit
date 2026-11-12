@@ -10,13 +10,12 @@
 //! always valid). Alternates are not read yet.
 
 use std::io::{BufRead, BufWriter, Write};
-use std::path::Path;
 
-use rgit_config::{CommandLine, ConfigSet, LoadOptions, SystemEnv};
+use rgit_config::ConfigSet;
 use rgit_hash::{HashKind, ObjectId, Prefix};
-use rgit_odb::{LooseOptions, LooseStore, ObjectStore};
-use rgit_pack::write::{self as pw, ListedObject, PackSetSource, SourceError, Tip, WriteOptions};
-use rgit_pack::{Object, ObjectKind, PackSet};
+use rgit_object::ObjectKind;
+use rgit_odb::{ObjectDatabase, PrefixMatch};
+use rgit_pack::write::{self as pw, ListedObject, Tip, WriteOptions};
 use rgit_refs::files::FilesStore;
 use rgit_refs::name::{RefNameFlags, is_valid_refname};
 use rgit_refs::{IterItem, IterOptions, MAX_SYMREF_DEPTH, RefStore, Target};
@@ -255,16 +254,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let hash = setup.format.object_format;
-    let config = load_config(ctx, &setup);
+    let config = repo::config(ctx, &setup);
     let level = match compression.get() {
         i32::MIN => config_compression(&config)?,
         l => check_level(l as i64)?,
     };
 
-    let objects_dir = rgit_odb::objects_dir(&setup.common_dir);
-    let set = PackSet::open(objects_dir.join("pack"), hash);
+    let odb = repo::odb_with_config(&setup, &config)?;
     let repo = Repo {
-        source: Objects::new(&set, &objects_dir, hash),
+        source: &odb,
         refs: Refs::new(&setup),
         hash,
     };
@@ -297,36 +295,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         max_depth,
     };
     let out = BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
-    let packs = set.packs();
+    let packs = odb.packs().map(|p| p.set().packs()).unwrap_or_default();
     let (_summary, mut out) = pw::write_pack(out, hash, &ordered, &repo.source, &packs, &opts)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     out.flush().map_err(|e| Die::Fatal(e.to_string()))?;
     Ok(0)
-}
-
-/// The configuration (all scopes), or an empty set if it cannot be read.
-fn load_config(ctx: &Context, setup: &rgit_repo::Setup) -> ConfigSet {
-    let env = SystemEnv::default();
-    let opts = LoadOptions {
-        env: &env,
-        repo: None,
-        includes: true,
-    };
-    let repo_cfg = rgit_config::sources::RepoConfig {
-        common_dir: setup.common_dir.clone(),
-        git_dir: setup.git_dir.clone(),
-        worktree_config: None,
-    };
-    let cl: CommandLine = repo::command_line(ctx);
-    let mut set = ConfigSet::new();
-    let _ = rgit_config::sources::load_standard(
-        opts,
-        Some(&repo_cfg),
-        &cl,
-        rgit_config::sources::ScopeFilter::default(),
-        &mut set,
-    );
-    set
 }
 
 /// `pack.compression`, else `core.compression`; `-1` is zlib's default.
@@ -379,7 +352,7 @@ fn read_object_list(input: &mut dyn BufRead, hash: HashKind) -> Result<Vec<Objec
 
 /// What resolving revisions needs.
 struct Repo<'a> {
-    source: Objects<'a>,
+    source: &'a ObjectDatabase,
     refs: Refs,
     hash: HashKind,
 }
@@ -470,7 +443,7 @@ fn resolve_name(repo: &Repo<'_>, name: &str, rev: &str) -> Result<ObjectId, Die>
         return Ok(id);
     }
     if is_hex && name.len() >= 4 && name.len() < hash.hex_len() {
-        if let Some(id) = repo.source.unique_prefix(name) {
+        if let Some(id) = unique_prefix(repo.source, name) {
             return Ok(id);
         }
     }
@@ -513,64 +486,12 @@ fn parents(repo: &Repo<'_>, id: &ObjectId) -> Option<Vec<ObjectId>> {
         .ok()
 }
 
-/// Packed objects (through `rgit_pack`) plus loose ones (through
-/// `rgit_odb`). Alternates are not read yet.
-struct Objects<'a> {
-    packed: PackSetSource<'a>,
-    loose: LooseStore,
-}
-
-impl<'a> Objects<'a> {
-    fn new(set: &'a PackSet, objects_dir: &Path, hash: HashKind) -> Objects<'a> {
-        Objects {
-            packed: PackSetSource::new(set),
-            loose: LooseStore::new(objects_dir, hash, LooseOptions::default()),
-        }
-    }
-
-    /// The only object whose id starts with `hex`, packed or loose.
-    fn unique_prefix(&self, hex: &str) -> Option<ObjectId> {
-        let prefix = Prefix::from_hex(self.loose.hash_kind(), hex.as_bytes()).ok()?;
-        let mut found = self.packed.set().lookup_prefix(&prefix, 2);
-        let _ = self.loose.for_each_prefix_match(&prefix, &mut |id| {
-            if !found.contains(&id) {
-                found.push(id);
-            }
-        });
-        (found.len() == 1).then(|| found[0])
-    }
-}
-
-fn pack_kind(kind: rgit_object::ObjectKind) -> ObjectKind {
-    match kind {
-        rgit_object::ObjectKind::Commit => ObjectKind::Commit,
-        rgit_object::ObjectKind::Tree => ObjectKind::Tree,
-        rgit_object::ObjectKind::Blob => ObjectKind::Blob,
-        rgit_object::ObjectKind::Tag => ObjectKind::Tag,
-    }
-}
-
-impl pw::ObjectSource for Objects<'_> {
-    fn read(&self, id: &ObjectId) -> Result<Option<Object>, SourceError> {
-        let packed = self.packed.read(id);
-        if let Ok(Some(o)) = packed {
-            return Ok(Some(o));
-        }
-        match self.loose.read(id) {
-            Ok(Some(o)) => Ok(Some(Object {
-                kind: pack_kind(o.kind),
-                data: o.data,
-            })),
-            Ok(None) => packed,
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, SourceError> {
-        if let Ok(Some(k)) = self.packed.kind(id) {
-            return Ok(Some(k));
-        }
-        Ok(self.loose.header(id)?.map(|h| pack_kind(h.kind)))
+/// The only object whose id starts with `hex`.
+fn unique_prefix(odb: &ObjectDatabase, hex: &str) -> Option<ObjectId> {
+    let prefix = Prefix::from_hex(odb.hash_kind(), hex.as_bytes()).ok()?;
+    match odb.resolve_prefix(&prefix) {
+        Ok(PrefixMatch::Unique(id)) => Some(id),
+        _ => None,
     }
 }
 

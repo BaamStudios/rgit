@@ -78,8 +78,8 @@ impl fmt::Display for WriteError {
                 id,
                 found,
                 expected,
-            } => m::wrong_object_type(f, id, found.as_str(), expected.as_str()),
-            WriteError::Corrupt { id, kind } => m::bad_object_of_kind(f, id, kind.as_str()),
+            } => m::wrong_object_type(f, id, found.name(), expected.name()),
+            WriteError::Corrupt { id, kind } => m::bad_object_of_kind(f, id, kind.name()),
             WriteError::TooManyObjects => m::too_many_objects(f),
             WriteError::Collision => m::trailer_collision(f),
         }

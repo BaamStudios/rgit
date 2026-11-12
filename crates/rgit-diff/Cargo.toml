@@ -1,0 +1,11 @@
+[package]
+name = "rgit-diff"
+description = "Line diff (Myers) and unified patch output for rgit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-hash = { path = "../rgit-hash" }
