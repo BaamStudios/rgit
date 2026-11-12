@@ -23,6 +23,7 @@ dispatches.
 | `rgit-merge` | Three-way merge, merge-file, sequencer |
 | `rgit-protocol` | pkt-line, capabilities, protocol v0/v1/v2 |
 | `rgit-transport` | file, SSH, smart HTTP, credentials |
+| `rgit-http` | Smart HTTP client: HTTP/1.1 on rustls, `http.*` config, implements the `rgit-transport` trait (#162) |
 | `rgit-server` | upload-pack, receive-pack, http-backend (M5) |
 | `rgit-cli` | The `rgit` binary |
 

@@ -6,6 +6,7 @@ pub mod check_ignore;
 pub mod config;
 pub mod ls_files;
 pub mod ls_tree;
+pub mod pack_objects;
 pub mod update_index;
 pub mod var;
 

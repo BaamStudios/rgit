@@ -1,0 +1,23 @@
+[package]
+name = "rgit-http"
+description = "Smart HTTP transport client (HTTP/1.1 over rustls) for rgit (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-config = { path = "../rgit-config" }
+rgit-protocol = { path = "../rgit-protocol" }
+rgit-trace = { path = "../rgit-trace" }
+rgit-transport = { path = "../rgit-transport" }
+thiserror = "2"
+bstr = "1"
+flate2 = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = { version = "1.12", features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3"
