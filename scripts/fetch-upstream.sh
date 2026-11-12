@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Fetch the reference version of upstream git into ./upstream/git (not committed).
 # Used for: reading Documentation/, building the reference binary, running t/ as a black box.
 set -euo pipefail
