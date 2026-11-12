@@ -72,6 +72,13 @@ fn fatal(msg: impl std::fmt::Display) -> i32 {
     128
 }
 
+fn print_fatal(lines: &[String]) -> i32 {
+    for l in lines {
+        eprintln!("{l}");
+    }
+    128
+}
+
 fn report(err: &Error) -> i32 {
     for (level, msg) in err.report() {
         eprintln!("{} {msg}", level.prefix());
@@ -150,6 +157,7 @@ pub fn config(args: &[String]) -> i32 {
             return fatal(messages::not_a_repository_fs(&dir.display().to_string()));
         }
         Err(SetupError::Format { reason, .. }) => return fatal(reason),
+        Err(SetupError::Fatal(lines)) => return print_fatal(&lines),
     };
     let Some(op) = args.first() else {
         eprintln!("{}", messages::CONFIG_NO_COMMAND);
@@ -352,6 +360,7 @@ fn read_early_config(key: &str) -> i32 {
     let repo = match repo::discover(false) {
         Ok(r) => Some(r),
         Err(SetupError::NotFound | SetupError::FilesystemBoundary(_)) => None,
+        Err(SetupError::Fatal(lines)) => return print_fatal(&lines),
         Err(SetupError::Format { git_dir, reason }) => {
             eprintln!(
                 "warning: {}",

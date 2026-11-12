@@ -140,10 +140,19 @@ pub fn repo_version(max: i64, found: i64) -> String {
 
 /// Unknown repository extensions.
 pub fn unknown_extensions(names: &[String]) -> String {
-    let mut s = String::from("unknown repository extension found:");
+    let mut s = String::from(if names.len() == 1 {
+        "unknown repository extension found:"
+    } else {
+        "unknown repository extensions found:"
+    });
     for n in names {
         s.push_str("\n\t");
         s.push_str(n);
     }
     s
+}
+
+/// A syntactically fine entry with an unusable value, after the `error:`.
+pub fn bad_config_line(line: usize, file: &std::path::Path) -> String {
+    format!("bad config line {line} in file {}", file.display())
 }

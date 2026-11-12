@@ -310,8 +310,35 @@ fn repository_format() {
         "v1",
         "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n[a]\n\tb = v1\n",
     );
-    let mut fx = repo(fx, "syntax", "[core]\n\trepositoryformatversion = 0\n[\n");
-    for dir in ["new", "ext", "v1", "syntax"] {
+    fx = repo(fx, "syntax", "[core]\n\trepositoryformatversion = 0\n[\n");
+    fx = repo(
+        fx,
+        "word",
+        "[core]\n\trepositoryformatversion = some\n[a]\n\tb = w\n",
+    );
+    fx = repo(
+        fx,
+        "novalue",
+        "[core]\n\trepositoryformatversion\n[a]\n\tb = w\n",
+    );
+    fx = repo(
+        fx,
+        "hash",
+        "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = md5\n",
+    );
+    fx = repo(
+        fx,
+        "sha256",
+        "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n[a]\n\tb = s\n",
+    );
+    let mut fx = repo(
+        fx,
+        "two",
+        "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tone = 1\n\ttwo = 2\n",
+    );
+    for dir in [
+        "new", "ext", "v1", "syntax", "word", "novalue", "hash", "sha256", "two",
+    ] {
         for args in [
             &["config", "read_early_config", "a.b"][..],
             &["config", "get_value", "a.b"],

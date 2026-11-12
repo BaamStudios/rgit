@@ -12,12 +12,15 @@
 use std::path::{Path, PathBuf};
 
 use bstr::{BString, ByteSlice};
-use rgit_config::{Origin, Scope, parse_bytes};
+use rgit_config::{IntWidth, Origin, Scope, parse_bytes};
 
 use crate::messages;
 
 /// Highest repository format version understood.
 const MAX_FORMAT_VERSION: i64 = 1;
+
+/// Valid values of `extensions.objectFormat`.
+const HASH_NAMES: &[&str] = &["sha1", "sha256"];
 
 /// Repository extensions understood with format version 1.
 const KNOWN_EXTENSIONS: &[&str] = &[
@@ -68,6 +71,9 @@ pub enum SetupError {
     /// No repository up to a file system boundary (the directory on the
     /// other file system is given).
     FilesystemBoundary(PathBuf),
+    /// The repository configuration is broken: the lines to print before
+    /// exiting with 128, also during early configuration reading.
+    Fatal(Vec<String>),
     /// A repository with a format this code does not understand.
     Format {
         /// The git directory as shown in messages.
@@ -137,21 +143,27 @@ fn ceilings() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The repository format check.
+/// The repository format check. `display` is the git directory as shown
+/// in messages.
 fn check_format(git_dir: &Path, display: &Path) -> Result<(), SetupError> {
-    let config = git_dir.join("config");
-    let Ok(data) = std::fs::read(&config) else {
+    let Ok(data) = std::fs::read(git_dir.join("config")) else {
         return Ok(());
+    };
+    let shown_config = if display.as_os_str().is_empty() || display == Path::new(".") {
+        PathBuf::from("config")
+    } else {
+        display.join("config")
     };
     // Syntax errors are reported when the configuration is read.
-    let Ok(set) = parse_bytes(&data, Origin::File(config), Scope::Local) else {
+    let Ok(set) = parse_bytes(&data, Origin::File(shown_config.clone()), Scope::Local) else {
         return Ok(());
     };
-    let version = set
-        .int("core.repositoryformatversion")
-        .ok()
-        .flatten()
-        .unwrap_or(0);
+    let version = match set.get("core.repositoryformatversion") {
+        Some(e) => e
+            .int(IntWidth::I32)
+            .map_err(|err| SetupError::Fatal(vec![messages::fatal(err)]))?,
+        None => 0,
+    };
     let fail = |reason: String| {
         Err(SetupError::Format {
             git_dir: display.to_path_buf(),
@@ -161,19 +173,34 @@ fn check_format(git_dir: &Path, display: &Path) -> Result<(), SetupError> {
     if version > MAX_FORMAT_VERSION {
         return fail(messages::repo_version(MAX_FORMAT_VERSION, version));
     }
-    if version >= 1 {
-        let unknown: Vec<String> = set
-            .entries()
-            .iter()
-            .filter_map(|e| {
-                let rest = e.name.strip_prefix(b"extensions.")?;
-                let name = rest.to_str_lossy().into_owned();
-                (!KNOWN_EXTENSIONS.contains(&name.as_str())).then_some(name)
-            })
-            .collect();
-        if !unknown.is_empty() {
-            return fail(messages::unknown_extensions(&unknown));
+    if version < 1 {
+        return Ok(());
+    }
+    let mut unknown: Vec<String> = Vec::new();
+    for e in set.entries() {
+        let Some(rest) = e.name.strip_prefix(b"extensions.") else {
+            continue;
+        };
+        let name = rest.to_str_lossy().into_owned();
+        if !KNOWN_EXTENSIONS.contains(&name.as_str()) {
+            unknown.push(name);
+            continue;
         }
+        if matches!(name.as_str(), "objectformat" | "compatobjectformat") {
+            let value = e.value.clone().unwrap_or_default();
+            if !HASH_NAMES.contains(&value.to_str_lossy().as_ref()) {
+                return Err(SetupError::Fatal(vec![
+                    format!(
+                        "error: {}",
+                        messages::invalid_value(&e.name.to_str_lossy(), &value.to_str_lossy())
+                    ),
+                    messages::fatal(messages::bad_config_line(e.line, &shown_config)),
+                ]));
+            }
+        }
+    }
+    if !unknown.is_empty() {
+        return fail(messages::unknown_extensions(&unknown));
     }
     Ok(())
 }
