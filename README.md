@@ -26,7 +26,7 @@ written from git's public documentation and from the observable behaviour of the
 |---|---|
 | `crates/rgit-cli/` | The `rgit` binary (command-line front end) |
 | `crates/` | Library crates, one per subsystem (objects, packs, refs, index, protocol, ...) |
-| `conformance/` | Tests ported from git's `t/` suite (GPL-2.0, separate work, not part of the binary) |
+| `conformance.lock` | Pinned commit of the conformance suite ([rgit-conformance](https://github.com/BaamStudios/rgit-conformance), GPL-2.0, separate repository) |
 | `docs/` | Design notes and architecture decision records |
 | `scripts/fetch-upstream.sh` | Fetches the reference git version into `upstream/git` (not committed) |
 | `upstream/git/` | Local copy of upstream git: documentation, reference binary, test suite |
@@ -51,11 +51,12 @@ scripts/fetch-upstream.sh   # clones git v2.56.1 into upstream/git
 1. Unit tests per crate.
 2. Differential tests: run the same operation with `git` and `rgit`, compare
    repository state and output.
-3. Conformance: git's own test suite (`t/`) is ported into `conformance/`. Every
+3. Conformance: git's own test suite (`t/`) is ported into the separate repository
+   [rgit-conformance](https://github.com/BaamStudios/rgit-conformance) (GPL-2.0). Every
    ported test passes against the reference `git` first and is then the
    acceptance check for rgit.
 
 ## License
 
-rgit itself: MIT, see [LICENSE](LICENSE).
-The ported tests in `conformance/`: GPL-2.0, see [conformance/LICENSE](conformance/LICENSE).
+MIT, see [LICENSE](LICENSE). This repository contains no GPL code; the ported
+git tests live in [rgit-conformance](https://github.com/BaamStudios/rgit-conformance) (GPL-2.0).

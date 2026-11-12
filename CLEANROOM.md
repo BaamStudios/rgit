@@ -9,7 +9,7 @@ free of GPL-derived code, every contributor (human or AI agent) follows these ru
 |---|---|
 | `upstream/git/Documentation/**` (man pages, `gitformat-*`, `gitprotocol-*`, `technical/*`) | Read freely. These describe formats, protocols and behaviour. |
 | The `git` binary | Run it, compare output, use it as the reference implementation in tests. |
-| `upstream/git/t/**` (the git test suite) | Port tests into `conformance/` (GPL-2.0, separate work, never linked into rgit). Run upstream scripts as a black box against `rgit`. Read tests to understand **expected behaviour**. |
+| `upstream/git/t/**` (the git test suite) | Port tests into the `rgit-conformance` repository (GPL-2.0, separate work, never linked into rgit). Run upstream scripts as a black box against `rgit`. Read tests to understand **expected behaviour**. |
 | Public specs and papers (RFCs, zlib/DEFLATE, SHA-1/SHA-256, diff algorithm papers) | Read freely. |
 | Permissively licensed crates (MIT/Apache/BSD/Zlib) | Use as dependencies. |
 | **gitoxide** (`gix-*`, MIT OR Apache-2.0, <https://github.com/GitoxideLabs/gitoxide>) | Read, port and adapt freely. Ported code keeps a header naming the gitoxide source file, and gitoxide's copyright notice is listed in `THIRD-PARTY-NOTICES.md`. |
@@ -19,7 +19,8 @@ free of GPL-derived code, every contributor (human or AI agent) follows these ru
 - Reading or translating git's implementation files: `*.c`, `*.h`, `src/*.rs`,
   `builtin/`, `compat/`, `xdiff/`, `reftable/`, `refs/` etc.
 - Copying text from GPL sources into rgit's own code, comments, docs or crate tests.
-  The only place for GPL-derived material is `conformance/`.
+  This repository contains no GPL-derived material at all; it lives only in the
+  separate `rgit-conformance` repository (https://github.com/BaamStudios/rgit-conformance).
 - Depending on GPL-licensed crates or linking libgit2 statically in a way that
   changes the license of rgit.
 
@@ -28,13 +29,13 @@ free of GPL-derived code, every contributor (human or AI agent) follows these ru
 | Work | Reads | Writes to | License |
 |---|---|---|---|
 | **Implementation** (rgit itself) | Documentation, git binary behaviour, ported conformance tests | `crates/`, `docs/` | MIT |
-| **Test porting** | `upstream/git/t/*.sh`, `t/lib-*.sh`, `t/test-lib*.sh`, `t/unit-tests/*` | `conformance/` only | GPL-2.0 |
+| **Test porting** | `upstream/git/t/*.sh`, `t/lib-*.sh`, `t/test-lib*.sh`, `t/unit-tests/*` | the `rgit-conformance` repository only | GPL-2.0 |
 
 Implementation agents may run and read the conformance tests (they describe
 behaviour), but must never read git's C/Rust implementation.
 
 `t/unit-tests/*.c` are C unit tests. Only **test porting** may read them, to port
-their cases into `conformance/unit/` (Rust, GPL-2.0). Implementation work never
+their cases into `rgit-conformance/unit/` (Rust, GPL-2.0). Implementation work never
 reads them directly, only the ported tests.
 
 ## How agents work

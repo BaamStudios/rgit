@@ -2,12 +2,17 @@
 
 Status: accepted (2026-11-12) · Issue #2
 
+Amended 2026-11-12: the ported tests live in the separate repository
+[BaamStudios/rgit-conformance](https://github.com/BaamStudios/rgit-conformance)
+(GPL-2.0). rgit pins the expected commit in `conformance.lock`; rgit's CI checks
+out exactly that commit. Paths below are relative to that repository.
+
 ## Decision
 
 git's shell test suite is the acceptance test for rgit.
 
 - Selected scripts from `upstream/git/t/` are copied **unchanged** into
-  `conformance/t/`, together with `test-lib.sh`, `test-lib-functions.sh` and the
+  `rgit-conformance/t/`, together with `test-lib.sh`, `test-lib-functions.sh` and the
   `lib-*.sh` files they need. Changes are made only where unavoidable and are
   marked with a `# rgit:` comment.
 - Every script is run twice:
@@ -21,8 +26,8 @@ git's shell test suite is the acceptance test for rgit.
   itself. Subcommands that exercise git internals directly are replaced over
   time by small Rust helpers (#6).
 - The harness (#5) records pass/fail per test case and generates
-  `conformance/STATUS.md`. CI fails when a previously passing case fails.
-- C unit tests in `t/unit-tests/` are ported to Rust under `conformance/unit/`
+  `rgit-conformance/STATUS.md`. CI fails when a previously passing case fails.
+- C unit tests in `t/unit-tests/` are ported to Rust under `rgit-conformance/unit/`
   (#8).
 
 ## Why
@@ -33,5 +38,6 @@ versions by copying newer scripts.
 
 ## Licensing
 
-Everything under `conformance/` is GPL-2.0 (derived from git). It is never
-linked into rgit. See CLEANROOM.md.
+The rgit-conformance repository is GPL-2.0 (derived from git). It only runs
+the rgit binary and is never linked into rgit. The rgit repository itself stays
+100 % MIT. See CLEANROOM.md.
