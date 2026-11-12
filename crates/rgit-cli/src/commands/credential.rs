@@ -17,9 +17,10 @@ use crate::prelude::*;
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let action = match argv.get(1).map(String::as_str) {
-        Some("-h") if argv.len() == 2 => {
+        // Like every builtin in git 2.56: help on stdout, exit 0.
+        Some("-h" | "--help-all") if argv.len() == 2 => {
             println!("usage: {CREDENTIAL_USAGE}");
-            return Ok(129);
+            return Ok(0);
         }
         Some(a @ ("fill" | "approve" | "reject" | "capability")) if argv.len() == 2 => a,
         _ => {

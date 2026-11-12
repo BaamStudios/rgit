@@ -17,7 +17,7 @@ use crate::repo::{self, Mode};
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Like git, `-h` works outside a repository; everything else needs one.
-    let help_only = argv.len() == 2 && argv[1] == "-h";
+    let help_only = argv.len() == 2 && (argv[1] == "-h" || argv[1] == "--help-all");
     let setup = if help_only {
         None
     } else {
