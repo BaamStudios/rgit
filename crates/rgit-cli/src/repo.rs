@@ -75,6 +75,45 @@ pub fn setup_with(
     Ok(setup)
 }
 
+/// The configuration of the repository set up by [`setup`] (system,
+/// global, local, worktree and command line). Errors are fatal like in git.
+pub fn load_config(ctx: &Context, setup: &Setup) -> Result<rgit_config::ConfigSet, Die> {
+    use rgit_config::sources::{self, RepoConfig, ScopeFilter};
+    use rgit_config::{ConfigSet, LoadOptions, StaticRepoFacts};
+
+    let env = SystemEnv::default();
+    let git_dir = setup.absolute_git_dir();
+    let branch = std::fs::read(git_dir.join("HEAD")).ok().and_then(|h| {
+        h.strip_prefix(b"ref: refs/heads/")
+            .map(|r| r.trim_ascii_end().into())
+    });
+    let facts = StaticRepoFacts {
+        git_dir: Some(git_dir.clone()),
+        worktree: setup.work_tree.as_ref().map(|w| setup.cwd.join(w)),
+        branch,
+    };
+    let opts = LoadOptions {
+        env: &env,
+        repo: Some(&facts),
+        includes: true,
+    };
+    let repo = RepoConfig {
+        common_dir: setup.absolute_common_dir(),
+        git_dir,
+        worktree_config: None,
+    };
+    let mut set = ConfigSet::new();
+    sources::load_standard(
+        opts,
+        Some(&repo),
+        &command_line(ctx),
+        ScopeFilter::default(),
+        &mut set,
+    )
+    .map_err(|e| Die::Fatal(e.to_string()))?;
+    Ok(set)
+}
+
 /// Print a setup error like git (all lines, last one `fatal:`) and exit 128.
 pub fn die(e: Error) -> Die {
     let mut err = std::io::stderr();

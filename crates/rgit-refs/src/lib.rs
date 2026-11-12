@@ -8,7 +8,9 @@
 //!   `packed-refs`; reftable (#31) is a second implementation.
 //! * [`Transaction`]: queue [`RefUpdate`]s, prepare (lock and check), commit
 //!   or abort. Either every update is applied or none.
-//! * [`RefHooks`]: hook points for reflog writes (#30), the
+//! * [`reflog`]: reflog files, `@{n}` / `@{date}` / `@{-n}` lookup, and
+//!   [`reflog::ReflogWriter`], the [`RefHooks`] that log a transaction.
+//! * [`RefHooks`]: hook points for reflog writes, the
 //!   `reference-transaction` hook (#76) and object checks (object database).
 //!
 //! The on-disk results (loose files, `packed-refs`, removed directories) are
@@ -36,6 +38,7 @@ pub mod loose;
 pub mod messages;
 pub mod name;
 pub mod packed;
+pub mod reflog;
 mod store;
 mod target;
 
