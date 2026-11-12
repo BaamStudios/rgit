@@ -9,6 +9,7 @@ mod context;
 mod global;
 mod history;
 mod messages;
+mod objects;
 mod repo;
 mod revisions;
 

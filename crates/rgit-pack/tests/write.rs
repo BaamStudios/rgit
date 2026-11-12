@@ -530,7 +530,7 @@ fn order_groups_types() {
         exclude: false,
     }];
     let ordered = pack_order(&enumerate(&source, kind, &tips).unwrap());
-    let kinds: Vec<&str> = ordered.iter().map(|o| o.kind.as_str()).collect();
+    let kinds: Vec<&str> = ordered.iter().map(|o| o.kind.name()).collect();
     let first_tree = kinds.iter().position(|k| *k == "tree").unwrap();
     let first_blob = kinds.iter().position(|k| *k == "blob").unwrap();
     assert!(

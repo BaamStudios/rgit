@@ -16,6 +16,9 @@
 //!   `bad`; `approxidate <date>...` the approximate date in UTC;
 //!   `timestamp <date>...` its seconds.
 //! - `is64bit`, `time_t-is64bit` exit 0.
+//! - `getnanos [<start>]` prints the current time in seconds with six
+//!   decimals, minus `<start>` (a decimal number read like C `strtod`, 0
+//!   when it does not parse), for measuring durations (t5584).
 //! - Anything else prints the usage and exits 129.
 
 use std::fmt::Write as _;
@@ -216,6 +219,28 @@ fn approx(args: &[String], ctx: &DateContext, seconds: bool) -> i32 {
     finish(out)
 }
 
+/// The longest leading decimal number of `s` (like `strtod`), else 0.
+fn leading_f64(s: &str) -> f64 {
+    let s = s.trim_start();
+    let end = s
+        .find(|c: char| !matches!(c, '0'..='9' | '+' | '-' | '.' | 'e' | 'E'))
+        .unwrap_or(s.len());
+    (1..=end)
+        .rev()
+        .find_map(|n| s[..n].parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+fn getnanos(args: &[String]) -> i32 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let start = args.first().map_or(0.0, |a| leading_f64(a));
+    let secs = now as f64 / 1e9 - start;
+    finish(format!("{secs:.6}\n"))
+}
+
 pub fn date(args: &[String]) -> i32 {
     let Some(action) = args.first() else {
         return usage();
@@ -229,6 +254,7 @@ pub fn date(args: &[String]) -> i32 {
         "approxidate" => approx(rest, &ctx, false),
         "timestamp" => approx(rest, &ctx, true),
         "is64bit" | "time_t-is64bit" => 0,
+        "getnanos" => getnanos(rest),
         a => match a.strip_prefix("show:") {
             Some(fmt) => show(fmt, rest, &ctx),
             None => usage(),
@@ -239,6 +265,14 @@ pub fn date(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strtod_prefix() {
+        assert_eq!(leading_f64("1.5 x"), 1.5);
+        assert_eq!(leading_f64("abc"), 0.0);
+        assert_eq!(leading_f64("12e"), 12.0);
+        assert_eq!(leading_f64(""), 0.0);
+    }
 
     #[test]
     fn c_number_parsing() {

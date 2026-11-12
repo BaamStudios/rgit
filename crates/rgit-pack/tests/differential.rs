@@ -353,7 +353,7 @@ fn object_info_and_delta_base_match_batch_check() {
             .offset_at(pack.index().lookup(&id).unwrap())
             .unwrap();
         let (kind, size) = pack.object_info(offset).unwrap();
-        assert_eq!(kind.as_str(), f[1]);
+        assert_eq!(kind.name(), f[1]);
         assert_eq!(size.to_string(), f[2]);
         let base = pack.delta_base(offset).unwrap();
         let null = HashKind::Sha1.null();
@@ -588,7 +588,7 @@ fn deep_chain(revisions: usize, reads: usize) {
                     .wrapping_add(1442695040888963407);
                 let i = (state >> 33) as usize % ids.len();
                 let obj = pack.read(&ids[i], &mut cache).unwrap().unwrap();
-                let h = rgit_hash::hash_object(HashKind::Sha1, obj.kind.as_str(), &obj.data);
+                let h = rgit_hash::hash_object(HashKind::Sha1, obj.kind.name(), &obj.data);
                 assert_eq!(h.unwrap(), ids[i]);
             }
         })
