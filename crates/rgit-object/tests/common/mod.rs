@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-//! Helpers for running the reference `git` binary in tests.
-//!
-//! To be replaced by `rgit-difftest` (#190) once that is on `main`.
+//! Helpers for running the reference `git` binary (located by
+//! `rgit-difftest`: `$RGIT_REFERENCE_GIT`, `upstream/git/git`, `PATH`) with
+//! stdin and a clean environment.
 
 #![allow(dead_code)]
 
@@ -13,16 +13,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rgit_hash::HashKind;
 
+fn reference() -> Option<PathBuf> {
+    static REF: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    REF.get_or_init(rgit_difftest::env::reference_git).clone()
+}
+
 pub fn git_available() -> bool {
-    Command::new("git")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
+    reference().is_some()
 }
 
 /// A `git` command with a clean environment.
 pub fn git_cmd(dir: &Path) -> Command {
-    let mut c = Command::new("git");
+    let mut c = Command::new(reference().expect("reference git"));
     c.current_dir(dir)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")

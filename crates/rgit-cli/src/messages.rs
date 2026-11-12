@@ -2,8 +2,10 @@
 //! User-visible messages of the front end, in one place for review
 //! (see CLEANROOM.md, "User-visible messages").
 
+pub mod check_ignore;
 pub mod config;
 pub mod init;
+pub mod var;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
 /// tests compare it).
@@ -92,11 +94,6 @@ pub const SYMBOLIC_REF_HELP_REASON: &str = "reason of the update";
 
 pub fn not_a_symbolic_ref(name: &str) -> String {
     format!("ref {name} is not a symbolic ref")
-}
-
-/// rgit wording: a part of symbolic-ref that is not implemented yet.
-pub fn symbolic_ref_not_supported(what: &str) -> String {
-    format!("rgit symbolic-ref: {what} is not supported yet")
 }
 
 /// rgit wording: a rev-parse argument that is not implemented yet.

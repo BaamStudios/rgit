@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: MIT
-//! `git symbolic-ref` (Documentation/git-symbolic-ref.adoc), reading only:
-//! creating and deleting symbolic refs needs the refs backend (#29).
+//! `git symbolic-ref` (Documentation/git-symbolic-ref.adoc). Creating and
+//! deleting go through `rgit_refs` transactions; reflog entries (`-m`) are
+//! written once the reflog exists (#30).
 
 use std::path::{Path, PathBuf};
+
+use rgit_refs::files::FilesStore;
+use rgit_refs::messages as refs_msg;
+use rgit_refs::name::{RefNameFlags, is_valid_refname};
+use rgit_refs::{NoHooks, RefUpdate, Transaction};
 
 use crate::messages as msg;
 use crate::prelude::*;
@@ -32,11 +38,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if args.len() != 1 {
             return Err(parser.usage_error().into());
         }
-        return Err(Die::Fatal(msg::symbolic_ref_not_supported("deleting symbolic refs")));
+        let setup = repo::setup(ctx, Mode::Required)?;
+        return delete_symref(&setup, &args[0]);
     }
     match args.len() {
         1 => {}
-        2 => return Err(Die::Fatal(msg::symbolic_ref_not_supported("creating symbolic refs"))),
+        2 => {
+            let setup = repo::setup(ctx, Mode::Required)?;
+            let reason = reason.borrow().clone().unwrap_or_default();
+            return create_symref(&setup, &args[0], &args[1], &reason);
+        }
         _ => return Err(parser.usage_error().into()),
     }
     let setup = repo::setup(ctx, Mode::Required)?;
@@ -64,6 +75,57 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         None if quiet.get() => Ok(1),
         None => Err(Die::Fatal(msg::not_a_symbolic_ref(name))),
     }
+}
+
+/// The reference store holding `name` (per-worktree refs, #104, are only
+/// told apart by directory).
+fn store_for(setup: &rgit_repo::Setup, name: &str) -> FilesStore {
+    let dir = if per_worktree(name) {
+        setup.absolute_git_dir()
+    } else {
+        setup.cwd.join(&setup.common_dir)
+    };
+    FilesStore::new(dir, setup.format.object_format)
+}
+
+/// Runs one update; errors are printed as `error: ...` with exit code 1.
+fn apply(store: &FilesStore, update: RefUpdate) -> CmdResult {
+    let mut tx = Transaction::new(store);
+    tx.push(update)
+        .and_then(|()| tx.commit(&mut NoHooks))
+        .map(|()| 0)
+        .map_err(|e| Die::Error(e.to_string(), 1))
+}
+
+/// `symbolic-ref <name> <target>`.
+fn create_symref(setup: &rgit_repo::Setup, name: &str, target: &str, reason: &str) -> CmdResult {
+    if name == "HEAD" && !target.starts_with("refs/") {
+        return Err(Die::Fatal(refs_msg::HEAD_OUTSIDE_REFS.to_owned()));
+    }
+    if !is_valid_refname(target.as_bytes(), RefNameFlags::ONELEVEL) {
+        return Err(Die::Fatal(refs_msg::invalid_symref_target(name, target)));
+    }
+    let store = store_for(setup, name);
+    let update = RefUpdate::symref_update(name, target, None)
+        .no_deref(true)
+        .skip_name_check(true)
+        .message(reason);
+    apply(&store, update)
+}
+
+/// `symbolic-ref --delete <name>`.
+fn delete_symref(setup: &rgit_repo::Setup, name: &str) -> CmdResult {
+    if read_symref(setup, name).is_none() {
+        return Err(Die::Fatal(refs_msg::cannot_delete_not_symref(name)));
+    }
+    if name == "HEAD" {
+        return Err(Die::Fatal(refs_msg::DELETING_HEAD.to_owned()));
+    }
+    let store = store_for(setup, name);
+    let update = RefUpdate::delete(name, setup.format.object_format, None)
+        .no_deref(true)
+        .skip_name_check(true);
+    apply(&store, update)
 }
 
 /// Refs that live in the work tree's own git directory rather than the
