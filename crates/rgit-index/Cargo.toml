@@ -1,0 +1,16 @@
+[package]
+name = "rgit-index"
+description = "Index (staging area) file format for rgit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-fs = { path = "../rgit-fs" }
+rgit-hash = { path = "../rgit-hash" }
+thiserror = "2.0.18"
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }

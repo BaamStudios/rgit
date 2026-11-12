@@ -362,6 +362,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-index"
+version = "0.1.0"
+dependencies = [
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-options"
 version = "0.1.0"
 
