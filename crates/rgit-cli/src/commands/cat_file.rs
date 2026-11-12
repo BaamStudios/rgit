@@ -11,7 +11,7 @@ use rgit_hash::ObjectId;
 use rgit_object::{ObjectKind, TreeIter};
 
 use crate::messages::cat_file as msg;
-use crate::objects::Repo;
+use crate::repo_objects::Repo;
 use crate::prelude::*;
 use crate::repo::{self, Mode};
 use crate::revision::{Failure, Resolved, Resolver, SymlinkEnd};
@@ -347,7 +347,7 @@ fn show_typed(repo: &mut Repo, type_name: &str, name: &str) -> CmdResult {
             Err(e) => {
                 // git looks the object up three times before it gives up
                 // on a damaged loose copy, reporting each attempt.
-                if let Some(crate::objects::Location::Loose(path)) = repo.locate(&real) {
+                if let Some(crate::repo_objects::Location::Loose(path)) = repo.locate(&real) {
                     for _ in 0..3 {
                         report(&e);
                     }
@@ -552,7 +552,7 @@ fn batch_stdin(repo: &mut Repo, opts: &BatchOptions) -> CmdResult {
     }
     if opts.kind == Batch::Command
         && opts.buffer
-        && crate::objects::env_bool("GIT_TEST_CAT_FILE_NO_FLUSH_ON_EXIT", false)
+        && crate::repo_objects::env_bool("GIT_TEST_CAT_FILE_NO_FLUSH_ON_EXIT", false)
     {
         out.discard();
     } else {

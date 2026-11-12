@@ -11,6 +11,7 @@ pub mod mktag;
 pub mod mktree;
 pub mod objects;
 pub mod pack_objects;
+pub mod reflog;
 pub mod var;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and

@@ -7,7 +7,7 @@ use std::io::{BufRead, Write};
 use rgit_object::{EntryMode, ObjectKind, Tree, TreeEntry};
 
 use crate::messages::mktree as msg;
-use crate::objects::Repo;
+use crate::repo_objects::Repo;
 use crate::prelude::*;
 use crate::repo::{self, Mode};
 

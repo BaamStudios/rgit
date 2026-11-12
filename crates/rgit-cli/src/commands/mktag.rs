@@ -10,7 +10,7 @@ use rgit_object::fsck::{self, Control, MsgId, Severity};
 use rgit_object::{ObjectKind, Tag};
 
 use crate::messages::mktag as msg;
-use crate::objects::Repo;
+use crate::repo_objects::Repo;
 use crate::prelude::*;
 use crate::repo::{self, Mode};
 

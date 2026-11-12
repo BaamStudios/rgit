@@ -15,7 +15,7 @@ use rgit_object::{Commit, ObjectKind, Tag, TreeIter};
 use rgit_odb::PrefixMatch;
 
 use crate::messages::objects as msg;
-use crate::objects::Repo;
+use crate::repo_objects::Repo;
 
 /// An object name resolved to an id.
 #[derive(Debug, Clone)]

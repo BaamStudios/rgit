@@ -12,6 +12,7 @@ mod objects;
 mod quote;
 mod refs;
 mod repo;
+mod repo_objects;
 mod revision;
 mod revisions;
 

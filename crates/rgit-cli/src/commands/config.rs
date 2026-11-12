@@ -915,10 +915,18 @@ impl<'o> Cmd<'o> {
             Location::Default => return Ok(None),
             Location::File(f) => (vec![PathBuf::from(f)], Scope::Command),
             Location::Global => {
-                if self.env.var("GIT_CONFIG_GLOBAL").is_none() {
-                    self.home()?;
+                if self.env.var("GIT_CONFIG_GLOBAL").is_some() {
+                    return Ok(Some((sources::global_config_paths(&self.env), Scope::Global)));
                 }
-                (sources::global_config_paths(&self.env), Scope::Global)
+                // git reads one global file here, the one it would write:
+                // ~/.gitconfig, or the XDG file when only that one exists.
+                let user = self.home()?.join(".gitconfig");
+                let paths = sources::global_config_paths(&self.env);
+                let file = match paths.first() {
+                    Some(xdg) if *xdg != user && xdg.exists() && !user.exists() => xdg.clone(),
+                    _ => user,
+                };
+                (vec![file], Scope::Global)
             }
             Location::System => (
                 vec![

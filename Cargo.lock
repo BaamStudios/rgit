@@ -678,9 +678,11 @@ dependencies = [
 name = "rgit-refs"
 version = "0.1.0"
 dependencies = [
+ "rgit-date",
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",
+ "tempfile",
  "thiserror",
 ]
 
