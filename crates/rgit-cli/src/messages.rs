@@ -7,6 +7,7 @@ pub mod check_ignore;
 pub mod config;
 pub mod hash_object;
 pub mod init;
+pub mod ls_tree;
 pub mod mktag;
 pub mod mktree;
 pub mod objects;
