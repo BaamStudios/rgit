@@ -16,6 +16,7 @@
 //! - [`index_pack`]: index a pack stream (`git index-pack`): object ids,
 //!   parallel delta resolution, thin pack completion, `.idx` and `.rev`
 //!   output.
+//! - [`write`]: writing packs (`pack-objects` without delta search).
 //!
 //! Objects come back as [`Object`]: the type and the raw content bytes,
 //! without parsing. SHA-1 and SHA-256 repositories are supported; the hash
@@ -35,6 +36,7 @@ pub mod messages;
 mod mmap;
 mod pack;
 mod store;
+pub mod write;
 
 pub use cache::{DEFAULT_DELTA_BASE_CACHE_LIMIT, DeltaBaseCache};
 pub use data::{EntryHeader, EntryKind, PACK_HEADER_LEN, PackData};
