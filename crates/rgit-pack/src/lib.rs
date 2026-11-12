@@ -15,8 +15,9 @@
 //! - [`apply_delta`]: the delta format on its own.
 //! - [`write`]: writing packs (`pack-objects` without delta search).
 //!
-//! Objects come back as [`Object`]: the type and the raw content bytes,
-//! without parsing. SHA-1 and SHA-256 repositories are supported; the hash
+//! Objects come back as [`Object`] (= [`rgit_object::RawObject`]): the
+//! type ([`rgit_object::ObjectKind`]) and the raw content bytes, without
+//! parsing. SHA-1 and SHA-256 repositories are supported; the hash
 //! algorithm is passed in, because pack files do not record it.
 //!
 //! Files are memory mapped (the only `unsafe` code, in `mmap.rs`). Every
@@ -42,55 +43,12 @@ pub use index::PackIndex;
 pub use pack::{ExternalBase, Pack};
 pub use store::{PackSet, Report};
 
-/// The type of a stored object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ObjectKind {
-    /// A commit (pack type 1).
-    Commit,
-    /// A tree (pack type 2).
-    Tree,
-    /// A blob (pack type 3).
-    Blob,
-    /// An annotated tag (pack type 4).
-    Tag,
-}
+/// The type of a stored object (the same type as everywhere in rgit).
+pub use rgit_object::ObjectKind;
 
-impl ObjectKind {
-    /// The type name used in object headers and by `git cat-file`.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            ObjectKind::Commit => "commit",
-            ObjectKind::Tree => "tree",
-            ObjectKind::Blob => "blob",
-            ObjectKind::Tag => "tag",
-        }
-    }
-
-    /// The type number in pack entry headers.
-    pub const fn pack_type(self) -> u8 {
-        match self {
-            ObjectKind::Commit => 1,
-            ObjectKind::Tree => 2,
-            ObjectKind::Blob => 3,
-            ObjectKind::Tag => 4,
-        }
-    }
-}
-
-impl std::fmt::Display for ObjectKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// An object read from a pack: its type and content.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Object {
-    /// The type.
-    pub kind: ObjectKind,
-    /// The content (without the `<type> <size>\0` header).
-    pub data: Vec<u8>,
-}
+/// An object read from a pack: its type and content. This is
+/// [`rgit_object::RawObject`], the form every object store hands out.
+pub type Object = rgit_object::RawObject;
 
 #[cfg(test)]
 mod tests {

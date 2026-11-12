@@ -563,6 +563,8 @@ dependencies = [
  "rgit-fs",
  "rgit-hash",
  "rgit-object",
+ "rgit-pack",
+ "rgit-repo",
  "thiserror",
 ]
 

@@ -16,6 +16,8 @@
 //! - [`Commit`], [`Tag`]: header block ([`HeaderBlock`]) plus message, with
 //!   typed accessors; [`Signature`] / [`SignatureRef`] for identities.
 //! - [`Object`], [`Blob`]: any object.
+//! - [`RawObject`]: an object as stored (type + unparsed bytes), the form
+//!   object stores (loose, packs) hand out.
 //! - [`fsck`]: the strict validator (git's fsck message ids), separate from
 //!   the tolerant parsers.
 //!
@@ -44,6 +46,7 @@ mod ident;
 mod kind;
 pub mod messages;
 mod object;
+mod raw;
 mod tag;
 mod tree;
 
@@ -54,6 +57,7 @@ pub use headers::{Header, HeaderBlock};
 pub use ident::{Signature, SignatureRef, Time};
 pub use kind::ObjectKind;
 pub use object::{Blob, Object};
+pub use raw::RawObject;
 pub use tag::{SIGNATURE_BEGIN_MARKERS, Tag, split_signature};
 pub use tree::{EntryMode, Tree, TreeEntry, TreeEntryRef, TreeIter, entry_cmp};
 
