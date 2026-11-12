@@ -544,6 +544,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-diff"
+version = "0.1.0"
+dependencies = [
+ "rgit-hash",
+]
+
+[[package]]
 name = "rgit-difftest"
 version = "0.1.0"
 dependencies = [
@@ -557,13 +564,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "thiserror",
-]
-
-[[package]]
-name = "rgit-diff"
-version = "0.1.0"
-dependencies = [
- "rgit-hash",
 ]
 
 [[package]]
@@ -735,8 +735,11 @@ dependencies = [
  "rgit-date",
  "rgit-difftest",
  "rgit-hash",
+ "rgit-ident",
  "rgit-options",
  "rgit-pathspec",
+ "rgit-refs",
+ "rgit-repo",
 ]
 
 [[package]]

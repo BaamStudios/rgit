@@ -54,8 +54,9 @@ pub struct RefUpdate {
     pub message: String,
     /// Create the reflog even if `core.logAllRefUpdates` would not.
     pub create_reflog: bool,
-    /// Do not check `name` against the reference name rules (`git
-    /// symbolic-ref` writes any name it is given).
+    /// Do not check `name`, nor a symbolic target, against the reference
+    /// name rules (`git symbolic-ref` writes any name it is given and checks
+    /// the target itself).
     pub skip_name_check: bool,
 }
 
@@ -497,10 +498,11 @@ pub fn check_update_name(update: &RefUpdate) -> Result<(), TransactionError> {
     {
         return Err(TransactionError::BadName(update.name.clone()));
     }
-    if let Some(NewValue::Symbolic(t)) = &update.new {
-        if !is_valid_refname(t.as_bytes(), RefNameFlags::ONELEVEL) {
-            return Err(TransactionError::BadName(t.clone()));
-        }
+    if let Some(NewValue::Symbolic(t)) = &update.new
+        && !update.skip_name_check
+        && !is_valid_refname(t.as_bytes(), RefNameFlags::ONELEVEL)
+    {
+        return Err(TransactionError::BadName(t.clone()));
     }
     Ok(())
 }
