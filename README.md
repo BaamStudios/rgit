@@ -1,22 +1,26 @@
-# rgit
+# bamm
 
-rgit is a native reimplementation of [git](https://git-scm.com/) in Rust: same
+bamm is a native reimplementation of [git](https://git-scm.com/) in Rust: same
 repository format, same wire protocol, same command line. The goal is a drop-in
 `git` replacement, client and server side, that interoperates byte-for-byte with
 existing repositories and hosts (GitHub, Gitea, Forgejo, GitLab).
 
 Status: **planning / early development.** Nothing is usable yet. The roadmap
-lives in the [epics](https://github.com/BaamStudios/rgit/issues?q=label%3Aepic).
+lives in the [epics](https://github.com/BaamStudios/bamm/issues?q=label%3Aepic).
 
-rgit is developed as a **clean-room implementation** under the MIT license. It is
+bamm is developed as a **clean-room implementation** under the MIT license. It is
 written from git's public documentation and from the observable behaviour of the
 `git` binary, never from git's GPL source code. See [CLEANROOM.md](CLEANROOM.md).
+
+bamm is an independent project. It is not affiliated with or endorsed by the Git
+project or Software Freedom Conservancy. "Git" is a trademark of Software Freedom
+Conservancy; it is used here only to describe compatibility.
 
 ## Directory layout
 
 | Path | Contents |
 |---|---|
-| `crates/rgit-cli/` | The `rgit` binary (command-line front end) |
+| `crates/bamm-cli/` | The `bamm` binary (command-line front end) |
 | `crates/` | Library crates, one per subsystem (objects, packs, refs, index, protocol, ...) |
 | `conformance/` | Tests ported from git's `t/` suite (GPL-2.0, separate work, not part of the binary) |
 | `docs/` | Design notes and architecture decision records |
@@ -28,7 +32,7 @@ written from git's public documentation and from the observable behaviour of the
 
 ```sh
 cargo build --release
-./target/release/rgit --version
+./target/release/bamm --version
 ```
 
 To get the reference implementation and its documentation:
@@ -40,13 +44,13 @@ scripts/fetch-upstream.sh   # clones git v2.56.1 into upstream/git
 ## Testing strategy
 
 1. Unit tests per crate.
-2. Differential tests: run the same operation with `git` and `rgit`, compare
+2. Differential tests: run the same operation with `git` and `bamm`, compare
    repository state and output.
 3. Conformance: git's own test suite (`t/`) is ported into `conformance/`. Every
    ported test passes against the reference `git` first and is then the
-   acceptance check for rgit.
+   acceptance check for bamm.
 
 ## License
 
-rgit itself: MIT, see [LICENSE](LICENSE).
+bamm itself: MIT, see [LICENSE](LICENSE).
 The ported tests in `conformance/`: GPL-2.0, see [conformance/LICENSE](conformance/LICENSE).
