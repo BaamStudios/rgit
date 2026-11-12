@@ -573,6 +573,7 @@ dependencies = [
 name = "rgit-protocol"
 version = "0.1.0"
 dependencies = [
+ "rgit-hash",
  "rgit-trace",
  "rgit-version",
  "tempfile",

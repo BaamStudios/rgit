@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rgit-hash = { path = "../rgit-hash" }
 rgit-trace = { path = "../rgit-trace" }
 rgit-version = { path = "../rgit-version" }
 thiserror = "2"
