@@ -24,7 +24,7 @@ fn usage(to_stdout: bool) -> CmdResult {
 
 pub fn run(_ctx: &mut Context, argv: &[String]) -> CmdResult {
     let args = &argv[1..];
-    if args.len() == 1 && args[0] == "-h" {
+    if args.len() == 1 && (args[0] == "-h" || args[0] == "--help-all") {
         return usage(true);
     }
     if args.first().map(String::as_str) == Some("--branch") {

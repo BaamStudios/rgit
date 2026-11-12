@@ -27,7 +27,7 @@ use crate::repo::{self, Mode};
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let args = &argv[1..];
     match args.first().map(String::as_str) {
-        Some("-h") => {
+        Some("-h" | "--help-all") => {
             print!("{}", msg::USAGE);
             Ok(0)
         }
@@ -174,7 +174,7 @@ fn parse_show(args: &[String]) -> Result<Result<ShowOptions, CmdResult>, Die> {
             continue;
         }
         match a.as_str() {
-            "-h" => {
+            "-h" | "--help-all" => {
                 print!("{}", msg::USAGE_SHOW);
                 return Ok(Err(Ok(0)));
             }

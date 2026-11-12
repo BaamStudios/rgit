@@ -10,9 +10,22 @@ use std::path::Path;
 
 use rgit_hash::ObjectId;
 
-/// `inflate: data stream error (<zlib message>)`.
-pub fn inflate_data_error(zlib_msg: &str) -> String {
-    format!("inflate: data stream error ({zlib_msg})")
+/// `inflate: <problem>`, e.g. `inflate: data stream error (<zlib message>)`.
+pub fn inflate_data_error(problem: &str) -> String {
+    format!("inflate: {problem}")
+}
+
+/// zlib's problem as git words it after `inflate: `: a stream that needs a
+/// preset dictionary is `needs dictionary (no message)`, other errors are
+/// `data stream error (<zlib message>)`.
+pub(crate) fn zlib_problem(e: &flate2::DecompressError) -> String {
+    if e.needs_dictionary().is_some() {
+        return "needs dictionary (no message)".to_owned();
+    }
+    format!(
+        "data stream error ({})",
+        e.message().unwrap_or("unknown error")
+    )
 }
 
 /// `unable to unpack <oid> header`.
