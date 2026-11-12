@@ -18,6 +18,7 @@ rgit-config = { path = "../rgit-config" }
 rgit-date = { path = "../rgit-date" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-options = { path = "../rgit-options" }
+rgit-refs = { path = "../rgit-refs" }
 rgit-repo = { path = "../rgit-repo" }
 
 [target.'cfg(unix)'.dependencies]
