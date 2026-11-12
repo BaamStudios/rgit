@@ -462,9 +462,13 @@ dependencies = [
  "rgit-date",
  "rgit-difftest",
  "rgit-fs",
+ "rgit-hash",
  "rgit-ident",
  "rgit-index",
+ "rgit-object",
+ "rgit-odb",
  "rgit-options",
+ "rgit-pack",
  "rgit-pathspec",
  "rgit-refs",
  "rgit-repo",
@@ -574,6 +578,7 @@ dependencies = [
  "flate2",
  "memmap2",
  "rgit-hash",
+ "rgit-object",
  "tempfile",
 ]
 
