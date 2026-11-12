@@ -18,6 +18,7 @@ rgit-config = { path = "../rgit-config" }
 rgit-date = { path = "../rgit-date" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-options = { path = "../rgit-options" }
+rgit-pathspec = { path = "../rgit-pathspec" }
 
 [dev-dependencies]
 rgit-difftest = { path = "../rgit-difftest" }
