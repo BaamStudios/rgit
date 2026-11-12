@@ -33,6 +33,17 @@ pub fn command_line(ctx: &Context) -> CommandLine {
 
 /// Set up the repository, change into [`Setup::cwd`] and return the setup.
 pub fn setup(ctx: &Context, mode: Mode) -> Result<Setup, Die> {
+    // A required setup returns a repository or an error.
+    setup_inner(ctx, mode == Mode::Required, true)?.ok_or(Die::Exit(rgit_options::EXIT_FATAL))
+}
+
+/// Like [`setup`], for commands that also work outside a repository
+/// (`RUN_SETUP_GENTLY`): `None` when there is none.
+pub fn setup_gently(ctx: &Context) -> Result<Option<Setup>, Die> {
+    setup_inner(ctx, true, false)
+}
+
+fn setup_inner(ctx: &Context, trace: bool, required: bool) -> Result<Option<Setup>, Die> {
     let env = SystemEnv::default();
     let mut opts = SetupOptions::from_process().map_err(die)?;
     if let Some(d) = &ctx.git_dir {
@@ -45,7 +56,14 @@ pub fn setup(ctx: &Context, mode: Mode) -> Result<Setup, Die> {
         opts.implicit_work_tree = false;
     }
     let mut protected = StandardProtectedConfig::new(&env, command_line(ctx));
-    let setup = rgit_repo::setup(&opts, &mut protected).map_err(die)?;
+    let setup = if required {
+        rgit_repo::setup(&opts, &mut protected).map_err(die)?
+    } else {
+        match rgit_repo::discover(&opts, &mut protected).map_err(die)? {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        }
+    };
     let mut err = std::io::stderr();
     for w in &setup.warnings {
         let _ = writeln!(err, "warning: {w}");
@@ -58,10 +76,10 @@ pub fn setup(ctx: &Context, mode: Mode) -> Result<Setup, Die> {
             ))
         })?;
     }
-    if mode == Mode::Required {
+    if trace {
         setup.trace();
     }
-    Ok(setup)
+    Ok(Some(setup))
 }
 
 /// Print a setup error like git (all lines, last one `fatal:`) and exit 128.

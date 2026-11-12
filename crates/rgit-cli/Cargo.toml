@@ -18,13 +18,18 @@ rgit-config = { path = "../rgit-config" }
 rgit-ident = { path = "../rgit-ident" }
 rgit-date = { path = "../rgit-date" }
 rgit-fs = { path = "../rgit-fs" }
+rgit-hash = { path = "../rgit-hash" }
 rgit-index = { path = "../rgit-index" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
 rgit-options = { path = "../rgit-options" }
+rgit-pack = { path = "../rgit-pack" }
 rgit-pathspec = { path = "../rgit-pathspec" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-repo = { path = "../rgit-repo" }
 rgit-version = { path = "../rgit-version" }
 rgit-worktree = { path = "../rgit-worktree" }
+regex = { version = "1.13", default-features = false, features = ["std", "perf"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
