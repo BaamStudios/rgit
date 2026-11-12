@@ -4,8 +4,9 @@
 //! `gitformat-index(5)`.
 //!
 //! - Reads versions 2, 3 and 4 (prefix-compressed paths) with SHA-1 or
-//!   SHA-256 ids; verifies the trailing checksum (a null trailer from
-//!   `index.skipHash` is accepted).
+//!   SHA-256 ids. Like git, the trailing checksum is only verified on
+//!   request ([`ReadOptions::verified`]); a null trailer from
+//!   `index.skipHash` is always accepted.
 //! - Writes version 2, or 3 when an entry has extended flags
 //!   (skip-worktree, intent-to-add), as git does; an index read as version
 //!   4 is written as version 4.

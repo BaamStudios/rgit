@@ -142,16 +142,19 @@ fn checksum() {
 
     let mut bad = bytes.clone();
     *bad.last_mut().unwrap() ^= 1;
-    assert!(matches!(parse(&bad, kind), Err(Error::BadChecksum)));
-    let lenient = ReadOptions {
-        verify_checksum: false,
-    };
-    assert!(Index::from_bytes(&bad, kind, &lenient).is_ok());
+    // Not verified by default (as in git), only on request.
+    assert!(parse(&bad, kind).is_ok());
+    assert!(matches!(
+        Index::from_bytes(&bad, kind, &ReadOptions::verified()),
+        Err(Error::BadChecksum)
+    ));
+    assert!(Index::from_bytes(&bytes, kind, &ReadOptions::verified()).is_ok());
 
     // index.skipHash: null trailer written and accepted.
     let skip = sample(kind).to_bytes(&WriteOptions { skip_hash: true });
     assert!(skip.ends_with(&[0; 20]));
-    assert!(parse(&skip, kind).unwrap().checksum().is_none());
+    let read = Index::from_bytes(&skip, kind, &ReadOptions::verified()).unwrap();
+    assert!(read.checksum().is_none());
 }
 
 #[test]
@@ -160,7 +163,7 @@ fn header_errors() {
     let bytes = sample(kind).to_bytes(&WriteOptions::default());
     assert!(matches!(parse(&bytes[..31], kind), Err(Error::TooSmall)));
     // A SHA-1 index read as SHA-256 has a wrong checksum.
-    assert!(parse(&bytes, HashKind::Sha256).is_err());
+    assert!(Index::from_bytes(&bytes, HashKind::Sha256, &ReadOptions::verified()).is_err());
 
     let mut b = body(&bytes, kind);
     b[..4].copy_from_slice(b"DIRX");
@@ -274,13 +277,21 @@ fn extensions() {
         Err(Error::SparseIndex)
     ));
 
-    // Extension larger than the file.
+    // Optional extension larger than the file: ignored like git does.
     let mut b = body(&bytes, kind);
     b.extend_from_slice(b"ABCD");
     b.extend_from_slice(&1000u32.to_be_bytes());
+    b.extend_from_slice(b"xyz");
+    let read = parse(&with_checksum(b, kind), kind).unwrap();
+    assert_eq!(read.ignored_extensions(), [*b"ABCD"]);
+    assert_eq!(read.to_bytes(&WriteOptions::default()), bytes);
+    // A required one is still refused.
+    let mut b = body(&bytes, kind);
+    b.extend_from_slice(b"abcd");
+    b.extend_from_slice(&1000u32.to_be_bytes());
     assert!(matches!(
         parse(&with_checksum(b, kind), kind),
-        Err(Error::Corrupt(_))
+        Err(Error::UnknownExtension(_))
     ));
 
     // A malformed TREE is dropped, not fatal.

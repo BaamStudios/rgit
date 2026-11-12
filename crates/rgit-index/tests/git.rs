@@ -81,7 +81,7 @@ fn read(path: &Path, kind: HashKind) -> Index {
 fn check_round_trip(fx: &Fixture, kind: HashKind, label: &str) -> Index {
     let path = index_file(fx);
     let original = std::fs::read(&path).unwrap();
-    let index = Index::from_bytes(&original, kind, &ReadOptions::default()).unwrap();
+    let index = Index::from_bytes(&original, kind, &ReadOptions::verified()).unwrap();
     let expected = git_ls(fx);
     assert_same_text(label, &expected, &ls_files_debug(&index));
     let rewritten = index.to_bytes(&WriteOptions::default());
@@ -356,6 +356,29 @@ fn extensions_against_git() {
             "{}\n",
             rgit_index::messages::ignoring_extension(&index.ignored_extensions()[0])
         )
+    );
+    assert!(index.to_bytes(&WriteOptions::default()) == original);
+
+    // Size running past the end of the file: git ignores it, so does rgit.
+    let mut oversized = body.to_vec();
+    oversized.extend_from_slice(b"ABCD");
+    oversized.extend_from_slice(&1000u32.to_be_bytes());
+    oversized.extend_from_slice(b"xyz");
+    let sum = rgit_hash::hash(kind, &oversized).unwrap();
+    oversized.extend_from_slice(sum.as_bytes());
+    std::fs::write(&path, oversized).unwrap();
+    let out = fx.git_output(["ls-files", "--stage", "--debug"]);
+    assert!(out.status.success());
+    let index = read(&path, kind);
+    assert_eq!(index.ignored_extensions(), [*b"ABCD"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("{}\n", rgit_index::messages::ignoring_extension(b"ABCD"))
+    );
+    assert_same_text(
+        "oversized extension",
+        &String::from_utf8_lossy(&out.stdout),
+        &ls_files_debug(&index),
     );
     assert!(index.to_bytes(&WriteOptions::default()) == original);
 

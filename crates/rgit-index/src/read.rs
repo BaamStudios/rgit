@@ -8,15 +8,17 @@ use crate::entry::{Entry, Flags, Mode, Stage, Stat, Time, bits};
 use crate::{CacheTree, Error, Index, varint};
 
 /// Options for [`Index::from_bytes`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ReadOptions {
     /// Verify the trailing checksum (a null trailer, written with
-    /// `index.skipHash`, is always accepted). Default: on.
+    /// `index.skipHash`, is always accepted). Default: off, as git only
+    /// verifies it in checks such as `fsck`.
     pub verify_checksum: bool,
 }
 
-impl Default for ReadOptions {
-    fn default() -> Self {
+impl ReadOptions {
+    /// Options that verify the trailing checksum (for `fsck`-like checks).
+    pub fn verified() -> Self {
         ReadOptions {
             verify_checksum: true,
         }
@@ -183,11 +185,20 @@ pub(crate) fn parse(data: &[u8], kind: HashKind, opts: &ReadOptions) -> Result<I
         let sig: [u8; 4] = header[..4].try_into().expect("4 bytes");
         let size = be32(&header[4..]) as usize;
         pos += 8;
-        if size > body.len() - pos {
-            return Err(Error::Corrupt("extension size"));
+        // git ignores an optional extension running past the end of the
+        // file, and with it everything after it. Required extensions are
+        // refused below anyway.
+        if size > body.len() - pos && sig[0].is_ascii_uppercase() {
+            rgit_trace::trace!(
+                rgit_trace::TRACE,
+                "index: {} extension size {size} exceeds the file, ignored",
+                String::from_utf8_lossy(&sig)
+            );
+            index.ignored.push(sig);
+            break;
         }
-        let ext = &body[pos..pos + size];
-        pos += size;
+        let ext = &body[pos..(pos + size).min(body.len())];
+        pos = (pos + size).min(body.len());
         match &sig {
             b"TREE" => index.tree = CacheTree::parse(ext, kind),
             b"REUC" => index.resolve_undo = Some(ext.to_vec()),
