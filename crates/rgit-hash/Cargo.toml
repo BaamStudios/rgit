@@ -1,0 +1,14 @@
+[package]
+name = "rgit-hash"
+description = "Object ids, collision-detecting SHA-1 and SHA-256 for rgit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# RustCrypto port of the SHA-1 collision detection (sha1dc) algorithm.
+sha1-checked = { version = "0.10.0", default-features = false, features = ["std"] }
+sha2 = "0.10.9"
+thiserror = "2.0.18"

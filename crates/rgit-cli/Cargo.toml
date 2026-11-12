@@ -17,3 +17,6 @@ rgit-options = { path = "../rgit-options" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
