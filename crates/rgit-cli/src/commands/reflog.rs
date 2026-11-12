@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use rgit_date::{DateContext, DateMode, show_date};
 use rgit_hash::{HashKind, ObjectId};
-use rgit_pack::ObjectKind;
+use rgit_object::ObjectKind;
 use rgit_refs::files::FilesStore;
 use rgit_refs::name::{RefNameFlags, is_per_worktree, is_root_ref_syntax, is_valid_refname};
 use rgit_refs::reflog::lookup::Target as LookupTarget;

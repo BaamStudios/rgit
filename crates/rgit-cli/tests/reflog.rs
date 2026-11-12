@@ -165,3 +165,37 @@ fn gaps_and_missing_objects() {
         ],
     );
 }
+
+#[test]
+fn packed_objects() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .git(["commit", "-q", "--allow-empty", "-m", "one"])
+        .tick()
+        .git(["commit", "-q", "--allow-empty", "-m", "two"])
+        .git([
+            "update-ref",
+            "--create-reflog",
+            "-m",
+            "c",
+            "refs/tests/t",
+            "HEAD",
+        ])
+        .git(["update-ref", "-m", "tree", "refs/tests/t", "HEAD^{tree}"])
+        .git(["update-ref", "-m", "back", "refs/tests/t", "HEAD"])
+        .git(["repack", "-adq"])
+        .git(["prune-packed"]);
+    if fx.is_skipped() {
+        return;
+    }
+    compare(
+        &mut fx,
+        &[
+            &["reflog"],
+            &["reflog", "main"],
+            &["reflog", "--abbrev=4", "main"],
+            &["reflog", "refs/tests/t"],
+        ],
+    );
+}
