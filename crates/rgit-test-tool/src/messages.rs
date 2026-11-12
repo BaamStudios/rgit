@@ -156,3 +156,36 @@ pub fn unknown_extensions(names: &[String]) -> String {
 pub fn bad_config_line(line: usize, file: &std::path::Path) -> String {
     format!("bad config line {line} in file {}", file.display())
 }
+
+// ----- date -------------------------------------------------------------
+
+/// `test-tool date` usage (stderr, exit 129).
+pub const DATE_USAGE: &str = concat!(
+    "usage: \n",
+    "  test-tool date relative [time_t]...\n",
+    "  test-tool date human [time_t]...\n",
+    "  test-tool date show:<format> [time_t]...\n",
+    "  test-tool date parse [date]...\n",
+    "  test-tool date approxidate [date]...\n",
+    "  test-tool date timestamp [date]...\n",
+    "  test-tool date getnanos [start-nanos]\n",
+    "  test-tool date is64bit\n",
+    "  test-tool date time_t-is64bit\n",
+    "\n",
+);
+
+/// A time beyond the signed 64-bit range.
+pub fn timestamp_too_large(time: u64) -> String {
+    format!("Timestamp too large for this system: {time}")
+}
+
+/// A time that overflows once shifted into its zone.
+pub fn timestamp_tz_too_large(time: u64, tz: i32) -> String {
+    format!("Timestamp+tz too large: {time} {tz:+05}")
+}
+
+/// A time before the epoch once shifted into its zone (the zone printed
+/// like C's `%04d`).
+pub fn before_epoch(time: u64, tz: i32) -> String {
+    format!("Timestamp before Unix epoch: {time} {tz:04}")
+}

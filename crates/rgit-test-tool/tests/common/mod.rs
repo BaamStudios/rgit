@@ -91,3 +91,90 @@ pub fn same(fx: &mut Fixture, args: &[&str]) {
 pub fn same_stdin(fx: &mut Fixture, args: &[&str], stdin: &[u8]) {
     fx.compare(args).output_only().stdin(stdin.to_vec()).run();
 }
+
+/// Splits a case line into words: whitespace separates, double quotes group
+/// (and are removed), a backslash keeps the next character, `""` is an
+/// empty word.
+pub fn words(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_word = false;
+    let mut quoted = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+                in_word = true;
+            }
+            '"' => {
+                quoted = !quoted;
+                in_word = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if in_word {
+                    out.push(std::mem::take(&mut cur));
+                    in_word = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                in_word = true;
+            }
+        }
+    }
+    assert!(!quoted, "unbalanced quotes in case: {line}");
+    if in_word {
+        out.push(cur);
+    }
+    out
+}
+
+/// Replays every call of a case file (one call per line: optional
+/// `VAR=value` words, then the arguments; `#` starts a comment line)
+/// against both binaries. `defaults` is the environment of every call,
+/// which the `VAR=value` words override. Fails if fewer than `min` calls
+/// ran (a guard against a truncated file).
+pub fn run_cases(cases: &str, defaults: &[(&str, &str)], min: usize) {
+    let Some(mut fx) = fixture() else { return };
+    let mut n = 0;
+    for line in cases.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut w = words(line);
+        let mut env: Vec<(String, String)> = defaults
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        while w
+            .first()
+            .is_some_and(|a| !a.starts_with('-') && a.contains('='))
+        {
+            let word = w.remove(0);
+            let (k, v) = word.split_once('=').expect("contains '='");
+            env.retain(|(ek, _)| ek != k);
+            env.push((k.to_string(), v.to_string()));
+        }
+        let mut cmp = fx.compare(&w).output_only();
+        for (k, v) in &env {
+            cmp = cmp.env(k, v);
+        }
+        if let Err(mismatch) = cmp.try_run() {
+            panic!("case `{line}`:\n{mismatch}");
+        }
+        n += 1;
+    }
+    assert!(n >= min, "only {n} cases");
+}
+
+#[test]
+fn word_splitting() {
+    assert_eq!(
+        words(r#"a --expect="x: 1" -s "" b\ c"#),
+        ["a", "--expect=x: 1", "-s", "", "b c"]
+    );
+}
