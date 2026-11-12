@@ -247,7 +247,8 @@ pub fn get_oid(store: &FilesStore, objects: &Objects, spec: &str) -> Option<Obje
             } else {
                 id = *parents(objects, &commit)?.get(n - 1)?;
             }
-        } else if let Some(r) = rest.strip_prefix('~') {
+        } else {
+            let r = rest.strip_prefix('~')?;
             let digits = r.bytes().take_while(u8::is_ascii_digit).count();
             let n: usize = if digits == 0 {
                 1
@@ -259,8 +260,6 @@ pub fn get_oid(store: &FilesStore, objects: &Objects, spec: &str) -> Option<Obje
             for _ in 0..n {
                 id = *parents(objects, &id)?.first()?;
             }
-        } else {
-            return None;
         }
     }
     Some(id)
@@ -383,6 +382,10 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
         use std::io::Write;
         let path = self.git_dir.join("logs").join(&update.name);
         if !update.create && !path.is_file() {
+            return Ok(());
+        }
+        // A dangling reference that stays dangling gets no entry.
+        if update.old.is_null() && update.new.is_null() {
             return Ok(());
         }
         // An unchanged value is not rewritten, so it gets no entry.

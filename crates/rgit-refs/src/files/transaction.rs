@@ -168,7 +168,7 @@ impl PreparedTransaction for Prepared<'_> {
 
 /// Removes empty directories from the parent of `path` upwards, keeping
 /// `$GIT_DIR/refs` and its direct subdirectories (`refs/heads`, ...).
-fn prune_empty_parents(git_dir: &Path, path: &Path) {
+pub(super) fn prune_empty_parents(git_dir: &Path, path: &Path) {
     let Ok(rel) = path.strip_prefix(git_dir) else {
         return;
     };
