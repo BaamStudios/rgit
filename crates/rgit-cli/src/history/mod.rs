@@ -467,6 +467,16 @@ fn resolve_tips(repo: &Repo<'_>, opts: &Options) -> Result<Vec<(ObjectId, bool)>
 
 /// Set up the repository, parse `argv` and run `cmd`.
 pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
+    // `-h` and `--help-all` work outside a repository and print to stdout.
+    if let Some(first @ ("-h" | "--help-all")) = argv.first().map(String::as_str) {
+        let text = match (cmd, first) {
+            (Command::RevList, _) => msg::REV_LIST_USAGE,
+            (Command::Log, "-h") => msg::LOG_USAGE,
+            (Command::Log, _) => msg::LOG_USAGE_ALL,
+        };
+        let _ = std::io::stdout().write_all(text.as_bytes());
+        return Ok(0);
+    }
     let mut opts = Options::parse(cmd, argv)?;
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
