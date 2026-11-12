@@ -343,6 +343,28 @@ fn update_ref_stdin() {
     }
 }
 
+/// An update whose new value equals the old one (#257): compare the ref and
+/// the reflogs git writes.
+#[test]
+fn update_ref_same_value_reflog() {
+    let Some(fx) = fixture() else { return };
+    let mut fx = fx.tick();
+    let cases: &[&[&str]] = &[
+        &["update-ref", "-m", "same", "refs/heads/main", "HEAD"],
+        &["update-ref", "-m", "same", "HEAD", "HEAD"],
+        &["update-ref", "-m", "same", "refs/heads/b/x", "b/x", "b/x"],
+    ];
+    for args in cases {
+        fx.compare(*args)
+            .checks(CHECKS.into_iter().chain([Check::GitFiles]))
+            .git_file("logs/HEAD")
+            .git_file("logs/refs/heads/main")
+            .git_file("logs/refs/heads/b/x")
+            .git_file("refs/heads/main")
+            .run();
+    }
+}
+
 #[test]
 fn pack_refs() {
     let Some(fx) = fixture() else { return };
