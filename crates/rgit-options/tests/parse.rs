@@ -351,6 +351,7 @@ usage: demo [<options>]
 
     --[no-]on             turn it on
     -N, --no-worry        starts with no-
+    --worry               opposite of --no-worry
     -X, --no-way          cannot be negated
     -c, --[no-]count      count up
     -8, --[no-]bit8       or in 8
@@ -412,7 +413,9 @@ fn completion_helper() {
     let v = Vals::default();
     let out = err(&["--git-completion-helper"]).stdout;
     assert!(out.starts_with("--on --no-worry --no-way --count --bit8 --int= --small= --uns= "));
-    assert!(out.contains(" --no-on -- --no-count "));
+    // `--no-worry` is listed already, so all negations follow the `--`,
+    // after the positive form `--worry`.
+    assert!(out.contains(" --worry -- --no-on --no-count "));
     assert!(!out.contains("--no-uns"));
     assert!(!out.contains("secret"));
     drop(v);
@@ -576,4 +579,59 @@ fn subcommands() {
         .parse(&argv(&["cmd", "--git-completion-helper"]))
         .unwrap_err();
     assert_eq!(e.stdout, "one two --opt= --no-opt\n");
+}
+
+#[test]
+fn usage_description() {
+    let v = Vals::default();
+    let p = Parser::new(
+        &[
+            "demo <x>",
+            "demo -y",
+            "",
+            "Some description.",
+            "Second line.",
+        ],
+        vec![Opt::bool('a', None, &v.flag, "a")],
+    );
+    assert_eq!(
+        p.usage_text(false),
+        "usage: demo <x>\n   or: demo -y\n\n    Some description.\n    Second line.\n\n    -a                    a\n\n"
+    );
+}
+
+#[test]
+fn number_in_bundle() {
+    let v = Vals::default();
+    run(&v, &["-12c"]).unwrap();
+    assert_eq!(*v.seen.borrow(), ["num 12"]);
+    assert_eq!(v.flag.get(), 1);
+    run(&v, &["-c3"]).unwrap();
+    assert_eq!(*v.seen.borrow(), ["num 12", "num 3"]);
+    assert_eq!(
+        err(&["-1z"]).stderr.lines().next(),
+        Some("error: unknown switch `z'")
+    );
+}
+
+#[test]
+fn cmdmode_only_on_change() {
+    let v = Vals::default();
+    // Neither option is a command mode: no conflict.
+    run(&v, &["--set7", "-i", "5"]).unwrap();
+    let v = Vals::default();
+    // Options that leave the value unchanged do not count.
+    run(&v, &["--no-set7", "--first"]).unwrap();
+    assert_eq!(
+        err(&["--first", "--no-set7"]).stderr,
+        "error: options '--no-set7' and '--first' cannot be used together\n"
+    );
+}
+
+#[test]
+fn completion_helper_all() {
+    let out = err(&["--git-completion-helper-all"]).stdout;
+    assert!(out.contains(" --old "));
+    assert!(out.contains(" --alias-text= "));
+    assert!(out.contains(" --secret "));
 }

@@ -14,9 +14,17 @@ const OPTS_WIDTH: usize = 26;
 /// continuation lines are written without indentation and are aligned
 /// under the first argument of the first line (the first word starting
 /// with `[`, `(`, `<`, `{` or `-`).
+///
+/// An empty usage string ends the alternatives: the strings after it are a
+/// description, printed indented by four spaces (an empty one as a blank
+/// line), as `git rev-parse --parseopt` shows for a spec with a blank line.
 pub(crate) fn usage_lines(usage: &[&str]) -> String {
     let mut out = String::new();
-    for (i, u) in usage.iter().enumerate() {
+    let (forms, description) = match usage.iter().position(|u| u.is_empty()) {
+        Some(n) => (&usage[..n], &usage[n..]),
+        None => (usage, &[][..]),
+    };
+    for (i, u) in forms.iter().enumerate() {
         let mut lines = u.split('\n');
         let first = lines.next().unwrap_or("");
         out.push_str(if i == 0 { "usage: " } else { "   or: " });
@@ -33,6 +41,14 @@ pub(crate) fn usage_lines(usage: &[&str]) -> String {
             out.push_str(l);
             out.push('\n');
         }
+    }
+    // The leading empty string becomes the blank line after the forms.
+    for l in description.iter().flat_map(|d| d.split('\n')) {
+        if !l.is_empty() {
+            out.push_str("    ");
+            out.push_str(l);
+        }
+        out.push('\n');
     }
     out
 }
@@ -136,26 +152,50 @@ pub(crate) fn usage_text(usage: &[&str], opts: &[Opt<'_>], all: bool) -> String 
             }
             _ => opt.help,
         };
-        let width = label.chars().count();
-        out.push_str(&label);
-        if width < OPTS_WIDTH {
-            out.extend(std::iter::repeat_n(' ', OPTS_WIDTH - width));
-        } else {
-            out.push('\n');
-            out.extend(std::iter::repeat_n(' ', OPTS_WIDTH));
+        push_entry(&mut out, &label, help);
+        if let Some(positive) = positive_form(opt, target) {
+            push_entry(
+                &mut out,
+                &format!("    --{positive}"),
+                &messages::opposite_of(opt.long.unwrap_or_default()),
+            );
         }
-        let mut lines = help.split('\n');
-        out.push_str(lines.next().unwrap_or(""));
-        for l in lines {
-            out.push('\n');
-            out.extend(std::iter::repeat_n(' ', OPTS_WIDTH));
-            out.push_str(l);
-        }
-        out.push('\n');
         printed = true;
     }
     out.push('\n');
     out
+}
+
+/// One option line: the label, then the help aligned at [`OPTS_WIDTH`]
+/// (on the next line when the label is too wide).
+fn push_entry(out: &mut String, label: &str, help: &str) {
+    let width = label.chars().count();
+    out.push_str(label);
+    if width < OPTS_WIDTH {
+        out.extend(std::iter::repeat_n(' ', OPTS_WIDTH - width));
+    } else {
+        out.push('\n');
+        out.extend(std::iter::repeat_n(' ', OPTS_WIDTH));
+    }
+    let mut lines = help.split('\n');
+    out.push_str(lines.next().unwrap_or(""));
+    for l in lines {
+        out.push('\n');
+        out.extend(std::iter::repeat_n(' ', OPTS_WIDTH));
+        out.push_str(l);
+    }
+    out.push('\n');
+}
+
+/// For a negatable option named `no-<x>`, the positive form `<x>`: git
+/// lists it after the option as "opposite of --no-<x>" and offers it for
+/// completion (observed with `git commit -h` and `git rev-parse --parseopt`).
+fn positive_form<'a>(opt: &Opt<'a>, target: &Opt<'a>) -> Option<&'a str> {
+    let long = opt.long?;
+    if opt.flags.noneg || !target.negatable() || opt.is_alias() {
+        return None;
+    }
+    long.strip_prefix("no-").filter(|p| !p.is_empty())
 }
 
 /// Resolve an alias to the option it names (or return the option itself).
@@ -168,15 +208,18 @@ pub(crate) fn resolve<'o, 'a>(opts: &'o [Opt<'a>], opt: &'o Opt<'a>) -> &'o Opt<
     opt
 }
 
-/// Output of `--git-completion-helper`.
-pub(crate) fn completion(opts: &[Opt<'_>]) -> String {
+/// Output of `--git-completion-helper`; with `all`, that of
+/// `--git-completion-helper-all`, which also lists hidden options and
+/// aliases.
+pub(crate) fn completion(opts: &[Opt<'_>], all: bool) -> String {
     let mut out = String::new();
-    for (idx, opt) in opts.iter().enumerate() {
-        if opt.is_group() || opt.flags.hidden || opt.flags.nocomplete || opt.is_alias() {
+    for opt in opts {
+        if opt.is_group() || opt.flags.nocomplete || (!all && (opt.flags.hidden || opt.is_alias()))
+        {
             continue;
         }
         let Some(long) = opt.long else { continue };
-        if idx > 0 {
+        if !out.is_empty() {
             out.push(' ');
         }
         if opt.is_subcommand() {
@@ -185,25 +228,48 @@ pub(crate) fn completion(opts: &[Opt<'_>]) -> String {
         }
         out.push_str("--");
         out.push_str(long);
-        if opt.arg_mode() == ArgMode::Required && !opt.flags.lastarg_default {
+        let target = resolve(opts, opt);
+        if target.arg_mode() == ArgMode::Required && !target.flags.lastarg_default {
             out.push('=');
         }
     }
-    let negs: Vec<&str> = opts
-        .iter()
-        .filter(|o| !o.flags.hidden && !o.flags.nocomplete && !o.is_subcommand())
+    let shown = || {
+        opts.iter()
+            .filter(move |o| (all || !o.flags.hidden) && !o.flags.nocomplete && !o.is_subcommand())
+    };
+    // Positive forms of `no-<x>` options come after all other options.
+    for p in shown().filter_map(|o| positive_form(o, resolve(opts, o))) {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str("--");
+        out.push_str(p);
+    }
+    let negs: Vec<&str> = shown()
         .filter(|o| !o.flags.noneg && resolve(opts, o).negatable())
         .filter_map(|o| o.long)
         .filter(|l| !l.starts_with("no-"))
         .collect();
+    // The `--` separates the negations completion only offers after
+    // `--no`. When an option named `no-<x>` is listed already, all of them
+    // go after it; otherwise the first negation is listed before it.
+    let mut separator_done = shown()
+        .any(|o| o.long.is_some_and(|l| l.starts_with("no-")) && !o.is_alias() && !o.is_group());
     for (k, n) in negs.iter().enumerate() {
+        if separator_done && k == 0 {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str("--");
+        }
         if !out.is_empty() {
             out.push(' ');
         }
         out.push_str("--no-");
         out.push_str(n);
-        if k == 0 && negs.len() > 1 {
+        if !separator_done && negs.len() > 1 {
             out.push_str(" --");
+            separator_done = true;
         }
     }
     out.push('\n');
