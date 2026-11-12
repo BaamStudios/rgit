@@ -16,6 +16,7 @@ pub mod mktree;
 pub mod objects;
 pub mod pack_objects;
 pub mod pack_refs;
+pub mod read_tree;
 pub mod reflog;
 pub mod rev_list;
 pub mod show_ref;
