@@ -10,5 +10,7 @@ rust-version.workspace = true
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
 thiserror = "2"
+regex = { version = "1.13", default-features = false, features = ["std", "perf"] }
+rgit-fs = { path = "../rgit-fs" }
 
 [dev-dependencies]

@@ -100,6 +100,49 @@ pub(crate) fn no_config_env_key() -> &'static str {
     "no config key given for --config-env"
 }
 
+pub(crate) fn multiple_values(key: &BStr) -> String {
+    format!("{key} has multiple values")
+}
+
+pub(crate) fn invalid_pattern(pattern: &BStr) -> String {
+    format!("invalid pattern: {pattern}")
+}
+
+pub(crate) fn multiline_comment(comment: &BStr) -> String {
+    format!("no multi-line comment allowed: '{comment}'")
+}
+
+pub(crate) fn invalid_section_name(name: &BStr) -> String {
+    format!("invalid section name: {name}")
+}
+
+pub(crate) fn no_such_section(name: &BStr) -> String {
+    format!("no such section: {name}")
+}
+
+pub(crate) fn overlong_line(file: impl Display, line: usize) -> String {
+    format!("refusing to work with overly long line in '{file}' on line {line}")
+}
+
+pub(crate) fn could_not_lock(file: impl Display, err: &std::io::Error) -> String {
+    format!("could not lock config file {file}: {}", io_error_text(err))
+}
+
+pub(crate) fn opening(file: impl Display, err: &std::io::Error) -> String {
+    format!("opening {file}: {}", io_error_text(err))
+}
+
+pub(crate) fn could_not_write(file: impl Display, err: &std::io::Error) -> String {
+    format!("could not write config file {file}: {}", io_error_text(err))
+}
+
+pub(crate) fn could_not_commit(file: impl Display, err: &std::io::Error) -> String {
+    format!(
+        "could not commit config file {file}: {}",
+        io_error_text(err)
+    )
+}
+
 /// The C library's text for an I/O error (git prints `strerror(errno)`).
 pub(crate) fn io_error_text(err: &std::io::Error) -> String {
     use std::io::ErrorKind::*;

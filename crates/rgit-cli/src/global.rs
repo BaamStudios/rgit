@@ -138,6 +138,9 @@ pub fn parse(ctx: &mut Context, args: &[String]) -> Result<Action, Die> {
                     let Some((key, var)) = spec.rsplit_once('=') else {
                         return Err(Die::Fatal(msg::invalid_config_format(&spec)));
                     };
+                    if var.is_empty() {
+                        return Err(Die::Fatal(msg::missing_env_name_for_config(key)));
+                    }
                     let value = std::env::var(var)
                         .map_err(|_| Die::Fatal(msg::missing_env_for_config(var, key)))?;
                     ctx.config_parameters.push((key.to_string(), Some(value)));
