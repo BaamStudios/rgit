@@ -498,6 +498,60 @@ fn colors_and_dates() {
 }
 
 #[test]
+fn includes_from_stdin() {
+    let mut fx = fixture().write("one", "[test]one = 1\n");
+    let abs = format!("[include]path=\"{}/one\"\n", fx.work_dir().display());
+    for (input, args) in [
+        (abs.as_str(), &["config", "--file", "-", "test.one"][..]),
+        (abs.as_str(), &["config", "--file", "-", "--list"][..]),
+        (
+            abs.as_str(),
+            &["config", "--no-includes", "--file", "-", "test.one"][..],
+        ),
+        (
+            "[include]path=one\n",
+            &["config", "--file", "-", "test.one"][..],
+        ),
+    ] {
+        fx.compare(args).stdin(input).checks(CHECKS).run();
+    }
+}
+
+#[test]
+fn include_if_gitdir_through_symlink() {
+    let mut fx = fixture()
+        .git(["init", "-q", "foo"])
+        .symlink("foo", "bar")
+        .write(
+            "foo/.git/config",
+            "[core]\n\trepositoryformatversion = 0\n[includeIf \"gitdir:bar/\"]path=bar7\n[includeIf \"gitdir/i:BAR/\"]path=bar8\n",
+        )
+        .write("foo/.git/bar7", "[test]seven=7\n")
+        .write("foo/.git/bar8", "[test]eight=8\n");
+    let pwd = fx.work_dir().join("bar");
+    for key in ["test.seven", "test.eight"] {
+        fx.compare(["config", key])
+            .in_dir("bar")
+            .env("PWD", &pwd)
+            .checks(CHECKS)
+            .run();
+    }
+}
+
+#[test]
+fn include_if_worktree_with_nonexistent_git_dir() {
+    let mut fx = fixture().write("c.inc", "[foo]\n\tbar = baz\n").write(
+        ".gitconfig",
+        "[includeIf \"worktree:**\"]\n\tpath = c.inc\n",
+    );
+    let home = fx.work_dir();
+    fx.compare(["--git-dir=nonexistent", "config", "get", "foo.bar"])
+        .env("HOME", &home)
+        .checks(CHECKS)
+        .run();
+}
+
+#[test]
 fn unusable_repository_is_no_repository() {
     // Unsafe owner: `config` does not check ownership, it just runs
     // without a repository.
