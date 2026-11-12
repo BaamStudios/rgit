@@ -596,3 +596,31 @@ fn unusable_repository_is_no_repository() {
         ]],
     );
 }
+
+/// With both `~/.gitconfig` and the XDG file present, `--global` reads only
+/// `~/.gitconfig` (t1306); with only the XDG file it reads that one.
+#[test]
+fn global_reads_one_file() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let xdg = fx.home_dir().join(".config/git");
+    std::fs::create_dir_all(&xdg).unwrap();
+    std::fs::write(
+        xdg.join("config"),
+        "[user]\n\tname = xdg\n[x]\n\tonly = xdg\n",
+    )
+    .unwrap();
+    let mut fx = fx.same(["config", "--global", "user.name", "user"]);
+    let reads: &[&[&str]] = &[
+        &["config", "--global", "--list"],
+        &["config", "list", "--global", "--show-origin"],
+        &["config", "--global", "--get", "x.only"],
+        &["config", "--global", "--get-all", "user.name"],
+        &["config", "get", "--global", "--all", "user.name"],
+    ];
+    all_same(&mut fx, reads);
+    std::fs::remove_file(fx.home_dir().join(".gitconfig")).unwrap();
+    all_same(&mut fx, reads);
+}
