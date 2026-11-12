@@ -377,6 +377,16 @@ name = "rgit-options"
 version = "0.1.0"
 
 [[package]]
+name = "rgit-protocol"
+version = "0.1.0"
+dependencies = [
+ "rgit-trace",
+ "rustix",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-simcheck"
 version = "0.1.0"
 
