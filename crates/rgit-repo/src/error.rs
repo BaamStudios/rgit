@@ -178,6 +178,7 @@ pub(crate) fn io_text(err: &std::io::Error) -> String {
     match err.kind() {
         NotFound => "No such file or directory".into(),
         PermissionDenied => "Permission denied".into(),
+        AlreadyExists => "File exists".into(),
         NotADirectory => "Not a directory".into(),
         _ => {
             let s = err.to_string();

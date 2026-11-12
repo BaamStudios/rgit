@@ -1,0 +1,15 @@
+[package]
+name = "rgit-revwalk"
+description = "rgit: revision syntax (gitrevisions) and history walking"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-date = { path = "../rgit-date" }
+rgit-hash = { path = "../rgit-hash" }
+rgit-object = { path = "../rgit-object" }
+regex = { version = "1.13", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
+thiserror = "2"
