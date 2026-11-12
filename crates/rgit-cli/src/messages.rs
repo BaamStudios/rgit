@@ -16,6 +16,7 @@ pub mod objects;
 pub mod pack_objects;
 pub mod pack_refs;
 pub mod reflog;
+pub mod reset;
 pub mod rev_list;
 pub mod show_ref;
 pub mod update_index;
