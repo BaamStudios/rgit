@@ -8,5 +8,16 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rgit-config = { path = "../rgit-config" }
 rgit-protocol = { path = "../rgit-protocol" }
+rgit-trace = { path = "../rgit-trace" }
+bstr = { version = "1.13", default-features = false, features = ["std"] }
 thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+# Safe termios wrapper to read passwords from the terminal without echo.
+rustix = { version = "1", default-features = false, features = ["std", "termios"] }
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
+tempfile = "3"
