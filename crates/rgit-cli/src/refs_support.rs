@@ -297,7 +297,7 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
             return Ok(());
         }
         // A dangling reference that stays dangling gets no entry.
-        if update.old.is_null() && update.new.is_null() {
+        if update.new.is_null() && (update.old.is_null() || self.symbolic.contains(&update.name)) {
             return Ok(());
         }
         // An unchanged value is not rewritten, so it gets no entry.

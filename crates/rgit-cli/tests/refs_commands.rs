@@ -328,7 +328,16 @@ fn update_ref_stdin() {
         "verify refs/heads/zz\0\0",
         "update refs/heads/z1\0HEAD\0\0extra\0",
         "update \0",
+        "symref-update refs/heads/zz2\0refs/heads/master\0",
+        "option no-deref\0symref-delete refs/heads/z1\0",
     ];
+    for input in [
+        "start\ncreate refs/heads/restart HEAD\nstart\ncommit\n",
+        "create refs/heads/restart HEAD\nstart\ncommit\n",
+        "option no-deref\nsymref-update refs/heads/restart refs/heads/master\n",
+    ] {
+        run_stdin(&mut fx, &["update-ref", "--stdin"], input);
+    }
     for input in nul {
         run_stdin(&mut fx, &["update-ref", "-z", "--stdin"], input);
     }
