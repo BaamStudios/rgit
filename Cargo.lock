@@ -523,6 +523,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-odb"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "rgit-config",
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
+ "rgit-object",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-options"
 version = "0.1.0"
 
