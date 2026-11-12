@@ -529,6 +529,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-pathspec"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-protocol"
 version = "0.1.0"
 dependencies = [
