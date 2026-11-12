@@ -108,9 +108,23 @@ impl ObjectStore for PackStore {
         oid: &ObjectId,
         report: &mut dyn FnMut(&Error),
     ) -> Result<Option<RawObject>, Error> {
+        self.read_with_bases(oid, report, &mut |_| None)
+    }
+
+    fn read_with_bases(
+        &self,
+        oid: &ObjectId,
+        report: &mut dyn FnMut(&Error),
+        bases: &mut dyn FnMut(&ObjectId) -> Option<RawObject>,
+    ) -> Result<Option<RawObject>, Error> {
         let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         self.set
-            .read(oid, &mut cache, &mut |e| report(&Error::Pack(e.clone())))
+            .read_with_fallback(
+                oid,
+                &mut cache,
+                &mut |e| report(&Error::Pack(e.clone())),
+                bases,
+            )
             .map_err(Error::PackSummary)
     }
 
