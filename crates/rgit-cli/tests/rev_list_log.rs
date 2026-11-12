@@ -76,6 +76,12 @@ fn rev_list_walks() {
         &["rev-list", "--abbrev-commit", "--abbrev=10", "HEAD"],
         &["rev-list", "--oneline", "HEAD"],
         &["rev-list", "HEAD^{tree}"],
+        &["rev-list", "HEAD~1^!"],
+        &["rev-list", "HEAD~1^@"],
+        &["rev-list", "side^!", "--not", "main"],
+        &["rev-list", "main...other"],
+        &["rev-list", "side...other", "--topo-order"],
+        &["rev-list", "HEAD^-1"],
     ] {
         same(&mut fx, args);
     }
@@ -230,4 +236,20 @@ fn shallow_clone() {
     ] {
         same(&mut fx, args);
     }
+}
+
+#[test]
+fn linked_worktree() {
+    let mut fx = history()
+        .git(["worktree", "add", "-q", "--detach", "wt", "side"])
+        .git(["worktree", "add", "-q", "wt2", "-b", "topic", "other"]);
+    for args in [
+        &["log", "--oneline"][..],
+        &["rev-list", "--all"],
+        &["rev-list", "HEAD", "main"],
+    ] {
+        fx.compare(args).in_dir("wt").checks(Check::OUTPUT).run();
+        fx.compare(args).in_dir("wt2").checks(Check::OUTPUT).run();
+    }
+    same(&mut fx, &["rev-list", "--all"]);
 }

@@ -302,6 +302,35 @@ impl Repo<'_> {
         )
     }
 
+    /// `HEAD` of every other work tree of the repository (`--all` includes
+    /// them).
+    fn other_worktree_heads(&self) -> Vec<ObjectId> {
+        let common = self.setup.common_dir.as_path();
+        let mut dirs = vec![common.to_path_buf()];
+        if let Ok(entries) = std::fs::read_dir(common.join("worktrees")) {
+            let mut wt: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            wt.sort();
+            dirs.extend(wt);
+        }
+        let own = std::path::absolute(&self.setup.git_dir).ok();
+        let mut out = Vec::new();
+        for dir in dirs {
+            if std::path::absolute(&dir).ok() == own {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(dir.join("HEAD")) else {
+                continue;
+            };
+            let text = text.trim_end();
+            let id = match text.strip_prefix("ref: ") {
+                Some(name) => self.refs.resolve(name).ok().flatten().and_then(|r| r.oid),
+                None => ObjectId::from_hex(self.objects.hash_kind(), text.as_bytes()).ok(),
+            };
+            out.extend(id);
+        }
+        out
+    }
+
     /// The work tree has a file `arg` (then git would take it as a path).
     fn is_path(&self, arg: &str) -> bool {
         if self.setup.work_tree.is_none() {
@@ -417,11 +446,13 @@ fn resolve_tips(repo: &Repo<'_>, opts: &Options) -> Result<Vec<(ObjectId, bool)>
                 repo.refs
                     .for_each_ref(iter_prefix, &mut |_, id| ids.push(*id))
                     .map_err(|e| Die::Fatal(e.message()))?;
-                if prefix.is_empty()
-                    && let Ok(Some(head)) = repo.refs.resolve("HEAD")
-                    && let Some(id) = head.oid
-                {
-                    ids.push(id);
+                if prefix.is_empty() {
+                    if let Ok(Some(head)) = repo.refs.resolve("HEAD")
+                        && let Some(id) = head.oid
+                    {
+                        ids.push(id);
+                    }
+                    ids.extend(repo.other_worktree_heads());
                 }
                 for id in ids {
                     if let Some(c) = repo.peel_to_commit(id) {
