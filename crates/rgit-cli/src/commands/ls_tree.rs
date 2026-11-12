@@ -18,8 +18,7 @@ use crate::messages::ls_tree as msg;
 use crate::prelude::*;
 use crate::quote::{relative_to, write_quoted};
 use crate::repo::Mode;
-use crate::repository::Repo;
-use crate::revision;
+use crate::repository::{MIN_ABBREV, Repo};
 
 /// What `--abbrev` asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,7 +161,7 @@ impl Lister<'_> {
     }
 
     fn walk(&mut self, tree: &ObjectId, base: &[u8]) -> Result<(), Die> {
-        let entries = match revision::read_object(self.repo, tree) {
+        let entries = match self.repo.read_object(tree) {
             Some(Object::Tree(t)) => t.entries,
             _ => return Err(Die::Error(msg::could_not_read(&tree.to_hex()), 1)),
         };
@@ -369,19 +368,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     drop(parser);
 
-    let repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let full_tree = full_tree.get();
     let prefix = if full_tree { Vec::new() } else { repo.prefix() };
 
     let spec = &args[0];
-    let id = revision::resolve(&repo, spec).map_err(|e| {
-        if let Some(err) = e.error {
-            eprintln!("error: {err}");
-        }
-        Die::Fatal(msg::not_valid_object_name(spec))
-    })?;
-    let tree = revision::peel_to(&repo, id, ObjectKind::Tree)
-        .map_err(|_| Die::Fatal(msg::NOT_A_TREE.to_string()))?;
+    let id = repo
+        .resolve(spec)
+        .ok_or_else(|| Die::Fatal(msg::not_valid_object_name(spec)))?;
+    let tree = repo
+        .peel_to(id, ObjectKind::Tree)
+        .ok_or_else(|| Die::Fatal(msg::NOT_A_TREE.to_string()))?;
+    let repo = repo;
 
     let root = repo
         .setup
@@ -408,7 +406,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let abbrev = match abbrev.get() {
         Abbrev::Full => 0,
         Abbrev::Configured => repo.default_abbrev(),
-        Abbrev::Digits(n) => n.max(crate::objects::MIN_ABBREV),
+        Abbrev::Digits(n) => n.max(MIN_ABBREV),
     };
     let fmt = format.borrow().clone();
     let mut lister = Lister {

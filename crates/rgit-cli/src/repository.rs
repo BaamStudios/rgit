@@ -1,85 +1,71 @@
 // SPDX-License-Identifier: MIT
-//! A set-up repository for commands that read objects, the index or the
-//! configuration: [`crate::repo::setup`] plus the merged configuration and
-//! the object database, opened on first use.
+//! A set-up repository for plumbing that lists trees and the index:
+//! [`crate::repo_objects::Repo`] (configuration, object database with
+//! packs and alternates) plus revision lookup, abbreviations and output
+//! settings.
 
 use std::cell::OnceCell;
-use std::path::PathBuf;
+use std::ops::Deref;
 
-use rgit_config::sources::{self, RepoConfig, ScopeFilter};
-use rgit_config::{ConfigSet, LoadOptions, StaticRepoFacts, SystemEnv};
-use rgit_hash::HashKind;
-use rgit_odb::{LooseOptions, ObjectDatabase};
-use rgit_repo::Setup;
+use rgit_hash::{ObjectId, Prefix};
+use rgit_object::{Object, ObjectKind};
+use rgit_odb::ObjectDatabase;
 
 use crate::repo::{self, Mode};
-use crate::{Context, Die, objects};
+use crate::repo_objects;
+use crate::revision::Resolver;
+use crate::{Context, Die};
+
+/// Shortest abbreviation git prints.
+pub const MIN_ABBREV: usize = 4;
 
 /// A repository opened by a command.
 pub struct Repo {
-    /// Discovery result; the process is in [`Setup::cwd`].
-    pub setup: Setup,
-    /// System, global, local, worktree and command line configuration.
-    pub config: ConfigSet,
-    db: OnceCell<ObjectDatabase>,
+    inner: repo_objects::Repo,
     auto_abbrev: OnceCell<usize>,
 }
 
+impl Deref for Repo {
+    type Target = repo_objects::Repo;
+
+    fn deref(&self) -> &repo_objects::Repo {
+        &self.inner
+    }
+}
+
 impl Repo {
-    /// Set up the repository and read its configuration.
+    /// Set up the repository and open its configuration and objects.
     pub fn open(ctx: &Context, mode: Mode) -> Result<Repo, Die> {
         let setup = repo::setup(ctx, mode)?;
-        let env = SystemEnv::default();
-        let facts = StaticRepoFacts {
-            git_dir: Some(setup.absolute_git_dir()),
-            worktree: setup.work_tree.clone(),
-            branch: None,
-        };
-        let opts = LoadOptions {
-            env: &env,
-            repo: Some(&facts),
-            includes: true,
-        };
-        let repo_cfg = RepoConfig {
-            common_dir: setup.common_dir.clone(),
-            git_dir: setup.git_dir.clone(),
-            worktree_config: None,
-        };
-        let mut config = ConfigSet::new();
-        if let Err(e) = sources::load_standard(
-            opts,
-            Some(&repo_cfg),
-            &repo::command_line(ctx),
-            ScopeFilter::default(),
-            &mut config,
-        ) {
-            return Err(Die::Fatal(e.to_string()));
-        }
         Ok(Repo {
-            setup,
-            config,
-            db: OnceCell::new(),
+            inner: repo_objects::Repo::open(ctx, setup)?,
             auto_abbrev: OnceCell::new(),
         })
     }
 
-    /// The repository's hash algorithm.
-    pub fn hash(&self) -> HashKind {
-        self.setup.format.object_format
-    }
-
-    /// The `objects` directory.
-    pub fn objects_dir(&self) -> PathBuf {
-        rgit_odb::objects_dir(&self.setup.common_dir)
-    }
-
-    /// The object database (loose objects and packs).
+    /// The object database (loose objects, packs, alternates).
     pub fn odb(&self) -> &ObjectDatabase {
-        self.db.get_or_init(|| {
-            let mut warnings = Vec::new();
-            let loose = LooseOptions::from_config(&self.config, &mut warnings).unwrap_or_default();
-            objects::open(&self.objects_dir(), self.hash(), loose)
-        })
+        &self.inner.odb
+    }
+
+    /// Resolve an object name (`gitrevisions(7)`); `None` when it does not
+    /// name an object. Errors git reports on the way (`expected tree type,
+    /// ...`) are printed.
+    pub fn resolve(&mut self, name: &str) -> Option<ObjectId> {
+        Resolver::new(&mut self.inner)
+            .resolve(name)
+            .ok()
+            .map(|r| r.oid)
+    }
+
+    /// Peel tags and commits down to an object of type `kind`.
+    pub fn peel_to(&mut self, id: ObjectId, kind: ObjectKind) -> Option<ObjectId> {
+        Resolver::new(&mut self.inner).peel_to(id, kind, None)
+    }
+
+    /// Read and parse an object.
+    pub fn read_object(&self, id: &ObjectId) -> Option<Object> {
+        self.inner.odb.read_object(id).ok().flatten()
     }
 
     /// The current directory relative to the top of the work tree, with a
@@ -104,27 +90,35 @@ impl Repo {
     /// The default abbreviation length: `core.abbrev`, else computed from
     /// the number of objects.
     pub fn default_abbrev(&self) -> usize {
-        let hexsz = self.hash().hex_len();
-        if let Ok(Some(v)) = self.config.string("core.abbrev") {
-            let v = v.to_string();
-            if v.eq_ignore_ascii_case("no") || v.eq_ignore_ascii_case("false") {
-                return hexsz;
-            }
-            if let Ok(n) = v.parse::<usize>() {
-                return n.clamp(objects::MIN_ABBREV, hexsz);
-            }
-        }
         *self
             .auto_abbrev
-            .get_or_init(|| objects::auto_abbrev(self.odb(), &self.objects_dir()))
+            .get_or_init(|| crate::revision::default_abbrev(&self.inner))
     }
 
     /// `id` abbreviated to at least `len` digits (full when `len` is 0 or
-    /// at least the full length), unique in the object database.
-    pub fn abbrev(&self, id: &rgit_hash::ObjectId, len: usize) -> String {
-        if len == 0 || len >= self.hash().hex_len() {
-            return id.to_hex();
+    /// at least the full length), unique among all objects.
+    pub fn abbrev(&self, id: &ObjectId, len: usize) -> String {
+        let hex = id.to_hex();
+        if len == 0 || len >= hex.len() {
+            return hex;
         }
-        objects::unique_abbrev(self.odb(), id, len)
+        let mut len = len.max(MIN_ABBREV);
+        while len < hex.len() {
+            let Ok(prefix) = Prefix::new(*id, len) else {
+                break;
+            };
+            let mut other = false;
+            for store in self.odb().stores() {
+                let _ = store.for_each_prefix_match(&prefix, &mut |o| other |= o != *id);
+                if other {
+                    break;
+                }
+            }
+            if !other {
+                break;
+            }
+            len += 1;
+        }
+        hex[..len].to_string()
     }
 }

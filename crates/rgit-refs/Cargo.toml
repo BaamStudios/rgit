@@ -8,9 +8,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rgit-date = { path = "../rgit-date" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
 thiserror = "2"
 
 [dev-dependencies]
 rgit-difftest = { path = "../rgit-difftest" }
+tempfile = "3"

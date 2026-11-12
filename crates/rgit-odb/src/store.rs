@@ -6,33 +6,11 @@
 use std::fmt;
 
 use rgit_hash::{HashKind, ObjectId, Prefix};
-use rgit_object::{Object, ObjectHeader, ObjectKind};
+use rgit_object::ObjectHeader;
 
 use crate::Error;
 
-/// An object as stored: its type and content (without the header).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RawObject {
-    /// The type.
-    pub kind: ObjectKind,
-    /// The content.
-    pub data: Vec<u8>,
-}
-
-impl RawObject {
-    /// The header `<type> <size>`.
-    pub fn header(&self) -> ObjectHeader {
-        ObjectHeader {
-            kind: self.kind,
-            size: self.data.len() as u64,
-        }
-    }
-
-    /// Parse the content (see [`rgit_object::Object::parse`]).
-    pub fn parse(&self, hash: HashKind) -> Result<Object, rgit_object::Error> {
-        Object::parse(self.kind, hash, &self.data)
-    }
-}
+pub use rgit_object::RawObject;
 
 /// A source of objects.
 ///
@@ -43,7 +21,7 @@ impl RawObject {
 ///
 /// `Ok(None)` means "not in this store". An `Err` means the store has the
 /// object but cannot deliver it intact; [`crate::ObjectDatabase`] then
-/// reports the error and tries the remaining stores.
+/// tries the remaining stores (see there for how errors are reported).
 pub trait ObjectStore: Send + Sync + fmt::Debug {
     /// The hash kind of the ids in this store.
     fn hash_kind(&self) -> HashKind;
@@ -58,6 +36,29 @@ pub trait ObjectStore: Send + Sync + fmt::Debug {
 
     /// The whole object.
     fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error>;
+
+    /// [`read`](ObjectStore::read), passing problems with single copies
+    /// that the store skipped on its own (a store holding several copies,
+    /// such as a set of packs) to `report`. The default calls `read`.
+    fn read_reporting(
+        &self,
+        oid: &ObjectId,
+        report: &mut dyn FnMut(&Error),
+    ) -> Result<Option<RawObject>, Error> {
+        let _ = report;
+        self.read(oid)
+    }
+
+    /// [`header`](ObjectStore::header) with skipped copies passed to
+    /// `report` (see [`read_reporting`](ObjectStore::read_reporting)).
+    fn header_reporting(
+        &self,
+        oid: &ObjectId,
+        report: &mut dyn FnMut(&Error),
+    ) -> Result<Option<ObjectHeader>, Error> {
+        let _ = report;
+        self.header(oid)
+    }
 
     /// Call `f` for every object id in the store that starts with `prefix`
     /// (in any order; duplicates are allowed).
