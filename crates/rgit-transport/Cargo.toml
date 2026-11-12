@@ -1,0 +1,12 @@
+[package]
+name = "rgit-transport"
+description = "Transports (file, SSH) and credentials for rgit, plus the transport trait smart HTTP builds on (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-protocol = { path = "../rgit-protocol" }
+thiserror = "2"
