@@ -12,6 +12,7 @@ use rgit_object::ObjectKind;
 use rgit_odb::{LooseOptions, LooseStore};
 use rgit_pack::{DeltaBaseCache, PackSet};
 use rgit_refs::files::{FilesOptions, FilesStore};
+use rgit_refs::reflog::{Committer, FilesReflog, ReflogWriter};
 use rgit_refs::{LogAllRefUpdates, RefStore};
 use rgit_repo::Setup;
 
@@ -208,15 +209,11 @@ impl Revs {
     }
 }
 
-/// Hooks for reference updates from the command line: object checks and a
-/// minimal reflog writer (append and delete).
-///
-/// The full reflog support of #30 (`ReflogWriter`) replaces the writer
-/// part once it is on `main`.
+/// Hooks for reference updates from the command line: object checks, and
+/// reflog entries through [`ReflogWriter`] (#30).
 pub struct UpdateHooks<'a> {
     objects: &'a Objects,
-    git_dir: std::path::PathBuf,
-    ident: Option<Vec<u8>>,
+    writer: Option<ReflogWriter>,
     store: FilesStore,
     /// References that become symbolic: their entry is written even when
     /// the resolved value stays the same.
@@ -227,18 +224,22 @@ impl<'a> UpdateHooks<'a> {
     /// Hooks for the repository of `setup`.
     pub fn new(setup: &Setup, config: &ConfigSet, objects: &'a Objects) -> Self {
         let env = SystemEnv::default();
-        let ident = rgit_ident::IdentConfig::from_config(config)
+        let committer = rgit_ident::IdentConfig::from_config(config)
             .ok()
             .and_then(|ic| {
                 rgit_ident::Resolver::new(&ic, &env)
                     .ident(rgit_ident::Role::Committer, rgit_ident::Strictness::Lenient)
                     .ok()
             })
-            .map(|id| id.to_bstring().to_vec());
+            .map(|id| Committer::new(&id.name, &id.email, id.time, id.tz));
+        let logs = FilesReflog::new(
+            setup.absolute_git_dir(),
+            setup.cwd.join(&setup.common_dir),
+            setup.format.object_format,
+        );
         UpdateHooks {
             objects,
-            git_dir: setup.cwd.join(&setup.common_dir),
-            ident,
+            writer: committer.map(|c| ReflogWriter::new(logs, c)),
             store: ref_store(setup, config),
             symbolic: Default::default(),
         }
@@ -248,15 +249,6 @@ impl<'a> UpdateHooks<'a> {
     pub fn mark_symbolic(&mut self, name: &str) {
         self.symbolic.insert(name.to_owned());
     }
-}
-
-/// Folds whitespace runs of a reflog message into single spaces and drops
-/// leading and trailing whitespace.
-fn normalize_reflog_message(msg: &str) -> String {
-    msg.split([' ', '\t', '\n', '\r'])
-        .filter(|w| !w.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 impl rgit_refs::RefHooks for UpdateHooks<'_> {
@@ -271,12 +263,8 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
     }
 
     fn reflog_append(&mut self, update: &rgit_refs::ReflogUpdate) -> Result<(), String> {
-        use std::io::Write;
-        let path = self.git_dir.join("logs").join(&update.name);
-        if !update.create && !path.is_file() {
-            return Ok(());
-        }
-        // A dangling reference that stays dangling gets no entry.
+        // A symbolic update to a dangling target, or a dangling reference
+        // that stays dangling, gets no entry.
         if update.new.is_null() && (update.old.is_null() || self.symbolic.contains(&update.name)) {
             return Ok(());
         }
@@ -287,45 +275,15 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
         {
             return Ok(());
         }
-        let Some(ident) = &self.ident else {
-            return Ok(());
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        match &mut self.writer {
+            Some(w) => w.reflog_append(update),
+            None => Ok(()),
         }
-        let mut line = Vec::new();
-        line.extend_from_slice(update.old.to_hex().as_bytes());
-        line.push(b' ');
-        line.extend_from_slice(update.new.to_hex().as_bytes());
-        line.push(b' ');
-        line.extend_from_slice(ident);
-        let msg = normalize_reflog_message(&update.message);
-        if !msg.is_empty() {
-            line.push(b'\t');
-            line.extend_from_slice(msg.as_bytes());
-        }
-        line.push(b'\n');
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .and_then(|mut f| f.write_all(&line))
-            .map_err(|e| format!("unable to append to '{}': {e}", path.display()))
     }
 
     fn reflog_delete(&mut self, name: &str) {
-        let path = self.git_dir.join("logs").join(name);
-        let _ = std::fs::remove_file(&path);
-        let logs = self.git_dir.join("logs").join("refs");
-        let mut dir = path.parent().map(Path::to_path_buf);
-        while let Some(d) = dir {
-            if d == logs || !d.starts_with(&logs) || d.parent() == Some(logs.as_path()) {
-                break;
-            }
-            if std::fs::remove_dir(&d).is_err() {
-                break;
-            }
-            dir = d.parent().map(Path::to_path_buf);
+        if let Some(w) = &mut self.writer {
+            w.reflog_delete(name);
         }
     }
 }
