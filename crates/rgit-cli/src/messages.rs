@@ -22,6 +22,7 @@ pub mod status;
 pub mod update_index;
 pub mod update_ref;
 pub mod var;
+pub mod write_tree;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
 /// tests compare it).
