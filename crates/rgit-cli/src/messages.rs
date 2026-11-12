@@ -17,6 +17,7 @@ pub mod pack_objects;
 pub mod pack_refs;
 pub mod reflog;
 pub mod rev_list;
+pub mod rm;
 pub mod show_ref;
 pub mod update_index;
 pub mod update_ref;
