@@ -108,78 +108,75 @@ fn object_header() {
     }
 }
 
-/// The first 320 bytes of `shattered-1.pdf` (Stevens et al., "The first
-/// collision for full SHA-1", 2017, <https://shattered.io>): a 192 byte
-/// prefix followed by the two near-collision blocks. That is enough to
-/// trigger collision detection.
-const SHATTERED_1_PREFIX: &str = concat!(
-    "255044462d312e330a25e2e3cfd30a0a0a312030206f626a0a3c3c2f57696474",
-    "682032203020522f4865696768742033203020522f547970652034203020522f",
-    "537562747970652035203020522f46696c7465722036203020522f436f6c6f72",
-    "53706163652037203020522f4c656e6774682038203020522f42697473506572",
-    "436f6d706f6e656e7420383e3e0a73747265616d0affd8fffe00245348412d31",
-    "20697320646561642121212121852fec092339759c39b1a1c63c4c97e1fffe01",
-    "7346dc9166b67e118f029ab621b2560ff9ca67cca8c7f85ba84c79030c2b3de2",
-    "18f86db3a90901d5df45c14f26fedfb3dc38e96ac22fe7bd728f0e45bce046d2",
-    "3c570feb141398bb552ef5a0a82be331fea48037b8b5d71f0e332edf93ac3500",
-    "eb4ddc0decc1a864790c782c76215660dd309791d06bd0af3f98cda4bc4629b1",
-);
+// SHAttered (Stevens et al., "The first collision for full SHA-1", 2017,
+// <https://shattered.io>). The PDF is not part of this repository: it is
+// read from `RGIT_SHATTERED_PDF` or downloaded once into the cargo target
+// directory. Without either (offline), these tests skip with a message.
 
-fn shattered_prefix() -> Vec<u8> {
-    (0..SHATTERED_1_PREFIX.len() / 2)
-        .map(|i| u8::from_str_radix(&SHATTERED_1_PREFIX[2 * i..2 * i + 2], 16).unwrap())
-        .collect()
+const SHATTERED_URL: &str = "https://shattered.io/static/shattered-1.pdf";
+const SHATTERED_SHA1: &str = "38762cf7f55934b34d179ae6a4c80cadccbb7f0a";
+
+fn shattered_pdf() -> Option<Vec<u8>> {
+    if let Some(path) = std::env::var_os("RGIT_SHATTERED_PDF") {
+        return Some(std::fs::read(path).expect("read RGIT_SHATTERED_PDF"));
+    }
+    // Tests run as threads of one process: download at most once.
+    static DOWNLOAD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = DOWNLOAD.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("shattered-1.pdf");
+    if !cache.exists() {
+        let tmp = cache.with_extension(format!("part{}", std::process::id()));
+        let ok = std::process::Command::new("curl")
+            .args(["-fsSL", "--max-time", "60", "-o"])
+            .arg(&tmp)
+            .arg(SHATTERED_URL)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok || std::fs::rename(&tmp, &cache).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            eprintln!(
+                "skipping: shattered-1.pdf unavailable (offline or no curl); \
+                 set RGIT_SHATTERED_PDF=<path> to run"
+            );
+            return None;
+        }
+    }
+    Some(std::fs::read(&cache).expect("read cached shattered-1.pdf"))
 }
 
 #[test]
-fn shattered_prefix_is_detected() {
-    let data = shattered_prefix();
-    assert_eq!(data.len(), 320);
+fn shattered_full_pdf_is_detected() {
+    let Some(data) = shattered_pdf() else { return };
     let err = hash(HashKind::Sha1, &data).unwrap_err();
-    // The reported id is the plain SHA-1 of the input.
-    assert_eq!(err.id.to_hex(), "f92d74e3874587aaf443d1db961d4e26dde13e9c");
+    // The reported id is the plain SHA-1 of the input (t0013 expectation).
+    assert_eq!(err.id, SHATTERED_SHA1.parse::<ObjectId>().unwrap());
     assert_eq!(
         err.to_string(),
-        format!(
-            "{}f92d74e3874587aaf443d1db961d4e26dde13e9c",
-            messages::COLLISION
-        )
+        format!("{}{SHATTERED_SHA1}", messages::COLLISION)
     );
     assert!(err.to_string().contains("collision"));
-
-    // Without the attack blocks nothing is detected.
-    assert!(hash(HashKind::Sha1, &data[..256]).is_ok());
     // SHA-256 is not affected.
     assert!(hash(HashKind::Sha256, &data).is_ok());
 }
 
 #[test]
-fn shattered_prefix_as_blob_is_not_detected() {
-    // The object header shifts the input off the attack's block alignment
-    // and chaining value, so `git hash-object` on the PDFs succeeds; so must we.
-    let data = shattered_prefix();
-    assert!(hash_object(HashKind::Sha1, "blob", &data).is_ok());
+fn shattered_prefix_is_detected() {
+    let Some(data) = shattered_pdf() else { return };
+    // The 192 byte common prefix plus both near-collision blocks suffice.
+    let err = hash(HashKind::Sha1, &data[..320]).unwrap_err();
+    assert_eq!(err.id.to_hex(), "f92d74e3874587aaf443d1db961d4e26dde13e9c");
+    // Without the second attack block nothing is detected.
+    assert!(hash(HashKind::Sha1, &data[..256]).is_ok());
 }
 
-/// The full PDF is not part of this repository. Set `RGIT_SHATTERED_PDF`
-/// to the path of `shattered-1.pdf` to run this check (t0013 expectations).
 #[test]
-fn shattered_full_pdf() {
-    let Some(path) = std::env::var_os("RGIT_SHATTERED_PDF") else {
-        eprintln!("RGIT_SHATTERED_PDF not set, skipping");
-        return;
-    };
-    let data = std::fs::read(path).unwrap();
-    let err = hash(HashKind::Sha1, &data).unwrap_err();
-    assert_eq!(
-        err.id,
-        "38762cf7f55934b34d179ae6a4c80cadccbb7f0a"
-            .parse::<ObjectId>()
-            .unwrap()
-    );
-    // `git hash-object shattered-1.pdf` (blob header) succeeds with this id.
+fn shattered_as_blob_is_not_detected() {
+    let Some(data) = shattered_pdf() else { return };
+    // The object header shifts the input off the attack's chaining value, so
+    // `git hash-object shattered-1.pdf` succeeds with this id; so must we.
     assert_eq!(
         hash_object(HashKind::Sha1, "blob", &data).unwrap().to_hex(),
         "ba9aaa145ccd24ef760cf31c74d8f7ca1a2e47b0"
     );
+    assert!(hash_object(HashKind::Sha1, "blob", &data[..320]).is_ok());
 }
