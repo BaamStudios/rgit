@@ -1,6 +1,6 @@
 [package]
-name = "baam-cli"
-description = "baam command-line interface"
+name = "rgit-cli"
+description = "rgit: unofficial clean-room reimplementation of git in Rust (not affiliated with the Git project)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "baam"
+name = "rgit"
 path = "src/main.rs"
 
 [dependencies]

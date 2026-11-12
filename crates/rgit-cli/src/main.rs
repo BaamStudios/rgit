@@ -2,11 +2,12 @@ fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("--version") | Some("version") => {
-            println!("baam version {}", env!("CARGO_PKG_VERSION"));
+            println!("rgit version {}", env!("CARGO_PKG_VERSION"));
+            println!("rgit is an independent reimplementation, not the official git.");
         }
         _ => {
             eprintln!(
-                "baam: nothing implemented yet, see https://github.com/BaamStudios/baam/issues"
+                "rgit: nothing implemented yet, see https://github.com/BaamStudios/rgit/issues"
             );
             std::process::exit(1);
         }
