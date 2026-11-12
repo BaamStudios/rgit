@@ -1,17 +1,30 @@
 # Third-party notices
 
 rgit includes or adapts code from the following projects. Their licenses require
-keeping these notices.
+keeping these notices. Files adapted from them carry a header comment naming the
+original file.
 
 ## gitoxide
 
 Source: https://github.com/GitoxideLabs/gitoxide
-License: MIT OR Apache-2.0 (rgit uses it under the MIT license)
+License: MIT OR Apache-2.0 (used here under the MIT license)
 
-Copyright (c) 2018-2026 The gitoxide contributors (Sebastian Thiel and others)
+```text
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files, to deal in the Software
-without restriction, subject to the conditions of the MIT License (see LICENSE).
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-Files adapted from gitoxide carry a header comment naming the original file.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
