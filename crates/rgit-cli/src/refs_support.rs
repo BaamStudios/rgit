@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use rgit_config::{CommandLine, ConfigSet, LoadOptions, SystemEnv};
+use rgit_config::{ConfigSet, SystemEnv};
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::ObjectKind;
 use rgit_odb::{LooseOptions, LooseStore};
@@ -16,35 +16,15 @@ use rgit_refs::{LogAllRefUpdates, RefStore};
 use rgit_repo::Setup;
 
 use crate::Context;
-use crate::repo;
 use crate::revisions;
 use rgit_revwalk::revision::{
     Flags, Options as RevOptions, Repo, Resolver, WorkTreeInfo, WorkTreeLookup,
 };
 
-/// The configuration of the repository (all standard scopes).
-pub fn load_config(ctx: &Context, setup: &Setup) -> ConfigSet {
-    let env = SystemEnv::default();
-    let opts = LoadOptions {
-        env: &env,
-        repo: None,
-        includes: true,
-    };
-    let repo_cfg = rgit_config::sources::RepoConfig {
-        common_dir: setup.common_dir.clone(),
-        git_dir: setup.git_dir.clone(),
-        worktree_config: None,
-    };
-    let cl: CommandLine = repo::command_line(ctx);
-    let mut set = ConfigSet::new();
-    let _ = rgit_config::sources::load_standard(
-        opts,
-        Some(&repo_cfg),
-        &cl,
-        rgit_config::sources::ScopeFilter::default(),
-        &mut set,
-    );
-    set
+/// The configuration of the repository (all standard scopes, with the
+/// repository facts for `includeIf`).
+pub fn load_config(ctx: &Context, setup: &Setup) -> Result<ConfigSet, crate::Die> {
+    revisions::load_config(ctx, setup)
 }
 
 /// The files reference store of the repository, with

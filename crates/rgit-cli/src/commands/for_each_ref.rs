@@ -200,7 +200,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     let setup = repo::setup(ctx, Mode::Required)?;
-    let config = refs_support::load_config(ctx, &setup);
+    let config = refs_support::load_config(ctx, &setup)?;
     let store = refs_support::ref_store(&setup, &config);
     let objects = Objects::open(&setup);
     let revs = refs_support::Revs::new(ctx, &setup)?;
