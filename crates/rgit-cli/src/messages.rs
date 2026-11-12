@@ -49,6 +49,10 @@ pub fn invalid_config_format(spec: &str) -> String {
     format!("invalid config format: {spec}")
 }
 
+pub fn missing_env_name_for_config(key: &str) -> String {
+    format!("missing environment variable name for configuration '{key}'")
+}
+
 pub fn missing_env_for_config(var: &str, key: &str) -> String {
     format!("missing environment variable '{var}' for configuration '{key}'")
 }
