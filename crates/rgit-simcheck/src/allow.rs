@@ -13,6 +13,8 @@
 
 use std::fmt;
 
+use crate::lex::{Kind, Tok};
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Check {
     Code,
@@ -48,6 +50,8 @@ pub enum Reason {
     Allowlist,
     Gitoxide,
     Message,
+    TestExpectation,
+    InterfaceName,
 }
 
 impl fmt::Display for Reason {
@@ -56,8 +60,62 @@ impl fmt::Display for Reason {
             Reason::Allowlist => "allowlist",
             Reason::Gitoxide => "gitoxide provenance header",
             Reason::Message => "user-visible message",
+            Reason::TestExpectation => "expected output in a test",
+            Reason::InterfaceName => "interface name",
         })
     }
+}
+
+/// Files below a `tests/` directory (integration and differential tests).
+pub fn is_test_path(path: &str) -> bool {
+    path.split('/').any(|c| c == "tests")
+}
+
+/// Line ranges of inline test modules (`mod tests { ... }`, or any module
+/// whose name starts with `test`).
+pub fn test_module_ranges(toks: &[Tok]) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 < toks.len() {
+        let is_mod = toks[i].kind == Kind::Ident
+            && toks[i].text == "mod"
+            && toks[i + 1].kind == Kind::Ident
+            && toks[i + 1].text.starts_with("test")
+            && toks[i + 2].text == "{";
+        if !is_mod {
+            i += 1;
+            continue;
+        }
+        let start = toks[i].line;
+        let mut depth = 0usize;
+        let mut j = i + 2;
+        while j < toks.len() {
+            match toks[j].text.as_str() {
+                "{" if toks[j].kind == Kind::Punct => depth += 1,
+                "}" if toks[j].kind == Kind::Punct => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        let end = toks.get(j).or(toks.last()).map_or(start, |t| t.line);
+        out.push((start, end));
+        i = j + 1;
+    }
+    out
+}
+
+/// A literal without whitespace, such as an environment variable, config
+/// key, ref name or path: an interface name that has to be spelled exactly
+/// like git's, not expression.
+pub fn is_interface_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./:=@+".contains(c))
 }
 
 impl Allowlist {
@@ -157,5 +215,17 @@ mod tests {
         assert!(is_message_file("crates/rgit-cli/src/messages.rs"));
         assert!(is_message_file("crates/x/src/messages/refs.rs"));
         assert!(!is_message_file("crates/x/src/mess.rs"));
+        assert!(is_test_path("crates/x/tests/cli.rs"));
+        assert!(!is_test_path("crates/x/src/testsuite.rs"));
+    }
+
+    #[test]
+    fn test_modules_and_interface_names() {
+        let src = "fn a() { \"x\" }\n#[cfg(test)]\nmod tests {\n fn t() { \"y\"; }\n}\nfn b() {}\n";
+        let toks = crate::lex::lex(src, crate::lex::Lang::Rust).toks;
+        assert_eq!(test_module_ranges(&toks), [(3, 5)]);
+        assert!(is_interface_name("GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS"));
+        assert!(is_interface_name("refs/remotes/origin/HEAD"));
+        assert!(!is_interface_name("could not open file"));
     }
 }

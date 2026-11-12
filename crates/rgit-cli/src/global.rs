@@ -94,12 +94,8 @@ pub fn parse(ctx: &mut Context, args: &[String]) -> Result<Action, Die> {
             "--bare" => {
                 ctx.bare = true;
                 if ctx.git_dir.is_none() && std::env::var_os("GIT_DIR").is_none() {
-                    let cwd = std::env::current_dir().map_err(|e| {
-                        Die::Fatal(format!(
-                            "unable to get current working directory: {}",
-                            strerror(&e)
-                        ))
-                    })?;
+                    let cwd = std::env::current_dir()
+                        .map_err(|e| Die::Fatal(crate::messages::cannot_get_cwd(&strerror(&e))))?;
                     ctx.git_dir = Some(cwd.to_string_lossy().into_owned());
                 }
             }

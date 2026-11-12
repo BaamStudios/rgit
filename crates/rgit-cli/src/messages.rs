@@ -61,5 +61,12 @@ pub fn not_a_git_command(cmd: &str) -> String {
     format!("git: '{cmd}' is not a git command. See 'git --help'.")
 }
 
+pub fn cannot_get_cwd(err: &str) -> String {
+    format!("unable to get current working directory: {err}")
+}
+
+/// `version --build-options` when the build has no commit id.
+pub const NO_BUILD_COMMIT: &str = "no commit associated with this build";
+
 /// Second line of `version` when not invoked as `git`.
 pub const NOT_OFFICIAL_GIT: &str = "rgit is an independent reimplementation, not the official git.";

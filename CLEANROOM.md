@@ -81,7 +81,14 @@ Do not open the upstream lines it names.
 (ported, MIT/Apache-2.0); string literals in a `messages.rs` file or below a
 `messages/` directory, and literals that start with `fatal: `, `error: `,
 `warning: `, `hint: ` or `usage: ` (user-visible messages may be reproduced
-verbatim, see "Decisions on borderline material").
+verbatim, see "Decisions on borderline material"). Also allowed: string literals
+in test code (files below a `tests/` directory and inline `mod tests { ... }`
+modules), because tests compare rgit's output with git's observable output and
+spell the expected messages verbatim; and literals without whitespace (environment
+variables, config keys, ref names, paths), which are interface names.
+
+Messages in implementation code belong in the crate's `messages.rs` (or a
+`messages/` module); a verbatim message elsewhere is a finding until it is moved.
 
 **Running it.**
 
@@ -105,8 +112,9 @@ about 2 million normalised tokens): there they yield 4 code, 1 comment and about
 20 string findings, which is the expected review load for a code base of that size.
 
 **CI.** The workflow `License guard` runs on every pull request, weekly and on
-demand. It is non-blocking for now (`continue-on-error`); the report is in the
-job summary and as artifact `simcheck-report`.
+demand. It is blocking: a finding fails the job, and with the job set as a
+required check the PR cannot be merged until the finding is resolved as below.
+The report is in the job summary and as artifact `simcheck-report`.
 
 **Procedure for a finding.**
 

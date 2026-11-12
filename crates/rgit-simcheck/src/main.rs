@@ -338,6 +338,7 @@ fn scan(
     let mut rgit_hay = Haystack::new();
     let mut rgit_paths = Vec::new();
     let mut gitoxide = Vec::new();
+    let mut rgit_tests: Vec<TestLines> = Vec::new();
     let mut tokens = 0;
     for (fi, f) in files.iter().enumerate() {
         let src = read_lossy(f).map_err(|e| format!("{}: {e}", f.display()))?;
@@ -373,6 +374,11 @@ fn scan(
                 });
             }
         }
+        let tests = TestLines {
+            whole_file: allow::is_test_path(&path),
+            modules: allow::test_module_ranges(&lexed.toks),
+        };
+        let in_test = |line| tests.contains(line);
         for (lit, line) in literals(&lexed.toks, Lang::Rust) {
             if strings::comparable(&lit, o.string_min) {
                 let locs = up.literals.find_all(&lit, 4);
@@ -382,9 +388,8 @@ fn scan(
                         &path,
                         line,
                         &lit,
-                        &up.paths[d],
-                        uline,
-                        more,
+                        (&up.paths[d], uline, more),
+                        in_test(line),
                         allowlist,
                     ));
                 }
@@ -392,6 +397,7 @@ fn scan(
             rgit_hay.add(&lit, fi, line);
         }
         rgit_paths.push(path);
+        rgit_tests.push(tests);
     }
     // Long upstream literals contained in a (longer) rgit literal.
     for (lit, d, uline) in &up.long_literals {
@@ -407,9 +413,8 @@ fn scan(
                 path,
                 line,
                 lit,
-                &up.paths[*d],
-                *uline,
-                "",
+                (&up.paths[*d], *uline, ""),
+                rgit_tests[fi].contains(line),
                 allowlist,
             ));
         }
@@ -432,17 +437,35 @@ fn scan(
     Ok((findings, files.len(), tokens))
 }
 
+/// Where a file's test code is: the whole file (below `tests/`) or inline
+/// test modules.
+struct TestLines {
+    whole_file: bool,
+    modules: Vec<(u32, u32)>,
+}
+
+impl TestLines {
+    fn contains(&self, line: u32) -> bool {
+        self.whole_file || self.modules.iter().any(|r| r.0 <= line && line <= r.1)
+    }
+}
+
 fn string_finding(
     path: &str,
     line: u32,
     lit: &str,
-    up_path: &str,
-    up_line: u32,
-    more: &str,
+    (up_path, up_line, more): (&str, u32, &str),
+    in_test: bool,
     allowlist: &Allowlist,
 ) -> Finding {
     let allowed = if allow::is_message_file(path) || allow::is_message_literal(lit) {
         Some(Reason::Message)
+    } else if in_test {
+        // Tests compare rgit's output with git's observable output, so they
+        // spell expected messages verbatim (CLEANROOM.md, "License guard").
+        Some(Reason::TestExpectation)
+    } else if allow::is_interface_name(lit) {
+        Some(Reason::InterfaceName)
     } else if allowlist.allows(Check::String, path, (line, line)) {
         Some(Reason::Allowlist)
     } else {

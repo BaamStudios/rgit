@@ -9,31 +9,34 @@
 /// Decodes a number from the start of `data`; returns it and the number of
 /// bytes used, or `None` if the data ends early or the value overflows.
 pub(crate) fn decode(data: &[u8]) -> Option<(usize, usize)> {
-    let mut iter = data.iter();
-    let mut c = *iter.next()?;
-    let mut value = usize::from(c & 0x7f);
-    let mut used = 1;
-    while c & 0x80 != 0 {
-        c = *iter.next()?;
-        used += 1;
-        value = value.checked_add(1)?.checked_mul(128)? | usize::from(c & 0x7f);
+    let mut acc: Option<usize> = None;
+    for (n, &byte) in data.iter().enumerate() {
+        let group = usize::from(byte & 0x7f);
+        let value = match acc {
+            None => group,
+            // Every continuation byte stands for "one more, times 128".
+            Some(prev) => prev.checked_add(1)?.checked_mul(128)? + group,
+        };
+        if byte & 0x80 == 0 {
+            return Some((value, n + 1));
+        }
+        acc = Some(value);
     }
-    Some((value, used))
+    None
 }
 
 /// Appends the encoding of `value` to `out`.
-pub(crate) fn encode(mut value: usize, out: &mut Vec<u8>) {
-    let mut buf = [0u8; 16];
-    let mut pos = buf.len() - 1;
-    buf[pos] = (value & 0x7f) as u8;
-    value >>= 7;
-    while value != 0 {
-        value -= 1;
-        pos -= 1;
-        buf[pos] = 0x80 | (value & 0x7f) as u8;
-        value >>= 7;
+pub(crate) fn encode(value: usize, out: &mut Vec<u8>) {
+    // Build the 7-bit groups from the least significant end, then emit
+    // them most significant first.
+    let mut groups = vec![(value % 128) as u8];
+    let mut high = value / 128;
+    while high > 0 {
+        high -= 1;
+        groups.push((high % 128) as u8 | 0x80);
+        high /= 128;
     }
-    out.extend_from_slice(&buf[pos..]);
+    out.extend(groups.into_iter().rev());
 }
 
 #[cfg(test)]

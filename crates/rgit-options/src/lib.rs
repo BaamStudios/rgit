@@ -245,29 +245,21 @@ impl<'a> Parser<'a> {
     fn check_flags(&self) -> Result<(), Exit> {
         let f = &self.flags;
         if f.keep_unknown_opt && f.stop_at_non_option && !f.subcommand_optional {
-            return Err(Self::bug(
-                "STOP_AT_NON_OPTION and KEEP_UNKNOWN_OPT don't go together",
-            ));
+            return Err(Self::bug(messages::BUG_STOP_AND_KEEP_UNKNOWN));
         }
         if self.opts.iter().any(Opt::is_subcommand) {
             if f.stop_at_non_option {
-                return Err(Self::bug(
-                    "subcommands are incompatible with PARSE_OPT_STOP_AT_NON_OPTION",
-                ));
+                return Err(Self::bug(messages::BUG_SUBCOMMAND_STOP));
             }
             if f.keep_unknown_opt && !f.subcommand_optional {
-                return Err(Self::bug(
-                    "subcommands are incompatible with PARSE_OPT_KEEP_UNKNOWN_OPT unless in combination with PARSE_OPT_SUBCOMMAND_OPTIONAL",
-                ));
+                return Err(Self::bug(messages::BUG_SUBCOMMAND_KEEP_UNKNOWN));
             }
             if f.keep_dashdash && !f.subcommand_optional {
-                return Err(Self::bug(
-                    "subcommands are incompatible with PARSE_OPT_KEEP_DASHDASH unless in combination with PARSE_OPT_SUBCOMMAND_OPTIONAL",
-                ));
+                return Err(Self::bug(messages::BUG_SUBCOMMAND_KEEP_DASHDASH));
             }
         }
         if self.opts.iter().filter(|o| o.is_number()).count() > 1 {
-            return Err(Self::bug("more than one number option"));
+            return Err(Self::bug(messages::BUG_MULTIPLE_NUMBER_OPTIONS));
         }
         Ok(())
     }
