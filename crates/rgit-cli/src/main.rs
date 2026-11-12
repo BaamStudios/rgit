@@ -7,6 +7,7 @@
 mod abbrev;
 mod commands;
 mod context;
+mod external;
 mod format;
 mod global;
 mod history;
@@ -133,10 +134,13 @@ fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
             rgit_trace::trace_builtin(&argv);
             (cmd.run)(ctx, &argv)
         }
-        None => {
-            eprintln!("{}", messages::not_a_git_command(&name));
-            Ok(1)
-        }
+        None => match external::run(ctx, &argv) {
+            Some(result) => result,
+            None => {
+                eprintln!("{}", messages::not_a_git_command(&name));
+                Ok(1)
+            }
+        },
     }
 }
 
