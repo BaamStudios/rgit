@@ -68,7 +68,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     match target {
         Some(t) => {
-            let t = if short.get() { shorten(&t) } else { &t };
+            let t = if short.get() {
+                shorten(ctx, &setup, &t)?
+            } else {
+                t
+            };
             println!("{t}");
             Ok(0)
         }
@@ -160,14 +164,32 @@ fn read_symref(setup: &rgit_repo::Setup, name: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// `--short`: drop the namespace prefix.
-fn shorten(name: &str) -> &str {
-    for p in ["refs/heads/", "refs/tags/", "refs/remotes/", "refs/"] {
-        if let Some(s) = name.strip_prefix(p) {
-            if !s.is_empty() {
-                return s;
-            }
-        }
-    }
-    name
+/// `--short`: the shortest name that still resolves to `name` without
+/// being taken by a higher-priority rule (`refs/remotes/origin/HEAD` ->
+/// `origin`), like `rev-parse --abbrev-ref` in loose mode.
+fn shorten(ctx: &Context, setup: &rgit_repo::Setup, name: &str) -> Result<String, Die> {
+    use crate::revisions::{self, Config, Objects, Refs};
+    use rgit_revwalk::revision::{Repo, Resolver};
+
+    let kind = setup.format.object_format;
+    let config = revisions::load_config(ctx, setup)?;
+    let opts = revisions::options(&config, kind)?;
+    let shallow = setup.common_dir.join("shallow");
+    let objects = Objects::new(revisions::objects_dir(setup), kind, &shallow);
+    let refs = Refs::new(setup, kind);
+    let cfg = Config(&config);
+    let resolver = Resolver::new(
+        Repo {
+            objects: &objects,
+            refs: &refs,
+            config: &cfg,
+            index: None,
+            work_tree: None,
+            work_tree_info: None,
+        },
+        opts,
+    );
+    resolver
+        .shorten_ref(name, false)
+        .map_err(|e| Die::Fatal(e.to_string()))
 }
