@@ -10,6 +10,7 @@ mod global;
 mod messages;
 mod refs_support;
 mod repo;
+mod revisions;
 
 use std::io::Write;
 

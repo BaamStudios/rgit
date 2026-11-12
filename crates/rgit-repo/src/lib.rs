@@ -12,6 +12,8 @@
 //!   extensions are refused like git does, known ones rgit cannot handle yet
 //!   are refused before anything is touched.
 //! - [`layout`]: what a repository directory looks like, `.git` files.
+//! - [`init`]: creating and reinitialising repositories (`git init`),
+//!   with rgit's own default template.
 //!
 //! Behaviour follows git's documentation (`git(1)` ENVIRONMENT,
 //! `gitrepository-layout(5)`, `git-config(1)` `safe.*`/`core.*`/
@@ -21,6 +23,7 @@
 
 mod error;
 pub mod format;
+pub mod init;
 pub mod layout;
 mod messages;
 pub mod path;
