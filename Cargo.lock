@@ -517,6 +517,7 @@ dependencies = [
 name = "rgit-object"
 version = "0.1.0"
 dependencies = [
+ "rgit-difftest",
  "rgit-hash",
  "thiserror",
 ]
