@@ -20,6 +20,7 @@ pub mod read_tree;
 pub mod reflog;
 pub mod reset;
 pub mod rev_list;
+pub mod rm;
 pub mod show_ref;
 pub mod status;
 pub mod update_index;
