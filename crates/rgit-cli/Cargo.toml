@@ -1,0 +1,14 @@
+[package]
+name = "rgit-cli"
+description = "rgit command-line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rgit"
+path = "src/main.rs"
+
+[dependencies]

@@ -1,0 +1,3 @@
+/target
+# Upstream git source: local reference only, never committed (GPL-2.0, see CLEANROOM.md)
+/upstream/
