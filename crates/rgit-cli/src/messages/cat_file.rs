@@ -95,3 +95,8 @@ pub fn only_for_buffer(cmd: &str) -> String {
 pub fn cat_file_not_supported(what: &str) -> String {
     format!("rgit cat-file: {what} is not supported yet")
 }
+
+/// Writing the output failed (e.g. a full disk).
+pub fn unable_to_write_stdout(err: &str) -> String {
+    format!("unable to write to stdout: {err}")
+}

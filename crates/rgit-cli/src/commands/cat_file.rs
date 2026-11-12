@@ -463,6 +463,10 @@ struct Out {
     w: Option<BufWriter<std::io::StdoutLock<'static>>>,
     term: u8,
     buffer: bool,
+    /// The first write error. Once set, nothing more is written: carrying
+    /// on after a failed (possibly partial) write would silently drop
+    /// bytes from the middle of the stream.
+    err: Option<std::io::Error>,
 }
 
 impl Out {
@@ -471,31 +475,57 @@ impl Out {
             w: Some(BufWriter::with_capacity(65536, std::io::stdout().lock())),
             term,
             buffer,
+            err: None,
         }
     }
 
-    fn w(&mut self) -> &mut BufWriter<std::io::StdoutLock<'static>> {
-        self.w.as_mut().expect("writer")
+    fn write(&mut self, b: &[u8]) {
+        if self.err.is_some() {
+            return;
+        }
+        if let Some(w) = self.w.as_mut() {
+            if let Err(e) = w.write_all(b) {
+                self.err = Some(e);
+            }
+        }
     }
 
     fn put(&mut self, b: &[u8]) {
-        let _ = self.w().write_all(b);
+        self.write(b);
     }
 
     fn end(&mut self) {
         let t = self.term;
-        let _ = self.w().write_all(&[t]);
+        self.write(&[t]);
     }
 
-    /// Flush after a request unless `--buffer`.
-    fn done(&mut self) {
-        if !self.buffer {
-            let _ = self.w().flush();
+    /// The first write error as git's fatal message.
+    fn check(&self) -> Result<(), Die> {
+        match &self.err {
+            Some(e) => Err(Die::Fatal(msg::unable_to_write_stdout(
+                &crate::global::strerror(e),
+            ))),
+            None => Ok(()),
         }
     }
 
-    fn flush(&mut self) {
-        let _ = self.w().flush();
+    /// Flush after a request unless `--buffer`.
+    fn done(&mut self) -> Result<(), Die> {
+        if !self.buffer {
+            return self.flush();
+        }
+        self.check()
+    }
+
+    fn flush(&mut self) -> Result<(), Die> {
+        if self.err.is_none() {
+            if let Some(w) = self.w.as_mut() {
+                if let Err(e) = w.flush() {
+                    self.err = Some(e);
+                }
+            }
+        }
+        self.check()
     }
 
     /// Drop buffered output without writing it (test hook of git:
@@ -529,7 +559,7 @@ fn batch_stdin(repo: &mut Repo, opts: &BatchOptions) -> CmdResult {
         }
         if opts.kind == Batch::Command {
             if let Err(d) = command(repo, opts, &line, &mut out) {
-                out.flush();
+                let _ = out.flush();
                 return Err(d);
             }
             continue;
@@ -545,10 +575,10 @@ fn batch_stdin(repo: &mut Repo, opts: &BatchOptions) -> CmdResult {
             contents: opts.kind == Batch::Contents,
         };
         if let Err(d) = one(repo, opts, &req, &mut out) {
-            out.flush();
+            let _ = out.flush();
             return Err(d);
         }
-        out.done();
+        out.done()?;
     }
     if opts.kind == Batch::Command
         && opts.buffer
@@ -556,7 +586,7 @@ fn batch_stdin(repo: &mut Repo, opts: &BatchOptions) -> CmdResult {
     {
         out.discard();
     } else {
-        out.flush();
+        out.flush()?;
     }
     Ok(0)
 }
@@ -598,7 +628,7 @@ fn command(repo: &mut Repo, opts: &BatchOptions, line: &[u8], out: &mut Out) -> 
                 contents: cmd == b"contents",
             };
             one(repo, opts, &req, out)?;
-            out.done();
+            out.done()?;
         }
         b"flush" => {
             if arg.is_some() {
@@ -607,7 +637,7 @@ fn command(repo: &mut Repo, opts: &BatchOptions, line: &[u8], out: &mut Out) -> 
             if !opts.buffer {
                 return Err(Die::Fatal(msg::only_for_buffer("flush")));
             }
-            out.flush();
+            out.flush()?;
         }
         _ => return Err(Die::Fatal(msg::unknown_command(&text))),
     }
@@ -641,7 +671,7 @@ fn one(repo: &mut Repo, opts: &BatchOptions, req: &Request<'_>, out: &mut Out) -
             return Ok(());
         }
         Err(Failure::Fatal(m)) => {
-            out.flush();
+            let _ = out.flush();
             return Err(Die::Fatal(m));
         }
         Err(Failure::Ambiguous) => {
@@ -745,11 +775,11 @@ fn batch_all(repo: &mut Repo, opts: &BatchOptions) -> CmdResult {
             contents,
         };
         if let Err(d) = show_object(repo, opts, &oid, &oid, None, &req, &mut out) {
-            out.flush();
+            let _ = out.flush();
             return Err(d);
         }
-        out.done();
+        out.done()?;
     }
-    out.flush();
+    out.flush()?;
     Ok(0)
 }
