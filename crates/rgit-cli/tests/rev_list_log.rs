@@ -216,6 +216,9 @@ fn errors() {
         &["rev-list", "-n", "x", "HEAD"],
         &["rev-list", "--skip=y", "HEAD"],
         &["log", "--pretty=bogus"],
+        &["log", "-h"],
+        &["log", "--help-all"],
+        &["rev-list", "-h"],
     ] {
         same(&mut fx, args);
     }

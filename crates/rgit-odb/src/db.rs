@@ -255,12 +255,32 @@ impl ObjectDatabase {
     /// `git cat-file -t` with a corrupt loose and an intact packed copy);
     /// when no copy answers, the first error is returned.
     pub fn header(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
-        self.first_in_stores(false, |s, r| s.header_reporting(oid, r))
+        match self.first_in_stores(false, |s, r| s.header_reporting(oid, r)) {
+            // A delta whose base is corrupt in its pack may still be
+            // readable with a base from another store.
+            Err(e) if e.is_corruption() => match self.read(oid) {
+                Ok(Some(o)) => Ok(Some(o.header())),
+                _ => Err(e),
+            },
+            other => other,
+        }
     }
 
     /// An object's type and content.
     pub fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
-        self.first_in_stores(true, |s, r| s.read_reporting(oid, r))
+        self.first_in_stores(true, |s, r| {
+            // A delta base that is corrupt in this store may have a good
+            // copy in another one (git reads it from there).
+            s.read_with_bases(oid, r, &mut |base| self.base_elsewhere(s, base))
+        })
+    }
+
+    /// Read `base` silently from the stores other than `skip`.
+    fn base_elsewhere(&self, skip: &dyn ObjectStore, base: &ObjectId) -> Option<RawObject> {
+        self.stores
+            .iter()
+            .filter(|s| !std::ptr::addr_eq(s.as_ref() as *const dyn ObjectStore, skip))
+            .find_map(|s| s.read(base).ok().flatten())
     }
 
     /// An object, parsed.

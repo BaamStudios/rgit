@@ -8,6 +8,8 @@ pub mod config;
 pub mod for_each_ref;
 pub mod hash_object;
 pub mod init;
+pub mod ls_files;
+pub mod ls_tree;
 pub mod mktag;
 pub mod mktree;
 pub mod objects;
@@ -16,6 +18,7 @@ pub mod pack_refs;
 pub mod reflog;
 pub mod rev_list;
 pub mod show_ref;
+pub mod update_index;
 pub mod update_ref;
 pub mod var;
 
@@ -193,4 +196,20 @@ pub fn option_requires_argument(opt: &str) -> String {
 
 pub fn unknown_abbrev_ref_mode(mode: &str) -> String {
     format!("unknown mode for --abbrev-ref: {mode}")
+}
+
+pub fn bad_format_open(cmd: &str, element: &str) -> String {
+    format!("bad {cmd} format: element '{element}' does not start with '('")
+}
+
+pub fn bad_format_close(cmd: &str, element: &str) -> String {
+    format!("bad {cmd} format: element '{element}' does not end in ')'")
+}
+
+pub fn bad_format_field(cmd: &str, field: &str) -> String {
+    format!("bad {cmd} format: %{field}")
+}
+
+pub fn abbrev_not_numeric(opt: &str) -> String {
+    format!("option `{opt}' expects a numerical value")
 }

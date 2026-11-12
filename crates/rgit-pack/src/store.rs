@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use rgit_hash::{HashKind, ObjectId, Prefix};
 
-use crate::{DeltaBaseCache, Error, Object, Pack};
+use crate::{DeltaBaseCache, Error, ExternalBase, Object, Pack};
 
 /// The packs in one `objects/pack` directory.
 ///
@@ -164,9 +164,21 @@ impl PackSet {
         cache: &mut DeltaBaseCache,
         report: Report<'_>,
     ) -> Result<Option<Object>, Error> {
-        match self.read_once(id, cache, report, 0)? {
+        self.read_with_fallback(id, cache, report, &mut |_| None)
+    }
+
+    /// [`read`](PackSet::read), with `fallback` asked for delta bases that
+    /// no pack can deliver (e.g. a loose copy of a corrupt packed base).
+    pub fn read_with_fallback(
+        &self,
+        id: &ObjectId,
+        cache: &mut DeltaBaseCache,
+        report: Report<'_>,
+        fallback: ExternalBase<'_>,
+    ) -> Result<Option<Object>, Error> {
+        match self.read_once(id, cache, report, 0, fallback)? {
             Some(o) => Ok(Some(o)),
-            None if self.rescan_if_changed() => self.read_once(id, cache, report, 0),
+            None if self.rescan_if_changed() => self.read_once(id, cache, report, 0, fallback),
             None => Ok(None),
         }
     }
@@ -177,6 +189,7 @@ impl PackSet {
         cache: &mut DeltaBaseCache,
         report: Report<'_>,
         depth: usize,
+        fallback: ExternalBase<'_>,
     ) -> Result<Option<Object>, Error> {
         let packs = self.packs();
         let mut first_failure: Option<PathBuf> = None;
@@ -196,9 +209,10 @@ impl PackSet {
                         return None;
                     }
                     let mut tmp = DeltaBaseCache::new(0);
-                    self.read_once(base, &mut tmp, &mut |_| {}, depth + 1)
-                        .ok()
-                        .flatten()
+                    match self.read_once(base, &mut tmp, &mut |_| {}, depth + 1, &mut |_| None) {
+                        Ok(Some(o)) => Some(o),
+                        _ => fallback(base),
+                    }
                 };
                 pack.read_at(offset, cache, &mut external)
             });

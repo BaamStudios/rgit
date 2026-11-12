@@ -91,10 +91,19 @@ impl ObjectStore for PackStore {
     }
 
     fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, rgit_odb::Error> {
+        self.read_with_bases(oid, &mut |_| {}, &mut |_| None)
+    }
+
+    fn read_with_bases(
+        &self,
+        oid: &ObjectId,
+        _report: &mut dyn FnMut(&rgit_odb::Error),
+        bases: &mut dyn FnMut(&ObjectId) -> Option<RawObject>,
+    ) -> Result<Option<RawObject>, rgit_odb::Error> {
         let mut cache = self.cache.lock().expect("cache lock");
         let obj = self
             .set
-            .read(oid, &mut cache, &mut |_| {})
+            .read_with_fallback(oid, &mut cache, &mut |_| {}, bases)
             .map_err(store_err)?;
         Ok(obj.map(|o| RawObject {
             kind: kind_of(o.kind),

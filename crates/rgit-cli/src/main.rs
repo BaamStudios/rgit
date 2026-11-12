@@ -4,8 +4,10 @@
 //! Behaves as `git` when installed under that name; when invoked as
 //! `git-<cmd>` (e.g. `git-upload-pack`) it runs `<cmd>` directly.
 
+mod abbrev;
 mod commands;
 mod context;
+mod format;
 mod global;
 mod history;
 mod messages;
@@ -15,6 +17,7 @@ mod refs;
 mod refs_support;
 mod repo;
 mod repo_objects;
+mod repository;
 mod revision;
 mod revisions;
 
@@ -126,7 +129,10 @@ fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
         };
     }
     match commands::find(&name) {
-        Some(cmd) => (cmd.run)(ctx, &argv),
+        Some(cmd) => {
+            rgit_trace::trace_builtin(&argv);
+            (cmd.run)(ctx, &argv)
+        }
         None => {
             eprintln!("{}", messages::not_a_git_command(&name));
             Ok(1)
@@ -158,14 +164,17 @@ fn run(args: Vec<String>) -> CmdResult {
 }
 
 fn main() {
+    let start = std::time::Instant::now();
     reset_sigpipe();
     let args: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    let code = match run(args) {
+    let code = match run(args.clone()) {
         Ok(code) => code,
         Err(die) => die.emit(),
     };
     let _ = std::io::stdout().flush();
+    // GIT_TRACE_PERFORMANCE: the whole command line as invoked.
+    rgit_trace::trace_command_performance(start, &args);
     std::process::exit(code);
 }
