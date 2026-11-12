@@ -12,6 +12,7 @@ free of GPL-derived code, every contributor (human or AI agent) follows these ru
 | `upstream/git/t/**` (the git test suite) | Port tests into `conformance/` (GPL-2.0, separate work, never linked into rgit). Run upstream scripts as a black box against `rgit`. Read tests to understand **expected behaviour**. |
 | Public specs and papers (RFCs, zlib/DEFLATE, SHA-1/SHA-256, diff algorithm papers) | Read freely. |
 | Permissively licensed crates (MIT/Apache/BSD/Zlib) | Use as dependencies. |
+| **gitoxide** (`gix-*`, MIT OR Apache-2.0, <https://github.com/GitoxideLabs/gitoxide>) | Read, port and adapt freely. Ported code keeps a header naming the gitoxide source file, and gitoxide's copyright notice is listed in `THIRD-PARTY-NOTICES.md`. |
 
 ## Forbidden
 

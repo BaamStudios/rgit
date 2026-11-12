@@ -31,6 +31,7 @@ written from git's public documentation and from the observable behaviour of the
 | `scripts/fetch-upstream.sh` | Fetches the reference git version into `upstream/git` (not committed) |
 | `upstream/git/` | Local copy of upstream git: documentation, reference binary, test suite |
 | `CLEANROOM.md` | Rules for what sources may be used |
+| `THIRD-PARTY-NOTICES.md` | Copyright notices for adapted code (gitoxide) |
 
 ## Building
 
