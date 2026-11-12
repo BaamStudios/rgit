@@ -91,6 +91,11 @@ pub fn not_a_git_command(cmd: &str) -> String {
     format!("git: '{cmd}' is not a git command. See 'git --help'.")
 }
 
+/// An external `git-<cmd>` was killed by a signal.
+pub fn died_of_signal(prog: &str, sig: i32) -> String {
+    format!("{prog} died of signal {sig}")
+}
+
 pub fn cannot_get_cwd(err: &str) -> String {
     format!("unable to get current working directory: {err}")
 }
