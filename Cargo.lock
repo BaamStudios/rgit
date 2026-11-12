@@ -219,6 +219,14 @@ name = "rgit-cli"
 version = "0.1.0"
 
 [[package]]
+name = "rgit-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-hash"
 version = "0.1.0"
 dependencies = [
