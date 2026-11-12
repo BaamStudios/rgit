@@ -1,0 +1,12 @@
+[package]
+name = "rgit-version"
+description = "Version string and protocol agent of rgit (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Safe uname(2) for the operating system part of the agent string.
+rustix = { version = "1", default-features = false, features = ["std", "system"] }
