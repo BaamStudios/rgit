@@ -2,6 +2,7 @@
 //! User-visible messages of the front end, in one place for review
 //! (see CLEANROOM.md, "User-visible messages").
 
+pub mod branch;
 pub mod cat_file;
 pub mod check_ignore;
 pub mod config;
