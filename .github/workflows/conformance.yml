@@ -101,8 +101,9 @@ jobs:
         run: cargo build --locked --bin rgit
       - name: Run conformance suite and regression gate
         run: |
-          conformance/run --mode both --rgit target/debug/rgit \
-            --check --check-status
+          # Lead decision 2026-11-12: only regressions (pass -> fail) fail the build.
+          # STATUS.md/baseline are refreshed in rgit-conformance, not per rgit PR.
+          conformance/run --mode both --rgit target/debug/rgit --check
       - name: Self-test of the regression gate
         run: conformance/selftest/gate.sh
       - name: Summary
