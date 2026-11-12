@@ -29,10 +29,12 @@ pub mod options;
 mod smart;
 mod tls;
 mod trace;
+mod transport;
 pub mod url;
 
 pub use auth::{Credential, CredentialProvider};
 pub use error::{Error, Result, Transport};
 pub use options::{FollowRedirects, HttpOptions, HttpVersion, Proxy};
 pub use smart::{Advertisement, RpcBody, RpcResponse, Service, SmartHttp};
+pub use transport::HttpTransport;
 pub use url::{Scheme, Url};

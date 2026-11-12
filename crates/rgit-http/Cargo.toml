@@ -11,6 +11,7 @@ rust-version.workspace = true
 rgit-config = { path = "../rgit-config" }
 rgit-protocol = { path = "../rgit-protocol" }
 rgit-trace = { path = "../rgit-trace" }
+rgit-transport = { path = "../rgit-transport" }
 thiserror = "2"
 bstr = "1"
 flate2 = "1"

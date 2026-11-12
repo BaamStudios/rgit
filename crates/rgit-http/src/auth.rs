@@ -49,6 +49,30 @@ pub trait CredentialProvider {
     fn reject(&mut self, cred: &Credential);
 }
 
+impl<T: CredentialProvider + ?Sized> CredentialProvider for &mut T {
+    fn fill(&mut self, cred: &mut Credential) -> Result<(), String> {
+        (**self).fill(cred)
+    }
+    fn approve(&mut self, cred: &Credential) {
+        (**self).approve(cred)
+    }
+    fn reject(&mut self, cred: &Credential) {
+        (**self).reject(cred)
+    }
+}
+
+impl<T: CredentialProvider + ?Sized> CredentialProvider for Box<T> {
+    fn fill(&mut self, cred: &mut Credential) -> Result<(), String> {
+        (**self).fill(cred)
+    }
+    fn approve(&mut self, cred: &Credential) {
+        (**self).approve(cred)
+    }
+    fn reject(&mut self, cred: &Credential) {
+        (**self).reject(cred)
+    }
+}
+
 /// Standard base64 with padding (RFC 4648), as used by Basic auth.
 pub fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

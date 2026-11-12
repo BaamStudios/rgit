@@ -747,6 +747,7 @@ dependencies = [
  "rgit-config",
  "rgit-protocol",
  "rgit-trace",
+ "rgit-transport",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",

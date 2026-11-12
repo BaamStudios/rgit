@@ -4,10 +4,9 @@
 
 mod support;
 
-use std::cell::RefCell;
 use std::io::Read;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use rgit_http::{
     Credential, CredentialProvider, Error, FollowRedirects, HttpOptions, RpcBody, Service,
@@ -215,9 +214,9 @@ fn push_with_content_length() {
     let mut o = opts();
     o.verbosity = 2;
     let mut h = SmartHttp::new(&s.url("/smart/repo.git"), o).unwrap();
-    let lines = Rc::new(RefCell::new(Vec::new()));
+    let lines = Arc::new(Mutex::new(Vec::new()));
     let l2 = lines.clone();
-    h.set_diagnostics(move |l| l2.borrow_mut().push(l.to_string()));
+    h.set_diagnostics(move |l| l2.lock().unwrap().push(l.to_string()));
     let adv = h.discover(Service::ReceivePack).unwrap();
     assert!(String::from_utf8_lossy(&adv.data).contains("report-status"));
     let req = push_request(&old, &new, &pack);
@@ -231,7 +230,7 @@ fn push_with_content_length() {
     );
     assert_eq!(head_of(&bare), new);
     assert_eq!(
-        *lines.borrow(),
+        *lines.lock().unwrap(),
         vec![format!("POST git-receive-pack ({} bytes)", req.len())]
     );
     let log = s.log();
@@ -248,9 +247,9 @@ fn push_larger_than_post_buffer_is_chunked_after_probe() {
     o.post_buffer = 64;
     o.verbosity = 2;
     let mut h = SmartHttp::new(&s.url("/smart/repo.git"), o).unwrap();
-    let lines = Rc::new(RefCell::new(Vec::new()));
+    let lines = Arc::new(Mutex::new(Vec::new()));
     let l2 = lines.clone();
-    h.set_diagnostics(move |l| l2.borrow_mut().push(l.to_string()));
+    h.set_diagnostics(move |l| l2.lock().unwrap().push(l.to_string()));
     h.discover(Service::ReceivePack).unwrap();
     let req = push_request(&old, &new, &pack);
     let mut cursor = std::io::Cursor::new(req.clone());
@@ -262,7 +261,7 @@ fn push_larger_than_post_buffer_is_chunked_after_probe() {
     assert!(String::from_utf8_lossy(&body).contains("ok refs/heads/main"));
     assert_eq!(head_of(&bare), new);
     assert_eq!(
-        *lines.borrow(),
+        *lines.lock().unwrap(),
         vec!["POST git-receive-pack (chunked)".to_string()]
     );
     let log = s.log();
@@ -374,13 +373,13 @@ fn auth_without_provider_and_with_url_credentials() {
 
     let url = format!("http://user:pass@127.0.0.1:{}/auth/smart/repo.git", s.port);
     let mut h = SmartHttp::new(&url, opts()).unwrap();
-    let lines = Rc::new(RefCell::new(Vec::new()));
+    let lines = Arc::new(Mutex::new(Vec::new()));
     let l2 = lines.clone();
-    h.set_diagnostics(move |l| l2.borrow_mut().push(l.to_string()));
+    h.set_diagnostics(move |l| l2.lock().unwrap().push(l.to_string()));
     h.discover(Service::UploadPack).unwrap();
     // Like git, the effective URL differs from the one with credentials.
     assert_eq!(
-        *lines.borrow(),
+        *lines.lock().unwrap(),
         vec![format!(
             "warning: redirecting to http://127.0.0.1:{}/auth/smart/repo.git/",
             s.port
@@ -404,12 +403,12 @@ fn redirects_follow_initial_and_update_base() {
     let s = Server::start(false);
     s.create_repo("repo.git");
     let mut h = SmartHttp::new(&s.url("/redir/smart/repo.git"), opts()).unwrap();
-    let lines = Rc::new(RefCell::new(Vec::new()));
+    let lines = Arc::new(Mutex::new(Vec::new()));
     let l2 = lines.clone();
-    h.set_diagnostics(move |l| l2.borrow_mut().push(l.to_string()));
+    h.set_diagnostics(move |l| l2.lock().unwrap().push(l.to_string()));
     h.discover(Service::UploadPack).unwrap();
     assert_eq!(
-        *lines.borrow(),
+        *lines.lock().unwrap(),
         vec![format!(
             "warning: redirecting to {}/",
             s.url("/smart/repo.git")
@@ -602,4 +601,40 @@ fn user_agent_and_smart_off() {
     let e = h.discover(Service::UploadPack).unwrap_err();
     assert!(matches!(e, Error::DumbNotSupported { .. }), "{e:?}");
     assert_eq!(s.log()[1].target, "/smart/repo.git/info/refs");
+}
+
+#[test]
+fn transport_trait_v2_ls_refs() {
+    use rgit_transport::{ConnectOptions, Transport};
+    let s = Server::start(false);
+    let bare = s.create_repo("repo.git");
+    let mut t = rgit_http::HttpTransport::new(s.url("/smart/repo.git"), opts());
+    let mut o = ConnectOptions::new(rgit_transport::Service::UploadPack);
+    o.protocol_version = rgit_protocol::ProtocolVersion::V2;
+    let mut c = t.connect(&o).unwrap();
+    assert!(c.is_stateless());
+    let mut adv = [0u8; 14];
+    c.read_exact(&mut adv).unwrap();
+    assert_eq!(&adv, b"000eversion 2\n");
+    let mut rest = Vec::new();
+    c.read_to_end(&mut rest).unwrap();
+
+    use std::io::Write;
+    c.write_all(&pkt("command=ls-refs\n")).unwrap();
+    c.write_all(b"0000").unwrap();
+    c.end_request().unwrap();
+    let mut body = Vec::new();
+    c.read_to_end(&mut body).unwrap();
+    assert!(
+        String::from_utf8_lossy(&body).contains(&format!("{} refs/heads/main", head_of(&bare)))
+    );
+    c.close().unwrap();
+    assert_eq!(s.log()[0].header("git-protocol"), Some("version=2"));
+
+    let mut t = rgit_http::HttpTransport::new(s.url("/smart/nope.git"), opts());
+    let e = t.connect(&o).err().unwrap();
+    assert_eq!(
+        e.to_string(),
+        format!("repository '{}/' not found", s.url("/smart/nope.git"))
+    );
 }

@@ -115,12 +115,12 @@ impl Payload<'_> {
 pub struct SmartHttp<'a> {
     url: Url,
     client: Client,
-    provider: Option<&'a mut dyn CredentialProvider>,
+    provider: Option<Box<dyn CredentialProvider + Send + 'a>>,
     cred: Option<Credential>,
     cred_from_provider: bool,
     approved: bool,
     git_protocol: Option<String>,
-    diagnostics: Box<dyn FnMut(&str) + 'a>,
+    diagnostics: Box<dyn FnMut(&str) + Send + 'a>,
 }
 
 fn print_diagnostic(line: &str) {
@@ -144,8 +144,8 @@ impl<'a> SmartHttp<'a> {
     }
 
     /// Use `provider` to obtain credentials after a `401`.
-    pub fn with_credentials(mut self, provider: &'a mut dyn CredentialProvider) -> Self {
-        self.provider = Some(provider);
+    pub fn with_credentials(mut self, provider: impl CredentialProvider + Send + 'a) -> Self {
+        self.provider = Some(Box::new(provider));
         self
     }
 
@@ -157,7 +157,7 @@ impl<'a> SmartHttp<'a> {
 
     /// Where warnings (`warning: redirecting to ...`) and verbose lines
     /// (`POST git-upload-pack (123 bytes)`) go; stderr by default.
-    pub fn set_diagnostics(&mut self, f: impl FnMut(&str) + 'a) {
+    pub fn set_diagnostics(&mut self, f: impl FnMut(&str) + Send + 'a) {
         self.diagnostics = Box::new(f);
     }
 
