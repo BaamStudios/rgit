@@ -68,9 +68,13 @@ fn round_trip_with_all_options() {
                 .filter(|e| e.file_name().to_string_lossy().starts_with("tmp_obj_"))
                 .collect();
             assert!(leftovers.is_empty());
-            let missing = hash.empty_tree();
+            let missing = rgit_hash::hash_object(hash, "blob", b"never written").unwrap();
             assert!(odb.read(&missing).unwrap().is_none());
             assert!(odb.header(&missing).unwrap().is_none());
+            // Like git, the empty tree is there without being stored.
+            let empty_tree = hash.empty_tree();
+            assert_eq!(odb.read(&empty_tree).unwrap().unwrap().data, b"");
+            assert!(odb.contains(&empty_tree));
             std::fs::remove_dir_all(dir).unwrap();
         }
     }
