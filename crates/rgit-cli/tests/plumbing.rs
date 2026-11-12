@@ -211,6 +211,30 @@ fn cat_file_batch_formats() {
     );
 }
 
+/// Packs are found by their `.idx` file whatever their name (t5300 copies
+/// packs as `test-1-<hash>.{pack,idx}`).
+#[test]
+fn cat_file_pack_with_other_name() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx.git(["repack", "-adq"]);
+    let pack_dir = fx.work_dir().join(".git/objects/pack");
+    for e in std::fs::read_dir(&pack_dir).unwrap().flatten() {
+        let name = e.file_name().into_string().unwrap();
+        if let Some(rest) = name.strip_prefix("pack-") {
+            std::fs::rename(e.path(), pack_dir.join(format!("test-1-{rest}"))).unwrap();
+        }
+    }
+    out(&mut fx, &["cat-file", "-t", "HEAD:a"]);
+    out(&mut fx, &["cat-file", "commit", "HEAD"]);
+    out(
+        &mut fx,
+        &["cat-file", "--batch-all-objects", "--batch-check"],
+    );
+}
+
 #[test]
 fn cat_file_packed_objects() {
     let mut fx = repo()
