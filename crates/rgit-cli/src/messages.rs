@@ -9,6 +9,7 @@ pub mod hash_object;
 pub mod mktag;
 pub mod mktree;
 pub mod objects;
+pub mod pack_objects;
 pub mod var;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and

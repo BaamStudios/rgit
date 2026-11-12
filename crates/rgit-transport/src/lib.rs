@@ -40,13 +40,73 @@
 //! honoured the request is only known from its response
 //! ([`rgit_protocol::ProtocolVersion::read`]).
 
+mod child;
+pub mod command;
+pub mod credential;
 mod error;
+pub mod local;
+pub mod messages;
+mod os;
 pub mod service;
+pub mod ssh;
+pub mod url;
 
+pub use child::ChildConnection;
 pub use error::{Error, Result};
+pub use local::LocalTransport;
 pub use service::{ConnectOptions, Service};
+pub use ssh::{IpVersion, SshCommand, SshTransport, Variant};
+pub use url::{Remote, SshTarget};
 
+use std::ffi::OsString;
 use std::io::{Read, Write};
+
+use rgit_config::{ConfigSet, Environment};
+
+/// A transport connection is the duplex stream of the protocol v2 client
+/// (`rgit_protocol::v2::Client`).
+impl rgit_protocol::v2::Duplex for Box<dyn Connection> {
+    fn is_stateless(&self) -> bool {
+        Connection::is_stateless(&**self)
+    }
+
+    fn end_request(&mut self) -> std::io::Result<()> {
+        Connection::end_request(&mut **self).map_err(std::io::Error::other)
+    }
+}
+
+/// Settings shared by the transports of this crate.
+pub struct Settings<'a> {
+    /// The environment (`GIT_SSH*`).
+    pub env: &'a dyn Environment,
+    /// The configuration (`core.sshCommand`, `ssh.variant`).
+    pub config: &'a ConfigSet,
+    /// `-4` / `-6`.
+    pub ip: IpVersion,
+    /// Extra environment for children (the global options' exports).
+    pub base_env: Vec<(OsString, OsString)>,
+}
+
+/// Choose the transport of this crate for `url`: local paths and
+/// `file://` get a [`LocalTransport`], SSH locations an [`SshTransport`].
+/// Other schemes return `Ok(None)` (smart HTTP lives in `rgit-http`,
+/// `git://` elsewhere).
+pub fn transport_for(url: &str, settings: &Settings<'_>) -> Result<Option<Box<dyn Transport>>> {
+    let exists = |p: &str| std::path::Path::new(p).exists();
+    Ok(match url::parse_remote(url, &exists)? {
+        Remote::Local { path } => Some(Box::new(LocalTransport {
+            path,
+            base_env: settings.base_env.clone(),
+        })),
+        Remote::Ssh(target) => Some(Box::new(SshTransport {
+            target,
+            ssh: SshCommand::from_config(settings.env, settings.config),
+            ip: settings.ip,
+            base_env: settings.base_env.clone(),
+        })),
+        Remote::Other { .. } => None,
+    })
+}
 
 /// A way to reach a remote repository.
 ///
