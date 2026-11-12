@@ -10,7 +10,7 @@
 use rgit_hash::{HashKind, ObjectId};
 
 use crate::error::{Error, TransactionError};
-use crate::name::{RefNameFlags, is_root_ref, is_valid_refname};
+use crate::name::{RefNameFlags, is_valid_refname};
 use crate::target::{Reference, Resolved, Target};
 
 /// Maximum number of reads when following symbolic references, as in git:
@@ -174,7 +174,7 @@ pub enum LogAllRefUpdates {
     /// `false`: only append to reflogs that exist.
     False,
     /// `true` (the default in repositories with a working tree): create
-    /// reflogs for branches, remote-tracking branches, notes and root refs.
+    /// reflogs for `HEAD`, branches, remote-tracking branches and notes.
     #[default]
     True,
     /// `always`: create reflogs for every reference.
@@ -182,6 +182,12 @@ pub enum LogAllRefUpdates {
 }
 
 impl LogAllRefUpdates {
+    /// The default without configuration: `true` with a working tree,
+    /// `false` in a bare repository.
+    pub fn default_for(bare: bool) -> Self {
+        if bare { Self::False } else { Self::True }
+    }
+
     /// Parses the config value (`true`/`false` spellings or `always`).
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
@@ -192,16 +198,18 @@ impl LogAllRefUpdates {
         }
     }
 
-    /// Whether an update of `name` should create its reflog.
+    /// Whether an update of `name` should create its reflog. With `true`,
+    /// root references other than `HEAD` (`ORIG_HEAD`, ...) and tags get
+    /// none.
     pub fn should_autocreate(self, name: &str) -> bool {
         match self {
             Self::False => false,
             Self::Always => true,
             Self::True => {
-                name.starts_with("refs/heads/")
+                name == "HEAD"
+                    || name.starts_with("refs/heads/")
                     || name.starts_with("refs/remotes/")
                     || name.starts_with("refs/notes/")
-                    || is_root_ref(name)
             }
         }
     }

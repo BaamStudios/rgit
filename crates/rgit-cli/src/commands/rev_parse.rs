@@ -697,7 +697,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let _ = std::io::stdout().write_all(messages::REV_PARSE_USAGE.as_bytes());
         return Ok(0);
     }
-    let setup = repo::setup(ctx, Mode::RequiredQuiet)?;
+    // Objects, refs and index are read hash-generically; only the files
+    // ref backend is supported.
+    let support = rgit_repo::format::Support {
+        sha256: true,
+        ..Default::default()
+    };
+    let setup = repo::setup_with(ctx, Mode::RequiredQuiet, support)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
     let opts = revisions::options(&config, kind)?;

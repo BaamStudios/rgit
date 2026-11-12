@@ -162,7 +162,10 @@ pub(crate) fn usage_text(usage: &[&str], opts: &[Opt<'_>], all: bool) -> String 
         }
         printed = true;
     }
-    out.push('\n');
+    // Without options git prints only the usage and one empty line.
+    if printed {
+        out.push('\n');
+    }
     out
 }
 
