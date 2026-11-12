@@ -9,6 +9,7 @@ mod context;
 mod global;
 mod messages;
 mod repo;
+mod revisions;
 
 use std::io::Write;
 

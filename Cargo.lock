@@ -518,6 +518,7 @@ dependencies = [
  "rgit-pathspec",
  "rgit-refs",
  "rgit-repo",
+ "rgit-revwalk",
  "rgit-transport",
  "rgit-version",
  "rgit-worktree",
@@ -695,6 +696,17 @@ dependencies = [
  "rgit-hash",
  "rgit-trace",
  "rustix",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-revwalk"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "rgit-date",
+ "rgit-hash",
+ "rgit-object",
  "thiserror",
 ]
 
