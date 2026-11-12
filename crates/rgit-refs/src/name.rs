@@ -166,6 +166,17 @@ pub fn is_root_ref_syntax(name: &str) -> bool {
             .all(|b| b.is_ascii_uppercase() || b == b'-' || b == b'_')
 }
 
+/// Whether the reference (and its reflog) belongs to one worktree and lives
+/// in that worktree's own directory rather than the common directory
+/// (`gitrepository-layout(5)`): names outside `refs/` such as `HEAD`, and
+/// `refs/bisect/`, `refs/worktree/`, `refs/rewritten/`.
+pub fn is_per_worktree(name: &str) -> bool {
+    !name.starts_with("refs/")
+        || name.starts_with("refs/bisect/")
+        || name.starts_with("refs/worktree/")
+        || name.starts_with("refs/rewritten/")
+}
+
 /// Pseudo-refs are files in `$GIT_DIR` with a format of their own that the
 /// reference store does not manage (`FETCH_HEAD`, `MERGE_HEAD`).
 pub fn is_pseudo_ref(name: &str) -> bool {

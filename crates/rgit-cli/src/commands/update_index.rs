@@ -23,7 +23,6 @@ use crate::messages::update_index as msg;
 use crate::prelude::*;
 use crate::repo::Mode;
 use crate::repository::{self, Repo};
-use crate::revision;
 
 /// One option as it appeared on the command line, replayed in order.
 #[derive(Debug, Clone)]
@@ -87,6 +86,7 @@ fn lossy(p: &[u8]) -> String {
 
 struct State<'a> {
     repo: &'a Repo,
+    head_tree: Option<ObjectId>,
     index: Index,
     index_mtime: Option<rgit_index::Time>,
     work_tree: Option<PathBuf>,
@@ -134,7 +134,7 @@ impl State<'_> {
     fn checker(&self) -> Result<Checker, Stop> {
         Ok(Checker::new(
             self.work_tree()?,
-            self.repo.hash(),
+            self.repo.hash,
             self.repo.stat_options(),
             self.index_mtime,
         ))
@@ -258,7 +258,7 @@ impl State<'_> {
         let full = os_path(&wt, path);
         let (mode, id) = if meta.is_dir() {
             let gitlink = existing.iter().any(|e| e.mode.is_gitlink());
-            let head = repository::submodule_head(&full, self.repo.hash());
+            let head = repository::submodule_head(&full, self.repo.hash);
             match head {
                 Some(h) if gitlink || self.flag(Flag::Add) || !existing.is_empty() => {
                     (IndexMode::GITLINK, h)
@@ -291,7 +291,7 @@ impl State<'_> {
                 std::fs::read(&full).map_err(|e| Some(format!("open(\"{shown}\"): {e}")))?
             };
             let id = if self.flag(Flag::InfoOnly) {
-                rgit_hash::hash_object(self.repo.hash(), "blob", &data)
+                rgit_hash::hash_object(self.repo.hash, "blob", &data)
                     .map_err(|e| Some(e.to_string()))?
             } else {
                 self.repo
@@ -340,7 +340,7 @@ impl State<'_> {
     fn cacheinfo(&mut self, mode: &str, sha: &str, path: &str) -> Result<(), Stop> {
         let bad = || Stop::Die(Die::Output(usage_error(msg::CACHEINFO_ARGS)));
         let mode = u32::from_str_radix(mode, 8).map_err(|_| bad())?;
-        let id = ObjectId::from_hex(self.repo.hash(), sha.as_bytes()).map_err(|_| bad())?;
+        let id = ObjectId::from_hex(self.repo.hash, sha.as_bytes()).map_err(|_| bad())?;
         let p = path.as_bytes();
         if !rgit_index::verify_path(p) {
             eprintln!("error: {}", msg::invalid_path(path));
@@ -394,7 +394,7 @@ impl State<'_> {
                     continue;
                 }
                 let full = os_path(&self.work_tree()?, e.path());
-                match repository::submodule_head(&full, self.repo.hash()) {
+                match repository::submodule_head(&full, self.repo.hash) {
                     Some(h) if h != e.id => lines.push(msg::needs_update(&lossy(e.path()))),
                     _ => {}
                 }
@@ -441,10 +441,8 @@ impl State<'_> {
     /// `--again`: update the entries that differ from `HEAD`.
     fn again(&mut self, ctx: &Context, args: &[String]) -> Result<(), Stop> {
         let mut head: HashMap<Vec<u8>, (u32, ObjectId)> = HashMap::new();
-        if let Some(id) = revision::read_ref(self.repo, "HEAD") {
-            if let Ok(tree) = revision::peel_to(self.repo, id, ObjectKind::Tree) {
-                flatten_tree(self.repo, &tree, b"", &mut head);
-            }
+        if let Some(tree) = self.head_tree {
+            flatten_tree(self.repo, &tree, b"", &mut head);
         }
         let opts = ParseOptions {
             prefix: self.repo.prefix(),
@@ -507,7 +505,7 @@ impl State<'_> {
     }
 
     fn index_info(&mut self) -> Result<(), Stop> {
-        let hash = self.repo.hash();
+        let hash = self.repo.hash;
         for raw in self.read_stdin() {
             let malformed = || fatal(msg::malformed_index_info(&lossy(&raw)));
             let Some(tab) = raw.iter().position(|&b| b == b'\t') else {
@@ -650,7 +648,7 @@ fn flatten_tree(
     base: &[u8],
     out: &mut HashMap<Vec<u8>, (u32, ObjectId)>,
 ) {
-    let Some(Object::Tree(t)) = revision::read_object(repo, tree) else {
+    let Some(Object::Tree(t)) = repo.read_object(tree) else {
         return;
     };
     for e in t.entries {
@@ -991,10 +989,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let mut rest = parse(&mut parser, &argv[1..])?;
 
-    let repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    let head_tree = repo
+        .resolve("HEAD")
+        .and_then(|id| repo.peel_to(id, ObjectKind::Tree));
+    let repo = repo;
     let (index, index_mtime) = repo.read_index()?;
     let mut st = State {
         repo: &repo,
+        head_tree,
         index,
         index_mtime,
         work_tree: repo.setup.work_tree.clone(),

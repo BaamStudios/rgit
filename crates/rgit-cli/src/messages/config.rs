@@ -28,6 +28,17 @@ pub const NOT_IN_GIT_DIR: &str = "not in a git directory";
 pub const HOME_NOT_SET: &str = "$HOME not set";
 pub const WRITE_STDIN: &str = "writing to stdin is not supported";
 pub const EDIT_STDIN: &str = "editing stdin is not supported";
+pub const WRITE_BLOB: &str = "writing config blobs is not supported";
+pub const EDIT_BLOB: &str = "editing blobs is not supported";
+pub const ERROR_PROCESSING: &str = "error processing config file(s)";
+
+pub fn unable_to_resolve_blob(name: &str) -> String {
+    format!("unable to resolve config blob '{name}'")
+}
+
+pub fn not_a_blob(name: &str) -> String {
+    format!("reference '{name}' does not point to a blob")
+}
 pub const NAME_ONLY: &str = "--name-only is only applicable to --list or --get-regexp";
 pub const SHOW_ORIGIN: &str =
     "--show-origin is only applicable to --get, --get-all, --get-regexp, and --list";
@@ -74,9 +85,6 @@ pub fn did_you_mean(key: &str, value: &str) -> String {
 }
 pub fn editor_problem(editor: &str) -> String {
     format!("there was a problem with the editor '{editor}'")
-}
-pub fn not_implemented(what: &str) -> String {
-    format!("rgit: {what} is not implemented yet")
 }
 
 pub fn bad_numeric(value: &str, name: &str, reason: &str) -> String {

@@ -2,11 +2,18 @@
 //! User-visible messages of the front end, in one place for review
 //! (see CLEANROOM.md, "User-visible messages").
 
+pub mod cat_file;
 pub mod check_ignore;
 pub mod config;
+pub mod hash_object;
+pub mod init;
 pub mod ls_files;
 pub mod ls_tree;
+pub mod mktag;
+pub mod mktree;
+pub mod objects;
 pub mod pack_objects;
+pub mod reflog;
 pub mod update_index;
 pub mod var;
 
@@ -108,9 +115,82 @@ pub fn cannot_chdir(dir: &str, reason: &str) -> String {
     format!("cannot chdir to '{dir}': {reason}")
 }
 
-/// `<rev>^{<type>}` reached an object of another type.
-pub fn peel_mismatch(spec: &str, expected: &str, found: &str) -> String {
-    format!("{spec}: expected {expected} type, but the object dereferences to {found} type")
+/// Print `error: <msg>` to standard error.
+pub fn print_error(msg: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "error: {msg}");
+}
+
+/// A configuration value that cannot be used, given on the command line.
+pub fn unable_to_parse_config(key: &str, source: &str) -> String {
+    format!("unable to parse '{key}' from {source}")
+}
+
+/// A configuration value that cannot be used, in a file.
+pub fn bad_config_variable(key: &str, file: &str, line: usize) -> String {
+    format!("bad config variable '{key}' in file '{file}' at line {line}")
+}
+
+pub fn unknown_hint_type(value: &str) -> String {
+    format!("unknown hint type for 'core.disambiguate': {value}")
+}
+
+pub fn abbrev_out_of_range(n: i64) -> String {
+    format!("abbrev length out of range: {n}")
+}
+
+pub fn malformed_push_default(value: &str) -> String {
+    format!("malformed value for push.default: {value}")
+}
+
+pub const PUSH_DEFAULT_VALUES: &str =
+    "must be one of nothing, matching, simple, upstream or current";
+
+/// `git rev-parse -h`.
+pub const REV_PARSE_USAGE: &str = "\
+usage: git rev-parse --parseopt [<options>] -- [<args>...]
+   or: git rev-parse --sq-quote [<arg>...]
+   or: git rev-parse [<options>] [<arg>...]
+
+Run \"git rev-parse --parseopt -h\" for more information on the first usage.
+";
+
+/// `rev-parse --verify` without exactly one revision.
+pub const NEEDED_SINGLE_REVISION: &str = "Needed a single revision";
+
+/// An argument that is neither a revision nor a path.
+pub fn ambiguous_argument(arg: &str) -> String {
+    format!(
+        "ambiguous argument '{arg}': unknown revision or path not in the working tree.\n\
+         Use '--' to separate paths from revisions, like this:\n\
+         'git <command> [<revision>...] -- [<file>...]'"
+    )
+}
+
+/// A path argument (after the first path) that does not exist.
+pub fn no_such_path(arg: &str) -> String {
+    format!(
+        "{arg}: no such path in the working tree.\n\
+         Use 'git <command> -- <path>...' to specify paths that do not exist locally."
+    )
+}
+
+/// A non-revision before `--`.
+pub fn bad_revision(arg: &str) -> String {
+    format!("bad revision '{arg}'")
+}
+
+/// An option after a path.
+pub fn option_after_path(arg: &str) -> String {
+    format!("option '{arg}' must come before non-option arguments")
+}
+
+pub fn option_requires_argument(opt: &str) -> String {
+    format!("{opt} requires an argument")
+}
+
+pub fn unknown_abbrev_ref_mode(mode: &str) -> String {
+    format!("unknown mode for --abbrev-ref: {mode}")
 }
 
 pub fn bad_format_open(cmd: &str, element: &str) -> String {

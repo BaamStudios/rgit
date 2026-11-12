@@ -11,6 +11,10 @@ use std::sync::Arc;
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::{Object, ObjectHeader, ObjectKind};
 
+use rgit_config::ConfigSet;
+
+use crate::alternates;
+use crate::packed::PackStore;
 use crate::store::{ObjectStore, RawObject};
 use crate::{Error, LooseOptions, LooseStore};
 
@@ -39,16 +43,34 @@ pub enum PrefixMatch {
 
 type ErrorSink = Box<dyn Fn(&Error) + Send + Sync>;
 
+/// The default error sink: every line of [`Error::skipped_copy_lines`] as
+/// `error: <line>` on standard error, like git.
+pub fn print_error_to_stderr(e: &Error) {
+    use std::io::Write;
+    let mut err = std::io::stderr().lock();
+    for line in e.skipped_copy_lines() {
+        let _ = writeln!(err, "error: {line}");
+    }
+}
+
 /// Reads objects from a list of stores and writes new ones as loose objects.
 ///
 /// Lookups ask the stores in order. When a store has an object but cannot
-/// deliver it intact (a corrupt loose file, say), the error is passed to the
-/// error sink (see [`ObjectDatabase::set_error_sink`]; git prints such
-/// errors and goes on) and the next store is tried. Only when no store
-/// delivers the object is the first error returned.
+/// deliver it intact (a corrupt loose file, say), the next store is tried.
+/// If one delivers it, [`ObjectDatabase::read`] passes the errors of the
+/// skipped copies to the error sink (git prints them and goes on); if none
+/// does, the first error is returned instead and the caller reports it.
+/// Broken copies inside a set of packs are passed to the sink as they are
+/// skipped. By default the sink prints to standard error as git does
+/// ([`print_error_to_stderr`]); [`ObjectDatabase::set_error_sink`]
+/// replaces it and [`ObjectDatabase::quiet`] turns it off.
+///
+/// Commands open the database of a repository with
+/// [`ObjectDatabase::open_for_repo`] (loose objects, packs and alternates).
 pub struct ObjectDatabase {
     hash: HashKind,
     loose: Arc<LooseStore>,
+    packs: Option<Arc<PackStore>>,
     stores: Vec<Arc<dyn ObjectStore>>,
     sink: Option<ErrorSink>,
 }
@@ -74,8 +96,68 @@ impl ObjectDatabase {
             hash,
             stores: vec![loose.clone()],
             loose,
-            sink: None,
+            packs: None,
+            sink: Some(Box::new(print_error_to_stderr)),
         }
+    }
+
+    /// The full database of an `objects` directory: its loose objects
+    /// (where new objects are written), its packs, then the loose objects
+    /// and packs of every alternate (`objects/info/alternates`,
+    /// recursively, and `$GIT_ALTERNATE_OBJECT_DIRECTORIES`). Loose objects
+    /// are asked before packs, as git does when reading an object (a
+    /// corrupt loose copy is reported, then the packed copy is used).
+    pub fn open_with_packs(
+        objects_dir: impl Into<PathBuf>,
+        hash: HashKind,
+        options: LooseOptions,
+    ) -> ObjectDatabase {
+        let objects_dir = objects_dir.into();
+        let mut db = ObjectDatabase::open(&objects_dir, hash, options.clone());
+        let packs = Arc::new(PackStore::open(objects_dir.join("pack"), hash));
+        db.push_store(packs.clone());
+        db.packs = Some(packs);
+        for alt in alternates::resolve(&objects_dir) {
+            db.push_store(Arc::new(LooseStore::new(&alt, hash, options.clone())));
+            db.push_store(Arc::new(PackStore::open(alt.join("pack"), hash)));
+        }
+        db
+    }
+
+    /// The database of a repository: [`ObjectDatabase::open_with_packs`] on
+    /// [`objects_dir`] of its common directory, with the hash algorithm of
+    /// the repository, the loose object settings from `config`
+    /// ([`LooseOptions::from_config`]) and `core.deltaBaseCacheLimit`.
+    ///
+    /// Configuration warnings are appended to `warnings` (print each as
+    /// `warning: <text>`); invalid values are an [`Error::Config`] (fatal
+    /// in git).
+    ///
+    /// ```no_run
+    /// # fn f(setup: &rgit_repo::Setup, config: &rgit_config::ConfigSet) {
+    /// let mut warnings = Vec::new();
+    /// let odb = rgit_odb::ObjectDatabase::open_for_repo(setup, config, &mut warnings).unwrap();
+    /// # }
+    /// ```
+    pub fn open_for_repo(
+        setup: &rgit_repo::Setup,
+        config: &ConfigSet,
+        warnings: &mut Vec<String>,
+    ) -> Result<ObjectDatabase, Error> {
+        let options = LooseOptions::from_config(config, warnings)?;
+        let hash = setup.format.object_format;
+        let db = ObjectDatabase::open_with_packs(objects_dir(&setup.common_dir), hash, options);
+        let limit = config.int("core.deltaBaseCacheLimit").ok().flatten();
+        if let (Some(limit), Some(packs)) = (limit, &db.packs) {
+            packs.set_cache_limit(usize::try_from(limit).unwrap_or(0));
+        }
+        Ok(db)
+    }
+
+    /// The packs of the main `objects` directory, if the database was
+    /// opened with them.
+    pub fn packs(&self) -> Option<&Arc<PackStore>> {
+        self.packs.as_ref()
     }
 
     /// The hash kind of the repository.
@@ -104,31 +186,60 @@ impl ObjectDatabase {
         self.stores.insert(index, store);
     }
 
-    /// Receive errors of stores that are skipped during a lookup. The CLI
-    /// prints each line of [`Error::git_lines`] as `error: <line>`.
+    /// Receive errors of object copies that are skipped during a lookup
+    /// instead of printing them (the default, see
+    /// [`print_error_to_stderr`]).
     pub fn set_error_sink(&mut self, sink: impl Fn(&Error) + Send + Sync + 'static) {
         self.sink = Some(Box::new(sink));
     }
 
+    /// Do not report skipped copies at all.
+    pub fn quiet(&mut self) {
+        self.sink = None;
+    }
+
+    fn report(&self, e: &Error) {
+        if let Some(sink) = &self.sink {
+            sink(e);
+        }
+    }
+
     fn first_in_stores<T>(
         &self,
-        mut f: impl FnMut(&dyn ObjectStore) -> Result<Option<T>, Error>,
+        report_skipped: bool,
+        mut f: impl FnMut(&dyn ObjectStore, &mut dyn FnMut(&Error)) -> Result<Option<T>, Error>,
     ) -> Result<Option<T>, Error> {
-        let mut first_err = None;
+        // Broken copies of whole stores. They are reported only when a later
+        // store delivers the object; otherwise the first one is returned and
+        // the caller reports it (git prints the full message then).
+        let mut skipped: Vec<Error> = Vec::new();
+        // Copies a store skipped internally (inside a set of packs) are
+        // reported right away, as git does.
+        let mut report = |e: &Error| {
+            if report_skipped {
+                self.report(e)
+            }
+        };
         for store in &self.stores {
-            match f(store.as_ref()) {
-                Ok(Some(v)) => return Ok(Some(v)),
-                Ok(None) => {}
-                Err(e) if e.is_corruption() => {
-                    if let Some(sink) = &self.sink {
-                        sink(&e);
+            match f(store.as_ref(), &mut report) {
+                Ok(Some(v)) => {
+                    if report_skipped {
+                        // A pack summary's causes were reported already.
+                        for e in skipped
+                            .iter()
+                            .filter(|e| !matches!(e, Error::PackSummary(_)))
+                        {
+                            self.report(e);
+                        }
                     }
-                    first_err.get_or_insert(e);
+                    return Ok(Some(v));
                 }
+                Ok(None) => {}
+                Err(e) if e.is_corruption() => skipped.push(e),
                 Err(e) => return Err(e),
             }
         }
-        match first_err {
+        match skipped.into_iter().next() {
             Some(e) => Err(e),
             None => Ok(None),
         }
@@ -139,14 +250,17 @@ impl ObjectDatabase {
         self.stores.iter().any(|s| s.contains(oid))
     }
 
-    /// Type and size of an object.
+    /// Type and size of an object. Unlike [`ObjectDatabase::read`], copies
+    /// skipped on the way are not reported (git is silent there too, e.g.
+    /// `git cat-file -t` with a corrupt loose and an intact packed copy);
+    /// when no copy answers, the first error is returned.
     pub fn header(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
-        self.first_in_stores(|s| s.header(oid))
+        self.first_in_stores(false, |s, r| s.header_reporting(oid, r))
     }
 
     /// An object's type and content.
     pub fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
-        self.first_in_stores(|s| s.read(oid))
+        self.first_in_stores(true, |s, r| s.read_reporting(oid, r))
     }
 
     /// An object, parsed.
@@ -219,4 +333,28 @@ pub enum ReadObjectError {
     /// The object does not parse.
     #[error(transparent)]
     Parse(#[from] rgit_object::Error),
+}
+
+/// The pack writer reads objects through the database: packs, loose
+/// objects and alternates.
+impl rgit_pack::write::ObjectSource for ObjectDatabase {
+    fn read(&self, id: &ObjectId) -> Result<Option<RawObject>, rgit_pack::write::SourceError> {
+        Ok(ObjectDatabase::read(self, id)?)
+    }
+
+    fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, rgit_pack::write::SourceError> {
+        Ok(self.header(id)?.map(|h| h.kind))
+    }
+}
+
+/// `index-pack` looks up objects (collision checks, thin pack bases)
+/// through the database.
+impl rgit_pack::index_pack::ObjectDb for ObjectDatabase {
+    fn contains(&self, id: &ObjectId) -> bool {
+        id.kind() == self.hash && ObjectDatabase::contains(self, id)
+    }
+
+    fn read(&self, id: &ObjectId) -> Result<Option<RawObject>, String> {
+        ObjectDatabase::read(self, id).map_err(|e| e.to_string())
+    }
 }

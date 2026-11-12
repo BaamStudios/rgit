@@ -21,7 +21,6 @@ use crate::prelude::*;
 use crate::quote::{relative_to, write_quoted};
 use crate::repo::Mode;
 use crate::repository::{self, Repo};
-use crate::revision;
 
 /// A field of `--format`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,7 +321,7 @@ impl Lister<'_> {
             if self.show.modified {
                 let gitlink_moved = e.mode.is_gitlink() && !deleted && {
                     let dir = checker_root(self.repo).join(lossy_os(e.path()));
-                    repository::submodule_head(&dir, self.repo.hash()).is_some_and(|h| h != e.id)
+                    repository::submodule_head(&dir, self.repo.hash).is_some_and(|h| h != e.id)
                 };
                 let modified = deleted
                     || gitlink_moved
@@ -637,7 +636,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(Die::Fatal(msg::not_supported("--eol")));
     }
 
-    let repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let need_work_tree = deleted.get() || modified.get() || others.get() || killed.get();
     let work_tree = if need_work_tree {
         Some(repo.work_tree()?)
@@ -665,8 +664,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let mut entries: Vec<Entry> = index.entries().to_vec();
     if let Some(spec) = with_tree.borrow().as_deref() {
-        overlay_tree(&repo, &index, &mut entries, spec)?;
+        overlay_tree(&mut repo, &index, &mut entries, spec)?;
     }
+    let repo = repo;
 
     let root = repo
         .setup
@@ -850,14 +850,14 @@ fn build_excludes(repo: &Repo, args: &[ExcludeArg]) -> Result<Excludes, Die> {
 /// `--with-tree`: add the files of the tree that are not in the index as
 /// stage 1 entries.
 fn overlay_tree(
-    repo: &Repo,
+    repo: &mut Repo,
     index: &Index,
     entries: &mut Vec<Entry>,
     spec: &str,
 ) -> Result<(), Die> {
     let not_found = || Die::Fatal(msg::tree_ish_not_found(spec));
-    let id = revision::resolve(repo, spec).map_err(|_| not_found())?;
-    let tree = revision::peel_to(repo, id, ObjectKind::Tree).map_err(|_| not_found())?;
+    let id = repo.resolve(spec).ok_or_else(not_found)?;
+    let tree = repo.peel_to(id, ObjectKind::Tree).ok_or_else(not_found)?;
     let mut files = Vec::new();
     collect_tree(repo, &tree, b"", &mut files)?;
     for (path, mode, oid) in files {
@@ -877,7 +877,7 @@ fn collect_tree(
     base: &[u8],
     out: &mut Vec<(Vec<u8>, IndexMode, ObjectId)>,
 ) -> Result<(), Die> {
-    let Some(Object::Tree(t)) = revision::read_object(repo, tree) else {
+    let Some(Object::Tree(t)) = repo.read_object(tree) else {
         return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(
             &tree.to_hex(),
         )));

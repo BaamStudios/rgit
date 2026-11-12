@@ -211,16 +211,31 @@ impl<'a> Parser<'a> {
 
     /// The `-h` text (or the `--help-all` text with `all`).
     pub fn usage_text(&self, all: bool) -> String {
-        usage::usage_text(&self.usage, &self.opts, all)
+        usage::usage_text(&self.usage, &self.opts, all, false)
+    }
+
+    /// The usage as printed by the error helpers below, which are called
+    /// after parsing: aliases are not resolved (see `usage::usage_text`).
+    fn usage_after_parse(&self) -> String {
+        usage::usage_text(&self.usage, &self.opts, false, true)
     }
 
     /// Usage error: usage on stderr, exit 129 (`usage_with_options`).
     pub fn usage_error(&self) -> Exit {
-        Exit::stderr(EXIT_USAGE, self.usage_text(false))
+        Exit::stderr(EXIT_USAGE, self.usage_after_parse())
     }
 
     /// `error: <msg>` followed by the usage, exit 129.
     pub fn error_with_usage(&self, msg: &str) -> Exit {
+        Exit::stderr(
+            EXIT_USAGE,
+            format!("error: {msg}\n{}", self.usage_after_parse()),
+        )
+    }
+
+    /// `error: <msg>` followed by the usage, for errors found while
+    /// parsing (aliases resolved).
+    fn parse_error_with_usage(&self, msg: &str) -> Exit {
         Exit::stderr(
             EXIT_USAGE,
             format!("error: {msg}\n{}", self.usage_text(false)),
@@ -232,7 +247,7 @@ impl<'a> Parser<'a> {
     pub fn usage_msg(&self, msg: &str) -> Exit {
         Exit::stderr(
             EXIT_USAGE,
-            format!("fatal: {msg}\n\n{}", self.usage_text(false)),
+            format!("fatal: {msg}\n\n{}", self.usage_after_parse()),
         )
     }
 
@@ -312,7 +327,7 @@ impl<'a> Parser<'a> {
                         out.extend(argv[i..].iter().cloned());
                         break;
                     }
-                    return Err(self.error_with_usage(&messages::unknown_subcommand(arg)));
+                    return Err(self.parse_error_with_usage(&messages::unknown_subcommand(arg)));
                 }
                 if self.flags.stop_at_non_option {
                     out.extend(argv[i..].iter().cloned());
@@ -340,7 +355,7 @@ impl<'a> Parser<'a> {
             }
         }
         if has_subcommands && subcommand.is_none() && !self.flags.subcommand_optional {
-            return Err(self.error_with_usage(messages::NEED_SUBCOMMAND));
+            return Err(self.parse_error_with_usage(messages::NEED_SUBCOMMAND));
         }
         Ok(Parsed {
             args: out,
@@ -443,13 +458,13 @@ impl<'a> Parser<'a> {
         if name == "no-" {
             // git reports the last negatable option twice here.
             if let Some(n) = last_neg {
-                return Err(self.error_with_usage(&messages::ambiguous(name, &n, &n)));
+                return Err(self.parse_error_with_usage(&messages::ambiguous(name, &n, &n)));
             }
         }
         if found.len() > 1 {
             let a = &found[found.len() - 2].2;
             let b = &found[found.len() - 1].2;
-            return Err(self.error_with_usage(&messages::ambiguous(name, a, b)));
+            return Err(self.parse_error_with_usage(&messages::ambiguous(name, a, b)));
         }
         let (idx, unset, _) = found.remove(0);
         let canonical = {
@@ -502,7 +517,7 @@ impl<'a> Parser<'a> {
                     *kept_unknown = true;
                     Ok(i + 1)
                 } else {
-                    Err(self.error_with_usage(&messages::unknown_option(body)))
+                    Err(self.parse_error_with_usage(&messages::unknown_option(body)))
                 }
             }
             Lookup::Found { idx, unset, name } => {
@@ -616,7 +631,7 @@ impl<'a> Parser<'a> {
                     *kept_unknown = true;
                     return Ok(i + 1);
                 }
-                return Err(self.error_with_usage(&messages::unknown_switch(c)));
+                return Err(self.parse_error_with_usage(&messages::unknown_switch(c)));
             };
             let idx = self.resolve_idx(idx);
             match self.opts[idx].arg_mode() {
@@ -656,7 +671,7 @@ impl<'a> Parser<'a> {
     fn callback_error(&self, e: CallbackError) -> Exit {
         match e {
             CallbackError::Error(m) => Self::error(&m),
-            CallbackError::Usage(m) => self.error_with_usage(&m),
+            CallbackError::Usage(m) => self.parse_error_with_usage(&m),
             CallbackError::Fatal(m) => Exit::stderr(EXIT_FATAL, format!("fatal: {m}\n")),
             CallbackError::Silent => Exit::stderr(EXIT_USAGE, String::new()),
         }

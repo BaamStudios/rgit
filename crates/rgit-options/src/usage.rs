@@ -118,7 +118,12 @@ pub(crate) fn option_label(opt: &Opt<'_>, target: &Opt<'_>) -> String {
 }
 
 /// Full usage text: usage lines, then the option list.
-pub(crate) fn usage_text(usage: &[&str], opts: &[Opt<'_>], all: bool) -> String {
+///
+/// With `after_parse`, aliases are shown as git shows them in usage
+/// messages printed after parsing (`usage_with_options`): unresolved, as
+/// an option taking an unnamed argument (`--[no-]mailmap ...`). During
+/// parsing (`-h`, unknown options) they are resolved to their target.
+pub(crate) fn usage_text(usage: &[&str], opts: &[Opt<'_>], all: bool, after_parse: bool) -> String {
     let mut out = usage_lines(usage);
     out.push('\n');
     let mut printed = false;
@@ -143,7 +148,13 @@ pub(crate) fn usage_text(usage: &[&str], opts: &[Opt<'_>], all: bool) -> String 
             continue;
         }
         let target = resolve(opts, opt);
-        let label = option_label(opt, target);
+        let label = match (&opt.kind, opt.long) {
+            (Kind::Alias(_), Some(l)) if after_parse => {
+                let neg = if l.starts_with("no-") { "" } else { "[no-]" };
+                format!("    --{neg}{l} ...")
+            }
+            _ => option_label(opt, target),
+        };
         let help_owned;
         let help = match opt.kind {
             Kind::Alias(t) if opt.help.is_empty() => {
@@ -162,7 +173,10 @@ pub(crate) fn usage_text(usage: &[&str], opts: &[Opt<'_>], all: bool) -> String 
         }
         printed = true;
     }
-    out.push('\n');
+    // Without options git prints only the usage and one empty line.
+    if printed {
+        out.push('\n');
+    }
     out
 }
 

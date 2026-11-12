@@ -5,8 +5,7 @@ use std::cell::Cell;
 
 use rgit_options::{CallbackError, Opt};
 
-use crate::objects::MIN_ABBREV;
-use crate::repository::Repo;
+use crate::repository::{MIN_ABBREV, Repo};
 
 /// What `--abbrev` asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
