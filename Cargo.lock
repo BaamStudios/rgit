@@ -712,6 +712,7 @@ dependencies = [
  "rgit-difftest",
  "rgit-hash",
  "rgit-options",
+ "rgit-pathspec",
 ]
 
 [[package]]
