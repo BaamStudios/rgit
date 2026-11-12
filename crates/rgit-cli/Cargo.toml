@@ -13,7 +13,10 @@ name = "rgit"
 path = "src/main.rs"
 
 [dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
 rgit-config = { path = "../rgit-config" }
+rgit-date = { path = "../rgit-date" }
+rgit-fs = { path = "../rgit-fs" }
 rgit-options = { path = "../rgit-options" }
 rgit-repo = { path = "../rgit-repo" }
 

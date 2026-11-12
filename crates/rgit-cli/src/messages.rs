@@ -2,6 +2,8 @@
 //! User-visible messages of the front end, in one place for review
 //! (see CLEANROOM.md, "User-visible messages").
 
+pub mod config;
+
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
 /// tests compare it).
 pub const GIT_USAGE: &str = "\
@@ -47,6 +49,10 @@ pub fn cannot_change_to(dir: &str, err: &str) -> String {
 
 pub fn invalid_config_format(spec: &str) -> String {
     format!("invalid config format: {spec}")
+}
+
+pub fn missing_env_name_for_config(key: &str) -> String {
+    format!("missing environment variable name for configuration '{key}'")
 }
 
 pub fn missing_env_for_config(var: &str, key: &str) -> String {
