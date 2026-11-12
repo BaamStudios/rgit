@@ -463,9 +463,13 @@ dependencies = [
  "rgit-difftest",
  "rgit-fs",
  "rgit-ident",
+ "rgit-index",
  "rgit-options",
+ "rgit-pathspec",
  "rgit-refs",
  "rgit-repo",
+ "rgit-version",
+ "rgit-worktree",
  "tempfile",
 ]
 
@@ -539,7 +543,21 @@ dependencies = [
 name = "rgit-object"
 version = "0.1.0"
 dependencies = [
+ "rgit-difftest",
  "rgit-hash",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-odb"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "rgit-config",
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
+ "rgit-object",
  "thiserror",
 ]
 
@@ -570,7 +588,7 @@ name = "rgit-protocol"
 version = "0.1.0"
 dependencies = [
  "rgit-trace",
- "rustix",
+ "rgit-version",
  "tempfile",
  "thiserror",
 ]
@@ -582,6 +600,18 @@ dependencies = [
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-remote"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
+ "rgit-difftest",
+ "rgit-hash",
+ "tempfile",
  "thiserror",
 ]
 
@@ -628,6 +658,24 @@ version = "0.1.0"
 dependencies = [
  "rgit-protocol",
  "thiserror",
+]
+
+[[package]]
+name = "rgit-version"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
+name = "rgit-worktree"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rgit-difftest",
+ "rgit-hash",
+ "rgit-index",
+ "rgit-pathspec",
 ]
 
 [[package]]

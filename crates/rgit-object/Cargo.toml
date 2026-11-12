@@ -10,3 +10,6 @@ rust-version.workspace = true
 [dependencies]
 rgit-hash = { path = "../rgit-hash" }
 thiserror = "2.0.18"
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
