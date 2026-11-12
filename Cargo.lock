@@ -462,9 +462,11 @@ dependencies = [
  "rgit-date",
  "rgit-difftest",
  "rgit-fs",
+ "rgit-ident",
  "rgit-options",
  "rgit-refs",
  "rgit-repo",
+ "tempfile",
 ]
 
 [[package]]
@@ -508,6 +510,18 @@ dependencies = [
  "sha1-checked",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "rgit-ident"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "jiff",
+ "rgit-config",
+ "rgit-date",
+ "rustix",
+ "tempfile",
 ]
 
 [[package]]
