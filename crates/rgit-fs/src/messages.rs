@@ -61,6 +61,12 @@ pub fn shared_repository_owner_perms(value: &str) -> String {
     )
 }
 
+/// Body of the fatal error for a `core.sharedRepository` value that is not
+/// understood; `name` is the variable (`arg` for `git init --shared=`).
+pub fn bad_boolean(value: &str, name: &str) -> String {
+    format!("bad boolean config value '{value}' for '{name}'")
+}
+
 /// The C library's text for an I/O error (`strerror`), i.e. Rust's
 /// `Display` without the trailing ` (os error N)`.
 pub fn strerror(err: &io::Error) -> String {

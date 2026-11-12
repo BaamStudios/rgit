@@ -3,6 +3,7 @@
 //! (see CLEANROOM.md, "User-visible messages").
 
 pub mod config;
+pub mod init;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
 /// tests compare it).
