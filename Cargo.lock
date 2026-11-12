@@ -590,6 +590,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-remote"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
+ "rgit-difftest",
+ "rgit-hash",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-repo"
 version = "0.1.0"
 dependencies = [
