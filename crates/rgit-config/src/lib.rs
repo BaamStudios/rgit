@@ -15,6 +15,7 @@
 //!   `GIT_CONFIG_COUNT`.
 //! - [`sources`]: the standard stack (system, global, local, worktree,
 //!   command line).
+//! - [`urlmatch`]: `<section>.<url>.<key>` lookups (`http.<url>.*`).
 //! - [`edit`], [`write`]: set/add/replace-all/unset/unset-all and
 //!   rename/remove-section, keeping everything else in the file as it was,
 //!   written through `<file>.lock`.
@@ -34,6 +35,7 @@ mod origin;
 pub mod parse;
 mod set;
 pub mod sources;
+pub mod urlmatch;
 pub mod value;
 pub mod write;
 

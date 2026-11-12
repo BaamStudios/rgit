@@ -27,7 +27,6 @@ fn all_same(fx: &mut Fixture, cases: &[&[&str]]) {
         if let Err(m) = fx.compare(*args).checks(CHECKS).try_run() {
             failures.push(m.to_string());
         }
-        // Reset the files the cases may change.
     }
     assert!(
         failures.is_empty(),
@@ -391,6 +390,79 @@ fn lock_held() {
                 "2",
             ],
             &["config", "-f", "c", "--rename-section", "s", "t"],
+        ],
+    );
+}
+
+#[test]
+fn url_match() {
+    let content = "[http]\n\tsslVerify\n[http \"https://*.example.com\"]\n\tsslVerify = false\n\tcookieFile = /c\n[http \"https://example.com/sub\"]\n\tcookieFile = /s\n[http \"https://u@example.com\"]\n\tcookieFile = /u\n";
+    let mut fx = fixture().write("c", content);
+    let url = "--get-urlmatch";
+    all_same(
+        &mut fx,
+        &[
+            &["config", "-f", "c", url, "http", "https://a.example.com"],
+            &[
+                "config",
+                "-f",
+                "c",
+                url,
+                "--bool",
+                "http.sslverify",
+                "https://a.example.com",
+            ],
+            &[
+                "config",
+                "-f",
+                "c",
+                url,
+                "--bool",
+                "http.sslverify",
+                "https://example.com",
+            ],
+            &[
+                "config",
+                "-f",
+                "c",
+                url,
+                "http.cookiefile",
+                "https://u@example.com/sub/x",
+            ],
+            &[
+                "config",
+                "-f",
+                "c",
+                url,
+                "http.cookiefile",
+                "https://u@example.com/",
+            ],
+            &[
+                "config",
+                "-f",
+                "c",
+                url,
+                "http.nope",
+                "https://example.com/",
+            ],
+            &[
+                "config",
+                "get",
+                "-f",
+                "c",
+                "--url=https://a.example.com",
+                "--show-scope",
+                "http",
+            ],
+            &[
+                "config",
+                "get",
+                "-f",
+                "c",
+                "--url=https://a.example.com",
+                "--show-names",
+                "http.cookiefile",
+            ],
         ],
     );
 }

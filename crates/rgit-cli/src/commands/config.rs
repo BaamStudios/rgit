@@ -8,9 +8,8 @@
 //! (`rgit_config::edit`) through `config.lock`.
 //!
 //! Not implemented yet (they need other subsystems): `--blob` (object
-//! database), `--url`/`--get-urlmatch` (URL matching), `--type=color`,
-//! `--get-color`, `--get-colorbool` (#75) and `--type=expiry-date` on
-//! reading (#74).
+//! database and revision syntax, #14/#32), `--type=color`, `--get-color`,
+//! `--get-colorbool` (#75) and `--type=expiry-date` on reading (#74).
 
 use std::cell::{Cell, RefCell};
 use std::io::Write;
@@ -558,15 +557,15 @@ fn run_subcommand(ctx: &mut Context, sub: &str, argv: &[String]) -> CmdResult {
         }
         "get" => {
             wrong_args(args.len(), 1, 1)?;
-            if o.url.borrow().is_some() {
-                return Err(Die::Fatal(msg::not_implemented("--url")));
-            }
-            if o.default.borrow().is_some() && o.all.get() {
+            if o.default.borrow().is_some() && (o.all.get() || o.url.borrow().is_some()) {
                 return Err(Die::Fatal(msg::DEFAULT_ALL.into()));
             }
             let pattern = o.value.borrow().clone();
             if o.fixed_value.get() && pattern.is_none() {
                 return Err(Die::Fatal(msg::FIXED_VALUE_LEGACY.into()));
+            }
+            if let Some(url) = o.url.borrow().clone() {
+                return cmd.get_url(&args[0], &url);
             }
             let show_names = o.show_names.get() == 1;
             cmd.get(&args[0], pattern.as_deref(), o.all.get(), o.regexp.get(), show_names)
@@ -654,7 +653,7 @@ fn run_legacy(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(Die::Error(msg::NAME_ONLY.into(), 129));
     }
     if (o.show_origin.get() || o.show_scope.get())
-        && !matches!(act, GET | GET_ALL | GET_REGEXP | LIST)
+        && !matches!(act, GET | GET_ALL | GET_REGEXP | GET_URLMATCH | LIST)
     {
         return Err(Die::Error(msg::SHOW_ORIGIN.into(), 129));
     }
@@ -741,7 +740,10 @@ fn run_legacy(ctx: &mut Context, argv: &[String]) -> CmdResult {
             wrong_args(n, 0, 0)?;
             cmd.edit()
         }
-        GET_URLMATCH => Err(Die::Fatal(msg::not_implemented("--get-urlmatch"))),
+        GET_URLMATCH => {
+            wrong_args(n, 2, 2)?;
+            cmd.get_url(&args[0], &args[1])
+        }
         _ => Err(Die::Fatal(msg::not_implemented("--get-color/--get-colorbool"))),
     }
 }
@@ -1321,6 +1323,54 @@ impl<'o> Cmd<'o> {
                 }
             } else {
                 out.extend_from_slice(v);
+            }
+            out.push(if z { 0 } else { b'\n' });
+        }
+        let _ = std::io::stdout().lock().write_all(&out);
+        Ok(0)
+    }
+
+    /// `get --url=<url> <name>` / `--get-urlmatch <name> <url>`.
+    fn get_url(&mut self, name: &str, url: &str) -> CmdResult {
+        let Some(url) = rgit_config::urlmatch::Url::parse(url) else {
+            return Ok(1);
+        };
+        let (section, key) = match name.split_once('.') {
+            Some((s, rest)) => (s, Some(rest.rsplit('.').next().unwrap_or(rest))),
+            None => (name, None),
+        };
+        let section = BString::from(section.to_ascii_lowercase());
+        let key = key.map(|k| BString::from(k.to_ascii_lowercase()));
+        // git shows names exactly when a whole section is listed, whatever
+        // --show-names says.
+        let show_names = key.is_none();
+        let set = self.load(false)?;
+        let found = rgit_config::urlmatch::best_entries(
+            set.entries(),
+            section.as_bstr(),
+            key.as_ref().map(|k| k.as_bstr()),
+            &url,
+        );
+        if found.is_empty() {
+            return Ok(1);
+        }
+        let z = self.o.null.get();
+        let mut out = Vec::new();
+        for (full, e) in found {
+            let v = match self.format(e) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue,
+                Err(err) => return Err(value_error(e, err)),
+            };
+            self.prefix_columns(&mut out, e);
+            if show_names {
+                out.extend_from_slice(&full);
+                if e.value.is_some() || self.o.ty.get().is_some() {
+                    out.push(if z { b'\n' } else { b' ' });
+                    out.extend_from_slice(&v);
+                }
+            } else {
+                out.extend_from_slice(&v);
             }
             out.push(if z { 0 } else { b'\n' });
         }
