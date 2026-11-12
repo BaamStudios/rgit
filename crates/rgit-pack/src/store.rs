@@ -83,7 +83,10 @@ impl PackSet {
                 let p = e.path();
                 let name = e.file_name();
                 let name = name.to_string_lossy();
-                if !name.starts_with("pack-") || !name.ends_with(".idx") {
+                // Like git, any `<name>.idx` next to a `<name>.pack` is a
+                // pack, not only `pack-<hash>.idx` (t5300 copies packs as
+                // `test-1-<hash>.idx`).
+                if !name.ends_with(".idx") {
                     continue;
                 }
                 let pack = p.with_extension("pack");

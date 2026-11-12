@@ -2,13 +2,19 @@
 //! User-visible messages of the front end, in one place for review
 //! (see CLEANROOM.md, "User-visible messages").
 
+pub mod cat_file;
 pub mod check_ignore;
 pub mod config;
 pub mod for_each_ref;
+pub mod hash_object;
 pub mod init;
+pub mod mktag;
+pub mod mktree;
+pub mod objects;
 pub mod pack_objects;
 pub mod pack_refs;
 pub mod reflog;
+pub mod rev_list;
 pub mod show_ref;
 pub mod update_ref;
 pub mod var;

@@ -7,10 +7,15 @@
 mod commands;
 mod context;
 mod global;
+mod history;
 mod messages;
 mod objects;
+mod quote;
+mod refs;
 mod refs_support;
 mod repo;
+mod repo_objects;
+mod revision;
 mod revisions;
 
 use std::io::Write;

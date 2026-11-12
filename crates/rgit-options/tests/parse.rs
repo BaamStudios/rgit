@@ -635,3 +635,33 @@ fn completion_helper_all() {
     assert!(out.contains(" --alias-text= "));
     assert!(out.contains(" --secret "));
 }
+
+/// Usage printed after parsing shows aliases unresolved, with an unnamed
+/// argument; `-h` and errors found while parsing resolve them.
+#[test]
+fn alias_in_usage_after_parse() {
+    let on = Cell::new(false);
+    let mk = || {
+        Parser::new(
+            &["demo"],
+            vec![
+                Opt::flag(None, "use-map", &on, "use the map"),
+                Opt::alias(None, "map", "use-map"),
+            ],
+        )
+    };
+    let resolved = "    --[no-]map            alias of --use-map\n";
+    let raw = "    --[no-]map ...        alias of --use-map\n";
+    let help = mk()
+        .parse(&["demo".to_string(), "-h".to_string()])
+        .unwrap_err();
+    assert!(help.stdout.contains(resolved), "{}", help.stdout);
+    let unknown = mk()
+        .parse(&["demo".to_string(), "--bogus".to_string()])
+        .unwrap_err();
+    assert!(unknown.stderr.contains(resolved), "{}", unknown.stderr);
+    let p = mk();
+    assert!(p.usage_error().stderr.contains(raw));
+    assert!(p.usage_msg("x").stderr.contains(raw));
+    assert!(p.error_with_usage("x").stderr.contains(raw));
+}
