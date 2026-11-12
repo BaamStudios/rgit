@@ -203,10 +203,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let config = refs_support::load_config(ctx, &setup);
     let store = refs_support::ref_store(&setup, &config);
     let objects = Objects::open(&setup);
+    let revs = refs_support::Revs::new(ctx, &setup)?;
 
     let mut points = Vec::new();
     for p in points_at.borrow().iter() {
-        let id = refs_support::get_oid(&store, &objects, p)
+        let id = revs.resolve(p)
             .ok_or_else(|| Die::Error(msg::malformed_object_name(p), 129))?;
         points.push(id);
     }

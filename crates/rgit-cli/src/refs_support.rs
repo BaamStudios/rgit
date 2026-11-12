@@ -2,12 +2,7 @@
 //! Shared glue for the reference commands (`update-ref`, `show-ref`,
 //! `for-each-ref`, `pack-refs`): the reference store with its settings,
 //! object lookups over loose objects and packs, unique abbreviations and a
-//! small object-name parser.
-//!
-//! The object-name parser understands full and abbreviated object ids,
-//! reference names with git's lookup rules (`gitrevisions(7)`, "<refname>"),
-//! `@`, and the suffixes `^`, `^<n>`, `~<n>`, `^{}` and `^{<type>}`. The
-//! full revision syntax is #32.
+//! object names through the revision parser.
 
 use std::path::Path;
 
@@ -22,6 +17,10 @@ use rgit_repo::Setup;
 
 use crate::Context;
 use crate::repo;
+use crate::revisions;
+use rgit_revwalk::revision::{
+    Flags, Options as RevOptions, Repo, Resolver, WorkTreeInfo, WorkTreeLookup,
+};
 
 /// The configuration of the repository (all standard scopes).
 pub fn load_config(ctx: &Context, setup: &Setup) -> ConfigSet {
@@ -154,13 +153,6 @@ impl Objects {
         found
     }
 
-    /// The only object whose id starts with `hex`.
-    pub fn unique_prefix(&self, hex: &str) -> Option<ObjectId> {
-        let prefix = Prefix::from_hex(self.hash, hex.as_bytes()).ok()?;
-        let found = self.prefix_matches(&prefix, 2);
-        (found.len() == 1).then(|| found[0])
-    }
-
     /// The shortest unique abbreviation of `id` with at least `min` digits
     /// (git's minimum of 4 applies).
     pub fn abbrev(&self, id: &ObjectId, min: usize) -> String {
@@ -185,144 +177,55 @@ impl Objects {
     }
 }
 
-/// The reference a short name stands for, with git's lookup order.
-pub fn dwim_ref(store: &FilesStore, name: &str) -> Option<String> {
-    let name = if name == "@" { "HEAD" } else { name };
-    let candidates = [
-        name.to_owned(),
-        format!("refs/{name}"),
-        format!("refs/tags/{name}"),
-        format!("refs/heads/{name}"),
-        format!("refs/remotes/{name}"),
-        format!("refs/remotes/{name}/HEAD"),
-    ];
-    for c in candidates {
-        if c.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
-            continue;
-        }
-        if c == name && !c.starts_with("refs/") && !rgit_refs::name::is_root_ref_syntax(&c) {
-            continue;
-        }
-        if let Ok(Some(r)) = store.resolve(&c) {
-            if r.oid.is_some() {
-                return Some(c);
-            }
-        }
-    }
-    None
+/// Object names through the revision parser (`gitrevisions(7)`).
+pub struct Revs {
+    objects: revisions::Objects,
+    refs: revisions::Refs,
+    config: ConfigSet,
+    index: revisions::IndexFile,
+    work_tree: Option<revisions::WorkTree>,
+    info: Option<WorkTreeInfo>,
+    opts: RevOptions,
 }
 
-/// Resolves an object name (see the module documentation).
-pub fn get_oid(store: &FilesStore, objects: &Objects, spec: &str) -> Option<ObjectId> {
-    let (base, suffix) = split_suffix(spec);
-    let mut id = base_oid(store, objects, base)?;
-    let mut rest = suffix;
-    while !rest.is_empty() {
-        if let Some(r) = rest.strip_prefix("^{") {
-            let end = r.find('}')?;
-            let ty = &r[..end];
-            rest = &r[end + 1..];
-            id = match ty {
-                "" => objects.peel(&id)?,
-                "object" => {
-                    objects.kind(&id)?;
-                    id
-                }
-                _ => {
-                    let want = ObjectKind::from_name(ty.as_bytes())?;
-                    peel_to(objects, id, want)?
-                }
-            };
-        } else if let Some(r) = rest.strip_prefix('^') {
-            let digits = r.bytes().take_while(u8::is_ascii_digit).count();
-            let n: usize = if digits == 0 {
-                1
-            } else {
-                r[..digits].parse().ok()?
-            };
-            rest = &r[digits..];
-            let commit = peel_to(objects, id, ObjectKind::Commit)?;
-            if n == 0 {
-                id = commit;
-            } else {
-                id = *parents(objects, &commit)?.get(n - 1)?;
-            }
-        } else {
-            let r = rest.strip_prefix('~')?;
-            let digits = r.bytes().take_while(u8::is_ascii_digit).count();
-            let n: usize = if digits == 0 {
-                1
-            } else {
-                r[..digits].parse().ok()?
-            };
-            rest = &r[digits..];
-            id = peel_to(objects, id, ObjectKind::Commit)?;
-            for _ in 0..n {
-                id = *parents(objects, &id)?.first()?;
-            }
-        }
+impl Revs {
+    /// The revision parser for the repository of `setup`.
+    pub fn new(ctx: &Context, setup: &Setup) -> Result<Revs, crate::Die> {
+        let kind = setup.format.object_format;
+        let config = revisions::load_config(ctx, setup)?;
+        let opts = revisions::options(&config, kind)?;
+        let shallow = std::env::var_os("GIT_SHALLOW_FILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| setup.common_dir.join("shallow"));
+        Ok(Revs {
+            objects: revisions::Objects::new(revisions::objects_dir(setup), kind, &shallow),
+            refs: revisions::Refs::new(setup, kind),
+            config,
+            index: revisions::IndexFile::new(setup, kind),
+            work_tree: setup.work_tree.clone().map(revisions::WorkTree),
+            info: revisions::work_tree_info(setup),
+            opts,
+        })
     }
-    Some(id)
-}
 
-/// Splits `name^{..}~2` into `name` and the suffix chain.
-fn split_suffix(spec: &str) -> (&str, &str) {
-    match spec.find(['^', '~']) {
-        Some(i) if i > 0 => (&spec[..i], &spec[i..]),
-        _ => (spec, ""),
+    /// The object `name` stands for, if any (no messages).
+    pub fn resolve(&self, name: &str) -> Option<ObjectId> {
+        let cfg = revisions::Config(&self.config);
+        let repo = Repo {
+            objects: &self.objects,
+            refs: &self.refs,
+            config: &cfg,
+            index: Some(&self.index),
+            work_tree: self.work_tree.as_ref().map(|w| w as &dyn WorkTreeLookup),
+            work_tree_info: self.info.clone(),
+        };
+        let resolver = Resolver::new(repo, self.opts.clone());
+        let flags = Flags {
+            quiet: true,
+            ..Flags::default()
+        };
+        resolver.resolve_with(name, flags).ok()
     }
-}
-
-fn base_oid(store: &FilesStore, objects: &Objects, name: &str) -> Option<ObjectId> {
-    let hash = objects.hash();
-    let hexlen = hash.hex_len();
-    let is_hex = !name.is_empty() && name.bytes().all(|b| b.is_ascii_hexdigit());
-    if is_hex && name.len() == hexlen {
-        return ObjectId::from_hex(hash, name.as_bytes()).ok();
-    }
-    if let Some(r) = dwim_ref(store, name) {
-        return store.resolve_oid(&r).ok().flatten();
-    }
-    if is_hex && name.len() >= 4 && name.len() < hexlen {
-        return objects.unique_prefix(&name.to_ascii_lowercase());
-    }
-    None
-}
-
-fn parents(objects: &Objects, id: &ObjectId) -> Option<Vec<ObjectId>> {
-    let (kind, data) = objects.read(id)?;
-    if kind != ObjectKind::Commit {
-        return None;
-    }
-    rgit_object::Commit::parse(objects.hash(), &data)
-        .ok()?
-        .parents()
-        .ok()
-}
-
-fn peel_to(objects: &Objects, mut id: ObjectId, want: ObjectKind) -> Option<ObjectId> {
-    for _ in 0..64 {
-        let (kind, data) = objects.read(&id)?;
-        if kind == want {
-            return Some(id);
-        }
-        match kind {
-            ObjectKind::Tag => {
-                id = rgit_object::Tag::parse(objects.hash(), &data)
-                    .ok()?
-                    .object()
-                    .ok()?
-            }
-            ObjectKind::Commit if want == ObjectKind::Tree => {
-                return rgit_object::Commit::parse(objects.hash(), &data)
-                    .ok()?
-                    .tree()
-                    .ok();
-            }
-            _ => return None,
-        }
-    }
-    None
 }
 
 /// Hooks for reference updates from the command line: object checks and a

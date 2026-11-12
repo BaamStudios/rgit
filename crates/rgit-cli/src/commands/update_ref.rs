@@ -77,6 +77,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let config = refs_support::load_config(ctx, &setup);
     let store = refs_support::ref_store(&setup, &config);
     let objects = Objects::open(&setup);
+    let revs = refs_support::Revs::new(ctx, &setup)?;
     let mut hooks = UpdateHooks::new(&setup, &config, &objects);
 
     let opts = Options {
@@ -87,6 +88,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let input = std::io::stdin();
         let mut session = Session {
             store: &store,
+            revs: &revs,
             objects: &objects,
             opts: &opts,
             z: nul.get(),
@@ -104,7 +106,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             None => None,
             Some(s) if s.is_empty() => None,
             Some(s) => Some(
-                refs_support::get_oid(&store, &objects, s)
+                revs.resolve(s)
                     .ok_or_else(|| Die::Fatal(msg::not_valid_old_sha1(s)))?,
             ),
         };
@@ -118,13 +120,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .map(|()| 0)
             .map_err(|e| Die::Error(e.to_string(), 1));
     }
-    let new = refs_support::get_oid(&store, &objects, &args[1])
+    let new = revs.resolve(&args[1])
         .ok_or_else(|| Die::Fatal(msg::not_valid_sha1(&args[1])))?;
     let old = match args.get(2) {
         None => None,
         Some(s) if s.is_empty() => Some(ObjectId::null(hash)),
         Some(s) => Some(
-            refs_support::get_oid(&store, &objects, s)
+            revs.resolve(s)
                 .ok_or_else(|| Die::Fatal(msg::not_valid_old_sha1(s)))?,
         ),
     };
@@ -166,6 +168,7 @@ enum Phase {
 
 struct Session<'a, R: BufRead> {
     store: &'a FilesStore,
+    revs: &'a refs_support::Revs,
     objects: &'a Objects,
     opts: &'a Options,
     z: bool,
@@ -471,7 +474,7 @@ impl<R: BufRead> Session<'_, R> {
     }
 
     fn parse_oid(&self, value: &str) -> Option<ObjectId> {
-        refs_support::get_oid(self.store, self.objects, value)
+        self.revs.resolve(value)
     }
 
     /// The reference name at the start of `rest`.
