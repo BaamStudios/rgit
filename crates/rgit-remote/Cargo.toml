@@ -1,0 +1,18 @@
+[package]
+name = "rgit-remote"
+description = "rgit: URLs, refspecs and remote configuration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
+thiserror = "2"
+rgit-config = { path = "../rgit-config" }
+rgit-hash = { path = "../rgit-hash" }
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
+tempfile = "3"
