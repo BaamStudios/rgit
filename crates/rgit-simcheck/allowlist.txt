@@ -1,0 +1,15 @@
+# rgit-simcheck allowlist: findings a maintainer has reviewed and accepted.
+# See CLEANROOM.md, section "License guard".
+#
+# One entry per line:
+#   <kind> <path>[:<first>[-<last>]]   # reason, reviewer, date, PR
+#
+# kind: file (all checks), code, comment or string
+# path: rgit path exactly as printed in the report (e.g. crates/rgit-foo/src/bar.rs)
+# A line range restricts the entry to findings whose rgit lines lie inside it.
+#
+# Not needed here (allowed automatically):
+#   - files whose header comment names a gitoxide source (ported, MIT/Apache-2.0)
+#   - string literals in messages.rs or below a messages/ directory, and literals
+#     starting with "fatal: ", "error: ", "warning: ", "hint: ", "usage: "
+#     (user-visible messages may be reproduced verbatim, decision 2026-11-12)
