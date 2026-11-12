@@ -605,6 +605,13 @@ impl State<'_, '_> {
                 };
             }
         }
+        // Hold the lock without an open file (many references in one
+        // transaction must not exhaust the file descriptor limit).
+        if let Some(lock) = item.lock.as_mut() {
+            let path = lock.lock_path().to_owned();
+            lock.close()
+                .map_err(|source| TransactionError::Io { path, source })?;
+        }
         Ok(())
     }
 
