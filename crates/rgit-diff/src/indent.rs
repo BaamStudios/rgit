@@ -4,13 +4,15 @@
 //!
 //! git documents this only as "shift diff hunk boundaries to make patches
 //! easier to read" (`--indent-heuristic`, on by default). Everything below was
-//! derived from black-box experiments against the `git` binary: about 100,000
+//! derived from black-box experiments against the `git` binary: about 280,000
 //! generated slider cases (a block of lines that can be placed at several
 //! positions), with the candidate positions and git's choice recorded, plus
 //! targeted probes. The structure (what is measured around a split, how two
 //! positions are compared, the search window) was found by testing hypotheses
-//! against that data; the weights were obtained by integer programming as one
-//! point of the feasible region and reproduce every recorded case.
+//! against that data; the weights were obtained by integer programming. They
+//! reproduce every recorded two-position case and all but 70 of the 280,000
+//! cases (0.025 %); the remaining differences involve three or more
+//! positions and are listed in the pull request / issue #82.
 //!
 //! Model:
 //! * A candidate position of a group `[start, end)` is scored at its two
@@ -33,17 +35,17 @@ const MAX_SLIDE: usize = 100;
 /// Blank lines scanned at most in either direction from a split.
 const MAX_BLANKS: usize = 20;
 
-const WEIGHT_INDENT: i64 = 82;
-const START_OF_FILE: i64 = 4;
-const END_OF_FILE: i64 = -5;
-const TOTAL_BLANK: i64 = -41;
-const POST_BLANK: i64 = 8;
-const INDENTED: i64 = -6;
-const INDENTED_BLANK: i64 = 13;
-const OUTDENTED: i64 = 32;
-const OUTDENTED_BLANK: i64 = 22;
-const DEDENTED: i64 = 31;
-const DEDENTED_BLANK: i64 = 22;
+const WEIGHT_INDENT: i64 = 232;
+const START_OF_FILE: i64 = 10;
+const END_OF_FILE: i64 = -8;
+const TOTAL_BLANK: i64 = -116;
+const POST_BLANK: i64 = 23;
+const INDENTED: i64 = -17;
+const INDENTED_BLANK: i64 = 38;
+const OUTDENTED: i64 = 93;
+const OUTDENTED_BLANK: i64 = 65;
+const DEDENTED: i64 = 84;
+const DEDENTED_BLANK: i64 = 65;
 
 fn is_blank(line: &[u8]) -> bool {
     line.iter()
