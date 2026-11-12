@@ -546,6 +546,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-repo"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
+ "rgit-difftest",
+ "rgit-hash",
+ "rgit-trace",
+ "rustix",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-simcheck"
 version = "0.1.0"
 
