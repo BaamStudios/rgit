@@ -768,6 +768,19 @@ fn discover(ctx: &Context) -> Result<(Option<Repo>, String), Die> {
                 String::new(),
             ));
         }
+        // Like git's gentle setup, a repository that may not be used
+        // (unsafe owner, disallowed bare repository, unsupported format)
+        // means "no repository" for `config`; the format problem is
+        // reported as a warning.
+        Err(rgit_repo::Error::DubiousOwnership { .. } | rgit_repo::Error::BareNotAllowed(_)) => {
+            return Ok((None, String::new()));
+        }
+        Err(
+            e @ (rgit_repo::Error::VersionTooNew(_) | rgit_repo::Error::UnknownExtensions(_)),
+        ) => {
+            eprintln!("warning: {e}");
+            return Ok((None, String::new()));
+        }
         Err(e) => return Err(crate::repo::die(e)),
         Ok(Err(_)) => return Ok((None, String::new())),
         Ok(Ok(setup)) => setup,
