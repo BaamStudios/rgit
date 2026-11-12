@@ -13,7 +13,9 @@ name = "rgit"
 path = "src/main.rs"
 
 [dependencies]
+rgit-config = { path = "../rgit-config" }
 rgit-options = { path = "../rgit-options" }
+rgit-repo = { path = "../rgit-repo" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"

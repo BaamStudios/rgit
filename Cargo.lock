@@ -457,8 +457,10 @@ name = "rgit-cli"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rgit-config",
  "rgit-difftest",
  "rgit-options",
+ "rgit-repo",
 ]
 
 [[package]]

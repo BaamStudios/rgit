@@ -112,7 +112,7 @@ impl RepositoryFormat {
                 let v = string(e)?;
                 let (format, payload) = match v.find(b"://") {
                     Some(i) => (&v[..i], Some(BString::from(&v[i + 3..]))),
-                    None => (&v[..], None),
+                    None => (v, None),
                 };
                 self.ref_storage = match format.as_bytes() {
                     b"files" => RefStorage::Files,
