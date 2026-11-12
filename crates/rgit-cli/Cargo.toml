@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 rgit-config = { path = "../rgit-config" }
 rgit-options = { path = "../rgit-options" }
+rgit-refs = { path = "../rgit-refs" }
 rgit-repo = { path = "../rgit-repo" }
 
 [target.'cfg(unix)'.dependencies]

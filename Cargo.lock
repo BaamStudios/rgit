@@ -460,6 +460,7 @@ dependencies = [
  "rgit-config",
  "rgit-difftest",
  "rgit-options",
+ "rgit-refs",
  "rgit-repo",
 ]
 
@@ -552,6 +553,16 @@ dependencies = [
  "rgit-trace",
  "rustix",
  "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-refs"
+version = "0.1.0"
+dependencies = [
+ "rgit-difftest",
+ "rgit-fs",
+ "rgit-hash",
  "thiserror",
 ]
 
