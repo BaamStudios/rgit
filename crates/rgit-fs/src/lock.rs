@@ -343,11 +343,18 @@ impl LockFile {
         self.rollback_in_place();
     }
 
+    /// Ends writing: flushes (if the options asked for it) and closes the
+    /// file descriptor, but keeps the lock. [`commit`](Self::commit) and
+    /// [`rollback`](Self::rollback) work as before; writing again panics.
+    /// Lets a caller hold many locks without one open file each.
+    pub fn close(&mut self) -> io::Result<()> {
+        self.finish_write()
+    }
+
     fn finish_write(&mut self) -> io::Result<()> {
-        let file = self
-            .file
-            .take()
-            .expect("lock file is open until commit/rollback");
+        let Some(file) = self.file.take() else {
+            return Ok(());
+        };
         if let Some(method) = self.fsync {
             fsync::harden(&file, method)?;
         }

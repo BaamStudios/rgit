@@ -26,6 +26,25 @@ fn commit_replaces_target() {
 }
 
 #[test]
+fn close_keeps_the_lock() {
+    let s = Scratch::new("close");
+    let target = s.path().join("ref");
+    let mut lock = LockFile::acquire(&target, &LockOptions::new()).unwrap();
+    lock.write_all(b"new").unwrap();
+    lock.close().unwrap();
+    assert!(s.path().join("ref.lock").exists());
+    assert!(LockFile::acquire(&target, &LockOptions::new()).is_err());
+    lock.commit().unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+
+    let mut lock = LockFile::acquire(&target, &LockOptions::new()).unwrap();
+    lock.close().unwrap();
+    lock.rollback();
+    assert!(!s.path().join("ref.lock").exists());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+}
+
+#[test]
 fn rollback_and_drop_remove_lock() {
     let s = Scratch::new("rollback");
     let target = s.path().join("index");

@@ -14,6 +14,7 @@ mod messages;
 mod objects;
 mod quote;
 mod refs;
+mod refs_support;
 mod repo;
 mod repo_objects;
 mod repository;

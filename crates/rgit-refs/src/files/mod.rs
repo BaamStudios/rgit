@@ -5,7 +5,10 @@
 //! Per-worktree references (#104) and case-insensitive file systems (#183)
 //! are not handled yet: `$GIT_DIR` is also the common directory.
 
+mod pack;
 mod transaction;
+
+pub use pack::PackFilter;
 
 use std::collections::BTreeMap;
 use std::io;

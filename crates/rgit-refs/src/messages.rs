@@ -43,6 +43,11 @@ pub fn unable_to_resolve(name: &str) -> String {
     format!("unable to resolve reference '{name}'")
 }
 
+/// `unable to resolve reference '<name>': reference broken`
+pub fn reference_broken(name: &str) -> String {
+    format!("unable to resolve reference '{name}': reference broken")
+}
+
 /// `is at <actual> but expected <expected>`
 pub fn is_at_but_expected(actual: impl Display, expected: impl Display) -> String {
     format!("is at {actual} but expected {expected}")
