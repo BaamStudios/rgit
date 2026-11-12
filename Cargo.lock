@@ -519,6 +519,7 @@ dependencies = [
  "rgit-refs",
  "rgit-repo",
  "rgit-revwalk",
+ "rgit-trace",
  "rgit-transport",
  "rgit-version",
  "rgit-worktree",

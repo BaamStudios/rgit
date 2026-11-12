@@ -5,7 +5,7 @@
 
 use std::io::Write;
 
-use rgit_config::{CommandLine, SystemEnv};
+use rgit_config::{CommandLine, LoadOptions, Loader, SourceSpec, SystemEnv};
 use rgit_repo::{Error, Setup, SetupOptions, StandardProtectedConfig};
 
 use crate::{Context, Die};
@@ -31,8 +31,32 @@ pub fn command_line(ctx: &Context) -> CommandLine {
     cl
 }
 
+/// Read the `-c` / `--config-env` / `GIT_CONFIG_*` settings the way git's
+/// first configuration read does: an invalid entry (no section, empty key,
+/// relative include) is fatal with git's two-line report.
+pub fn check_command_line(ctx: &Context) -> Result<(), Die> {
+    let env = SystemEnv::default();
+    let mut loader = Loader::new(LoadOptions {
+        env: &env,
+        repo: None,
+        includes: true,
+    });
+    loader.add(SourceSpec::CommandLine(command_line(ctx)));
+    match loader.load() {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let mut err = std::io::stderr();
+            for (level, msg) in e.report() {
+                let _ = writeln!(err, "{} {msg}", level.prefix());
+            }
+            Err(Die::Exit(rgit_options::EXIT_FATAL))
+        }
+    }
+}
+
 /// Set up the repository, change into [`Setup::cwd`] and return the setup.
 pub fn setup(ctx: &Context, mode: Mode) -> Result<Setup, Die> {
+    check_command_line(ctx)?;
     let env = SystemEnv::default();
     let mut opts = SetupOptions::from_process().map_err(die)?;
     if let Some(d) = &ctx.git_dir {
