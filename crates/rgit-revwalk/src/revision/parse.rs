@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Resolving one revision expression (no ranges).
 
-use rgit_date::{DateMode, DateStyle, approxidate_careful, show_date};
+use rgit_date::approxidate_careful;
 use rgit_hash::ObjectId;
 use rgit_object::{ObjectKind, TreeIter};
 
@@ -338,23 +338,36 @@ impl Resolver<'_> {
         if bad {
             return Err(Error::NotFound);
         }
-        if let Some(e) = log.iter().rev().find(|e| e.time <= at) {
-            return Ok(e.new);
+        let entries: Vec<rgit_refs::reflog::Entry> = log
+            .iter()
+            .map(|e| rgit_refs::reflog::Entry {
+                old: e.old,
+                new: e.new,
+                ident: Vec::new(),
+                time: e.time,
+                tz: e.tz,
+                message: Vec::new(),
+            })
+            .collect();
+        let current = self.repo.refs.resolve(&full)?.and_then(|v| v.oid);
+        let target = rgit_refs::reflog::lookup::Target {
+            refname: &full,
+            display: &display,
+            current,
+        };
+        let resolved =
+            rgit_refs::reflog::resolve(&entries, rgit_refs::reflog::Selector::Date(at), target)
+                .map_err(|e| Error::Fatal(e.to_string()))?;
+        // `-q` silences only `only goes back`; gaps and a log that ended
+        // early are always reported.
+        for w in &resolved.warnings {
+            let only_goes_back =
+                matches!(w, rgit_refs::reflog::lookup::Warning::OnlyGoesBack { .. });
+            if !flags.diagnose && !(flags.quiet && only_goes_back) {
+                self.push_diag(Level::Warning, w.to_string());
+            }
         }
-        let first = &log[0];
-        if !flags.quiet && !flags.diagnose {
-            let mode = DateMode::new(DateStyle::Rfc2822);
-            let date = show_date(first.time, first.tz, &mode, &self.opts.date).unwrap_or_default();
-            self.push_diag(
-                Level::Warning,
-                messages::log_only_goes_back(&display, &date),
-            );
-        }
-        Ok(if first.old.is_null() {
-            first.new
-        } else {
-            first.old
-        })
+        Ok(resolved.oid)
     }
 
     /// The full ref whose reflog `<name>@{...}` reads (git's `dwim_log`).

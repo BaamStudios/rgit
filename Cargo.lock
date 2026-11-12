@@ -722,6 +722,7 @@ dependencies = [
  "rgit-difftest",
  "rgit-hash",
  "rgit-object",
+ "rgit-refs",
  "thiserror",
 ]
 

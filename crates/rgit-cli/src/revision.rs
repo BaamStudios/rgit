@@ -414,8 +414,11 @@ impl<'a> Resolver<'a> {
         Err(Failure::missing())
     }
 
-    /// `<ref>@{<n>}`.
+    /// `<ref>@{<n>}` and `<ref>@{<date>}`.
     fn reflog(&mut self, base: &str, spec: &str) -> Res<ObjectId> {
+        if spec.is_empty() || !spec.bytes().all(|b| b.is_ascii_digit()) {
+            return self.reflog_date(base, spec);
+        }
         let n: usize = spec.parse().map_err(|_| Failure::missing())?;
         let full = if base.is_empty() {
             self.repo.refs.head_target().ok_or_else(Failure::missing)?
@@ -431,6 +434,48 @@ impl<'a> Resolver<'a> {
             let shown = if base.is_empty() { &full } else { base };
             Err(Failure::Fatal(msg::reflog_too_short(shown, entries.len())))
         }
+    }
+
+    /// `<ref>@{<date>}` through the reflog lookup of `rgit-refs`, printing
+    /// git's warnings (`only goes back to`, `has gap after`, ...).
+    fn reflog_date(&mut self, base: &str, spec: &str) -> Res<ObjectId> {
+        use rgit_refs::reflog::{Selector, lookup::Target, resolve};
+        let ctx = rgit_date::DateContext::from_env();
+        let (at, bad) = rgit_date::approxidate_careful(spec, &ctx);
+        if bad {
+            return Err(Failure::missing());
+        }
+        let (full, display) = if base.is_empty() {
+            match self.repo.refs.head_target() {
+                Some(t) => {
+                    let d = t.strip_prefix("refs/heads/").unwrap_or(&t).to_string();
+                    (t, d)
+                }
+                None => ("HEAD".to_string(), "HEAD".to_string()),
+            }
+        } else if base == "HEAD" || base == "@" {
+            ("HEAD".to_string(), base.to_string())
+        } else {
+            let full = self.dwim_ref(base).ok_or_else(Failure::missing)?;
+            (full, base.to_string())
+        };
+        let entries = self
+            .repo
+            .refs
+            .reflog_entries(&full)
+            .filter(|e| !e.is_empty())
+            .ok_or_else(Failure::missing)?;
+        let target = Target {
+            refname: &full,
+            display: &display,
+            current: self.repo.refs.resolve(&full),
+        };
+        let r = resolve(&entries, Selector::Date(at), target)
+            .map_err(|e| Failure::Fatal(e.to_string()))?;
+        for w in &r.warnings {
+            eprintln!("warning: {w}");
+        }
+        Ok(r.oid)
     }
 
     /// The full ref name `name` stands for (git's ref lookup rules).
