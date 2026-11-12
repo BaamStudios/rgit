@@ -1,0 +1,13 @@
+[package]
+name = "rgit-difftest"
+description = "Differential tests for rgit: run the same command with the reference git and with rgit, compare output and repository state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+regex = "1"
+tempfile = "3"
