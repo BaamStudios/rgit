@@ -10,7 +10,8 @@ use flate2::{Decompress, FlushDecompress, Status};
 /// Why inflation failed.
 #[derive(Debug)]
 pub(crate) enum InflateError {
-    /// zlib reported a data error; the text is zlib's message.
+    /// zlib reported a problem; the text follows `inflate: ` in git's
+    /// message (e.g. `data stream error (incorrect header check)`).
     Data(String),
     /// The compressed input ended before the end of the stream.
     Truncated,
@@ -73,9 +74,7 @@ impl<R: Read> Inflater<R> {
             let status = self
                 .z
                 .decompress(&self.buf[self.pos..self.len], out, FlushDecompress::None)
-                .map_err(|e| {
-                    InflateError::Data(e.message().unwrap_or("unknown error").to_owned())
-                })?;
+                .map_err(|e| InflateError::Data(crate::messages::zlib_problem(&e)))?;
             let consumed = (self.z.total_in() - in_before) as usize;
             let produced = (self.z.total_out() - out_before) as usize;
             self.pos += consumed;
@@ -143,7 +142,9 @@ mod tests {
 
         let mut inf = Inflater::new(&b"blob 5\0hello"[..]);
         match inf.read(&mut chunk) {
-            Err(InflateError::Data(m)) => assert_eq!(m, "incorrect header check"),
+            Err(InflateError::Data(m)) => {
+                assert_eq!(m, "data stream error (incorrect header check)")
+            }
             other => panic!("{other:?}"),
         }
 
