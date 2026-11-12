@@ -415,3 +415,73 @@ pub fn options(config: &ConfigSet, kind: HashKind) -> Result<Options, Die> {
     }
     Ok(o)
 }
+
+/// What `config --blob=<name>` finds.
+#[derive(Debug, Clone)]
+pub enum BlobLookup {
+    /// No repository, or `name` does not name an object.
+    Unresolved,
+    /// `name` names an object that is not a blob.
+    NotBlob,
+    /// The blob's content.
+    Blob(Vec<u8>),
+}
+
+/// Resolve `name` in the repository of the current directory and read it
+/// as a blob. `prefix` is the original directory relative to the top of
+/// the work tree (`HEAD:./file`); the caller may already have moved to the
+/// top. Nothing is printed: the caller reports problems like git.
+pub fn read_blob(ctx: &crate::Context, name: &str, prefix: &str) -> BlobLookup {
+    let env = rgit_config::SystemEnv::default();
+    let Ok(mut opts) = rgit_repo::SetupOptions::from_process() else {
+        return BlobLookup::Unresolved;
+    };
+    if let Some(d) = &ctx.git_dir {
+        opts.git_dir = Some(d.into());
+    }
+    if let Some(w) = &ctx.work_tree {
+        opts.work_tree = Some(w.into());
+    }
+    if ctx.bare {
+        opts.implicit_work_tree = false;
+    }
+    let mut protected =
+        rgit_repo::StandardProtectedConfig::new(&env, crate::repo::command_line(ctx));
+    let Ok(setup) = rgit_repo::setup(&opts, &mut protected) else {
+        return BlobLookup::Unresolved;
+    };
+    let kind = setup.format.object_format;
+    let shallow = setup.common_dir.join("shallow");
+    let objects = Objects::new(objects_dir(&setup), kind, &shallow);
+    let refs = Refs::new(&setup, kind);
+    let config = ConfigSet::new();
+    let cfg = Config(&config);
+    let index = IndexFile::new(&setup, kind);
+    let work_tree = setup.work_tree.clone().map(WorkTree);
+    let repo = rgit_revwalk::revision::Repo {
+        objects: &objects,
+        refs: &refs,
+        config: &cfg,
+        index: Some(&index),
+        work_tree: work_tree.as_ref().map(|w| w as &dyn WorkTreeLookup),
+        work_tree_info: work_tree_info(&setup).map(|mut info| {
+            if !prefix.is_empty() {
+                info.prefix = prefix.to_string();
+                if !info.prefix.ends_with('/') {
+                    info.prefix.push('/');
+                }
+                info.cwd_inside = true;
+            }
+            info
+        }),
+    };
+    let resolver = rgit_revwalk::revision::Resolver::new(repo, Options::default());
+    let Ok(oid) = resolver.resolve(name) else {
+        return BlobLookup::Unresolved;
+    };
+    match objects.read(&oid) {
+        Ok(Some((ObjectKind::Blob, data))) => BlobLookup::Blob(data),
+        Ok(Some(_)) => BlobLookup::NotBlob,
+        _ => BlobLookup::Unresolved,
+    }
+}
