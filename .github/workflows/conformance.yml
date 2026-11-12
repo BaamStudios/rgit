@@ -1,0 +1,125 @@
+# Conformance: run the ported git test suite (BaamStudios/rgit-conformance, the
+# commit pinned in conformance.lock) against the reference git and against rgit.
+# See docs/adr/0001-*.md. Issue #9.
+name: Conformance
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  reference:
+    name: Reference git
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pin.outputs.version }}
+      repo: ${{ steps.pin.outputs.repo }}
+      commit: ${{ steps.pin.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read pinned versions
+        id: pin
+        run: |
+          # The upstream version lives in exactly one place: scripts/fetch-upstream.sh
+          version=$(sed -n 's/^GIT_REF="\${GIT_REF:-\(.*\)}"$/\1/p' scripts/fetch-upstream.sh)
+          repo=$(sed -n 's/^repo = "https:\/\/github.com\/\(.*\)\.git"$/\1/p' conformance.lock)
+          commit=$(sed -n 's/^commit = "\([0-9a-f]\{40\}\)"$/\1/p' conformance.lock)
+          test -n "$version" && test -n "$repo" && test -n "$commit" || {
+            echo "::error::cannot read the pinned versions"; exit 1; }
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "repo=$repo" >>"$GITHUB_OUTPUT"
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
+          # cached per version and runner image (ImageOS/ImageVersion are runner env vars)
+          echo "cache-key=reference-git-$version-$ImageOS-$ImageVersion" >>"$GITHUB_OUTPUT"
+      - name: Check out rgit-conformance
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.commit }}
+          path: conformance
+      - name: Suite and rgit agree on the reference version
+        run: |
+          suite=$(tr -d ' \n' <conformance/REFERENCE_VERSION)
+          if test "$suite" != "${{ steps.pin.outputs.version }}"; then
+            echo "::error::rgit-conformance is ported from $suite, scripts/fetch-upstream.sh pins ${{ steps.pin.outputs.version }}"
+            exit 1
+          fi
+      - name: Restore reference build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rgit-conformance/git-${{ steps.pin.outputs.version }}
+          key: ${{ steps.pin.outputs.cache-key }}
+      - name: Install build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gettext libcurl4-openssl-dev libexpat1-dev libpcre2-dev libssl-dev zlib1g-dev
+      - name: Build reference git
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          GIT_REF=${{ steps.pin.outputs.version }} scripts/fetch-upstream.sh
+          RGIT_REFERENCE_SOURCE="$PWD/upstream/git" conformance/run --build-only
+      - name: Reference build is usable
+        run: |
+          ~/.cache/rgit-conformance/git-${{ steps.pin.outputs.version }}/git version
+          test -x ~/.cache/rgit-conformance/git-${{ steps.pin.outputs.version }}/t/helper/test-tool
+
+  conformance:
+    name: Conformance (fallback + strict)
+    needs: reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out rgit-conformance
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.reference.outputs.repo }}
+          ref: ${{ needs.reference.outputs.commit }}
+          path: conformance
+      - name: Cache key for this runner image
+        id: key
+        run: echo "cache-key=reference-git-${{ needs.reference.outputs.version }}-$ImageOS-$ImageVersion" >>"$GITHUB_OUTPUT"
+      - name: Restore reference build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rgit-conformance/git-${{ needs.reference.outputs.version }}
+          key: ${{ steps.key.outputs.cache-key }}
+      - name: Build reference git (only if this runner image missed the cache)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gettext libcurl4-openssl-dev libexpat1-dev libpcre2-dev libssl-dev zlib1g-dev
+          GIT_REF=${{ needs.reference.outputs.version }} scripts/fetch-upstream.sh
+          RGIT_REFERENCE_SOURCE="$PWD/upstream/git" conformance/run --build-only
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build rgit
+        run: cargo build --locked --bin rgit
+      - name: Run conformance suite and regression gate
+        run: |
+          # Lead decision 2026-11-12: only regressions (pass -> fail) fail the build.
+          # STATUS.md/baseline are refreshed in rgit-conformance, not per rgit PR.
+          conformance/run --mode both --rgit target/debug/rgit --check
+      - name: Self-test of the regression gate
+        run: conformance/selftest/gate.sh
+      - name: Summary
+        if: always()
+        run: |
+          f=conformance/results/default/STATUS.generated.md
+          test -f "$f" && sed -n '/^## Summary/,/^## Per-case/p' "$f" | sed '$d' >>"$GITHUB_STEP_SUMMARY" || true
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results
+          path: |
+            conformance/results/**/STATUS.generated.md
+            conformance/results/**/*.tap
+            conformance/results/**/*.tsv
+            conformance/results/**/*.meta
+            conformance/results/**/*.stderr
+          if-no-files-found: warn
