@@ -20,6 +20,7 @@ rgit-fs = { path = "../rgit-fs" }
 rgit-options = { path = "../rgit-options" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-repo = { path = "../rgit-repo" }
+rgit-version = { path = "../rgit-version" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"

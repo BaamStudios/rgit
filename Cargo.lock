@@ -465,6 +465,7 @@ dependencies = [
  "rgit-options",
  "rgit-refs",
  "rgit-repo",
+ "rgit-version",
 ]
 
 [[package]]
@@ -556,7 +557,7 @@ name = "rgit-protocol"
 version = "0.1.0"
 dependencies = [
  "rgit-trace",
- "rustix",
+ "rgit-version",
  "tempfile",
  "thiserror",
 ]
@@ -614,6 +615,13 @@ version = "0.1.0"
 dependencies = [
  "rgit-protocol",
  "thiserror",
+]
+
+[[package]]
+name = "rgit-version"
+version = "0.1.0"
+dependencies = [
+ "rustix",
 ]
 
 [[package]]
