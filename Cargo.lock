@@ -457,12 +457,15 @@ name = "rgit-cli"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "flate2",
  "libc",
  "rgit-config",
  "rgit-date",
  "rgit-difftest",
  "rgit-fs",
+ "rgit-hash",
  "rgit-options",
+ "rgit-pack",
  "rgit-refs",
  "rgit-repo",
 ]
@@ -565,9 +568,11 @@ dependencies = [
 name = "rgit-refs"
 version = "0.1.0"
 dependencies = [
+ "rgit-date",
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",
+ "tempfile",
  "thiserror",
 ]
 

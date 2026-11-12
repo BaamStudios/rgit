@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use rgit_fs::SharedRepository;
 use rgit_hash::{HashKind, ObjectId};
 
-use crate::entry::{Committer, Entry};
-use crate::name::{is_per_worktree, is_valid_refname};
-use crate::Error;
+use super::ReflogError as Error;
+use super::entry::{Committer, Entry};
+use crate::name::{RefNameFlags, is_per_worktree, is_valid_refname};
 
 /// The reflogs of one worktree's view of a repository.
 #[derive(Clone, Debug)]
@@ -34,7 +34,11 @@ pub(crate) fn strerror(e: &io::Error) -> String {
 impl FilesReflog {
     /// Reflogs of the worktree whose git directory is `git_dir`, sharing
     /// `common_dir` (the same directory outside linked worktrees).
-    pub fn new(git_dir: impl Into<PathBuf>, common_dir: impl Into<PathBuf>, kind: HashKind) -> Self {
+    pub fn new(
+        git_dir: impl Into<PathBuf>,
+        common_dir: impl Into<PathBuf>,
+        kind: HashKind,
+    ) -> Self {
         FilesReflog {
             git_dir: git_dir.into(),
             common_dir: common_dir.into(),
@@ -323,7 +327,7 @@ fn walk(dir: &Path, prefix: &str, f: &mut dyn FnMut(&str)) -> io::Result<()> {
         let Ok(t) = e.file_type() else { continue };
         if t.is_dir() {
             walk(&e.path(), &format!("{name}/"), f)?;
-        } else if t.is_file() && is_valid_refname(&name) {
+        } else if t.is_file() && is_valid_refname(name.as_bytes(), RefNameFlags::ONELEVEL) {
             f(&name);
         }
     }

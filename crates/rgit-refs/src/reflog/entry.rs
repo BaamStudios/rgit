@@ -122,7 +122,10 @@ impl Entry {
         let mut time: u64 = 0;
         let mut overflow = false;
         while let Some(&b) = after.get(p).filter(|b| b.is_ascii_digit()) {
-            match time.checked_mul(10).and_then(|t| t.checked_add(u64::from(b - b'0'))) {
+            match time
+                .checked_mul(10)
+                .and_then(|t| t.checked_add(u64::from(b - b'0')))
+            {
                 Some(t) => time = t,
                 None => overflow = true,
             }
@@ -217,7 +220,11 @@ impl Entry {
 
     /// The e-mail part of the identity (`%ge`): between `<` and `>`.
     pub fn email(&self) -> &[u8] {
-        let start = self.ident.iter().position(|&b| b == b'<').map_or(0, |p| p + 1);
+        let start = self
+            .ident
+            .iter()
+            .position(|&b| b == b'<')
+            .map_or(0, |p| p + 1);
         let end = self.ident.len().saturating_sub(1).max(start);
         &self.ident[start..end]
     }
@@ -247,7 +254,10 @@ mod tests {
 
     #[test]
     fn normalizes_messages() {
-        assert_eq!(normalize_message(b"  multi\n line\t tab  \n\n"), b"multi line tab");
+        assert_eq!(
+            normalize_message(b"  multi\n line\t tab  \n\n"),
+            b"multi line tab"
+        );
         assert_eq!(normalize_message(b"a\rb\x0bc\x0cd"), b"a b\x0bc\x0cd");
         assert_eq!(normalize_message(b" \n "), b"");
         assert_eq!(normalize_message(b"commit: x"), b"commit: x");
@@ -315,17 +325,30 @@ mod tests {
         ] {
             assert!(parse(rest).is_none(), "accepted {rest:?}");
         }
-        assert!(Entry::parse(format!("{A}  {B} N <e> 1 +0000").as_bytes(), HashKind::Sha1).is_none());
-        assert!(Entry::parse(format!("{} {B} N <e> 1 +0000", &A[..39]).as_bytes(), HashKind::Sha1).is_none());
+        assert!(
+            Entry::parse(format!("{A}  {B} N <e> 1 +0000").as_bytes(), HashKind::Sha1).is_none()
+        );
+        assert!(
+            Entry::parse(
+                format!("{} {B} N <e> 1 +0000", &A[..39]).as_bytes(),
+                HashKind::Sha1
+            )
+            .is_none()
+        );
         let upper = A.to_ascii_uppercase();
-        assert!(Entry::parse(format!("{upper} {B} N <e> 1 +0000").as_bytes(), HashKind::Sha1).is_some());
+        assert!(
+            Entry::parse(
+                format!("{upper} {B} N <e> 1 +0000").as_bytes(),
+                HashKind::Sha1
+            )
+            .is_some()
+        );
     }
 
     #[test]
     fn parse_all_skips_bad_and_unterminated_lines() {
-        let data = format!(
-            "garbage\n{A} {B} N <e> 1 +0000\tm1\n\n{A} {B} bad\n{A} {B} N <e> 2 +0000\tm2"
-        );
+        let data =
+            format!("garbage\n{A} {B} N <e> 1 +0000\tm1\n\n{A} {B} bad\n{A} {B} N <e> 2 +0000\tm2");
         let all = Entry::parse_all(data.as_bytes(), HashKind::Sha1);
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].message, b"m1");

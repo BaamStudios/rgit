@@ -9,8 +9,8 @@ use std::fmt;
 use rgit_date::{DateContext, DateMode, DateStyle, approxidate_careful, parse_date, show_date};
 use rgit_hash::ObjectId;
 
-use crate::entry::Entry;
-use crate::messages;
+use super::entry::Entry;
+use super::messages;
 
 /// What is inside `@{...}` after a reference name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,8 +57,13 @@ pub enum Warning {
 }
 
 fn rfc2822(time: u64, tz: i32) -> String {
-    show_date(time, tz, &DateMode::new(DateStyle::Rfc2822), &DateContext::utc(0))
-        .unwrap_or_else(|_| rgit_date::format_raw(time, tz))
+    show_date(
+        time,
+        tz,
+        &DateMode::new(DateStyle::Rfc2822),
+        &DateContext::utc(0),
+    )
+    .unwrap_or_else(|_| rgit_date::format_raw(time, tz))
 }
 
 impl fmt::Display for Warning {
@@ -115,7 +120,11 @@ pub struct Target<'a> {
 }
 
 /// Looks up `selector` in `entries` (oldest first, as read from the file).
-pub fn resolve(entries: &[Entry], selector: Selector, target: Target<'_>) -> Result<Resolved, LookupError> {
+pub fn resolve(
+    entries: &[Entry],
+    selector: Selector,
+    target: Target<'_>,
+) -> Result<Resolved, LookupError> {
     let len = entries.len();
     if len == 0 {
         if let (Selector::Nth(0), Some(cur)) = (selector, target.current) {
@@ -130,31 +139,9 @@ pub fn resolve(entries: &[Entry], selector: Selector, target: Target<'_>) -> Res
         });
     }
     let newest = &entries[len - 1];
-    // `@{0}` and dates after the newest entry ask for the value after the
-    // end of the log: the current value, which should match.
-    let past_end = match selector {
-        Selector::Nth(n) => n == 0,
-        Selector::Date(t) => t > newest.time,
-    };
-    if past_end {
-        let mut warnings = Vec::new();
-        let mut oid = newest.new;
-        if let Some(cur) = target.current.filter(|c| *c != newest.new) {
-            warnings.push(Warning::UnexpectedlyEnded {
-                refname: target.refname.to_string(),
-                time: newest.time,
-                tz: newest.tz,
-            });
-            oid = cur;
-        }
-        return Ok(Resolved {
-            oid,
-            index: Some(len - 1),
-            warnings,
-        });
-    }
-    let index = match selector {
-        Selector::Nth(n) if n < len => len - 1 - n,
+    // (entry index, whether a date matched the entry's time exactly)
+    let (index, exact) = match selector {
+        Selector::Nth(n) if n < len => (len - 1 - n, false),
         Selector::Nth(n) => {
             let oldest = &entries[0];
             if n == len && !oldest.old.is_null() {
@@ -169,8 +156,9 @@ pub fn resolve(entries: &[Entry], selector: Selector, target: Target<'_>) -> Res
                 count: len,
             });
         }
+        Selector::Date(t) if t > newest.time => (len - 1, false),
         Selector::Date(t) => match entries.iter().rposition(|e| e.time <= t) {
-            Some(i) => i,
+            Some(i) => (i, entries[i].time == t),
             None => {
                 let oldest = &entries[0];
                 let oid = if oldest.old.is_null() {
@@ -190,18 +178,37 @@ pub fn resolve(entries: &[Entry], selector: Selector, target: Target<'_>) -> Res
             }
         },
     };
-    // The entry's new value should be the next entry's old value.
     let e = &entries[index];
     let mut warnings = Vec::new();
-    if entries.get(index + 1).is_some_and(|next| next.old != e.new) {
-        warnings.push(Warning::GapAfter {
-            refname: target.refname.to_string(),
-            time: e.time,
-            tz: e.tz,
-        });
+    let mut oid = e.new;
+    match entries.get(index + 1) {
+        // The entry's new value should be the next entry's old value.
+        Some(next) if !next.old.is_null() => {
+            if next.old != e.new {
+                warnings.push(Warning::GapAfter {
+                    refname: target.refname.to_string(),
+                    time: e.time,
+                    tz: e.tz,
+                });
+            }
+        }
+        // The newest entry, or the next one (re)creates the reference: the
+        // value should still be the current one. A date matching the
+        // entry exactly is not checked.
+        _ if exact => {}
+        _ => {
+            if let Some(cur) = target.current.filter(|c| *c != e.new) {
+                warnings.push(Warning::UnexpectedlyEnded {
+                    refname: target.refname.to_string(),
+                    time: e.time,
+                    tz: e.tz,
+                });
+                oid = cur;
+            }
+        }
     }
     Ok(Resolved {
-        oid: e.new,
+        oid,
         index: Some(index),
         warnings,
     })
@@ -275,18 +282,40 @@ mod tests {
         let log = [e(1, 2, 1000), e(3, 4, 2000), e(5, 6, 3000)];
         let r = resolve(&log, Selector::Nth(0), t(8)).unwrap();
         assert_eq!(r.oid, id(8));
-        assert!(matches!(r.warnings[..], [Warning::UnexpectedlyEnded { time: 3000, .. }]));
+        assert!(matches!(
+            r.warnings[..],
+            [Warning::UnexpectedlyEnded { time: 3000, .. }]
+        ));
         let r = resolve(&log, Selector::Nth(1), t(8)).unwrap();
         assert_eq!(r.oid, id(4));
-        assert!(matches!(r.warnings[..], [Warning::GapAfter { time: 2000, .. }]));
+        assert!(matches!(
+            r.warnings[..],
+            [Warning::GapAfter { time: 2000, .. }]
+        ));
         let r = resolve(&log, Selector::Nth(3), t(8)).unwrap();
         assert_eq!((r.oid, r.warnings.len()), (id(1), 0));
         assert_eq!(
-            resolve(&log, Selector::Nth(4), t(8)).unwrap_err().to_string(),
+            resolve(&log, Selector::Nth(4), t(8))
+                .unwrap_err()
+                .to_string(),
             "log for 'x' only has 3 entries"
         );
         let r = resolve(&log, Selector::Nth(0), t(6)).unwrap();
         assert_eq!((r.oid, r.warnings.len()), (id(6), 0));
+    }
+
+    #[test]
+    fn recreated_reference_ends_the_check() {
+        // A->B, B->C, 0->D, D->E; ref E: C is checked against the ref.
+        let log = [e(1, 2, 1000), e(2, 3, 2000), e(0, 4, 3000), e(4, 5, 4000)];
+        let r = resolve(&log, Selector::Nth(2), t(5)).unwrap();
+        assert_eq!(r.oid, id(5));
+        assert!(matches!(
+            r.warnings[..],
+            [Warning::UnexpectedlyEnded { time: 2000, .. }]
+        ));
+        let r = resolve(&log, Selector::Date(2000), t(5)).unwrap();
+        assert_eq!((r.oid, r.warnings.len()), (id(3), 0));
     }
 
     #[test]
@@ -301,8 +330,14 @@ mod tests {
         let log = [e(0, 1, 1000), e(1, 2, 2000), e(2, 3, 3000)];
         let d = |s| resolve(&log, Selector::Date(s), t(3)).unwrap();
         // exactly at the newest entry: no comparison with the current value
-        assert_eq!(resolve(&log, Selector::Date(3000), t(7)).unwrap().oid, id(3));
-        assert_eq!(resolve(&log, Selector::Date(3001), t(7)).unwrap().oid, id(7));
+        assert_eq!(
+            resolve(&log, Selector::Date(3000), t(7)).unwrap().oid,
+            id(3)
+        );
+        assert_eq!(
+            resolve(&log, Selector::Date(3001), t(7)).unwrap().oid,
+            id(7)
+        );
         assert_eq!(d(2000).oid, id(2));
         assert_eq!(d(2999).oid, id(2));
         assert_eq!(d(9999).oid, id(3));
@@ -320,7 +355,9 @@ mod tests {
     fn empty_log() {
         assert_eq!(resolve(&[], Selector::Nth(0), t(4)).unwrap().oid, id(4));
         assert_eq!(
-            resolve(&[], Selector::Nth(1), t(4)).unwrap_err().to_string(),
+            resolve(&[], Selector::Nth(1), t(4))
+                .unwrap_err()
+                .to_string(),
             "log for refs/heads/x is empty"
         );
         assert!(resolve(&[], Selector::Date(5), t(4)).is_err());

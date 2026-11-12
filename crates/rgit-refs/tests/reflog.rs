@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! rgit-reflog against the reference git: the files written, the list of
+//! Reflogs against the reference git: the files written, the list of
 //! reflogs and `@{...}` lookups must match byte for byte.
 
 use std::collections::BTreeMap;
@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use rgit_date::DateContext;
 use rgit_difftest::{Fixture, assert_same_text, env};
 use rgit_hash::{HashKind, ObjectId};
-use rgit_reflog::{Committer, FilesReflog, LogAllRefUpdates, Selector, Target, resolve};
+use rgit_refs::LogAllRefUpdates;
+use rgit_refs::reflog::lookup::Target;
+use rgit_refs::reflog::{Committer, FilesReflog, Selector, resolve};
 
 const K: HashKind = HashKind::Sha1;
 
@@ -97,19 +99,44 @@ fn appended_lines_and_created_files_match_git() {
     let two = oid(&fx, "HEAD").unwrap();
     // (config, ref, new, message)
     let steps: &[(&str, &str, ObjectId, Option<&str>)] = &[
-        ("true", "refs/heads/main", one, Some("  multi\n line\t tab  \n\n")),
+        (
+            "true",
+            "refs/heads/main",
+            one,
+            Some("  multi\n line\t tab  \n\n"),
+        ),
         ("true", "refs/heads/main", two, None),
-        ("true", "refs/heads/main", one, Some("a\rb\x0bc\x0cd\x01e  \u{e4} x")),
-        ("true", "refs/heads/topic/deep", two, Some("branch: Created from main")),
+        (
+            "true",
+            "refs/heads/main",
+            one,
+            Some("a\rb\x0bc\x0cd\x01e  \u{e4} x"),
+        ),
+        (
+            "true",
+            "refs/heads/topic/deep",
+            two,
+            Some("branch: Created from main"),
+        ),
         ("true", "refs/tags/v1", two, Some("not logged")),
         ("true", "ORIG_HEAD", two, Some("not logged either")),
         ("true", "refs/notes/commits", two, Some("notes")),
-        ("true", "refs/remotes/origin/main", two, Some("fetch: fast-forward")),
+        (
+            "true",
+            "refs/remotes/origin/main",
+            two,
+            Some("fetch: fast-forward"),
+        ),
         ("always", "refs/tags/v2", one, Some("tag")),
         ("always", "BAR_HEAD", one, Some("root ref")),
         ("always", "refs/heads/main", two, Some(" ")),
         ("false", "refs/heads/nolog", two, Some("no log")),
-        ("false", "refs/heads/main", one, Some("existing log is appended")),
+        (
+            "false",
+            "refs/heads/main",
+            one,
+            Some("existing log is appended"),
+        ),
     ];
     for &(cfg, name, new, msg) in steps {
         fx = fx.tick();
@@ -127,7 +154,7 @@ fn appended_lines_and_created_files_match_git() {
         args.push(new.to_hex());
         fx.git_stdout(&args);
 
-        let mode = LogAllRefUpdates::parse(Some(cfg)).unwrap();
+        let mode = LogAllRefUpdates::parse(cfg).unwrap();
         let c = committer(&fx);
         let m = msg.unwrap_or("").as_bytes();
         ours.log_update(name, old, new, &c, m, mode.should_autocreate(name))
@@ -204,7 +231,14 @@ fn directories_in_the_way() {
     let out = fx.git_output(["branch", "one/two", "main"]);
     assert!(!out.status.success());
     let err = ours
-        .log_update("refs/heads/one/two", K.null(), head, &committer(&fx), b"x", true)
+        .log_update(
+            "refs/heads/one/two",
+            K.null(),
+            head,
+            &committer(&fx),
+            b"x",
+            true,
+        )
         .unwrap_err()
         .to_string();
     let err = err.replace(&format!("{}/", fx.work_dir().display()), "");
@@ -246,7 +280,13 @@ fn rename_matches_git() {
 fn list_matches_git() {
     let Some(fx) = setup() else { return };
     let git_dir = fx.work_dir().join(".git");
-    fx.git_stdout(["-c", "core.logAllRefUpdates=always", "update-ref", "BAR_HEAD", "HEAD"]);
+    fx.git_stdout([
+        "-c",
+        "core.logAllRefUpdates=always",
+        "update-ref",
+        "BAR_HEAD",
+        "HEAD",
+    ]);
     for f in [
         "refs/heads/a.lock",
         "refs/heads/.hidden",
@@ -293,8 +333,14 @@ fn list_with_worktrees_matches_git() {
     };
     run(None, &["update-ref", "refs/worktree/main", "HEAD"]);
     run(None, &["update-ref", "refs/worktree/per-worktree", "HEAD"]);
-    run(Some("wt"), &["update-ref", "refs/worktree/per-worktree", "HEAD"]);
-    run(Some("wt"), &["update-ref", "refs/worktree/worktree", "HEAD"]);
+    run(
+        Some("wt"),
+        &["update-ref", "refs/worktree/per-worktree", "HEAD"],
+    );
+    run(
+        Some("wt"),
+        &["update-ref", "refs/worktree/worktree", "HEAD"],
+    );
     let check = |ours: FilesReflog, dir: &str| {
         let mut text = ours.list().unwrap().join("\n");
         text.push('\n');
@@ -310,7 +356,10 @@ fn list_with_worktrees_matches_git() {
         "wt",
     );
     let main_wt = FilesReflog::new(git_dir.join("worktrees/wt"), &git_dir, K);
-    assert_eq!(main_wt.path("main-worktree/HEAD"), git_dir.join("logs/HEAD"));
+    assert_eq!(
+        main_wt.path("main-worktree/HEAD"),
+        git_dir.join("logs/HEAD")
+    );
     assert_eq!(
         FilesReflog::new(&git_dir, &git_dir, K).path("worktrees/wt/HEAD"),
         git_dir.join("worktrees/wt/logs/HEAD")
@@ -330,7 +379,11 @@ fn our_rev_parse(logs: &FilesReflog, fx: &Fixture, short: &str, spec: &str) -> (
     };
     match resolve(&entries, sel, target) {
         Ok(r) => {
-            let err: String = r.warnings.iter().map(|w| format!("warning: {w}\n")).collect();
+            let err: String = r
+                .warnings
+                .iter()
+                .map(|w| format!("warning: {w}\n"))
+                .collect();
             (format!("{}\n", r.oid), err)
         }
         Err(e) => (String::new(), format!("fatal: {e}\n")),
@@ -354,8 +407,22 @@ fn lookups_match_git() {
         format!("{o} {n} C O Mitter <c@x> {t} {tz}\t{m}\n")
     };
     let specs = [
-        "0", "1", "2", "3", "4", "5", "1112900500", "1112901000", "1112901500", "1112902500",
-        "1112903500", "1112999999", "1112902000", "1112903000", "1112903001", "1112901001",
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "1112900500",
+        "1112901000",
+        "1112901500",
+        "1112902500",
+        "1112903500",
+        "1112999999",
+        "1112902000",
+        "1112903000",
+        "1112903001",
+        "1112901001",
     ];
     let scenarios: Vec<(String, usize)> = vec![
         // consistent history created from nothing
@@ -391,11 +458,30 @@ fn lookups_match_git() {
         // empty log
         (String::new(), 3),
     ];
+    let mut scenarios = scenarios;
+    // the reference is deleted and created again in the middle
+    for (old, cur) in [(z, 4), (z, 7), (ids[6], 4), (ids[6], 7)] {
+        scenarios.push((
+            line(ids[0], ids[1], 1112901000, "+0000", "m0")
+                + &line(ids[1], ids[2], 1112902000, "+0000", "m1")
+                + &line(old, ids[3], 1112903000, "+0000", "m2")
+                + &line(ids[3], ids[4], 1112904000, "+0000", "m3"),
+            cur,
+        ));
+    }
+    let specs: Vec<&str> = specs
+        .into_iter()
+        .chain(["1112904000", "1112904500", "1112903999"])
+        .collect();
     for (k, (content, cur)) in scenarios.iter().enumerate() {
         let name = format!("x{k}");
-        fx.git_stdout(["update-ref", &format!("refs/heads/{name}"), &ids[*cur].to_hex()]);
+        fx.git_stdout([
+            "update-ref",
+            &format!("refs/heads/{name}"),
+            &ids[*cur].to_hex(),
+        ]);
         fs::write(git_dir.join("logs/refs/heads").join(&name), content).unwrap();
-        for spec in specs {
+        for &spec in &specs {
             let arg = format!("{name}@{{{spec}}}");
             let out = fx.git_output(["rev-parse", "--verify", &arg]);
             let (o, e) = our_rev_parse(&logs, &fx, &name, spec);
@@ -424,7 +510,7 @@ fn prior_checkouts_match_git() {
     for n in 1..=6 {
         let spec = format!("@{{-{n}}}");
         let out = fx.git_output(["rev-parse", "--verify", "-q", &spec]);
-        let ours = rgit_reflog::nth_prior_checkout(&head, n).map(|b| {
+        let ours = rgit_refs::reflog::nth_prior_checkout(&head, n).map(|b| {
             let s = std::str::from_utf8(b).unwrap();
             format!("{}\n", oid(&fx, s).unwrap())
         });
@@ -432,6 +518,148 @@ fn prior_checkouts_match_git() {
             &spec,
             &String::from_utf8_lossy(&out.stdout),
             ours.as_deref().unwrap_or(""),
+        );
+    }
+}
+
+mod common;
+
+/// Reference transactions with `ReflogWriter` as hooks write the same logs
+/// as `git update-ref`: `HEAD` follows its branch, `core.logAllRefUpdates`
+/// decides which logs are created, deleted references lose their log.
+#[test]
+fn transactions_log_like_git() {
+    use common::{Cmd, Repo, Step, run_git, stdin_text, to_update};
+    use rgit_refs::files::{FilesOptions, FilesStore};
+    use rgit_refs::reflog::ReflogWriter;
+    use rgit_refs::{RefUpdate, Transaction};
+
+    let Some(repo) = Repo::new() else { return };
+    let c = repo.c.clone();
+    let step = |cmd: Cmd| Step {
+        cmd,
+        no_deref: false,
+    };
+    let r = |s: &str| s.to_string();
+    // (core.logAllRefUpdates, --create-reflog, message, steps)
+    let cases: Vec<(&str, bool, &str, Vec<Step>)> = vec![
+        (
+            "true",
+            false,
+            "via HEAD",
+            vec![step(Cmd::Update(r("HEAD"), c[0], None))],
+        ),
+        (
+            "true",
+            false,
+            "branch",
+            vec![step(Cmd::Update(r("refs/heads/main"), c[1], None))],
+        ),
+        (
+            "true",
+            false,
+            "  odd\n message\t ",
+            vec![step(Cmd::Create(r("refs/heads/new/x"), c[1]))],
+        ),
+        (
+            "true",
+            false,
+            "tag",
+            vec![step(Cmd::Create(r("refs/tags/t1"), c[1]))],
+        ),
+        (
+            "true",
+            true,
+            "forced",
+            vec![step(Cmd::Create(r("refs/tags/t2"), c[1]))],
+        ),
+        (
+            "true",
+            false,
+            "orig",
+            vec![step(Cmd::Update(r("ORIG_HEAD"), c[1], None))],
+        ),
+        (
+            "always",
+            false,
+            "orig",
+            vec![step(Cmd::Update(r("ORIG_HEAD"), c[0], None))],
+        ),
+        (
+            "always",
+            false,
+            "tag",
+            vec![step(Cmd::Create(r("refs/tags/t3"), c[0]))],
+        ),
+        (
+            "false",
+            false,
+            "no log",
+            vec![step(Cmd::Create(r("refs/heads/quiet"), c[0]))],
+        ),
+        (
+            "false",
+            false,
+            "existing",
+            vec![step(Cmd::Update(r("refs/heads/main"), c[2], None))],
+        ),
+        (
+            "true",
+            false,
+            "detach",
+            vec![Step {
+                cmd: Cmd::Update(r("HEAD"), c[1], None),
+                no_deref: true,
+            }],
+        ),
+        (
+            "true",
+            false,
+            "delete",
+            vec![step(Cmd::Delete(r("refs/heads/new/x"), None))],
+        ),
+        (
+            "true",
+            false,
+            "several",
+            vec![
+                step(Cmd::Create(r("refs/remotes/o/a"), c[0])),
+                step(Cmd::Create(r("refs/notes/n"), c[0])),
+                step(Cmd::Delete(r("refs/tags/t2"), None)),
+            ],
+        ),
+    ];
+    let (a, b) = repo.twins("reflog");
+    for (cfg, create, msg, steps) in &cases {
+        let text = stdin_text(steps);
+        let cfg_arg = format!("core.logAllRefUpdates={cfg}");
+        let mut args = vec!["-c", cfg_arg.as_str(), "update-ref", "-m", msg];
+        if *create {
+            args.push("--create-reflog");
+        }
+        args.push("--stdin");
+        let git = run_git(&repo, &a, &args, text.as_bytes());
+        assert!(git.ok, "git failed: {}", git.stderr);
+
+        let opts = FilesOptions {
+            log_all_ref_updates: LogAllRefUpdates::parse(cfg).unwrap(),
+            ..FilesOptions::default()
+        };
+        let store = FilesStore::with_options(&b, K, opts);
+        let mut tx = Transaction::new(&store);
+        for s in steps {
+            let u: RefUpdate = to_update(s).message(*msg).create_reflog(*create);
+            tx.push(u).unwrap();
+        }
+        let mut hooks = ReflogWriter::new(
+            FilesReflog::new(&b, &b, K),
+            Committer::new(b"C", b"c@example.com", 1_700_000_000, 0),
+        );
+        tx.commit(&mut hooks).unwrap();
+        assert_same_text(
+            &format!("logs after ({cfg}, -m {msg:?}):\n{text}"),
+            &render(&tree(&a.join("logs"))),
+            &render(&tree(&b.join("logs"))),
         );
     }
 }
