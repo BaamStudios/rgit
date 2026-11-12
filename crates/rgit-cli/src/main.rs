@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
