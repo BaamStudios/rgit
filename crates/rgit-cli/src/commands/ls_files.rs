@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use rgit_hash::ObjectId;
-use rgit_index::{AddOptions, Entry, Index, Mode as IndexMode, Stage};
+use rgit_index::{Entry, Index, Mode as IndexMode, Stage};
 use rgit_object::{Object, ObjectKind};
 use rgit_pathspec::{ParseOptions, Pathspec};
 use rgit_worktree::ignore::{Excludes, default_excludes_file};
@@ -179,13 +179,13 @@ impl Lister<'_> {
         }
     }
 
-    fn size(&self, e: &Entry) -> String {
+    fn size(&self, e: &Entry) -> Result<String, Die> {
         if Self::kind_of(e.mode) != ObjectKind::Blob {
-            return "-".to_string();
+            return Ok("-".to_string());
         }
         match self.repo.odb().header(&e.id) {
-            Ok(Some(h)) => h.size.to_string(),
-            _ => "BAD".to_string(),
+            Ok(Some(h)) => Ok(h.size.to_string()),
+            _ => Err(Die::Fatal(msg::no_object_info(&e.id.to_hex()))),
         }
     }
 
@@ -200,13 +200,20 @@ impl Lister<'_> {
         }
         if let Some(fmt) = &self.format {
             let pieces = fmt.clone().map_err(Die::Fatal)?;
+            let start = self.out.len();
             for p in pieces {
                 match p {
                     format::Piece::Literal(l) => self.out.extend_from_slice(&l),
-                    format::Piece::Field(f) => self.field(f, e),
+                    format::Piece::Field(f) => {
+                        if let Err(d) = self.field(f, e) {
+                            self.out.truncate(start);
+                            return Err(d);
+                        }
+                    }
                 }
             }
             self.end_line();
+            self.debug_block(e);
             return Ok(());
         }
         if self.show.tags {
@@ -228,6 +235,12 @@ impl Lister<'_> {
         }
         self.write_path(e.path());
         self.end_line();
+        self.debug_block(e);
+        Ok(())
+    }
+
+    /// `--debug`: the cached stat data and flags after the entry's line.
+    fn debug_block(&mut self, e: &Entry) {
         if self.show.debug {
             let s = &e.stat;
             let text = format!(
@@ -245,34 +258,34 @@ impl Lister<'_> {
             );
             self.out.extend_from_slice(text.as_bytes());
         }
-        Ok(())
     }
 
-    fn field(&mut self, f: Field, e: &Entry) {
+    fn field(&mut self, f: Field, e: &Entry) -> Result<(), Die> {
         let text = match f {
             Field::Mode => format!("{:06o}", e.mode.0),
             Field::Type => Self::kind_of(e.mode).name().to_string(),
             Field::Name => self.name(&e.id),
-            Field::Size => self.size(e),
-            Field::SizePadded => format!("{:>7}", self.size(e)),
+            Field::Size => self.size(e)?,
+            Field::SizePadded => format!("{:>7}", self.size(e)?),
             Field::Stage => e.stage().get().to_string(),
             Field::Path => {
                 self.write_path(e.path());
-                return;
+                return Ok(());
             }
         };
         self.out.extend_from_slice(text.as_bytes());
+        Ok(())
     }
 
     /// The index part of the listing.
     fn show_index(
         &mut self,
-        index: &Index,
+        entries: &[Entry],
         checker: Option<&Checker>,
         excludes: &mut Option<Excludes>,
     ) -> Result<(), Die> {
         let show_cached = self.show.cached || self.show.stage || self.show.unmerged;
-        for e in index.entries() {
+        for e in entries {
             if !self.wanted(e.path()) {
                 continue;
             }
@@ -307,7 +320,12 @@ impl Lister<'_> {
                 self.show_entry("R", e)?;
             }
             if self.show.modified {
+                let gitlink_moved = e.mode.is_gitlink() && !deleted && {
+                    let dir = checker_root(self.repo).join(lossy_os(e.path()));
+                    repository::submodule_head(&dir, self.repo.hash()).is_some_and(|h| h != e.id)
+                };
                 let modified = deleted
+                    || gitlink_moved
                     || e.stage().is_conflict()
                     || !matches!(
                         checker.check(e),
@@ -628,15 +646,26 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let prefix = repo.prefix();
 
-    let (mut index, index_mtime) = repo.read_index()?;
+    let (index, index_mtime) = repo.read_index()?;
     if resolve_undo.get() && index.resolve_undo_raw().is_some() {
         return Err(Die::Fatal(msg::not_supported("--resolve-undo")));
+    }
+    if recurse_submodules.get()
+        && (others.get()
+            || killed.get()
+            || deleted.get()
+            || modified.get()
+            || ignored.get()
+            || with_tree.borrow().is_some())
+    {
+        return Err(Die::Fatal(msg::RECURSE_UNSUPPORTED.to_string()));
     }
     if recurse_submodules.get() && index.entries().iter().any(|e| e.mode.is_gitlink()) {
         return Err(Die::Fatal(msg::not_supported("--recurse-submodules")));
     }
+    let mut entries: Vec<Entry> = index.entries().to_vec();
     if let Some(spec) = with_tree.borrow().as_deref() {
-        overlay_tree(&repo, &mut index, spec)?;
+        overlay_tree(&repo, &index, &mut entries, spec)?;
     }
 
     let root = repo
@@ -747,7 +776,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else {
         None
     };
-    let result = lister.show_index(&index, checker.as_ref(), &mut ex);
+    let result = lister.show_index(&entries, checker.as_ref(), &mut ex);
     lister.flush();
     result?;
 
@@ -820,25 +849,25 @@ fn build_excludes(repo: &Repo, args: &[ExcludeArg]) -> Result<Excludes, Die> {
 
 /// `--with-tree`: add the files of the tree that are not in the index as
 /// stage 1 entries.
-fn overlay_tree(repo: &Repo, index: &mut Index, spec: &str) -> Result<(), Die> {
+fn overlay_tree(
+    repo: &Repo,
+    index: &Index,
+    entries: &mut Vec<Entry>,
+    spec: &str,
+) -> Result<(), Die> {
     let not_found = || Die::Fatal(msg::tree_ish_not_found(spec));
     let id = revision::resolve(repo, spec).map_err(|_| not_found())?;
     let tree = revision::peel_to(repo, id, ObjectKind::Tree).map_err(|_| not_found())?;
     let mut files = Vec::new();
     collect_tree(repo, &tree, b"", &mut files)?;
     for (path, mode, oid) in files {
-        if !index.path_range(&path).is_empty() {
+        if index.get(&path, Stage::MERGED).is_some() {
             continue;
         }
-        let entry = Entry::new(path, Stage::BASE, mode, oid);
-        let _ = index.add(
-            entry,
-            AddOptions {
-                skip_df_check: true,
-                ..Default::default()
-            },
-        );
+        entries.push(Entry::new(path, Stage::BASE, mode, oid));
     }
+    // Stable: index entries of a path come before the tree's.
+    entries.sort_by(|a, b| a.path().cmp(b.path()));
     Ok(())
 }
 
@@ -865,4 +894,12 @@ fn collect_tree(
         }
     }
     Ok(())
+}
+
+fn checker_root(repo: &Repo) -> PathBuf {
+    repo.setup.work_tree.clone().unwrap_or_default()
+}
+
+fn lossy_os(p: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(p).into_owned())
 }
