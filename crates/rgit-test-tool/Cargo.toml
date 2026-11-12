@@ -13,6 +13,8 @@ name = "rgit-test-tool"
 path = "src/main.rs"
 
 [dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-config = { path = "../rgit-config" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-options = { path = "../rgit-options" }
 

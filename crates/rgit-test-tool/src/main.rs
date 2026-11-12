@@ -15,6 +15,7 @@
 
 mod cmd;
 mod messages;
+mod repo;
 
 use std::io::{self, Write};
 use std::process::exit;
@@ -25,6 +26,7 @@ type Tool = (&'static str, fn(&[String]) -> i32);
 
 /// Implemented subcommands, in the order the usage lists them.
 const TOOLS: &[Tool] = &[
+    ("config", cmd::config::config),
     ("parse-options", cmd::parse_options::parse_options),
     (
         "parse-options-flags",

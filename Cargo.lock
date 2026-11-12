@@ -553,6 +553,8 @@ version = "0.1.0"
 name = "rgit-test-tool"
 version = "0.1.0"
 dependencies = [
+ "bstr",
+ "rgit-config",
  "rgit-difftest",
  "rgit-hash",
  "rgit-options",
