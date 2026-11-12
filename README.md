@@ -29,8 +29,11 @@ written from git's public documentation and from the observable behaviour of the
 | `conformance.lock` | Pinned commit of the conformance suite ([rgit-conformance](https://github.com/BaamStudios/rgit-conformance), GPL-2.0, separate repository) |
 | `docs/` | Design notes and architecture decision records |
 | `scripts/fetch-upstream.sh` | Fetches the reference git version into `upstream/git` (not committed) |
+| `scripts/check-*.sh` | License guards run in CI: SPDX headers, banned dependencies, DCO sign-off |
+| `deny.toml` | cargo-deny policy: license allowlist, banned crates (ADR 0002), crates.io only |
 | `upstream/git/` | Local copy of upstream git: documentation, reference binary, test suite |
 | `CLEANROOM.md` | Rules for what sources may be used |
+| `CONTRIBUTING.md` | How to contribute: clean-room rules, DCO sign-off, building and testing |
 | `THIRD-PARTY-NOTICES.md` | Copyright notices for adapted code (gitoxide) |
 
 ## Building
@@ -55,6 +58,12 @@ scripts/fetch-upstream.sh   # clones git v2.56.1 into upstream/git
    [rgit-conformance](https://github.com/BaamStudios/rgit-conformance) (GPL-2.0). Every
    ported test passes against the reference `git` first and is then the
    acceptance check for rgit.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Every commit needs a DCO sign-off
+(`git commit -s`), and the clean-room rules in [CLEANROOM.md](CLEANROOM.md) apply
+to everyone.
 
 ## License
 
