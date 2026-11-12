@@ -12,3 +12,6 @@ rust-version.workspace = true
 sha1-checked = { version = "0.10.0", default-features = false, features = ["std"] }
 sha2 = "0.10.9"
 thiserror = "2.0.18"
+# THROWAWAY (#83): must make cargo-deny fail. Do not merge.
+gix-hash = "0.20"
+gnuplot = "0.0.46"
