@@ -1,0 +1,59 @@
+# License guard (issue #85): compares rgit's sources with upstream git's GPL
+# implementation sources and reports suspicious similarity. The report holds
+# locations and scores only, never upstream text (see CLEANROOM.md).
+name: License guard
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1" # weekly, Monday 04:23 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  simcheck:
+    runs-on: ubuntu-latest
+    # Non-blocking while the thresholds settle; findings still show up as a
+    # failed (but allowed-to-fail) job and in the step summary.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache upstream git checkout
+        uses: actions/cache@v4
+        with:
+          path: upstream/git
+          key: upstream-git-v2.56.1
+      - name: Fetch upstream git
+        run: scripts/fetch-upstream.sh
+      - name: Build
+        run: cargo build --release -p rgit-simcheck
+      - name: Self-test (planted fragments must be reported)
+        id: selftest
+        run: |
+          set -o pipefail
+          target/release/rgit-simcheck --self-test 100 | tee self-test.txt
+      - name: Scan crates/
+        if: ${{ !cancelled() && steps.selftest.conclusion != 'skipped' }}
+        run: |
+          set -o pipefail
+          status=0
+          target/release/rgit-simcheck --report simcheck-report.txt || status=$?
+          {
+            echo '## License guard'
+            echo '```'
+            cat simcheck-report.txt
+            echo '```'
+            echo 'Findings need a maintainer review, see CLEANROOM.md "License guard".'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simcheck-report
+          path: |
+            simcheck-report.txt
+            self-test.txt
+          if-no-files-found: ignore

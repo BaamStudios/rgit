@@ -366,6 +366,10 @@ name = "rgit-options"
 version = "0.1.0"
 
 [[package]]
+name = "rgit-simcheck"
+version = "0.1.0"
+
+[[package]]
 name = "rgit-trace"
 version = "0.1.0"
 dependencies = [
