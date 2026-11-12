@@ -1,6 +1,6 @@
 [package]
-name = "bamm-cli"
-description = "bamm command-line interface"
+name = "baam-cli"
+description = "baam command-line interface"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "bamm"
+name = "baam"
 path = "src/main.rs"
 
 [dependencies]
