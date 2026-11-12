@@ -122,40 +122,53 @@ fn plural(n: u64, unit: &str) -> String {
 /// `--date=relative` text for a time `diff` seconds before now
 /// (`None` = in the future).
 fn relative_text(diff: Option<u64>) -> String {
-    let Some(diff) = diff else {
+    /// Rounded division (halves round up).
+    fn round_div(x: u64, d: u64) -> u64 {
+        (2 * x + d) / (2 * d)
+    }
+
+    // Fine units: each is the previous count rounded into the next unit;
+    // a unit is used while its count stays below `below`.
+    const FINE: [(&str, u64, u64); 4] = [
+        // (unit, size in the previous unit, below)
+        ("second", 1, 90),
+        ("minute", 60, 90),
+        ("hour", 60, 36),
+        ("day", 24, 14),
+    ];
+    // Coarse units, chosen by the number of days.
+    const COARSE: [(&str, u64, u64); 2] = [
+        // (unit, days per unit, used while days below)
+        ("week", 7, 70),
+        ("month", 30, 365),
+    ];
+
+    let Some(mut count) = diff else {
         return "in the future".to_string();
     };
-    if diff < 90 {
-        return format!("{} ago", plural(diff, "second"));
-    }
-    let minutes = (diff + 30) / 60;
-    if minutes < 90 {
-        return format!("{} ago", plural(minutes, "minute"));
-    }
-    let hours = (minutes + 30) / 60;
-    if hours < 36 {
-        return format!("{} ago", plural(hours, "hour"));
-    }
-    let days = (hours + 12) / 24;
-    if days < 14 {
-        return format!("{} ago", plural(days, "day"));
-    }
-    if days < 70 {
-        return format!("{} ago", plural((days + 3) / 7, "week"));
-    }
-    if days < 365 {
-        return format!("{} ago", plural((days + 15) / 30, "month"));
-    }
-    if days < 1825 {
-        let total_months = (days * 12 * 2 + 365) / (365 * 2);
-        let years = total_months / 12;
-        let months = total_months % 12;
-        if months > 0 {
-            return format!("{}, {} ago", plural(years, "year"), plural(months, "month"));
+    for (unit, size, below) in FINE {
+        count = round_div(count, size);
+        if count < below {
+            return format!("{} ago", plural(count, unit));
         }
-        return format!("{} ago", plural(years, "year"));
     }
-    format!("{} ago", plural((days + 183) / 365, "year"))
+    let days = count;
+    if let Some(&(unit, size, _)) = COARSE.iter().find(|&&(_, _, below)| days < below) {
+        return format!("{} ago", plural(round_div(days, size), unit));
+    }
+    // Five years and more: whole years only.
+    if days >= 5 * 365 {
+        // Rounds half a year (183 days) up.
+        return format!("{} ago", plural((days + 183) / 365, "year"));
+    }
+    let (years, months) = {
+        let m = round_div(days * 12, 365);
+        (m / 12, m % 12)
+    };
+    match months {
+        0 => format!("{} ago", plural(years, "year")),
+        _ => format!("{}, {} ago", plural(years, "year"), plural(months, "month")),
+    }
 }
 
 /// Relative description of `time` as seen from `now`.
