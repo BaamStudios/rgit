@@ -560,6 +560,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-diff"
+version = "0.1.0"
+dependencies = [
+ "rgit-hash",
+]
+
+[[package]]
 name = "rgit-hash"
 version = "0.1.0"
 dependencies = [
@@ -627,6 +634,8 @@ dependencies = [
  "rgit-fs",
  "rgit-hash",
  "rgit-object",
+ "rgit-pack",
+ "rgit-repo",
  "thiserror",
 ]
 
@@ -668,9 +677,11 @@ dependencies = [
 name = "rgit-refs"
 version = "0.1.0"
 dependencies = [
+ "rgit-date",
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",
+ "tempfile",
  "thiserror",
 ]
 

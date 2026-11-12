@@ -765,7 +765,9 @@ fn discover(ctx: &Context) -> Result<(Option<Repo>, String), Die> {
                 Some(Repo {
                     git_dir: dir.clone(),
                     common_dir: dir,
-                    worktree: Some(opts.cwd.clone()),
+                    // Without a repository there is no work tree either
+                    // (`includeIf.worktree:` does not match).
+                    worktree: None,
                 }),
                 String::new(),
             ));
@@ -926,10 +928,18 @@ impl<'o> Cmd<'o> {
             Location::File(f) => (vec![PathBuf::from(f)], Scope::Command),
             Location::Blob(..) => (Vec::new(), Scope::Command),
             Location::Global => {
-                if self.env.var("GIT_CONFIG_GLOBAL").is_none() {
-                    self.home()?;
+                if self.env.var("GIT_CONFIG_GLOBAL").is_some() {
+                    return Ok(Some((sources::global_config_paths(&self.env), Scope::Global)));
                 }
-                (sources::global_config_paths(&self.env), Scope::Global)
+                // git reads one global file here, the one it would write:
+                // ~/.gitconfig, or the XDG file when only that one exists.
+                let user = self.home()?.join(".gitconfig");
+                let paths = sources::global_config_paths(&self.env);
+                let file = match paths.first() {
+                    Some(xdg) if *xdg != user && xdg.exists() && !user.exists() => xdg.clone(),
+                    _ => user,
+                };
+                (vec![file], Scope::Global)
             }
             Location::System => (
                 vec![
@@ -1006,17 +1016,21 @@ impl<'o> Cmd<'o> {
 
     fn includes(&self) -> bool {
         match self.o.includes.get() {
-            // git follows includes in blobs by default, like in the standard files.
-            -1 => matches!(self.location, Location::Default | Location::Blob(..)),
+            // Off for an explicit file; standard input and blobs count as
+            // "no specific file".
+            -1 => match &self.location {
+                Location::Default | Location::Blob(..) => true,
+                Location::File(f) => f == "-",
+                _ => false,
+            },
             v => v == 1,
         }
     }
 
     fn repo_facts(&self) -> Option<StaticRepoFacts> {
         let repo = self.repo.as_ref()?;
-        let abs = |p: &Path| std::path::absolute(p).ok();
         Some(StaticRepoFacts {
-            git_dir: abs(&repo.git_dir),
+            git_dir: Some(rgit_config::include::absolute(&repo.git_dir)),
             worktree: repo.worktree.clone(),
             branch: current_branch(&repo.git_dir),
         })

@@ -23,8 +23,8 @@ use rgit_pack::index_pack::{
     self as ip, IndexVersion, IndexedPack, Input, ObjectDb, ObjectHook, Options, Phase, Progress,
     messages as m,
 };
-use rgit_odb::{LooseOptions, LooseStore};
-use rgit_pack::{DeltaBaseCache, Object, ObjectKind, PackSet};
+use rgit_odb::{LooseOptions, ObjectDatabase};
+use rgit_pack::ObjectKind;
 
 use crate::prelude::*;
 
@@ -267,50 +267,6 @@ fn load_config(ctx: &Context, repo: Option<&Repo>) -> ConfigSet {
         &mut set,
     );
     set
-}
-
-/// The repository's objects: packs and loose objects.
-struct Odb {
-    loose: LooseStore,
-    packs: PackSet,
-    hash: HashKind,
-}
-
-impl Odb {
-    fn new(objects: PathBuf, hash: HashKind) -> Odb {
-        let packs = PackSet::open(objects.join("pack"), hash);
-        Odb {
-            loose: LooseStore::new(objects, hash, LooseOptions::default()),
-            packs,
-            hash,
-        }
-    }
-}
-
-impl ObjectDb for Odb {
-    fn contains(&self, id: &ObjectId) -> bool {
-        id.kind() == self.hash && (self.packs.contains(id) || self.loose.contains(id))
-    }
-
-    fn read(&self, id: &ObjectId) -> Result<Option<Object>, String> {
-        let mut cache = DeltaBaseCache::new(0);
-        if let Ok(Some(o)) = self.packs.read(id, &mut cache, &mut |_| {}) {
-            return Ok(Some(o));
-        }
-        match self.loose.read(id) {
-            Ok(Some(raw)) => Ok(Some(Object {
-                kind: match raw.kind {
-                    rgit_object::ObjectKind::Commit => ObjectKind::Commit,
-                    rgit_object::ObjectKind::Tree => ObjectKind::Tree,
-                    rgit_object::ObjectKind::Blob => ObjectKind::Blob,
-                    rgit_object::ObjectKind::Tag => ObjectKind::Tag,
-                },
-                data: raw.data,
-            })),
-            Ok(None) => Ok(None),
-            Err(e) => Err(e.to_string()),
-        }
-    }
 }
 
 /// `--strict` / `--fsck-objects` / `--check-self-contained-and-connected`.
@@ -660,7 +616,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         None
     };
 
-    let odb = repo.as_ref().map(|r| Odb::new(r.objects_dir(), hash));
+    // Packs, loose objects and alternates of the repository.
+    let odb = repo
+        .as_ref()
+        .map(|r| ObjectDatabase::open_with_packs(r.objects_dir(), hash, LooseOptions::default()));
     let checks = Checks {
         hash,
         fsck: args.fsck,

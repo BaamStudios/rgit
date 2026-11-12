@@ -592,3 +592,42 @@ fn upstream_clone() {
     }
     finish(failures);
 }
+
+#[test]
+fn sha256_repository() {
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "--object-format=sha256"])
+        .write("a", "a\n")
+        .git(["add", "a"])
+        .git(["commit", "-q", "-m", "one"])
+        .tick()
+        .git(["tag", "-a", "-m", "t", "one"])
+        .write("a", "a2\n")
+        .git(["commit", "-q", "-a", "-m", "two"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let p = Pair::new(&fx);
+    let dir = fx.work_dir();
+    let mut failures = Vec::new();
+    let cases: &[&[&str]] = &[
+        &[
+            "rev-parse",
+            "HEAD",
+            "one",
+            "one^{}",
+            "HEAD~1",
+            "HEAD:a",
+            ":a",
+        ],
+        &["rev-parse", "--short", "HEAD"],
+        &["rev-parse", "HEAD~1..HEAD", "--symbolic-full-name", "HEAD"],
+        &["rev-parse", "--verify", "HEAD~5"],
+        &["rev-parse", "0000000000000000000000000000000000000000"],
+    ];
+    for args in cases {
+        p.check(&dir, args, &mut failures);
+    }
+    finish(failures);
+}
