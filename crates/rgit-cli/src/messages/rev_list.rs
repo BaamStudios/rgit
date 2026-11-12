@@ -47,6 +47,46 @@ usage: git rev-list [<options>] <commit>... [--] [<path>...]
     --bisect-all
 ";
 
+/// `git log -h`.
+pub const LOG_USAGE: &str = "\
+usage: git log [<options>] [<revision-range>] [[--] <path>...]
+   or: git show [<options>] <object>...
+
+    -q, --[no-]quiet      suppress diff output
+    --[no-]source         show source
+    --[no-]use-mailmap    use mail map file
+    --[no-]mailmap        alias of --use-mailmap
+    --clear-decorations   clear all previously-defined decoration filters
+    --[no-]decorate-refs <pattern>
+                          only decorate refs that match <pattern>
+    --[no-]decorate-refs-exclude <pattern>
+                          do not decorate refs that match <pattern>
+    --[no-]decorate[=...] decorate options
+    -L <range:file>       trace the evolution of line range <start>,<end> or function :<funcname> in <file>
+
+";
+
+/// `git log --help-all` (also lists hidden options).
+pub const LOG_USAGE_ALL: &str = "\
+usage: git log [<options>] [<revision-range>] [[--] <path>...]
+   or: git show [<options>] <object>...
+
+    -q, --[no-]quiet      suppress diff output
+    --[no-]source         show source
+    --[no-]use-mailmap    use mail map file
+    --[no-]i-still-use-this
+                          <use this deprecated command>
+    --[no-]mailmap        alias of --use-mailmap
+    --clear-decorations   clear all previously-defined decoration filters
+    --[no-]decorate-refs <pattern>
+                          only decorate refs that match <pattern>
+    --[no-]decorate-refs-exclude <pattern>
+                          do not decorate refs that match <pattern>
+    --[no-]decorate[=...] decorate options
+    -L <range:file>       trace the evolution of line range <start>,<end> or function :<funcname> in <file>
+
+";
+
 pub fn ambiguous_argument(arg: &str) -> String {
     format!(
         "ambiguous argument '{arg}': unknown revision or path not in the working tree.\n\

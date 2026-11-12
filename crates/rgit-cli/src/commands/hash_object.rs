@@ -139,7 +139,8 @@ fn read_file(path: &str) -> Result<Vec<u8>, Die> {
             &crate::global::strerror(&e),
         ))
     })?;
-    if !meta.is_file() {
+    // Character devices and FIFOs (e.g. /dev/null) are read like files.
+    if meta.is_dir() {
         return Err(Die::Fatal(msg::unable_to_hash(path)));
     }
     std::fs::read(path).map_err(|e| {

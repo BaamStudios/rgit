@@ -247,7 +247,7 @@ impl ObjectDatabase {
 
     /// Whether any store has the object.
     pub fn contains(&self, oid: &ObjectId) -> bool {
-        self.stores.iter().any(|s| s.contains(oid))
+        self.stores.iter().any(|s| s.contains(oid)) || is_empty_tree(oid)
     }
 
     /// Type and size of an object. Unlike [`ObjectDatabase::read`], copies
@@ -255,12 +255,37 @@ impl ObjectDatabase {
     /// `git cat-file -t` with a corrupt loose and an intact packed copy);
     /// when no copy answers, the first error is returned.
     pub fn header(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
-        self.first_in_stores(false, |s, r| s.header_reporting(oid, r))
+        match self.first_in_stores(false, |s, r| s.header_reporting(oid, r)) {
+            // A delta whose base is corrupt in its pack may still be
+            // readable with a base from another store.
+            Err(e) if e.is_corruption() => match self.read(oid) {
+                Ok(Some(o)) => Ok(Some(o.header())),
+                _ => Err(e),
+            },
+            Ok(None) if is_empty_tree(oid) => Ok(Some(empty_tree().header())),
+            other => other,
+        }
     }
 
     /// An object's type and content.
     pub fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
-        self.first_in_stores(true, |s, r| s.read_reporting(oid, r))
+        let found = self.first_in_stores(true, |s, r| {
+            // A delta base that is corrupt in this store may have a good
+            // copy in another one (git reads it from there).
+            s.read_with_bases(oid, r, &mut |base| self.base_elsewhere(s, base))
+        });
+        match found {
+            Ok(None) if is_empty_tree(oid) => Ok(Some(empty_tree())),
+            other => other,
+        }
+    }
+
+    /// Read `base` silently from the stores other than `skip`.
+    fn base_elsewhere(&self, skip: &dyn ObjectStore, base: &ObjectId) -> Option<RawObject> {
+        self.stores
+            .iter()
+            .filter(|s| !std::ptr::addr_eq(s.as_ref() as *const dyn ObjectStore, skip))
+            .find_map(|s| s.read(base).ok().flatten())
     }
 
     /// An object, parsed.
@@ -356,5 +381,18 @@ impl rgit_pack::index_pack::ObjectDb for ObjectDatabase {
 
     fn read(&self, id: &ObjectId) -> Result<Option<RawObject>, String> {
         ObjectDatabase::read(self, id).map_err(|e| e.to_string())
+    }
+}
+
+/// git knows the empty tree without storing it: it can be read in every
+/// repository (t1060 "internal tree objects are not missing").
+fn is_empty_tree(oid: &ObjectId) -> bool {
+    *oid == ObjectId::empty_tree(oid.kind())
+}
+
+fn empty_tree() -> RawObject {
+    RawObject {
+        kind: rgit_object::ObjectKind::Tree,
+        data: Vec::new(),
     }
 }

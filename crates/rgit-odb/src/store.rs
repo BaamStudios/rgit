@@ -49,6 +49,20 @@ pub trait ObjectStore: Send + Sync + fmt::Debug {
         self.read(oid)
     }
 
+    /// [`read_reporting`](ObjectStore::read_reporting), with `bases`
+    /// asked for delta bases this store holds only in unreadable copies
+    /// (git then uses e.g. a loose copy of the base). The default ignores
+    /// `bases`.
+    fn read_with_bases(
+        &self,
+        oid: &ObjectId,
+        report: &mut dyn FnMut(&Error),
+        bases: &mut dyn FnMut(&ObjectId) -> Option<RawObject>,
+    ) -> Result<Option<RawObject>, Error> {
+        let _ = bases;
+        self.read_reporting(oid, report)
+    }
+
     /// [`header`](ObjectStore::header) with skipped copies passed to
     /// `report` (see [`read_reporting`](ObjectStore::read_reporting)).
     fn header_reporting(

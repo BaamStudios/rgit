@@ -13,7 +13,9 @@ const OPTS_WIDTH: usize = 26;
 /// `   or: `. A usage string may span several lines (separated by `\n`);
 /// continuation lines are written without indentation and are aligned
 /// under the first argument of the first line (the first word starting
-/// with `[`, `(`, `<`, `{` or `-`).
+/// with `[`, `(`, `<`, `{` or `-`). A continuation line indented deeper
+/// than that keeps its own indentation (some git usage strings are, e.g.
+/// `git for-each-ref`).
 ///
 /// An empty usage string ends the alternatives: the strings after it are a
 /// description, printed indented by four spaces (an empty one as a blank
@@ -32,12 +34,13 @@ pub(crate) fn usage_lines(usage: &[&str]) -> String {
         out.push('\n');
         let indent = 7 + continuation_indent(first);
         for l in lines {
+            let own = l.len() - l.trim_start_matches(' ').len();
             let l = l.trim_start();
             if l.is_empty() {
                 out.push('\n');
                 continue;
             }
-            out.extend(std::iter::repeat_n(' ', indent));
+            out.extend(std::iter::repeat_n(' ', indent.max(own)));
             out.push_str(l);
             out.push('\n');
         }

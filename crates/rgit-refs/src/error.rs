@@ -46,6 +46,9 @@ pub enum LockReason {
     /// A reference that must exist (old value given) does not.
     #[error("{}", messages::unable_to_resolve(.0))]
     Unresolvable(String),
+    /// The loose file of the reference is not a valid reference.
+    #[error("{}", messages::reference_broken(.0))]
+    BrokenRef(String),
     /// The current value differs from the expected one.
     #[error("{}", messages::is_at_but_expected(actual, expected))]
     IsAt {

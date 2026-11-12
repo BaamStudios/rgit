@@ -14,8 +14,9 @@ use crate::{DeltaBaseCache, Error, Object, ObjectKind, PackIndex};
 
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
-/// Resolver for `REF_DELTA` bases that are not in the pack itself (thin
-/// packs). Returns the base object, or `None` if it is not available.
+/// Resolver for delta bases that are not in the pack itself (thin packs)
+/// or whose copy in the pack is unreadable. Returns the base object, or
+/// `None` if it is not available.
 pub type ExternalBase<'a> = &'a mut dyn FnMut(&ObjectId) -> Option<Object>;
 
 /// One pack: `pack-<hash>.idx` and `pack-<hash>.pack`.
@@ -208,20 +209,34 @@ impl Pack {
                     break (k, b, true);
                 }
             }
-            let h = data
-                .entry_header(cur)
-                .map_err(|e| self.wrap_base(e, &chain, cur, cur_id))?;
+            let h = match data.entry_header(cur) {
+                Ok(h) => h,
+                Err(e) => match self.base_elsewhere(&mut chain, cur_id, external) {
+                    Some(obj) => break (obj.kind, obj.data.into(), true),
+                    None => return Err(self.wrap_base(e, &chain, cur, cur_id)),
+                },
+            };
             match h.kind {
                 EntryKind::Base(k) => {
-                    let (bytes, _) = data
-                        .inflate(&h)
-                        .map_err(|e| self.wrap_base(e, &chain, cur, cur_id))?;
+                    let bytes = match data.inflate(&h) {
+                        Ok((bytes, _)) => bytes,
+                        Err(e) => match self.base_elsewhere(&mut chain, cur_id, external) {
+                            Some(obj) => break (obj.kind, obj.data.into(), true),
+                            None => return Err(self.wrap_base(e, &chain, cur, cur_id)),
+                        },
+                    };
                     break (k, bytes.into(), false);
                 }
                 EntryKind::OfsDelta { base_offset } => {
-                    let base_id = self
-                        .id_at_offset(base_offset)
-                        .ok_or(Error::BadRevindexOffset)?;
+                    let Some(base_id) = self.id_at_offset(base_offset) else {
+                        // A broken base offset: another copy of an object
+                        // further up the chain may still help.
+                        chain.push(h);
+                        match self.base_elsewhere(&mut chain, None, external) {
+                            Some(obj) => break (obj.kind, obj.data.into(), true),
+                            None => return Err(Error::BadRevindexOffset),
+                        }
+                    };
                     chain.push(h);
                     cur = base_offset;
                     cur_id = Some(base_id);
@@ -235,12 +250,15 @@ impl Pack {
                         }
                         None => match external(&base_id) {
                             Some(obj) => break (obj.kind, obj.data.into(), true),
-                            None => {
-                                return Err(Error::MissingBase {
-                                    base: base_id,
-                                    offset: h.offset,
-                                });
-                            }
+                            None => match self.base_elsewhere(&mut chain, None, external) {
+                                Some(obj) => break (obj.kind, obj.data.into(), true),
+                                None => {
+                                    return Err(Error::MissingBase {
+                                        base: base_id,
+                                        offset: h.offset,
+                                    });
+                                }
+                            },
                         },
                     }
                 }
@@ -274,18 +292,57 @@ impl Pack {
             if i == 0 {
                 return applied.map(|data| Object { kind, data });
             }
-            let result = applied.map_err(|e| Error::DeltaBase {
-                base: self
-                    .id_at_offset(h.offset)
-                    .unwrap_or(self.index.hash_kind().null()),
-                offset: h.offset,
-                path: self.pack_path.clone(),
-                source: Box::new(e),
-            })?;
+            let id = self.id_at_offset(h.offset);
+            let result = match applied {
+                Ok(result) => result,
+                // This intermediate object cannot be rebuilt here: use
+                // another copy of it, as git does.
+                Err(e) => match id.and_then(|id| external(&id)) {
+                    Some(obj) if obj.kind == kind => obj.data,
+                    _ => {
+                        return Err(Error::DeltaBase {
+                            base: id.unwrap_or(self.index.hash_kind().null()),
+                            offset: h.offset,
+                            path: self.pack_path.clone(),
+                            source: Box::new(e),
+                        });
+                    }
+                },
+            };
             base = result.into();
             cache.insert(self.uid, h.offset, kind, base.clone());
         }
         unreachable!("chain is not empty")
+    }
+
+    /// A delta base whose entry in this pack is unreadable: like git, ask
+    /// for another copy of it by id (another pack, a loose object). When
+    /// there is none, try the objects further up the chain, innermost
+    /// first; on success the chain is cut so that the found object is the
+    /// base of the remaining deltas. The target itself (`chain[0]`) is not
+    /// requested: the caller's other stores are asked for it anyway.
+    fn base_elsewhere(
+        &self,
+        chain: &mut Vec<EntryHeader>,
+        cur_id: Option<ObjectId>,
+        external: ExternalBase<'_>,
+    ) -> Option<Object> {
+        if chain.is_empty() {
+            return None;
+        }
+        if let Some(obj) = cur_id.and_then(|id| external(&id)) {
+            return Some(obj);
+        }
+        for j in (1..chain.len()).rev() {
+            let Some(id) = self.id_at_offset(chain[j].offset) else {
+                continue;
+            };
+            if let Some(obj) = external(&id) {
+                chain.truncate(j);
+                return Some(obj);
+            }
+        }
+        None
     }
 
     /// Wrap an error from reading the entry at `cur`: when `cur` is a
