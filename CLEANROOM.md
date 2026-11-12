@@ -17,7 +17,7 @@ free of GPL-derived code, every contributor (human or AI agent) follows these ru
 ## Forbidden
 
 - Reading or translating git's implementation files: `*.c`, `*.h`, `src/*.rs`,
-  `builtin/`, `compat/`, `xdiff/`, `reftable/`, `refs/`, `t/unit-tests/` etc.
+  `builtin/`, `compat/`, `xdiff/`, `reftable/`, `refs/` etc.
 - Copying text from GPL sources into rgit's own code, comments, docs or crate tests.
   The only place for GPL-derived material is `conformance/`.
 - Depending on GPL-licensed crates or linking libgit2 statically in a way that
@@ -28,10 +28,14 @@ free of GPL-derived code, every contributor (human or AI agent) follows these ru
 | Work | Reads | Writes to | License |
 |---|---|---|---|
 | **Implementation** (rgit itself) | Documentation, git binary behaviour, ported conformance tests | `crates/`, `docs/` | MIT |
-| **Test porting** | `upstream/git/t/*.sh`, `t/lib-*.sh`, `t/test-lib*.sh` | `conformance/` only | GPL-2.0 |
+| **Test porting** | `upstream/git/t/*.sh`, `t/lib-*.sh`, `t/test-lib*.sh`, `t/unit-tests/*` | `conformance/` only | GPL-2.0 |
 
 Implementation agents may run and read the conformance tests (they describe
 behaviour), but must never read git's C/Rust implementation.
+
+`t/unit-tests/*.c` are C unit tests. Only **test porting** may read them, to port
+their cases into `conformance/unit/` (Rust, GPL-2.0). Implementation work never
+reads them directly, only the ported tests.
 
 ## How agents work
 
