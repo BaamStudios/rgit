@@ -70,6 +70,11 @@ pub(crate) fn alias_of(target: &str) -> String {
     format!("alias of --{target}")
 }
 
+/// Help of the positive form `--<x>` of an option named `no-<x>`.
+pub(crate) fn opposite_of(long: &str) -> String {
+    format!("opposite of --{long}")
+}
+
 pub(crate) const NOOP_HELP: &str = "no-op (backward compatibility)";
 
 // Programming errors, printed as `BUG: <text>` when a caller combines

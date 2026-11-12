@@ -573,6 +573,18 @@ name = "rgit-simcheck"
 version = "0.1.0"
 
 [[package]]
+name = "rgit-test-tool"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
+ "rgit-date",
+ "rgit-difftest",
+ "rgit-hash",
+ "rgit-options",
+]
+
+[[package]]
 name = "rgit-trace"
 version = "0.1.0"
 dependencies = [

@@ -403,6 +403,16 @@ impl<'a> Opt<'a> {
         self.cmdmode_flag()
     }
 
+    /// Name the integer a callback writes, so that it takes part in the
+    /// conflict check of command-mode options sharing `slot` (without
+    /// being a command-mode option itself).
+    pub fn value_slot(mut self, slot: &'a Cell<i32>) -> Self {
+        if let Kind::Callback(_, s) = &mut self.kind {
+            *s = Some(slot);
+        }
+        self
+    }
+
     fn cmdmode_flag(mut self) -> Self {
         self.flags.cmdmode = true;
         self

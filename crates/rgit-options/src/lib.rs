@@ -39,6 +39,7 @@ mod num;
 mod opt;
 mod usage;
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -160,8 +161,9 @@ pub struct Parser<'a> {
     flags: ParseFlags,
     prefix: Option<String>,
     disallow_abbrev: bool,
-    /// Command-mode bookkeeping: slot address -> (description, value).
-    cmdmode_seen: HashMap<usize, (String, i32)>,
+    /// Command-mode bookkeeping: slot address -> (description of the last
+    /// option that changed it, whether that option is a command mode).
+    cmdmode_seen: HashMap<usize, (String, bool)>,
 }
 
 fn git_env_bool(name: &str) -> bool {
@@ -480,8 +482,14 @@ impl<'a> Parser<'a> {
                 _ => {}
             }
         }
-        if body == "git-completion-helper" {
-            return Err(Exit::stdout(usage::completion(&self.opts)));
+        match body {
+            "git-completion-helper" => {
+                return Err(Exit::stdout(usage::completion(&self.opts, false)));
+            }
+            "git-completion-helper-all" => {
+                return Err(Exit::stdout(usage::completion(&self.opts, true)));
+            }
+            _ => {}
         }
         let (name, value) = match body.split_once('=') {
             Some((n, v)) => (n, Some(v)),
@@ -572,31 +580,33 @@ impl<'a> Parser<'a> {
         out: &mut Vec<String>,
         kept_unknown: &mut bool,
     ) -> Result<usize, Exit> {
-        let first = body.chars().next().unwrap_or_default();
-        let short_exists = |c: char| {
-            self.opts
-                .iter()
-                .any(|o| o.short == Some(c) && !o.flags.nodash && !o.is_group())
+        let short_pos = |opts: &[Opt<'_>], c: char| {
+            opts.iter()
+                .position(|o| o.short == Some(c) && !o.flags.nodash && !o.is_group())
         };
-        if first.is_ascii_digit()
-            && !short_exists(first)
-            && body.bytes().all(|b| b.is_ascii_digit())
-        {
-            if let Some(idx) = self.opts.iter().position(Opt::is_number) {
-                self.apply(idx, false, How::Short(first), Some(body))?;
-                return Ok(i + 1);
-            }
-        }
-        if body.chars().count() >= 3 && self.is_long_prefix(body) {
+        let number_opt = self.opts.iter().position(Opt::is_number);
+        let first = body.chars().next().unwrap_or_default();
+        let starts_number = first.is_ascii_digit()
+            && number_opt.is_some()
+            && short_pos(&self.opts, first).is_none();
+        if !starts_number && body.chars().count() >= 3 && self.is_long_prefix(body) {
             return Err(Self::error(&messages::did_you_mean(body)));
         }
         let mut rest = body;
         while let Some(c) = rest.chars().next() {
+            let found = short_pos(&self.opts, c);
+            // `-<digits>` for the number option; the bundle may go on after
+            // the digits (`-3n` is `-3 -n`, observed with `git grep`).
+            if let Some(idx) = number_opt.filter(|_| found.is_none() && c.is_ascii_digit()) {
+                let end = rest
+                    .find(|ch: char| !ch.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                let (digits, after) = rest.split_at(end);
+                self.apply(idx, false, How::Short(c), Some(digits))?;
+                rest = after;
+                continue;
+            }
             rest = &rest[c.len_utf8()..];
-            let found = self
-                .opts
-                .iter()
-                .position(|o| o.short == Some(c) && !o.flags.nodash && !o.is_group());
             let Some(idx) = found else {
                 if c == 'h' && !self.flags.no_internal_help {
                     return Err(Exit::stdout(self.usage_text(false)));
@@ -673,6 +683,7 @@ impl<'a> Parser<'a> {
             }
             s
         };
+        let old = self.opts[idx].int_slot().map(Cell::get);
         let prefix = self.prefix.clone();
         let opt = &mut self.opts[idx];
         let mut cb_err = None;
@@ -756,29 +767,39 @@ impl<'a> Parser<'a> {
         if let Some(e) = cb_err {
             return Err(self.callback_error(e));
         }
-        self.check_cmdmode(idx, &how, value)
+        self.check_cmdmode(idx, &how, value, old)
     }
 
-    fn check_cmdmode(&mut self, idx: usize, how: &How, value: Option<&str>) -> Result<(), Exit> {
+    /// Command modes: an option that changes an integer shared with
+    /// command-mode options conflicts with the option that changed it
+    /// before, if either of the two is a command-mode option. Options that
+    /// leave the value as it is are ignored.
+    fn check_cmdmode(
+        &mut self,
+        idx: usize,
+        how: &How,
+        value: Option<&str>,
+        old: Option<i32>,
+    ) -> Result<(), Exit> {
         let Some(slot) = self.opts[idx].int_slot() else {
             return Ok(());
         };
-        let addr = slot as *const _ as usize;
         let shared = self
             .opts
             .iter()
             .any(|o| o.flags.cmdmode && o.int_slot().is_some_and(|s| std::ptr::eq(s, slot)));
-        if !shared {
+        if !shared || old == Some(slot.get()) {
             return Ok(());
         }
+        let addr = slot as *const _ as usize;
         let desc = how.desc(value);
-        let now = slot.get();
-        if let Some((prev, val)) = self.cmdmode_seen.get(&addr) {
-            if *val != now && *prev != desc {
+        let is_cmdmode = self.opts[idx].flags.cmdmode;
+        if let Some((prev, prev_cmdmode)) = self.cmdmode_seen.get(&addr) {
+            if (is_cmdmode || *prev_cmdmode) && *prev != desc {
                 return Err(Self::error(&messages::cannot_be_used_together(&desc, prev)));
             }
         }
-        self.cmdmode_seen.insert(addr, (desc, now));
+        self.cmdmode_seen.insert(addr, (desc, is_cmdmode));
         Ok(())
     }
 }

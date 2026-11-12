@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: MIT
+#
+# Calls replayed against the reference test-tool and rgit-test-tool by
+# tests/date.rs, in the format of parse-options.txt. Defaults:
+# GIT_TEST_DATE_NOW=1251660000 and TZ=UTC.
+date relative 1251659995
+date relative 1251659995 1251300000 1
+date relative
+date relative 1251660000
+date relative 1251660001
+date relative abc
+date relative 12x
+date relative -5
+date relative "1251659995 +0200"
+date relative 99999999999999999999
+date human 1251642000
+date human 1251228000
+date human 1251642000 1251228000
+date human "1251228000 +0200"
+date human abc
+date show:iso8601 "1467123456 +0200"
+date show:iso8601 "1467123456"
+date show:iso8601 "1467123456 0200"
+date show:iso8601 "1467123456 +02"
+date show:iso8601 "1467123456 x"
+date show:iso8601 "1467123456 +0200 extra"
+date show:iso8601 "abc +0200"
+date show:iso8601 "-5 +0200"
+date show:iso8601 "5 -0200"
+date show:iso8601 "0 -0001"
+date show:iso8601 "1467123456 +9999"
+date show:iso8601-strict "1467123456 +0000"
+date show:iso8601-strict "1467123456 -0200"
+date show:rfc2822 "1467123456 +0200"
+date show:short "1467123456 +0200"
+date show:default "1467123456 +0200"
+date show:raw "1467123456 +0200"
+date show:unix "1467123456 +0200"
+date show:iso-local "1467123456 +0200"
+date show:raw-local "1467123456 +0200"
+date show:unix-local "1467123456 +0200"
+date show:relative "1251659995 +0200"
+date show:human "1251642000 +0200"
+date show:local "1467123456 +0200"
+date show:format:%z "1467123456 +0200"
+date show:format-local:%z "1467123456 +0200"
+date show:format:%Z "1467123456 +0200"
+date show:format-local:%Z "1467123456 +0200"
+date show:format:%%z "1467123456 +0200"
+date show:format:%s "123450000 -1234"
+date show:format-local:%s "123450000 -1234"
+TZ=EST5 date show:format-local:%Y-%m-%d\ %H:%M:%S "1467123456 +0200"
+TZ=EST5 date show:iso-local "1467123456 +0200"
+TZ=EST5 date show:default-local "1467123456 +0200"
+date show:iso "5758000000 -0400"
+date show:iso-local "5758000000 -0400"
+date show:bogus "1467123456 +0200"
+date show:format "1467123456 +0200"
+date show: "1467123456 +0200"
+date show
+date show:iso
+date show:iso "1" "2 +0100"
+date bogus
+date is64bit
+date time_t-is64bit
+date
+TZ=EST5 date human 1251642000
+TZ=EST5 date show:human "1251642000 -0500"
+date show:auto:iso "1467123456 +0200"
+date show:iso8601 "18446744073709551615 +0000"
+TZ=EST5 date human 1251228000
+TZ=EST5 date human 1251642000 1250000000 1100000000
+TZ=EST5 date human 1251659000
+date human 1251400000
+date human 1251300000
+date human 1250000000
+TZ=EST5 date show:iso-local "5 -0200"
+date show:iso-local "5 -0200"
+date show:raw "5 -0200"
+date show:unix "5 -0200"
+date show:relative "5 -0200"
+date show:human "5 -0200"
+date show:iso "18446744073709551615 -0100"
+date show:unix "18446744073709551615 +0000"
+date show:raw "18446744073709551615 +0100"
+date parse "2008-02-14 20:30:45"
+date parse "2008-02-14 20:30:45 -0500" 2008 "Thu, 7 Apr 2005 15:14:13 -0700"
+TZ=EST5 date parse "2008-02-14 20:30:45"
+date parse "1467123456 +0200" "@1467123456" "bogus"
+date approxidate yesterday "5 days ago" "last friday" now never "2008-02-14 20:30:45"
+date timestamp yesterday "5 days ago" now never "2008-02-14 20:30:45 -0500"
+date approxidate
+date parse
+TZ=EST5 date human 1251400000
+TZ=EST5 date human 1251560000
+date show:iso "18446744073709551615 -0100"
