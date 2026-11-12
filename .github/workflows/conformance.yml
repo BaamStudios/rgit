@@ -98,7 +98,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build rgit
-        run: cargo build --locked --bin rgit
+        run: cargo build --locked --bin rgit --bin rgit-test-tool
       - name: Run conformance suite and regression gate
         run: |
           # Lead decision 2026-11-12: only regressions (pass -> fail) fail the build.
