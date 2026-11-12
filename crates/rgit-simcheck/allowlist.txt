@@ -13,3 +13,7 @@
 #   - string literals in messages.rs or below a messages/ directory, and literals
 #     starting with "fatal: ", "error: ", "warning: ", "hint: ", "usage: "
 #     (user-visible messages may be reproduced verbatim, decision 2026-11-12)
+#   - string literals in test code (below tests/, or in inline `mod tests`)
+#   - string literals without whitespace (env variables, config keys, paths)
+
+code crates/rgit-protocol/src/sideband.rs:354-361  # unit-test assertions at threshold, reviewed by lead 2026-11-12, coincidental (#205)

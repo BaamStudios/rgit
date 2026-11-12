@@ -1,0 +1,18 @@
+[package]
+name = "rgit-pack"
+description = "Pack and pack index reading for rgit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-hash = { path = "../rgit-hash" }
+crc32fast = "1.5.0"
+# zlib-rs: pure Rust zlib (Zlib license), exposes zlib's error messages.
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
+memmap2 = "0.9.10"
+
+[dev-dependencies]
+tempfile = "3"
