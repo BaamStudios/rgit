@@ -514,6 +514,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-object"
+version = "0.1.0"
+dependencies = [
+ "rgit-hash",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-options"
 version = "0.1.0"
 
