@@ -226,13 +226,24 @@ impl<S: CommitSource> Walk<S> {
     pub fn next_commit(&mut self) -> Result<Option<ObjectId>, S::Error> {
         if !self.started {
             self.started = true;
-            if self.limited || self.opts.order != Order::Default || self.opts.reverse {
+            if self.limited || self.opts.order != Order::Default {
                 self.prepare()?;
+            } else if self.opts.reverse {
+                // Lazy walk, then reverse what it selected.
+                let mut list = VecDeque::new();
+                while let Some(n) = self.next_streamed()? {
+                    list.push_front(n);
+                }
+                self.prepared = Some(list);
             }
         }
         if let Some(list) = &mut self.prepared {
             return Ok(list.pop_front().map(|n| self.nodes[n as usize].id));
         }
+        Ok(self.next_streamed()?.map(|n| self.nodes[n as usize].id))
+    }
+
+    fn next_streamed(&mut self) -> Result<Option<u32>, S::Error> {
         loop {
             if self.opts.max_count.is_some_and(|m| self.shown >= m) {
                 return Ok(None);
@@ -246,7 +257,7 @@ impl<S: CommitSource> Walk<S> {
                 continue;
             }
             self.shown += 1;
-            return Ok(Some(self.nodes[entry.node as usize].id));
+            return Ok(Some(entry.node));
         }
     }
 
