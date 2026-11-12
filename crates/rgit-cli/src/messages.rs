@@ -5,6 +5,7 @@
 pub mod cat_file;
 pub mod check_ignore;
 pub mod config;
+pub mod diff_tree;
 pub mod for_each_ref;
 pub mod hash_object;
 pub mod init;

@@ -507,6 +507,7 @@ dependencies = [
  "regex",
  "rgit-config",
  "rgit-date",
+ "rgit-diff",
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",
