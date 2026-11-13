@@ -365,9 +365,17 @@ fn read_format(opts: &SetupOptions, cand: &Candidate) -> Result<RepositoryFormat
         Ok(data) => rgit_config::parse_bytes(&data, Origin::File(display), Scope::Local)?,
         Err(_) => ConfigSet::new(),
     };
-    let format = RepositoryFormat::from_config(&set)?;
+    let mut format = RepositoryFormat::from_config(&set)?;
     format.check()?;
     format.check_support(&opts.support)?;
+    // A linked work tree (its git directory has a separate common
+    // directory) does not take core.worktree / core.bare from the common
+    // configuration (t1501 "$GIT_DIR/common overrides core.worktree").
+    let own_config = path::real_path_lossy(&cand.abs, &opts.cwd).join("config");
+    if path::real_path_lossy(&file, &opts.cwd) != own_config {
+        format.worktree = None;
+        format.bare = None;
+    }
     Ok(format)
 }
 

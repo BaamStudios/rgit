@@ -256,6 +256,79 @@ fn unmerged_paths() {
     }
 }
 
+fn with_nested(commits: bool) -> Fixture {
+    let mut fx = fixture().git(["init", "-q", "s"]).git(["init", "-q", "s2"]);
+    if commits {
+        fx = fx
+            .git(["-C", "s", "commit", "-q", "--allow-empty", "-m", "s"])
+            .git(["-C", "s2", "commit", "-q", "--allow-empty", "-m", "s2"]);
+    }
+    fx.write("s/inner", "i\n")
+}
+
+#[test]
+fn embedded_repositories() {
+    let cases: &[(bool, &[&str])] = &[
+        (true, &["-v", "s"]),
+        (true, &["-v", "s/"]),
+        (true, &["."]),
+        (true, &["-v", "-A"]),
+        (true, &["--no-warn-embedded-repo", "-v", "s"]),
+        (true, &["-c", "advice.addEmbeddedRepo=false", "s", "s2"]),
+        (true, &["-n", "s"]),
+        (true, &["-N", "s"]),
+        (true, &["s/inner"]),
+        (false, &["s"]),
+        (false, &["-v", "s", "top"]),
+        (false, &["--ignore-errors", "-v", "s", "top"]),
+    ];
+    for (commits, args) in cases {
+        let mut fx = with_nested(*commits);
+        let mut argv = vec!["add"];
+        if args[0] == "-c" {
+            argv = vec!["-c", args[1], "add"];
+            argv.extend_from_slice(&args[2..]);
+        } else {
+            argv.extend_from_slice(args);
+        }
+        fx.compare(&argv).checks(STATE).run();
+    }
+    // A tracked submodule whose HEAD moved; one that was removed.
+    let base = || {
+        with_nested(true).git(["add", "s"]).git([
+            "-C",
+            "s",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "s2",
+        ])
+    };
+    for args in [&["-v", "s"][..], &["-v", "-u"], &["-N", "-v", "s"]] {
+        let mut fx = base();
+        let mut argv = vec!["add"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).checks(STATE).run();
+    }
+}
+
+#[test]
+fn beyond_symlink() {
+    for args in [
+        &["dl/c"][..],
+        &["-n", "dl/c"],
+        &["dl/nosuch"],
+        &["dl/*"],
+        &["top", "dl/c"],
+    ] {
+        let mut fx = fixture().symlink("d", "dl");
+        let mut argv = vec!["add"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).checks(STATE).run();
+    }
+}
+
 #[test]
 fn filemode_off_new_file() {
     let mut fx = fixture()

@@ -68,6 +68,43 @@ pub fn unable_to_index(path: &str) -> String {
     format!("unable to index file '{path}'")
 }
 
+pub const HELP_NO_WARN_EMBEDDED_REPO: &str = "warn when adding an embedded repository";
+
+#[must_use]
+pub fn embedded_repo(path: &str) -> String {
+    format!("adding embedded git repository: {path}")
+}
+
+#[must_use]
+pub fn embedded_repo_hint(path: &str) -> String {
+    format!(
+        "hint: You've added another git repository inside your current repository.
+hint: Clones of the outer repository will not contain the contents of
+hint: the embedded repository and will not know how to obtain it.
+hint: If you meant to add a submodule, use:
+hint:
+hint: \tgit submodule add <url> {path}
+hint:
+hint: If you added this path by mistake, you can remove it from the
+hint: index with:
+hint:
+hint: \tgit rm --cached {path}
+hint:
+hint: See \"git help submodule\" for more information.
+hint: Disable this message with \"git config set advice.addEmbeddedRepo false\""
+    )
+}
+
+#[must_use]
+pub fn no_commit_checked_out(path: &str) -> String {
+    format!("'{path}' does not have a commit checked out")
+}
+
+#[must_use]
+pub fn beyond_symlink(item: &str) -> String {
+    format!("pathspec '{item}' is beyond a symbolic link")
+}
+
 #[must_use]
 pub fn could_not_open(path: &str, err: &str) -> String {
     format!("could not open '{path}' for reading: {err}")

@@ -96,7 +96,7 @@ struct Walk<'a> {
     excludes: Excludes,
     force: bool,
     seen: Vec<bool>,
-    found: Vec<Vec<u8>>,
+    found: Vec<(Vec<u8>, bool)>,
     ignored: Vec<Vec<u8>>,
 }
 
@@ -137,12 +137,30 @@ impl Walk<'_> {
                 {
                     continue;
                 }
+                let excluded = parent_excluded || self.excludes.is_excluded(&path, true);
                 if self.index.dir_range(&path).is_empty()
                     && std::fs::symlink_metadata(os_path(&self.root, &path).join(".git")).is_ok()
                 {
-                    continue; // untracked nested repository: not handled yet
+                    // An embedded repository: added as a gitlink when a
+                    // pathspec names it (not a path inside it).
+                    if excluded && !self.force {
+                        if self.names_inside(&path) {
+                            self.ignored.push(path);
+                        }
+                        continue;
+                    }
+                    let mut slashed = path.clone();
+                    slashed.push(b'/');
+                    if !self.pathspec.is_empty() {
+                        let hit = self.pathspec.match_path_seen(&path, &mut self.seen).is_some()
+                            | self.pathspec.match_path_seen(&slashed, &mut self.seen).is_some();
+                        if !hit {
+                            continue;
+                        }
+                    }
+                    self.found.push((path, true));
+                    continue;
                 }
-                let excluded = parent_excluded || self.excludes.is_excluded(&path, true);
                 if excluded && !self.force {
                     // Nothing below is added; the directory itself is
                     // reported when a pathspec reaches into it.
@@ -173,7 +191,7 @@ impl Walk<'_> {
                 if !self.pathspec.is_empty() {
                     let _ = self.pathspec.match_path_seen(&path, &mut self.seen);
                 }
-                self.found.push(path);
+                self.found.push((path, false));
             }
         }
     }
@@ -288,6 +306,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let chmod: RefCell<Option<String>> = RefCell::new(None);
     let from_file: RefCell<Option<String>> = RefCell::new(None);
     let file_nul = Cell::new(false);
+    let warn_embedded = Cell::new(true);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -304,6 +323,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string(None, "chmod", &chmod, "(+|-)x", msg::HELP_CHMOD).literal_argh(),
             Opt::string(None, "pathspec-from-file", &from_file, "file", msg::HELP_PATHSPEC_FROM_FILE),
             Opt::flag(None, "pathspec-file-nul", &file_nul, msg::HELP_PATHSPEC_FILE_NUL),
+            Opt::flag(None, "warn-embedded-repo", &warn_embedded, msg::HELP_NO_WARN_EMBEDDED_REPO)
+                .hidden(),
         ],
     );
     let mut args: Vec<Vec<u8>> = parser
@@ -376,6 +397,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ..Default::default()
     };
     let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
+    // A pathspec whose literal leading directories pass a symbolic link.
+    for item in pathspec.items() {
+        let literal = &item.pattern()[..item.nowildcard_len()];
+        for (i, _) in literal.iter().enumerate().filter(|(_, b)| **b == b'/') {
+            let leading = std::fs::symlink_metadata(os_path(&root, &literal[..i]));
+            if leading.is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(Die::Fatal(msg::beyond_symlink(&lossy(item.original()))));
+            }
+        }
+    }
     let (mut index, index_mtime) = repo.read_index()?;
     let checker = repo.checker(index_mtime)?;
     let mut seen = vec![false; pathspec.items().len()];
@@ -514,11 +545,44 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 Err(err) => {
                     report_failure(path, &err);
                     failed = true;
+                    if !ignore_errors {
+                        return Err(Die::Fatal(msg::UPDATING_FAILED.to_string()));
+                    }
                 }
             }
             continue;
         }
         if e.mode.is_gitlink() {
+            // A tracked submodule: record the commit checked out there.
+            let full = os_path(&root, e.path());
+            let meta = std::fs::symlink_metadata(&full).ok();
+            if !meta.as_ref().is_some_and(std::fs::Metadata::is_dir) {
+                if show {
+                    println!("{}", msg::remove(&lossy(e.path())));
+                }
+                removals.push(e.path().to_vec());
+                continue;
+            }
+            if intent {
+                write_empty_blob()?;
+                if show {
+                    println!("{}", msg::add(&lossy(e.path())));
+                }
+                continue;
+            }
+            if let Some(head) = repository::submodule_head(&full, repo.hash) {
+                if head != e.id {
+                    if show {
+                        println!("{}", msg::add(&lossy(e.path())));
+                    }
+                    let mut n = Entry::new(e.path().to_vec(), Stage::MERGED, Mode::GITLINK, head);
+                    if let Some(m) = &meta {
+                        n.stat = stat_from_metadata(m);
+                    }
+                    n.flags = e.flags;
+                    updates.push(n);
+                }
+            }
             continue;
         }
         if intent && e.flags.intent_to_add {
@@ -562,6 +626,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     Err(err) => {
                         report_failure(e.path(), &err);
                         failed = true;
+                        if !ignore_errors {
+                            return Err(Die::Fatal(msg::UPDATING_FAILED.to_string()));
+                        }
                     }
                 }
             }
@@ -572,7 +639,48 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     let mut add_failed = false;
-    for path in &found {
+    let mut hint_shown = false;
+    for (path, is_repo) in &found {
+        if *is_repo {
+            // An embedded repository becomes a gitlink to its HEAD.
+            let mut shown = path.clone();
+            shown.push(b'/');
+            let full = os_path(&root, path);
+            let Some(head) = repository::submodule_head(&full, repo.hash) else {
+                report_failure(&shown, &msg::no_commit_checked_out(&lossy(&shown)));
+                add_failed = true;
+                if !ignore_errors {
+                    return Err(Die::Fatal(msg::ADDING_FAILED.to_string()));
+                }
+                continue;
+            };
+            if warn_embedded.get() {
+                eprintln!("warning: {}", msg::embedded_repo(&lossy(path)));
+                let advice = repo.config.bool("advice.addembeddedrepo").ok().flatten();
+                if !hint_shown && advice != Some(false) {
+                    eprintln!("{}", msg::embedded_repo_hint(&lossy(path)));
+                }
+                hint_shown = true;
+            }
+            if show {
+                println!("{}", msg::add(&lossy(&shown)));
+            }
+            let mut entry = if intent {
+                let id = write_empty_blob()?;
+                let mut e = Entry::new(path.clone(), Stage::MERGED, Mode::GITLINK, id);
+                e.flags.intent_to_add = true;
+                e
+            } else {
+                let mut e = Entry::new(path.clone(), Stage::MERGED, Mode::GITLINK, head);
+                if let Ok(meta) = std::fs::symlink_metadata(&full) {
+                    e.stat = stat_from_metadata(&meta);
+                }
+                e
+            };
+            entry.flags.assume_valid = false;
+            updates.push(entry);
+            continue;
+        }
         if intent {
             write_empty_blob()?;
             if let Some(n) = intent_entry(&repo, &checker, path)? {
@@ -598,6 +706,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Err(err) => {
                 report_failure(path, &err);
                 add_failed = true;
+                if !ignore_errors {
+                    return Err(Die::Fatal(msg::ADDING_FAILED.to_string()));
+                }
             }
         }
     }
