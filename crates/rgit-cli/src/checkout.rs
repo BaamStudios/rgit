@@ -142,8 +142,11 @@ impl Writer<'_> {
                 write_regular(&full, &data, mode & 0o111 != 0).map_err(fail)?;
             }
         }
-        let meta = std::fs::symlink_metadata(&full)
-            .map_err(|e| Die::Fatal(format!("unable to stat just-written file {shown}: {e}")))?;
+        let meta = std::fs::symlink_metadata(&full).map_err(|e| {
+            Die::Fatal(format!(
+                "rgit: cannot lstat {shown} after the checkout wrote it: {e}"
+            ))
+        })?;
         let mut entry = Entry::new(path.to_vec(), Stage::MERGED, IndexMode(mode), *id);
         if mode & 0o170000 != 0o160000 {
             entry.stat = stat_from_metadata(&meta);
