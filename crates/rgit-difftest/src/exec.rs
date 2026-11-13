@@ -42,7 +42,11 @@ pub fn write_executable(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
         .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
     drop(stdin);
     let status = child.wait().expect("wait for /bin/sh");
-    assert!(status.success(), "write {}: sh exited {status}", path.display());
+    assert!(
+        status.success(),
+        "write {}: sh exited {status}",
+        path.display()
+    );
 }
 
 /// Writes `contents` to `path` (no executable bit off Unix).
