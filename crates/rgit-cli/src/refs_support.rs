@@ -192,7 +192,7 @@ impl Revs {
     pub fn new(ctx: &Context, setup: &Setup) -> Result<Revs, crate::Die> {
         let kind = setup.format.object_format;
         let config = revisions::load_config(ctx, setup)?;
-        let opts = revisions::options(&config, kind)?;
+        let opts = revisions::options(ctx, &config, kind)?;
         let shallow = std::env::var_os("GIT_SHALLOW_FILE")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| setup.common_dir.join("shallow"));

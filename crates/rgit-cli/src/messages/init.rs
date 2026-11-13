@@ -44,19 +44,18 @@ pub fn done(reinit: bool, shared: bool, git_dir: &str) -> String {
     )
 }
 
-/// The `defaultBranchName` advice, one entry per `hint:` line.
-pub const DEFAULT_BRANCH_ADVICE: &[&str] = &[
-    "Using 'master' as the name for the initial branch. This default branch name",
-    "will change to \"main\" in Git 3.0. To configure the initial branch name",
-    "to use in all of your new repositories, which will suppress this warning,",
-    "call:",
-    "",
-    "\tgit config --global init.defaultBranch <name>",
-    "",
-    "Names commonly chosen instead of 'master' are 'main', 'trunk' and",
-    "'development'. The just-created branch can be renamed via this command:",
-    "",
-    "\tgit branch -m <name>",
-    "",
-    "Disable this message with \"git config set advice.defaultBranchName false\"",
-];
+/// Advice `defaultBranchName`. The final newline leaves an empty `hint:`
+/// line before the "Disable this message" line.
+pub const DEFAULT_BRANCH_ADVICE: &str = "\
+Using 'master' as the name for the initial branch. This default branch name
+will change to \"main\" in Git 3.0. To configure the initial branch name
+to use in all of your new repositories, which will suppress this warning,
+call:
+
+\tgit config --global init.defaultBranch <name>
+
+Names commonly chosen instead of 'master' are 'main', 'trunk' and
+'development'. The just-created branch can be renamed via this command:
+
+\tgit branch -m <name>
+";

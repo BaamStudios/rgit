@@ -197,14 +197,8 @@ pub struct LaunchOptions {
 /// Whether the `waitingForEditor` advice is enabled by configuration and
 /// `GIT_ADVICE` (the caller also honours `--no-advice`).
 pub fn waiting_hint_enabled(set: &ConfigSet, env: &dyn Environment) -> bool {
-    if let Some(v) = env.var_bytes("GIT_ADVICE") {
-        if rgit_config::value::parse_bool(Some(&v)) == Some(false) {
-            return false;
-        }
-    }
-    set.bool("advice.waitingForEditor")
-        .ok()
-        .flatten()
+    rgit_messages::Advisor::new(set, env, false)
+        .and_then(|a| a.enabled(rgit_messages::Advice::WaitingForEditor))
         .unwrap_or(true)
 }
 

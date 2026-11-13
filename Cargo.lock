@@ -516,6 +516,7 @@ dependencies = [
  "rgit-http",
  "rgit-ident",
  "rgit-index",
+ "rgit-messages",
  "rgit-object",
  "rgit-odb",
  "rgit-options",
@@ -644,6 +645,7 @@ dependencies = [
  "rgit-config",
  "rgit-date",
  "rgit-difftest",
+ "rgit-messages",
  "rustix",
  "tempfile",
 ]
@@ -657,6 +659,13 @@ dependencies = [
  "rgit-hash",
  "rgit-trace",
  "thiserror",
+]
+
+[[package]]
+name = "rgit-messages"
+version = "0.1.0"
+dependencies = [
+ "rgit-config",
 ]
 
 [[package]]
@@ -782,6 +791,7 @@ dependencies = [
  "rgit-difftest",
  "rgit-hash",
  "rgit-ident",
+ "rgit-messages",
  "rgit-options",
  "rgit-pathspec",
  "rgit-refs",

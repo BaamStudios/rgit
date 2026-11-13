@@ -173,7 +173,7 @@ fn shorten(ctx: &Context, setup: &rgit_repo::Setup, name: &str) -> Result<String
 
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, setup)?;
-    let opts = revisions::options(&config, kind)?;
+    let opts = revisions::options(ctx, &config, kind)?;
     let shallow = setup.common_dir.join("shallow");
     let objects = Objects::new(revisions::objects_dir(setup), kind, &shallow);
     let refs = Refs::new(setup, kind);

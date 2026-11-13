@@ -11,9 +11,11 @@ pub const HELP_UPDATE: &str = "update tracked files";
 pub const HELP_ALL: &str = "add changes from all tracked and untracked files";
 
 pub const NOTHING_SPECIFIED: &str = "Nothing specified, nothing added.";
-pub const HINT_ADD_DOT: &str = "hint: Maybe you wanted to say 'git add .'?\nhint: Disable this message with \"git config set advice.addEmptyPathspec false\"";
+/// Advice `addEmptyPathspec`.
+pub const HINT_ADD_DOT: &str = "Maybe you wanted to say 'git add .'?";
 pub const IGNORED_HEADER: &str = "The following paths are ignored by one of your .gitignore files:";
-pub const IGNORED_HINT: &str = "hint: Use -f if you really want to add them.\nhint: Disable this message with \"git config set advice.addIgnoredFile false\"";
+/// Advice `addIgnoredFile`.
+pub const IGNORED_HINT: &str = "Use -f if you really want to add them.";
 pub const UPDATE_AND_ALL: &str = "options '-u/--update' and '-A/--all' cannot be used together";
 
 #[must_use]
@@ -78,20 +80,19 @@ pub fn embedded_repo(path: &str) -> String {
 #[must_use]
 pub fn embedded_repo_hint(path: &str) -> String {
     format!(
-        "hint: You've added another git repository inside your current repository.
-hint: Clones of the outer repository will not contain the contents of
-hint: the embedded repository and will not know how to obtain it.
-hint: If you meant to add a submodule, use:
-hint:
-hint: \tgit submodule add <url> {path}
-hint:
-hint: If you added this path by mistake, you can remove it from the
-hint: index with:
-hint:
-hint: \tgit rm --cached {path}
-hint:
-hint: See \"git help submodule\" for more information.
-hint: Disable this message with \"git config set advice.addEmbeddedRepo false\""
+        "You've added another git repository inside your current repository.
+Clones of the outer repository will not contain the contents of
+the embedded repository and will not know how to obtain it.
+If you meant to add a submodule, use:
+
+\tgit submodule add <url> {path}
+
+If you added this path by mistake, you can remove it from the
+index with:
+
+\tgit rm --cached {path}
+
+See \"git help submodule\" for more information."
     )
 }
 

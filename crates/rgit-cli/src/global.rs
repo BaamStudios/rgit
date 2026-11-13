@@ -30,11 +30,7 @@ fn usage_error(text: &str) -> Die {
 
 /// `strerror`-style text of an I/O error (without Rust's "(os error N)").
 pub fn strerror(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error ") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_messages::strerror(e)
 }
 
 /// Take the value of `--name=<v>` or `--name <v>`.

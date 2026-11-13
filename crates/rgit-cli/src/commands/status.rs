@@ -391,6 +391,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
 
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    let advisor = ctx.advisor(&repo.config)?;
     let format = match format.get() {
         F_PORCELAIN => Format::Porcelain(porcelain_version),
         F_SHORT => Format::Short,
@@ -526,7 +527,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let ctx = LongContext {
                 info: &info,
                 detached,
-                hints: config_bool(&repo, "advice.statushints")?.unwrap_or(true),
+                hints: advisor
+                    .enabled(Advice::StatusHints)
+                    .map_err(Die::Fatal)?,
                 merging: repo.setup.git_dir.join("MERGE_HEAD").exists(),
                 mode,
             };

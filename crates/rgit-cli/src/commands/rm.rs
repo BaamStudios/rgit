@@ -84,6 +84,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     );
 
     let mut repo = Repo::open(ctx, Mode::Required)?;
+    let advisor = ctx.advisor(&repo.config)?;
     if args.is_empty() {
         return Err(Die::Fatal(msg::NO_PATHSPEC.to_string()));
     }
@@ -176,7 +177,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mut failed = false;
         for (k, paths) in &problems {
             if !paths.is_empty() {
-                eprintln!("error: {}", msg::problem(*k, paths, cached));
+                let hints = advisor.enabled(Advice::RmHints).map_err(Die::Fatal)?;
+                eprintln!("error: {}", msg::problem(*k, paths, cached, hints));
                 failed = true;
             }
         }

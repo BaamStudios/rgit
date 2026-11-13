@@ -16,7 +16,7 @@
 //! `--recurse-submodules`, thin packs, remote groups, local progress
 //! output, and hooks (an enabled `pre-push` hook gives a warning).
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 
 use rgit_config::{ConfigSet, SetRequest, SystemEnv, ValuePattern};
 use rgit_hash::ObjectId;
@@ -180,6 +180,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::config(ctx, &setup);
+    let advisor = ctx.advisor(&config)?.without_color_ui();
+    advisor.check_env().map_err(Die::Fatal)?;
     let hash = setup.format.object_format;
     let odb = repo::odb_with_config(&setup, &config)?;
     let refs = crate::refs::Refs::new(&setup);
@@ -311,6 +313,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ctx,
         setup: &setup,
         config: &config,
+        advisor: &advisor,
         odb: &odb,
         refs: &refs,
         head: head.as_deref(),
@@ -412,6 +415,7 @@ struct Push<'a> {
     ctx: &'a Context,
     setup: &'a rgit_repo::Setup,
     config: &'a ConfigSet,
+    advisor: &'a rgit_messages::Advisor,
     odb: &'a ObjectDatabase,
     refs: &'a crate::refs::Refs,
     head: Option<&'a str>,
@@ -422,23 +426,11 @@ struct Push<'a> {
 }
 
 impl Push<'_> {
-    fn advice(&self, key: &str) -> bool {
-        if self.ctx.no_advice || std::env::var("GIT_ADVICE").is_ok_and(|v| v == "0" || v == "false") {
-            return false;
-        }
-        let on = |k: &str| self.config.bool(k).ok().flatten().unwrap_or(true);
-        on("advice.pushUpdateRejected") && on(key)
-    }
-
-    fn hint(&self, text: &str) {
-        let mut err = std::io::stderr().lock();
-        for l in text.lines() {
-            if l.is_empty() {
-                let _ = writeln!(err, "hint:");
-            } else {
-                let _ = writeln!(err, "hint: {l}");
-            }
-        }
+    /// Push advice is shown without the "Disable this message" line.
+    fn hint(&self, advice: Advice, text: &str) -> Result<(), Die> {
+        self.advisor
+            .advise_without_footer(advice, text)
+            .map_err(Die::Fatal)
     }
 
     fn to_url(&self, url: &str) -> Result<i32, Die> {
@@ -500,9 +492,7 @@ impl Push<'_> {
             for e in &errors {
                 eprintln!("error: {}", e.error);
                 if let Some(h) = &e.hint {
-                    if self.advice("advice.pushUnqualifiedRefName") {
-                        self.hint(h);
-                    }
+                    self.hint(Advice::PushUnqualifiedRefname, h)?;
                 }
             }
             eprintln!("error: {}", msg::failed_to_push(&display));
@@ -617,35 +607,29 @@ impl Push<'_> {
         }
         if failed {
             eprintln!("error: {}", msg::failed_to_push(&display));
-            self.rejection_hints(&list);
+            self.rejection_hints(&list)?;
             return Ok(1);
         }
         Ok(0)
     }
 
-    fn rejection_hints(&self, list: &[PushRef]) {
+    fn rejection_hints(&self, list: &[PushRef]) -> Result<(), Die> {
         let has = |s: Status| list.iter().any(|r| r.status == s);
         let nonff_current = list
             .iter()
             .any(|r| r.status == Status::RejectNonFf && Some(r.dst.as_str()) == self.head);
         if nonff_current {
-            if self.advice("advice.pushNonFFCurrent") {
-                self.hint(msg::HINT_NON_FF_CURRENT);
-            }
+            self.hint(Advice::PushNonFfCurrent, msg::HINT_NON_FF_CURRENT)
         } else if has(Status::RejectNonFf) {
-            if self.advice("advice.pushNonFFMatching") {
-                self.hint(msg::HINT_NON_FF_MATCHING);
-            }
+            self.hint(Advice::PushNonFfMatching, msg::HINT_NON_FF_MATCHING)
         } else if has(Status::RejectAlreadyExists) {
-            if self.advice("advice.pushAlreadyExists") {
-                self.hint(msg::HINT_ALREADY_EXISTS);
-            }
+            self.hint(Advice::PushAlreadyExists, msg::HINT_ALREADY_EXISTS)
         } else if has(Status::RejectFetchFirst) {
-            if self.advice("advice.pushFetchFirst") {
-                self.hint(msg::HINT_FETCH_FIRST);
-            }
-        } else if has(Status::RejectNeedsForce) && self.advice("advice.pushNeedsForce") {
-            self.hint(msg::HINT_NEEDS_FORCE);
+            self.hint(Advice::PushFetchFirst, msg::HINT_FETCH_FIRST)
+        } else if has(Status::RejectNeedsForce) {
+            self.hint(Advice::PushNeedsForce, msg::HINT_NEEDS_FORCE)
+        } else {
+            Ok(())
         }
     }
 

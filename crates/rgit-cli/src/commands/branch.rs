@@ -41,6 +41,7 @@ use crate::tracking::{self, AutoSetup, Track};
 struct Ctx<'a> {
     setup: &'a Setup,
     config: &'a rgit_config::ConfigSet,
+    advisor: rgit_messages::Advisor,
     store: FilesStore,
     objects: &'a Objects,
     revs: Revs,
@@ -123,10 +124,10 @@ impl Ctx<'_> {
 
 fn not_valid_name(ctx: &Ctx<'_>, name: &str) -> Die {
     eprintln!("fatal: {}", msg::not_valid_branch_name(name));
-    if !matches!(ctx.config.bool("advice.refsyntax"), Ok(Some(false))) {
-        eprint!("{}", msg::HINT_REF_SYNTAX);
+    match ctx.advisor.advise(Advice::RefSyntax, msg::HINT_REF_SYNTAX) {
+        Ok(()) => Die::Exit(128),
+        Err(e) => Die::Fatal(e),
     }
-    Die::Exit(128)
 }
 
 fn valid_name(name: &str) -> bool {
@@ -184,6 +185,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = refs_support::load_config(ctx, &setup)?;
+    let advisor = ctx.advisor(&config)?;
     let auto = AutoSetup::from_config(&config)?;
     let store = refs_support::ref_store(&setup, &config);
     let objects = Objects::open(&setup);
@@ -196,6 +198,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let c = Ctx {
         setup: &setup,
         config: &config,
+        advisor,
         store,
         objects: &objects,
         revs,
@@ -300,9 +303,9 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
         };
         if !force && !remote && !merged_enough(c, name, &oid, head_oid.as_ref()) {
             eprintln!("error: {}", msg::not_fully_merged(name));
-            if !matches!(c.config.bool("advice.forcedeletebranch"), Ok(Some(false))) {
-                eprint!("{}", msg::hint_force_delete(name));
-            }
+            c.advisor
+                .advise(Advice::ForceDeleteBranch, &msg::hint_force_delete(name))
+                .map_err(Die::Fatal)?;
             code = 1;
             continue;
         }

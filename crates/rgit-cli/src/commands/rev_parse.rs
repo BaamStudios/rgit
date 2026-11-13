@@ -706,7 +706,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let setup = repo::setup_with(ctx, Mode::RequiredQuiet, support)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
-    let opts = revisions::options(&config, kind)?;
+    let opts = revisions::options(ctx, &config, kind)?;
     let shallow = std::env::var_os("GIT_SHALLOW_FILE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| setup.common_dir.join("shallow"));

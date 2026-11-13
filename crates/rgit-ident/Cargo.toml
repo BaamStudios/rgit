@@ -15,6 +15,7 @@ bstr = { version = "1.13", default-features = false, features = ["std"] }
 jiff = "0.2.35"
 rgit-config = { path = "../rgit-config" }
 rgit-date = { path = "../rgit-date" }
+rgit-messages = { path = "../rgit-messages" }
 
 [target.'cfg(unix)'.dependencies]
 # Safe getuid(2) and uname(2) for the guessed identity.

@@ -30,13 +30,20 @@ mod wt_status;
 
 use std::io::Write;
 
+use rgit_messages::{Level, prefixed};
+
 pub use context::Context;
+
+// The option parser keeps its own copies of the exit codes.
+const _: () = assert!(rgit_options::EXIT_FATAL == rgit_messages::EXIT_FATAL);
+const _: () = assert!(rgit_options::EXIT_USAGE == rgit_messages::EXIT_USAGE);
 
 /// Re-exports for command files: `use crate::prelude::*;`.
 #[allow(unused_imports)]
 pub mod prelude {
     pub use crate::context::Context;
     pub use crate::{CmdResult, Die};
+    pub use rgit_messages::Advice;
     pub use rgit_options::{CallbackError, Opt, ParseFlags, Parser};
     pub use std::cell::{Cell, RefCell};
 }
@@ -66,11 +73,11 @@ impl Die {
     pub fn emit(self) -> i32 {
         match self {
             Die::Fatal(m) => {
-                let _ = writeln!(std::io::stderr(), "fatal: {m}");
-                rgit_options::EXIT_FATAL
+                let _ = writeln!(std::io::stderr(), "{}", prefixed(Level::Fatal, &m));
+                rgit_messages::EXIT_FATAL
             }
             Die::Error(m, code) => {
-                let _ = writeln!(std::io::stderr(), "error: {m}");
+                let _ = writeln!(std::io::stderr(), "{}", prefixed(Level::Error, &m));
                 code
             }
             Die::Output(e) => e.emit(),
