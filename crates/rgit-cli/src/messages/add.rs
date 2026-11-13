@@ -32,3 +32,43 @@ pub fn remove(path: &str) -> String {
 pub fn attributes_not_applied(path: &str) -> String {
     format!("rgit: eol/filter attributes are not applied yet; '{path}' added unconverted")
 }
+
+pub const HELP_INTENT_TO_ADD: &str = "record only the fact that the path will be added later";
+pub const HELP_IGNORE_ERRORS: &str = "just skip files which cannot be added because of errors";
+pub const HELP_IGNORE_MISSING: &str = "check if - even missing - files are ignored in dry run";
+pub const HELP_SPARSE: &str = "allow updating entries outside of the sparse-checkout cone";
+pub const HELP_CHMOD: &str = "override the executable bit of the listed files";
+pub const HELP_PATHSPEC_FROM_FILE: &str = "read pathspec from file";
+pub const HELP_PATHSPEC_FILE_NUL: &str =
+    "with --pathspec-from-file, pathspec elements are separated with NUL character";
+
+pub const ADDING_FAILED: &str = "adding files failed";
+pub const UPDATING_FAILED: &str = "updating files failed";
+pub const FROM_FILE_WITH_ARGS: &str =
+    "'--pathspec-from-file' and pathspec arguments cannot be used together";
+
+/// `the option '<a>' requires '<b>'`.
+#[must_use]
+pub fn option_requires(a: &str, b: &str) -> String {
+    format!("the option '{a}' requires '{b}'")
+}
+
+#[must_use]
+pub fn bad_chmod(param: &str) -> String {
+    format!("--chmod param '{param}' must be either -x or +x")
+}
+
+#[must_use]
+pub fn cannot_chmod(flip: char, path: &str) -> String {
+    format!("cannot chmod {flip}x '{path}'")
+}
+
+#[must_use]
+pub fn unable_to_index(path: &str) -> String {
+    format!("unable to index file '{path}'")
+}
+
+#[must_use]
+pub fn could_not_open(path: &str, err: &str) -> String {
+    format!("could not open '{path}' for reading: {err}")
+}

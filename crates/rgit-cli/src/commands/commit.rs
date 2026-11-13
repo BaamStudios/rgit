@@ -356,7 +356,7 @@ fn update_path(
             return Ok(());
         }
     }
-    match entry_for(repo, checker, root, path, old.as_ref(), false)? {
+    match entry_for(repo, checker, root, path, old.as_ref(), false).map_err(Die::Fatal)? {
         Some(e) => {
             index
                 .add(
