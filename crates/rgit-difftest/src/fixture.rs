@@ -244,17 +244,18 @@ impl Fixture {
         self
     }
 
-    /// Writes a file and makes it executable (mode 755 on Unix).
+    /// Writes a file and makes it executable (mode 755 on Unix), creating
+    /// parent directories. Safe to execute right away even while other test
+    /// threads spawn processes (see [`crate::write_executable`]).
     pub fn write_executable(self, rel: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Self {
-        let rel = rel.as_ref().to_path_buf();
-        let fx = self.write(&rel, contents);
-        #[cfg(unix)]
-        if fx.inner.is_some() {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(fx.path(&rel), fs::Permissions::from_mode(0o755))
-                .expect("chmod 755");
+        if self.inner.is_some() {
+            let path = self.path(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create parent directories");
+            }
+            crate::write_executable(&path, contents);
         }
-        fx
+        self
     }
 
     /// Creates a symbolic link at `rel` pointing to `target` (Unix only).
@@ -772,6 +773,38 @@ fn retire(root: &Path, snapshot: &Path) {
     }
 }
 
+#[cfg(unix)]
+fn is_executable(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_: &fs::Metadata) -> bool {
+    false
+}
+
+/// Copies an executable file with `cp -p` (mode and time stamps kept), so no
+/// descriptor writing to `to` is ever open in this process.
+fn copy_executable(from: &Path, to: &Path) -> std::io::Result<()> {
+    let status = Command::new("cp")
+        .arg("-p")
+        .arg("--")
+        .arg(from)
+        .arg(to)
+        .stdin(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "cp -p {} {}: {status}",
+            from.display(),
+            to.display()
+        )))
+    }
+}
+
 /// Recursively copies `from` to `to`, keeping symlinks, permissions and modification times.
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
@@ -801,6 +834,12 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         } else if ft.is_dir() {
             copy_tree(&src, &dst)?;
             fs::set_permissions(&dst, fs::metadata(&src)?.permissions())?;
+        } else if is_executable(&entry.metadata()?) {
+            // Scripts (hooks, fake ssh, editors) may be executed right after
+            // the copy; a write descriptor of this process could leak into a
+            // child forked by another test thread and make that exec fail
+            // with ETXTBSY. Let `cp` write them (see `crate::write_executable`).
+            copy_executable(&src, &dst)?;
         } else {
             fs::copy(&src, &dst)?;
             let mtime = fs::metadata(&src)?.modified()?;

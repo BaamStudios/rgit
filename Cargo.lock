@@ -643,6 +643,7 @@ dependencies = [
  "jiff",
  "rgit-config",
  "rgit-date",
+ "rgit-difftest",
  "rustix",
  "tempfile",
 ]

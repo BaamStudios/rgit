@@ -11,7 +11,6 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -100,12 +99,10 @@ fn setup() -> Option<(PathBuf, tempfile::TempDir)> {
         "uplink",
     ] {
         let p = t.join(name);
-        fs::write(&p, RECORDER).unwrap();
-        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        rgit_difftest::write_executable(&p, RECORDER);
     }
     let p = t.join("sshlike");
-    fs::write(&p, SSHLIKE).unwrap();
-    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    rgit_difftest::write_executable(&p, SSHLIKE);
     let status = Command::new(&git)
         .args(["init", "-q"])
         .arg(t.join("repo"))

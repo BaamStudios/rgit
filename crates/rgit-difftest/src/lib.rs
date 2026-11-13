@@ -88,12 +88,14 @@
 
 mod diff;
 pub mod env;
+mod exec;
 mod fixture;
 mod messages;
 mod normalize;
 mod state;
 
 pub use diff::unified_diff;
+pub use exec::write_executable;
 pub use fixture::{Comparison, Fixture, Mismatch, Outcome, RunResult};
 pub use normalize::Normalizer;
 pub use state::{Check, DEFAULT_GIT_FILES};

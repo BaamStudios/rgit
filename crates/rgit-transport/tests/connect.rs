@@ -7,9 +7,7 @@
 #![cfg(unix)]
 
 use std::ffi::OsString;
-use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -57,8 +55,7 @@ fn setup() -> Option<Env> {
     let exec_path = Command::new(&git).arg("--exec-path").output().unwrap();
     let exec_path = String::from_utf8(exec_path.stdout).unwrap();
     let ssh = root.join("ssh");
-    fs::write(&ssh, FAKE_SSH).unwrap();
-    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+    rgit_difftest::write_executable(&ssh, FAKE_SSH);
     let mut dirs = vec![PathBuf::from(exec_path.trim())];
     dirs.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
