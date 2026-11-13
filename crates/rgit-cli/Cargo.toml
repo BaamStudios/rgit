@@ -19,6 +19,7 @@ rgit-config = { path = "../rgit-config" }
 rgit-ident = { path = "../rgit-ident" }
 rgit-date = { path = "../rgit-date" }
 rgit-diff = { path = "../rgit-diff" }
+rgit-fetch = { path = "../rgit-fetch" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-index = { path = "../rgit-index" }

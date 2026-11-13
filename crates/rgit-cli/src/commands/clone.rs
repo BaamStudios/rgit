@@ -2,33 +2,37 @@
 //! `git clone` (Documentation/git-clone.adoc, config/clone.adoc,
 //! urls.adoc): create a repository from a remote one.
 //!
-//! The steps: work out the source (a local path, `file://`, ssh) and the
-//! target directory, create and `init` the target, record the remote in
-//! the configuration, list the remote references (protocol v2 `ls-refs`),
-//! fetch the objects into a pack, write the references as one initial
-//! `packed-refs` file, point `HEAD` at the remote's default branch (or
-//! `--branch`) and check that branch out. Everything created is removed
-//! again when a step fails.
+//! The steps: work out the source and the target directory, create and
+//! `init` the target, record the remote in the configuration, then talk
+//! to the remote through `rgit-fetch` (any transport: a local path,
+//! `file://`, ssh, `git://`, `http(s)://`): `ls-refs`, one `fetch` without
+//! negotiation, the connectivity check. The references are written as one
+//! initial `packed-refs` file, `HEAD` points at the remote's default
+//! branch (or `--branch`), and the initial checkout is a one-way merge into
+//! the empty index through `rgit-unpack`. Everything created is removed
+//! again when a step before the checkout fails; a failed checkout leaves
+//! the repository (git's "Clone succeeded, but checkout failed.").
 //!
 //! A local path is cloned through the normal transport, like
 //! `--no-local`; git's messages for a local clone (`done.`) are kept.
 
+use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+use bstr::ByteSlice;
 use rgit_config::{ConfigSet, Environment, SystemEnv};
+use rgit_fetch::{ConnectSettings, LocalRepo, PackOptions, ReceivedPack, Session, graph, refmap};
 use rgit_hash::ObjectId;
 use rgit_object::ObjectKind;
-use rgit_protocol::ProtocolVersion;
-use rgit_protocol::v2::{Client, FetchArgs, LsRefsArgs, Negotiator, NoopNegotiator, RemoteRef};
+use rgit_protocol::v2::{LsRefsArgs, RemoteRef};
 use rgit_refs::packed::{PackedRef, PackedRefs};
 use rgit_refs::{RefUpdate, Transaction};
-use rgit_remote::refspec::{CloneOptions, Direction, Refspec, clone_refspec};
+use rgit_remote::refspec::{CloneOptions, Direction, RefspecSet, clone_refspec};
 use rgit_repo::init::{self as repo_init, InitOptions, Notice};
 use rgit_repo::{Setup, SetupOptions, StandardProtectedConfig};
-use rgit_transport::{ConnectOptions, IpVersion, Service, Settings};
+use rgit_transport::IpVersion;
 
-use crate::checkout;
 use crate::messages::clone as msg;
 use crate::prelude::*;
 use crate::refs_support::{self, Objects, UpdateHooks};
@@ -506,25 +510,21 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let setup = open_new_repository(ctx, &git_dir, work_tree.as_deref())?;
     let config = refs_support::load_config(ctx, &setup)?;
     let hash = setup.format.object_format;
+    let fatal = |e: &dyn std::fmt::Display| Die::Fatal(e.to_string());
+    let repo = LocalRepo::open(&setup, config).map_err(|e| fatal(&e))?;
+    for w in &repo.warnings {
+        eprintln!("warning: {w}");
+    }
 
     // Talk to the remote.
-    let settings = Settings {
+    let connect = ConnectSettings {
         env: &env,
-        config: &config,
-        ip: opts.ip,
+        config: &repo.config,
         base_env: ctx.child_env(),
+        upload_pack: opts.upload_pack.clone(),
+        ip: opts.ip,
     };
-    let fatal = |e: &dyn std::fmt::Display| Die::Fatal(e.to_string());
-    let Some(mut transport) =
-        rgit_transport::transport_for(&source.url, &settings).map_err(|e| fatal(&e))?
-    else {
-        return Err(Die::Fatal(msg::unsupported_url(&source.url)));
-    };
-    let mut connect = ConnectOptions::new(Service::UploadPack);
-    connect.program = opts.upload_pack.clone();
-    connect.protocol_version = ProtocolVersion::V2;
-    let conn = transport.connect(&connect).map_err(|e| fatal(&e))?;
-    let mut client = Client::connect(conn, "clone").map_err(|e| fatal(&e))?;
+    let mut session = Session::connect(&source.url, &connect, "clone").map_err(|e| fatal(&e))?;
 
     let mut ls = LsRefsArgs::standard();
     ls.server_options = opts.server_options.clone();
@@ -535,7 +535,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             ls.ref_prefixes.push("refs/tags/".into());
         }
     }
-    let refs: Vec<RemoteRef> = client.ls_refs(&ls).map_err(|e| fatal(&e))?;
+    let refs: Vec<RemoteRef> = session.client().ls_refs(&ls).map_err(|e| fatal(&e))?;
 
     let remote_head = refs.iter().find(|r| r.name == b"HEAD");
     let head_target: Option<String> = remote_head
@@ -548,20 +548,18 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     if let Some(b) = &opts.branch {
         let head = format!("refs/heads/{b}");
         let tag = format!("refs/tags/{b}");
-        our = refs
-            .iter()
-            .find(|r| r.name == head.as_bytes() && r.oid.is_some())
-            .map(|r| Our::Branch(head.clone(), r.oid.unwrap_or_else(|| ObjectId::null(hash))))
-            .or_else(|| {
-                refs.iter()
-                    .find(|r| r.name == tag.as_bytes() && r.oid.is_some())
-                    .map(|r| Our::Tag(tag.clone(), r.oid.unwrap_or_else(|| ObjectId::null(hash))))
-            });
+        let found = |name: &str| {
+            refs.iter()
+                .find(|r| r.name == name.as_bytes())
+                .and_then(|r| r.oid)
+        };
+        our = found(&head)
+            .map(|oid| Our::Branch(head.clone(), oid))
+            .or_else(|| found(&tag).map(|oid| Our::Tag(tag.clone(), oid)));
         if our.is_none() && !empty {
             return Err(Die::Fatal(msg::remote_branch_not_found(b, &origin)));
         }
-    } else if let Some(h) = remote_head.filter(|h| h.oid.is_some()) {
-        let oid = h.oid.unwrap_or_else(|| ObjectId::null(hash));
+    } else if let Some(oid) = remote_head.and_then(|h| h.oid) {
         our = Some(match &head_target {
             Some(t) if t.starts_with("refs/heads/") => Our::Branch(t.clone(), oid),
             _ => Our::Detached(oid),
@@ -596,46 +594,44 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
 
     let reflog_msg = msg::reflog_clone(&anonymize(&source.url));
-    let objects;
-    let mut packed: Vec<PackedRef> = Vec::new();
+    let mut packs: Vec<ReceivedPack> = Vec::new();
     let mut remote_head_ref: Option<String> = None;
     if empty {
-        client.close().map_err(|e| fatal(&e))?;
-        client.into_inner().close().map_err(|e| fatal(&e))?;
+        session.close().map_err(|e| fatal(&e))?;
         eprintln!("warning: {}", msg::EMPTY_REPOSITORY);
-        objects = Objects::open(&setup);
     } else {
-        let fetch = Refspec::parse(&spec.fetch, Direction::Fetch).map_err(|e| fatal(&e))?;
+        let specs = RefspecSet::parse([spec.fetch.as_str()], Direction::Fetch).map_err(|e| fatal(&e))?;
         let follow_tags = opts.tags && !opts.mirror;
-        let tag_spec = Refspec::parse("+refs/tags/*:refs/tags/*", Direction::Fetch)
-            .map_err(|e| fatal(&e))?;
-        let mut mapped: Vec<(String, ObjectId)> = Vec::new();
-        let mut wants: Vec<ObjectId> = Vec::new();
-        let mut tag_candidates: Vec<(String, ObjectId)> = Vec::new();
-        for r in &refs {
-            let Some(oid) = r.oid else { continue };
-            if r.name == b"HEAD" {
-                continue;
-            }
-            if let Some(dst) = fetch.map_src(&r.name) {
-                mapped.push((dst.to_string(), oid));
-                if !wants.contains(&oid) {
-                    wants.push(oid);
-                }
-            } else if follow_tags && tag_spec.src_matches(&r.name) {
+        let mut errors = Vec::new();
+        let mut mapped: Vec<(String, ObjectId)> = refmap::map_refspecs(&specs, &refs, hash, &mut errors)
+            .map_err(|e| fatal(&e))?
+            .into_iter()
+            .filter_map(|e| Some((e.local?.to_str_lossy().into_owned(), e.oid)))
+            .collect();
+        for e in errors {
+            eprintln!("error: {e}");
+        }
+        // Without --single-branch every tag is fetched; with it, the tags
+        // pointing into the fetched history follow (below).
+        let all_tags = follow_tags && single_ref.is_none();
+        let is_tag = |r: &RemoteRef| r.name.starts_with(b"refs/tags/") && r.oid.is_some();
+        if all_tags {
+            for r in refs.iter().filter(|r| is_tag(r)) {
                 let name = String::from_utf8_lossy(&r.name).into_owned();
-                if single_ref.is_none() {
-                    mapped.push((name, oid));
-                    if !wants.contains(&oid) {
-                        wants.push(oid);
-                    }
-                } else {
-                    tag_candidates.push((name, oid));
+                if !mapped.iter().any(|(n, _)| *n == name) {
+                    mapped.push((name, r.oid.unwrap_or_else(|| hash.null())));
                 }
             }
         }
+        let mut wants: Vec<ObjectId> = Vec::new();
+        let mut seen = HashSet::new();
+        for (_, oid) in &mapped {
+            if seen.insert(*oid) {
+                wants.push(*oid);
+            }
+        }
         if let Some(Our::Tag(_, oid)) = &our {
-            if !wants.contains(oid) {
+            if seen.insert(*oid) {
                 wants.push(*oid);
             }
         }
@@ -644,61 +640,72 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             && opts
                 .progress
                 .unwrap_or_else(|| std::io::stderr().is_terminal());
-        let mut args = FetchArgs {
-            wants,
-            thin_pack: true,
+        let pack_opts = PackOptions {
             no_progress: !show_progress,
-            ofs_delta: true,
+            // git asks for tags with --single-branch also under --no-tags
+            // (the tag objects arrive, no tag refs are written).
+            include_tag: single_ref.is_some() && !opts.mirror,
             server_options: opts.server_options.clone(),
-            local_format: Some(hash),
-            ..FetchArgs::default()
         };
-        receive_pack(ctx, &mut client, &args, &mut NoopNegotiator, &git_dir)?;
+        packs.extend(
+            session
+                .fetch_pack(&repo, &wants, None, &pack_opts)
+                .map_err(|e| fatal(&e))?,
+        );
 
-        // --single-branch: the tags that point into the fetched history,
-        // fetched in a second round (instead of `include-tag`) with the
-        // first round's tips as `have`s.
-        if !tag_candidates.is_empty() {
-            let first = Objects::open(&setup);
-            let follow: Vec<(String, ObjectId)> = tag_candidates
-                .into_iter()
-                .filter(|(name, oid)| {
-                    let peeled = refs
-                        .iter()
-                        .find(|r| r.name == name.as_bytes())
-                        .and_then(|r| r.peeled)
-                        .unwrap_or(*oid);
-                    first.contains(&peeled)
-                })
-                .collect();
-            let missing: Vec<ObjectId> = follow
-                .iter()
-                .map(|(_, o)| *o)
-                .filter(|o| !first.contains(o))
-                .collect();
-            if !missing.is_empty() {
-                let haves = std::mem::replace(&mut args.wants, missing);
-                args.wants.dedup();
-                receive_pack(ctx, &mut client, &args, &mut Haves(haves), &git_dir)?;
+        // --single-branch: the tags pointing into the fetched history; tag
+        // objects the server did not include come in a second round.
+        if follow_tags && !all_tags {
+            let mut more: Vec<ObjectId> = Vec::new();
+            for r in refs.iter().filter(|r| is_tag(r)) {
+                let name = String::from_utf8_lossy(&r.name).into_owned();
+                let oid = r.oid.unwrap_or_else(|| hash.null());
+                if mapped.iter().any(|(n, _)| *n == name) {
+                    continue;
+                }
+                if !repo.has_object(&r.peeled.unwrap_or(oid)) {
+                    continue;
+                }
+                if !repo.has_object(&oid) && !more.contains(&oid) {
+                    more.push(oid);
+                }
+                mapped.push((name, oid));
             }
-            mapped.extend(follow);
+            let advertised: Vec<ObjectId> = refs.iter().filter_map(|r| r.oid).collect();
+            packs.extend(
+                session
+                    .fetch_pack(&repo, &more, Some(&advertised), &pack_opts)
+                    .map_err(|e| fatal(&e))?,
+            );
         }
-        client.close().map_err(|e| fatal(&e))?;
-        client.into_inner().close().map_err(|e| fatal(&e))?;
+        session.close().map_err(|e| fatal(&e))?;
 
-        objects = Objects::open(&setup);
-        for (name, oid) in mapped {
-            let peeled = (objects.kind(&oid) == Some(ObjectKind::Tag))
-                .then(|| objects.peel(&oid))
-                .flatten();
-            packed.push(PackedRef { name, oid, peeled });
+        let received: HashSet<ObjectId> = packs
+            .iter()
+            .flat_map(|p| p.objects.iter().copied())
+            .collect();
+        let tips: Vec<ObjectId> = mapped.iter().map(|(_, o)| *o).collect();
+        if graph::check_connected(&repo.odb, &tips, &received).is_err() {
+            return Err(Die::Fatal(msg::REMOTE_DID_NOT_SEND_ALL.into()));
         }
-        write_packed_refs(&setup, &config, packed.clone())?;
+
+        // The initial reference transaction: one new `packed-refs` file,
+        // without reflog entries (as git writes it).
+        let packed: Vec<PackedRef> = mapped
+            .into_iter()
+            .map(|(name, oid)| {
+                let peeled = (repo.kind(&oid) == Some(ObjectKind::Tag))
+                    .then(|| graph::peel(&repo.odb, &oid))
+                    .flatten();
+                PackedRef { name, oid, peeled }
+            })
+            .collect();
+        write_packed_refs(&setup, &repo.config, &packed)?;
 
         if !opts.bare {
             if let Some(t) = &head_target {
-                if let Some(dst) = fetch.map_src(t.as_bytes()) {
-                    let dst = dst.to_string();
+                if let Some(dst) = specs.map_src(t.as_bytes()) {
+                    let dst = dst.to_str_lossy().into_owned();
                     if packed.iter().any(|p| p.name == dst) {
                         remote_head_ref = Some(dst);
                     }
@@ -708,8 +715,10 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
 
     // HEAD, the local branch and its upstream.
-    let store = refs_support::ref_store(&setup, &config);
-    let mut hooks = UpdateHooks::new(&setup, &config, &objects);
+    let config = &repo.config;
+    let objects = Objects::open(&setup);
+    let store = refs_support::ref_store(&setup, config);
+    let mut hooks = UpdateHooks::new(&setup, config, &objects);
     let commit = |u: RefUpdate, hooks: &mut UpdateHooks<'_>| -> Result<(), Die> {
         let mut tx = Transaction::new(&store);
         tx.push(u)
@@ -774,6 +783,10 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             }
         }
     }
+    // The refs are written: the packs need no `.keep` any more.
+    for p in &packs {
+        p.release();
+    }
 
     if local_mode && !opts.quiet {
         eprintln!("{}", msg::DONE);
@@ -782,18 +795,84 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         eprintln!("warning: {w}");
     }
 
-    if let (Some(oid), false, Some(wt)) = (checkout_oid, opts.no_checkout, &work_tree) {
-        checkout::checkout_commit(&setup, &config, &objects, wt, &oid)?;
+    // From here on the repository stays, even when the checkout fails.
+    junk.armed = false;
+    if let (Some(oid), false, Some(_)) = (checkout_oid, opts.no_checkout, &work_tree) {
+        let advice = advice_enabled(ctx, &env, config, "advice.detachedhead");
+        drop(hooks);
+        drop(repo);
+        if let Err(e) = initial_checkout(ctx, setup, oid) {
+            let _ = e.emit();
+            eprintln!("fatal: {}", msg::UNABLE_TO_CHECKOUT);
+            eprint!("warning: {}", msg::CHECKOUT_FAILED);
+            return Err(Die::Exit(128));
+        }
         if let Some(name) = detached_name {
-            if !opts.quiet && advice_enabled(ctx, &env, &config, "advice.detachedhead") {
+            if !opts.quiet && advice {
                 eprint!("{}", msg::detached_head_advice(&name));
             }
         }
     }
-
-    junk.armed = false;
     Ok(0)
 }
+
+/// The initial checkout: a one-way merge of `commit`'s tree into the
+/// empty index with the work tree updated (rgit-unpack), then the index
+/// is written.
+fn initial_checkout(ctx: &Context, setup: Setup, commit: ObjectId) -> Result<(), Die> {
+    use crate::commands::read_tree::{path_options, unpack_failed};
+    use rgit_unpack::{Identity, Merge, Options as UnpackOptions, Worktree};
+
+    let mut repo = crate::repository::Repo::from_setup(ctx, setup)?;
+    let tree = repo
+        .peel_to(commit, ObjectKind::Tree)
+        .ok_or_else(|| Die::Fatal(msg::unable_to_read_tree(&commit.to_hex())))?;
+    let index_path = repo.setup.cwd.join(repo.index_path());
+    let mut lock = rgit_fs::LockFile::acquire(&index_path, &rgit_fs::LockOptions::default())
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    let (old, old_mtime) = repo.read_index()?;
+    let root = repo.setup.cwd.join(repo.work_tree()?);
+    let checker = repo.checker(old_mtime)?;
+    let wt = Worktree {
+        root: &root,
+        checker: &checker,
+    };
+    let mut opts = UnpackOptions {
+        reset: true,
+        update: true,
+        initial_checkout: true,
+        paths: path_options(&repo),
+        ..UnpackOptions::default()
+    };
+    let plan = rgit_unpack::plan(repo.odb(), &old, &Merge::OneWay(tree), Some(&wt), &mut opts)
+        .map_err(unpack_failed)?;
+    let wrote_files = !plan.updates().is_empty();
+    let applied = plan.apply(repo.odb(), &wt, &Identity);
+    if wrote_files && crate::commands::add::attributes_may_apply(&repo, &root) {
+        eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);
+    }
+    for e in &applied.errors {
+        eprintln!("error: {e}");
+    }
+    let skip_hash = repo
+        .config
+        .bool("index.skiphash")
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    let unable = || Die::Fatal(crate::messages::read_tree::UNABLE_TO_WRITE_INDEX.into());
+    applied
+        .index
+        .write_locked(&mut lock, &rgit_index::WriteOptions { skip_hash })
+        .map_err(|_| unable())?;
+    lock.commit().map_err(|_| unable())?;
+    if applied.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(Die::Exit(128))
+    }
+}
+
 
 /// What `HEAD` of the new repository becomes.
 enum Our {
@@ -872,12 +951,12 @@ fn set_head_symref(git_dir: &Path, target: &str) -> Result<(), Die> {
 
 /// The initial reference transaction: every fetched reference goes into a
 /// new `packed-refs` file, without reflog entries.
-fn write_packed_refs(setup: &Setup, config: &ConfigSet, refs: Vec<PackedRef>) -> Result<(), Die> {
+fn write_packed_refs(setup: &Setup, config: &ConfigSet, refs: &[PackedRef]) -> Result<(), Die> {
     if refs.is_empty() {
         return Ok(());
     }
     let store = refs_support::ref_store(setup, config);
-    let packed = PackedRefs::from_refs(refs);
+    let packed = PackedRefs::from_refs(refs.to_vec());
     let mut lock = rgit_fs::LockFile::acquire(store.packed_refs_path(), &rgit_fs::LockOptions::default())
         .map_err(|e| Die::Fatal(e.to_string()))?;
     lock.write_all(&packed.serialize())
@@ -885,58 +964,3 @@ fn write_packed_refs(setup: &Setup, config: &ConfigSet, refs: Vec<PackedRef>) ->
         .map_err(|e| Die::Fatal(e.to_string()))
 }
 
-/// Run `fetch` and store the pack with `index-pack --stdin --fix-thin`
-/// in the new repository.
-fn receive_pack<C: rgit_protocol::v2::Duplex>(
-    ctx: &Context,
-    client: &mut Client<C>,
-    args: &FetchArgs,
-    negotiator: &mut dyn Negotiator,
-    git_dir: &Path,
-) -> Result<(), Die> {
-    use std::process::{Command, Stdio};
-    let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("index-pack")
-        .arg("--stdin")
-        .arg("--fix-thin")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .env("GIT_DIR", git_dir);
-    for (k, v) in ctx.child_env() {
-        cmd.env(k, v);
-    }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| Die::Fatal(format!("cannot start index-pack: {e}")))?;
-    let mut stdin = child.stdin.take();
-    let mut progress = rgit_protocol::sideband::Progress::stderr();
-    // If index-pack dies, writing its input must fail with EPIPE (reported
-    // through its exit status below) instead of killing rgit (#262).
-    let sigpipe = rgit_transport::sigpipe::IgnoreSigpipe::new();
-    let result = client.fetch(args, negotiator, &mut progress, |data| match &mut stdin {
-        Some(s) => s.write_all(data),
-        None => Ok(()),
-    });
-    drop(stdin);
-    drop(sigpipe);
-    let status = child.wait().map_err(|e| Die::Fatal(e.to_string()))?;
-    match result {
-        Err(e) => Err(Die::Fatal(format!("fetch-pack: {e}"))),
-        Ok(_) if !status.success() => Err(Die::Exit(rgit_options::EXIT_FATAL)),
-        Ok(_) => Ok(()),
-    }
-}
-
-/// Offers a fixed list of commits as `have`s.
-struct Haves(Vec<ObjectId>);
-
-impl Negotiator for Haves {
-    fn next_have(&mut self) -> Option<ObjectId> {
-        self.0.pop()
-    }
-
-    fn ack(&mut self, _id: &ObjectId) -> bool {
-        false
-    }
-}

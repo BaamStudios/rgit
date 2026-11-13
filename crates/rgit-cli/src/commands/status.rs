@@ -650,22 +650,22 @@ struct LongContext<'a> {
 
 fn label_of(letter: u8) -> &'static str {
     match letter {
-        b'A' => "new file:",
-        b'D' => "deleted:",
-        b'T' => "typechange:",
-        _ => "modified:",
+        b'A' => msg::LABEL_NEW,
+        b'D' => msg::LABEL_DELETED,
+        b'T' => msg::LABEL_TYPECHANGE,
+        _ => msg::LABEL_MODIFIED,
     }
 }
 
 fn conflict_label(code: &str) -> &'static str {
     match code {
-        "DD" => "both deleted:",
-        "AU" => "added by us:",
-        "UD" => "deleted by them:",
-        "UA" => "added by them:",
-        "DU" => "deleted by us:",
-        "AA" => "both added:",
-        _ => "both modified:",
+        "DD" => msg::LABEL_BOTH_DELETED,
+        "AU" => msg::LABEL_ADDED_BY_US,
+        "UD" => msg::LABEL_DELETED_BY_THEM,
+        "UA" => msg::LABEL_ADDED_BY_THEM,
+        "DU" => msg::LABEL_DELETED_BY_US,
+        "AA" => msg::LABEL_BOTH_ADDED,
+        _ => msg::LABEL_BOTH_MODIFIED,
     }
 }
 
@@ -685,11 +685,12 @@ fn long(
         }
     };
     match (&info.branch, &ctx.detached) {
-        (Some(b), _) => p.text(&format!("On branch {b}\n")),
-        (None, Some(Some((name, true)))) => p.text(&format!("HEAD detached at {name}\n")),
-        (None, Some(Some((name, false)))) => p.text(&format!("HEAD detached from {name}\n")),
-        (None, _) => p.text("Not currently on any branch.\n"),
+        (Some(b), _) => p.text(&msg::on_branch(b)),
+        (None, Some(Some((name, true)))) => p.text(&msg::detached_at(name)),
+        (None, Some(Some((name, false)))) => p.text(&msg::detached_from(name)),
+        (None, _) => p.text(msg::NOT_ON_BRANCH),
     }
+    p.text("\n");
     let unborn = info.head.is_none();
     if let (Some((up, state)), false) = (&info.upstream, unborn) {
         tracking(p, up, *state, ctx.hints);
@@ -712,26 +713,31 @@ fn long(
         .collect();
     if ctx.merging {
         if unmerged.is_empty() {
-            p.text("All conflicts fixed but you are still merging.\n");
-            hint(p, "use \"git commit\" to conclude merge");
+            p.text(msg::ALL_CONFLICTS_FIXED);
+            p.text("\n");
+            hint(p, msg::HINT_CONCLUDE_MERGE);
         } else {
-            p.text("You have unmerged paths.\n");
-            hint(p, "fix conflicts and run \"git commit\"");
-            hint(p, "use \"git merge --abort\" to abort the merge");
+            p.text(msg::UNMERGED_PATHS);
+            p.text("\n");
+            hint(p, msg::HINT_FIX_CONFLICTS);
+            hint(p, msg::HINT_MERGE_ABORT);
         }
         p.text("\n");
     }
     if unborn {
-        p.text("\nNo commits yet\n\n");
+        p.text("\n");
+        p.text(msg::NO_COMMITS_YET);
+        p.text("\n\n");
     }
     if !staged.is_empty() {
-        p.text("Changes to be committed:\n");
+        p.text(msg::STAGED_HEADER);
+        p.text("\n");
         if ctx.merging {
             // No unstage hint while merging.
         } else if unborn {
-            hint(p, "use \"git rm --cached <file>...\" to unstage");
+            hint(p, msg::HINT_UNSTAGE_INITIAL);
         } else {
-            hint(p, "use \"git restore --staged <file>...\" to unstage");
+            hint(p, msg::HINT_UNSTAGE);
         }
         for (path, x) in &staged {
             p.text(&format!("\t{:<12}", label_of(*x)));
@@ -741,14 +747,15 @@ fn long(
         p.text("\n");
     }
     if !unmerged.is_empty() {
-        p.text("Unmerged paths:\n");
+        p.text(msg::UNMERGED_HEADER);
+        p.text("\n");
         if !ctx.merging {
-            hint(p, "use \"git restore --staged <file>...\" to unstage");
+            hint(p, msg::HINT_UNSTAGE);
         }
         if unmerged.iter().all(|(_, c)| *c == "UU" || *c == "AA") {
-            hint(p, "use \"git add <file>...\" to mark resolution");
+            hint(p, msg::HINT_MARK_RESOLUTION);
         } else {
-            hint(p, "use \"git add/rm <file>...\" as appropriate to mark resolution");
+            hint(p, msg::HINT_MARK_RESOLUTION_RM);
         }
         for (path, code) in &unmerged {
             p.text(&format!("\t{:<17}", conflict_label(code)));
@@ -758,13 +765,14 @@ fn long(
         p.text("\n");
     }
     if !changed.is_empty() {
-        p.text("Changes not staged for commit:\n");
+        p.text(msg::UNSTAGED_HEADER);
+        p.text("\n");
         if changed.iter().any(|(_, y)| *y == b'D') {
-            hint(p, "use \"git add/rm <file>...\" to update what will be committed");
+            hint(p, msg::HINT_ADD_RM);
         } else {
-            hint(p, "use \"git add <file>...\" to update what will be committed");
+            hint(p, msg::HINT_ADD);
         }
-        hint(p, "use \"git restore <file>...\" to discard changes in working directory");
+        hint(p, msg::HINT_RESTORE);
         for (path, y) in &changed {
             p.text(&format!("\t{:<12}", label_of(*y)));
             p.path(path);
@@ -773,8 +781,9 @@ fn long(
         p.text("\n");
     }
     if !untracked.is_empty() {
-        p.text("Untracked files:\n");
-        hint(p, "use \"git add <file>...\" to include in what will be committed");
+        p.text(msg::UNTRACKED_HEADER);
+        p.text("\n");
+        hint(p, msg::HINT_INCLUDE);
         for u in untracked {
             p.text("\t");
             p.path(u);
@@ -786,26 +795,17 @@ fn long(
         if ctx.mode != Untracked::No {
             return;
         }
-        ("Untracked files not listed", " (use -u option to show untracked files)")
+        msg::UNTRACKED_NOT_LISTED
     } else if !changed.is_empty() || !unmerged.is_empty() {
-        (
-            "no changes added to commit",
-            " (use \"git add\" and/or \"git commit -a\")",
-        )
+        msg::NOTHING_ADDED
     } else if !untracked.is_empty() {
-        (
-            "nothing added to commit but untracked files present",
-            " (use \"git add\" to track)",
-        )
+        msg::UNTRACKED_ONLY
     } else if unborn {
-        (
-            "nothing to commit",
-            " (create/copy files and use \"git add\" to track)",
-        )
+        msg::NOTHING_INITIAL
     } else if ctx.mode == Untracked::No {
-        ("nothing to commit", " (use -u to show untracked files)")
+        msg::NOTHING_NO_UNTRACKED
     } else {
-        ("nothing to commit, working tree clean", "")
+        msg::NOTHING_CLEAN
     };
     p.text(text);
     if ctx.hints {
@@ -823,43 +823,33 @@ fn tracking(p: &mut Printer, up: &str, state: Tracking, hints: bool) {
             p.text(")\n");
         }
     };
-    let commits = |n: usize| if n == 1 { "commit" } else { "commits" };
+    let line = |p: &mut Printer, text: &str| {
+        p.text(text);
+        p.text("\n");
+    };
     match state {
         Tracking::Gone => {
-            p.text(&format!(
-                "Your branch is based on '{up}', but the upstream is gone.\n"
-            ));
-            hint(p, "use \"git branch --unset-upstream\" to fixup");
+            line(p, &msg::upstream_gone(up));
+            hint(p, msg::HINT_UNSET_UPSTREAM);
         }
         Tracking::Counts(0, 0) => {
-            p.text(&format!("Your branch is up to date with '{up}'.\n"));
+            line(p, &msg::up_to_date(up));
         }
         Tracking::Counts(a, 0) => {
-            p.text(&format!(
-                "Your branch is ahead of '{up}' by {a} {}.\n",
-                commits(a)
-            ));
-            hint(p, "use \"git push\" to publish your local commits");
+            line(p, &msg::ahead(up, a));
+            hint(p, msg::HINT_PUSH);
         }
         Tracking::Counts(0, b) => {
-            p.text(&format!(
-                "Your branch is behind '{up}' by {b} {}, and can be fast-forwarded.\n",
-                commits(b)
-            ));
-            hint(p, "use \"git pull\" to update your local branch");
+            line(p, &msg::behind(up, b));
+            hint(p, msg::HINT_PULL_FF);
         }
         Tracking::Counts(a, b) => {
-            p.text(&format!(
-                "Your branch and '{up}' have diverged,\n\
-                 and have {a} and {b} different commits each, respectively.\n"
-            ));
-            hint(p, "use \"git pull\" if you want to integrate the remote branch with yours");
+            line(p, &msg::diverged(up, a, b));
+            hint(p, msg::HINT_PULL_MERGE);
         }
         Tracking::Different => {
-            p.text(&format!(
-                "Your branch and '{up}' refer to different commits.\n"
-            ));
-            hint(p, "use \"git status --ahead-behind\" for details");
+            line(p, &msg::different(up));
+            hint(p, msg::HINT_AHEAD_BEHIND);
         }
     }
 }

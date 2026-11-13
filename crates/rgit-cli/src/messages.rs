@@ -12,6 +12,7 @@ pub mod commit;
 pub mod config;
 pub mod diff;
 pub mod diff_tree;
+pub mod fetch;
 pub mod for_each_ref;
 pub mod hash_object;
 pub mod init;

@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: MIT
-//! Differential tests of `clone` (#64) from local paths and `file://`:
-//! output, refs, reflogs, config, index and work tree equal git's.
+//! Differential tests of `clone` (#64) from local paths, `file://`, ssh,
+//! `git daemon` and smart HTTP: output, refs, reflogs, config, index and
+//! work tree equal git's.
+//!
+//! The server side (`upload-pack` and the `pack-objects` it runs) is the
+//! reference git on both sides: `PATH` starts with its directory.
 
 use rgit_difftest::{Check, Fixture};
+
+mod common;
+use common::servers::{server_path, start_daemon, start_http};
 
 fn source() -> Fixture {
     Fixture::new()
@@ -19,6 +26,18 @@ fn source() -> Fixture {
         .git(["-C", "src", "branch", "side", "HEAD~1"])
         .git(["-C", "src", "tag", "v1", "HEAD~1"])
         .git(["-C", "src", "tag", "-a", "-m", "annotated", "v2"])
+}
+
+/// Compare `args`, with the work tree check unless `dir` is a bare
+/// repository (its templates are rgit's own).
+fn compare(fx: &mut Fixture, args: &[&str], dir: &str) {
+    let path = server_path(fx);
+    let c = fx.compare(args).repo(dir).env("PATH", path);
+    if dir.ends_with(".git") || dir == "c15" {
+        c.skip(Check::Worktree).run();
+    } else {
+        c.run();
+    }
 }
 
 #[test]
@@ -77,16 +96,18 @@ fn clone_local_and_file_url_same_as_git() {
             &["clone", "--bare", "-o", "up", "src", "c18.git"],
             "c18.git",
         ),
+        (&["clone", "-v", &url, "c19"], "c19"),
+        (
+            &["clone", "--single-branch", "--no-tags", &url, "c20"],
+            "c20",
+        ),
+        (
+            &["clone", "-b", "v2", "--single-branch", &url, "c21"],
+            "c21",
+        ),
     ];
     for (args, dir) in cases {
-        let c = fx.compare(*args).repo(*dir);
-        // A bare clone's git directory is in the work tree check; its
-        // templates (hooks, description) are rgit's own.
-        if dir.ends_with(".git") || *dir == "c15" {
-            c.skip(Check::Worktree).run();
-        } else {
-            c.run();
-        }
+        compare(&mut fx, args, dir);
     }
 }
 
@@ -98,13 +119,9 @@ fn clone_tag_and_detached_head_same_as_git() {
     if fx.is_skipped() {
         return;
     }
-    fx.compare(["clone", "-b", "v1", "src", "t1"])
-        .repo("t1")
-        .run();
-    fx.compare(["clone", "-b", "v2", "src", "t2"])
-        .repo("t2")
-        .run();
-    fx.compare(["clone", "det", "t3"]).repo("t3").run();
+    compare(&mut fx, &["clone", "-b", "v1", "src", "t1"], "t1");
+    compare(&mut fx, &["clone", "-b", "v2", "src", "t2"], "t2");
+    compare(&mut fx, &["clone", "det", "t3"], "t3");
 }
 
 #[test]
@@ -129,8 +146,10 @@ fn clone_errors_and_cleanup_same_as_git() {
         &["clone", "-b", "nope", "src", "hollow"],
         &["clone", "--upload-pack=false", "file://nowhere/x", "x6"],
     ];
+    let path = server_path(&fx);
     for args in cases {
         fx.compare(*args)
+            .env("PATH", &path)
             .checks([
                 Check::ExitCode,
                 Check::Stdout,
@@ -139,6 +158,33 @@ fn clone_errors_and_cleanup_same_as_git() {
             ])
             .run();
     }
+}
+
+/// A tree path that may not be checked out: the clone succeeds, the
+/// checkout fails, and the repository is kept without an index.
+#[test]
+fn clone_checkout_failure_same_as_git() {
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main", "src"])
+        .write(
+            "src/mk.sh",
+            concat!(
+                "b=$(echo hi | git hash-object -w --stdin)\n",
+                "t=$(printf '100644 blob %s\\tx\\n' $b | git mktree)\n",
+                "t2=$(printf '040000 tree %s\\t.GIT\\n100644 blob %s\\tok\\n' $t $b | git mktree)\n",
+                "git update-ref refs/heads/main $(git commit-tree -m m $t2)\n",
+            ),
+        );
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx.git(["-C", "src", "-c", "alias.mk=!sh mk.sh", "mk"]);
+    let path = server_path(&fx);
+    fx.compare(["clone", "src", "bad"])
+        .repo("bad")
+        .env("PATH", path)
+        .run();
 }
 
 #[test]
@@ -153,6 +199,7 @@ fn clone_over_ssh_same_as_git() {
         return;
     }
     let ssh = fx.work_dir().join("fake-ssh");
+    let path = server_path(&fx);
     for (args, dir) in [
         (&["clone", "host:src", "s1"][..], "s1"),
         (
@@ -163,6 +210,7 @@ fn clone_over_ssh_same_as_git() {
         let c = fx
             .compare(args)
             .repo(dir)
+            .env("PATH", &path)
             .env("GIT_SSH", &ssh)
             .env("GIT_SSH_VARIANT", "ssh");
         if dir.ends_with(".git") {
@@ -171,4 +219,68 @@ fn clone_over_ssh_same_as_git() {
             c.run();
         }
     }
+}
+
+#[test]
+fn clone_over_git_daemon_same_as_git() {
+    let fx = source().git(["init", "-q", "--bare", "empty.git"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let Some((_daemon, base)) = start_daemon(&fx) else {
+        return;
+    };
+    let mut fx = fx;
+    compare(&mut fx, &["clone", &format!("{base}/src"), "g1"], "g1");
+    compare(
+        &mut fx,
+        &[
+            "clone",
+            "--single-branch",
+            "-b",
+            "side",
+            &format!("{base}/src"),
+            "g2",
+        ],
+        "g2",
+    );
+    compare(
+        &mut fx,
+        &["clone", &format!("{base}/empty.git"), "g3"],
+        "g3",
+    );
+}
+
+#[test]
+fn clone_over_smart_http_same_as_git() {
+    let fx = source().git(["init", "-q", "--bare", "empty.git"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let base = start_http(&fx);
+    let mut fx = fx;
+    compare(&mut fx, &["clone", &format!("{base}/src"), "h1"], "h1");
+    compare(
+        &mut fx,
+        &[
+            "clone",
+            "--bare",
+            "-o",
+            "up",
+            &format!("{base}/src"),
+            "h2.git",
+        ],
+        "h2.git",
+    );
+    compare(
+        &mut fx,
+        &["clone", "--single-branch", &format!("{base}/src"), "h3"],
+        "h3",
+    );
+    compare(
+        &mut fx,
+        &["clone", &format!("{base}/empty.git"), "h4"],
+        "h4",
+    );
+    compare(&mut fx, &["clone", &format!("{base}/nope"), "h5"], "h5");
 }
