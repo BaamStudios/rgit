@@ -62,6 +62,11 @@ struct Lab {
     _dir: tempfile::TempDir,
     root: PathBuf,
     git: PathBuf,
+    /// The reference's system config directory when it is not `/etc`: a
+    /// build installed under another prefix (CI's pinned reference, built
+    /// with prefix `$HOME`) names `<prefix>/etc/gitconfig`. rgit always
+    /// reports `/etc`, so the reference output is mapped back.
+    sysconfdir: Option<String>,
 }
 
 impl Lab {
@@ -70,11 +75,22 @@ impl Lab {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(root.join("home")).unwrap();
-        let lab = Lab {
+        let mut lab = Lab {
             _dir: dir,
             root,
             git,
+            sysconfdir: None,
         };
+        let attr = lab
+            .cmd(&lab.git, &[], &["var", "GIT_ATTR_SYSTEM"], &lab.root)
+            .output()
+            .unwrap();
+        let attr = String::from_utf8_lossy(&attr.stdout);
+        lab.sysconfdir = attr
+            .trim_end()
+            .strip_suffix("/gitattributes")
+            .filter(|d| *d != "/etc")
+            .map(|d| format!("{d}/"));
         let out = lab
             .cmd(&lab.git, &[], &["init", "-q", "repo"], &lab.root)
             .output()
@@ -116,7 +132,20 @@ impl Lab {
     }
 
     fn same(&self, env: &[(&str, &str)], args: &[&str]) {
-        let want = self.run(&self.git, env, args);
+        // A reference with another sysconfdir would read a different system
+        // config file than rgit; point it at the stock one.
+        let mut ref_env = env.to_vec();
+        let reads_system = env
+            .iter()
+            .any(|(k, v)| *k == "GIT_CONFIG_NOSYSTEM" && *v == "0")
+            && !env.iter().any(|(k, _)| *k == "GIT_CONFIG_SYSTEM");
+        if self.sysconfdir.is_some() && reads_system {
+            ref_env.push(("GIT_CONFIG_SYSTEM", "/etc/gitconfig"));
+        }
+        let mut want = self.run(&self.git, &ref_env, args);
+        if let Some(dir) = &self.sysconfdir {
+            want = want.replace(dir.as_str(), "/etc/");
+        }
         let got = self.run(Path::new(env!("CARGO_BIN_EXE_rgit")), env, args);
         assert_eq!(got, want, "rgit {args:?} with {env:?}");
     }

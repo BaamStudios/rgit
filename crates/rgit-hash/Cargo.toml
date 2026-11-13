@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # RustCrypto port of the SHA-1 collision detection (sha1dc) algorithm.
 sha1-checked = { version = "0.10.0", default-features = false, features = ["std"] }
