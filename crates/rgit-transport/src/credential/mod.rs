@@ -676,7 +676,9 @@ impl Credential {
             }
         };
         if let Some(mut stdin) = child.stdin.take() {
-            // A helper may exit without reading its input.
+            // A helper may exit without reading its input: like git, ignore
+            // SIGPIPE while writing and treat EPIPE as "not read" (#262).
+            let _sigpipe = crate::sigpipe::IgnoreSigpipe::new();
             let _ = stdin.write_all(&input);
         }
         let mut result = Ok(());

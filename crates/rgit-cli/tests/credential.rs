@@ -74,6 +74,36 @@ fn fill_prompts() {
     );
 }
 
+/// A helper that exits without reading its input (#262). The request is
+/// larger than a pipe buffer, so the write always fails with EPIPE after the
+/// helper is gone; git ignores SIGPIPE there and goes on with the next helper.
+#[test]
+fn helper_exits_without_reading() {
+    let mut fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let path = "p".repeat(256 * 1024);
+    let input = format!("protocol=https\nhost=example.com\npath={path}\n");
+    for first in ["!echo username=one", "!exit 0"] {
+        run(
+            &mut fx,
+            &[
+                "-c",
+                "credential.useHttpPath=true",
+                "-c",
+                &format!("credential.helper={first}"),
+                "-c",
+                "credential.helper=!f() { cat >/dev/null; echo username=u; echo password=two; }; f",
+                "credential",
+                "fill",
+            ],
+            &input,
+            &[],
+        );
+    }
+}
+
 #[test]
 fn fill_with_helpers() {
     let mut fx = fixture();
