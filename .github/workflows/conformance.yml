@@ -184,6 +184,7 @@ jobs:
           "$ref/git" init -q "$RUNNER_TEMP/probe" 2>"$RUNNER_TEMP/init.err"
           if test -s "$RUNNER_TEMP/init.err"; then cat "$RUNNER_TEMP/init.err"; exit 1; fi
           echo "RGIT_REFERENCE_GIT=$ref/git" >>"$GITHUB_ENV"
+          echo "RGIT_REFERENCE_TEST_TOOL=$ref/t/helper/test-tool" >>"$GITHUB_ENV"
           echo "RGIT_REQUIRE_REFERENCE=1" >>"$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -191,4 +192,5 @@ jobs:
         run: |
           "$RGIT_REFERENCE_GIT" version
           echo "RGIT_REFERENCE_GIT=$RGIT_REFERENCE_GIT RGIT_REQUIRE_REFERENCE=$RGIT_REQUIRE_REFERENCE"
+          echo "RGIT_REFERENCE_TEST_TOOL=$RGIT_REFERENCE_TEST_TOOL"
           cargo test --all --locked
