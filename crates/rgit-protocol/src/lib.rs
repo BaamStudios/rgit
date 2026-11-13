@@ -11,6 +11,8 @@
 //!   the first ref line) and the v2 capability advertisement.
 //! - [`agent`]: the `agent=` value rgit sends.
 //! - [`trace`]: `GIT_TRACE_PACKET` output through `rgit-trace`.
+//! - [`push`]: the `receive-pack` client of protocol v0 (ref
+//!   advertisement, commands, status report).
 //! - [`v2`]: the protocol v2 client (`ls-refs`, `fetch` with negotiation).
 //!
 //! Behaviour follows `Documentation/gitprotocol-common.adoc`,
@@ -22,6 +24,7 @@ pub mod capabilities;
 mod error;
 pub mod messages;
 pub mod pktline;
+pub mod push;
 pub mod sideband;
 pub mod trace;
 pub mod v2;

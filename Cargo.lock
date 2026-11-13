@@ -511,6 +511,7 @@ dependencies = [
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",
+ "rgit-http",
  "rgit-ident",
  "rgit-index",
  "rgit-object",
@@ -520,12 +521,14 @@ dependencies = [
  "rgit-pathspec",
  "rgit-protocol",
  "rgit-refs",
+ "rgit-remote",
  "rgit-repo",
  "rgit-revwalk",
  "rgit-trace",
  "rgit-transport",
  "rgit-version",
  "rgit-worktree",
+ "rustls",
  "tempfile",
 ]
 
