@@ -26,7 +26,9 @@ rgit-odb = { path = "../rgit-odb" }
 rgit-options = { path = "../rgit-options" }
 rgit-pack = { path = "../rgit-pack" }
 rgit-pathspec = { path = "../rgit-pathspec" }
+rgit-protocol = { path = "../rgit-protocol" }
 rgit-refs = { path = "../rgit-refs" }
+rgit-remote = { path = "../rgit-remote" }
 rgit-repo = { path = "../rgit-repo" }
 rgit-revwalk = { path = "../rgit-revwalk" }
 rgit-trace = { path = "../rgit-trace" }

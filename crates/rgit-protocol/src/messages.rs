@@ -15,6 +15,8 @@ pub fn bad_length(len: usize) -> String {
 }
 
 /// End of input in the middle of, or where the protocol expects, a packet.
+/// The connection closed before the advertisement.
+pub const NO_ADVERTISEMENT: &str = "Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.";
 pub const HUNG_UP: &str = "the remote end hung up unexpectedly";
 
 /// An `ERR <msg>` packet.

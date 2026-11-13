@@ -289,6 +289,9 @@ impl<C: Duplex> Client<C> {
                 other => return Err(other.unexpected()),
             }
         }
+        if reader.peek()?.is_none() {
+            return Err(Error::NoAdvertisement);
+        }
         let caps = match ProtocolVersion::read(&mut reader)? {
             ProtocolVersion::V2 => Capabilities::read_v2(&mut reader)?,
             ProtocolVersion::V1 => return Err(Error::NotV2(1)),

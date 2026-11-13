@@ -5,6 +5,7 @@
 pub mod add;
 pub mod cat_file;
 pub mod check_ignore;
+pub mod clone;
 pub mod config;
 pub mod diff_tree;
 pub mod for_each_ref;

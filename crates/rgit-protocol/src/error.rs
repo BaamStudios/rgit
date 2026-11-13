@@ -41,6 +41,9 @@ pub enum Error {
     ExpectedVersion2,
     /// The server answered with protocol v0 (0) or v1 (1).
     NotV2(u8),
+    /// The connection ended before the server sent anything (the remote
+    /// program failed to start or the repository does not exist).
+    NoAdvertisement,
     /// The server advertised an unknown `object-format`.
     UnknownObjectFormat(String),
     /// The server does not advertise the command.
@@ -92,6 +95,7 @@ impl fmt::Display for Error {
             Error::Unexpected(what) => f.write_str(&messages::unexpected(what)),
             Error::ExpectedVersion2 => f.write_str(messages::EXPECTED_VERSION_2),
             Error::NotV2(v) => f.write_str(&messages::not_v2(*v)),
+            Error::NoAdvertisement => f.write_str(messages::NO_ADVERTISEMENT),
             Error::UnknownObjectFormat(n) => f.write_str(&messages::unknown_object_format(n)),
             Error::CommandNotSupported(c) => f.write_str(&messages::command_not_supported(c)),
             Error::ExpectedSection(exp, got) => f.write_str(&messages::expected_section(exp, got)),
