@@ -133,3 +133,64 @@ jobs:
             conformance/results/**/*.meta
             conformance/results/**/*.stderr
           if-no-files-found: warn
+
+  # Differential tests (rgit-difftest, #7) against the pinned reference git
+  # (#237). RGIT_REQUIRE_REFERENCE=1 turns a missing reference into a failure
+  # instead of a silent skip or a fallback to the runner's git.
+  difftest:
+    name: Differential tests (pinned reference git)
+    needs: reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out rgit-conformance
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.reference.outputs.repo }}
+          ref: ${{ needs.reference.outputs.commit }}
+          path: conformance
+      - name: Cache key for this runner image
+        id: key
+        run: echo "cache-key=reference-git-${{ needs.reference.outputs.version }}-norust-$ImageOS-$ImageVersion" >>"$GITHUB_OUTPUT"
+      - name: Restore reference build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rgit-conformance/git-${{ needs.reference.outputs.version }}-norust
+          key: ${{ steps.key.outputs.cache-key }}
+      - name: Build reference git (only if this runner image missed the cache)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gettext libcurl4-openssl-dev libexpat1-dev libpcre2-dev libssl-dev zlib1g-dev
+          GIT_REF=${{ needs.reference.outputs.version }} scripts/fetch-upstream.sh
+          NO_RUST=YesPlease RGIT_REFERENCE_SOURCE="$PWD/upstream/git" conformance/run --build-only
+      - name: Install the reference exec path and templates
+        run: |
+          # The build tree's git looks for its programs and templates at its
+          # compile-time prefix (<prefix>/libexec/git-core, <prefix>/share/
+          # git-core/templates). Without them every init/clone warns, and a
+          # reference receive-pack runs `git unpack-objects` through PATH,
+          # where the tests put rgit. bin-wrappers/git is no substitute: it
+          # forces GIT_TEMPLATE_DIR and GIT_EXEC_PATH, which tests set.
+          ref=~/.cache/rgit-conformance/git-${{ needs.reference.outputs.version }}-norust
+          exec_path=$("$ref/git" --exec-path)
+          prefix=$(dirname "$(dirname "$exec_path")")
+          mkdir -p "$exec_path" "$prefix/share/git-core/templates"
+          find "$ref" -maxdepth 1 -type f -perm -u+x -name 'git*' \
+            -exec ln -sf {} "$exec_path/" \;
+          cp -R "$ref/templates/blt/." "$prefix/share/git-core/templates/"
+          "$ref/git" init -q "$RUNNER_TEMP/probe" 2>"$RUNNER_TEMP/init.err"
+          if test -s "$RUNNER_TEMP/init.err"; then cat "$RUNNER_TEMP/init.err"; exit 1; fi
+          echo "RGIT_REFERENCE_GIT=$ref/git" >>"$GITHUB_ENV"
+          echo "RGIT_REFERENCE_TEST_TOOL=$ref/t/helper/test-tool" >>"$GITHUB_ENV"
+          echo "RGIT_REQUIRE_REFERENCE=1" >>"$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Differential tests
+        run: |
+          "$RGIT_REFERENCE_GIT" version
+          echo "RGIT_REFERENCE_GIT=$RGIT_REFERENCE_GIT RGIT_REQUIRE_REFERENCE=$RGIT_REQUIRE_REFERENCE"
+          echo "RGIT_REFERENCE_TEST_TOOL=$RGIT_REFERENCE_TEST_TOOL"
+          cargo test --all --locked
