@@ -139,6 +139,8 @@ fn ignored_and_missing() {
             &["-n", "build/*"],
             &["-n", "-v", "x.log", "build/out", "top"],
             &["-n", "x.lo?"],
+            &["-n", "a", "y.log"],
+            &["-v", "a", "nosuch"],
             &["e/f"],
             &["-u", "top"],
             &["-u", "x.log", "nosuch"],
@@ -224,6 +226,7 @@ fn unmerged(stages: &[(&str, u8)], config: &[&str]) -> Fixture {
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn unmerged_paths() {
     let both: &[(&str, u8)] = &[("100755", 1), ("100644", 2)];
     let cases: &[(&[(&str, u8)], &[&str], bool, &[&str])] = &[

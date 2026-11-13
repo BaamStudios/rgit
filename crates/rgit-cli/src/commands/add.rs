@@ -389,13 +389,84 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .map_err(|e| Die::Fatal(e.to_string()))
     };
 
-    // Tracked files first, in index order.
+    // Which pathspecs match tracked paths; checked together with the
+    // untracked files before anything is updated or printed.
+    if !pathspec.is_empty() {
+        for e in index.entries() {
+            let _ = pathspec.match_path_seen(e.path(), &mut seen);
+        }
+    }
+
+
+    // Then untracked files in directory order.
+    let mut found = Vec::new();
+    let mut ignored = Vec::new();
+    let mut excludes = build_excludes(&repo, &root);
+    if !update {
+        let mut walk = Walk {
+            root: root.clone(),
+            index: &index,
+            pathspec: &pathspec,
+            excludes,
+            force,
+            seen,
+            found: Vec::new(),
+            ignored: Vec::new(),
+        };
+        walk.walk(b"", false);
+        for w in walk.excludes.take_warnings() {
+            eprintln!("warning: {w}");
+        }
+        seen = walk.seen;
+        found = walk.found;
+        ignored = walk.ignored;
+        excludes = walk.excludes;
+    }
+    for item in pathspec.unmatched(&seen) {
+        let pattern = item.pattern();
+        let path = pattern.strip_suffix(b"/").unwrap_or(pattern);
+        let meta = std::fs::symlink_metadata(os_path(&root, pattern)).ok();
+        let exists = meta.is_some();
+        let is_dir = pattern.len() != path.len() || meta.is_some_and(|m| m.is_dir());
+        let is_ignored = !force
+            && excludes
+                .match_with_leading_dirs(path, is_dir)
+                .is_some_and(|m| m.is_excluded());
+        if exists {
+            continue; // ignored ones were reported by the walk
+        }
+        if ignore_missing.get() {
+            if !exists && is_ignored {
+                ignored.push(pattern.to_vec());
+            }
+            continue;
+        }
+        return Err(Die::Fatal(rgit_pathspec::messages::did_not_match_any_files(
+            item.original(),
+        )));
+    }
+    if update {
+        // With -u only tracked files count.
+        let mut any = false;
+        for item in pathspec.unmatched(&seen) {
+            eprintln!(
+                "error: {}",
+                rgit_pathspec::messages::did_not_match_known_to_git(item.original())
+            );
+            any = true;
+        }
+        if any {
+            return Err(Die::Exit(128));
+        }
+    }
+
+    // Tracked files, in index order.
     let mut updates: Vec<Entry> = Vec::new();
     let mut removals: Vec<Vec<u8>> = Vec::new();
     let mut failed = false;
     let entries = index.entries();
     for (pos, e) in entries.iter().enumerate() {
-        if !pathspec.is_empty() && pathspec.match_path_seen(e.path(), &mut seen).is_none() {
+        if !pathspec.is_empty() && pathspec.match_path(e.path()).is_none() {
             continue;
         }
         if pathspec.is_empty() && !prefix.is_empty() && !update && !all {
@@ -498,68 +569,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if failed && !ignore_errors {
         return Err(Die::Fatal(msg::UPDATING_FAILED.to_string()));
-    }
-
-    // Then untracked files in directory order.
-    let mut found = Vec::new();
-    let mut ignored = Vec::new();
-    let mut excludes = build_excludes(&repo, &root);
-    if !update {
-        let mut walk = Walk {
-            root: root.clone(),
-            index: &index,
-            pathspec: &pathspec,
-            excludes,
-            force,
-            seen,
-            found: Vec::new(),
-            ignored: Vec::new(),
-        };
-        walk.walk(b"", false);
-        for w in walk.excludes.take_warnings() {
-            eprintln!("warning: {w}");
-        }
-        seen = walk.seen;
-        found = walk.found;
-        ignored = walk.ignored;
-        excludes = walk.excludes;
-    }
-    for item in pathspec.unmatched(&seen) {
-        let pattern = item.pattern();
-        let path = pattern.strip_suffix(b"/").unwrap_or(pattern);
-        let meta = std::fs::symlink_metadata(os_path(&root, pattern)).ok();
-        let exists = meta.is_some();
-        let is_dir = pattern.len() != path.len() || meta.is_some_and(|m| m.is_dir());
-        let is_ignored = !force
-            && excludes
-                .match_with_leading_dirs(path, is_dir)
-                .is_some_and(|m| m.is_excluded());
-        if exists {
-            continue; // ignored ones were reported by the walk
-        }
-        if ignore_missing.get() {
-            if !exists && is_ignored {
-                ignored.push(pattern.to_vec());
-            }
-            continue;
-        }
-        return Err(Die::Fatal(rgit_pathspec::messages::did_not_match_any_files(
-            item.original(),
-        )));
-    }
-    if update {
-        // With -u only tracked files count.
-        let mut any = false;
-        for item in pathspec.unmatched(&seen) {
-            eprintln!(
-                "error: {}",
-                rgit_pathspec::messages::did_not_match_known_to_git(item.original())
-            );
-            any = true;
-        }
-        if any {
-            return Err(Die::Exit(128));
-        }
     }
 
     let mut add_failed = false;
