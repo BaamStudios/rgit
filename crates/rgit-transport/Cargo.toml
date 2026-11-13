@@ -15,6 +15,8 @@ bstr = { version = "1.13", default-features = false, features = ["std"] }
 thiserror = "2"
 
 [target.'cfg(unix)'.dependencies]
+# Ignoring SIGPIPE while feeding a child process (credential helpers).
+libc = "0.2"
 # Safe termios wrapper to read passwords from the terminal without echo.
 rustix = { version = "1", default-features = false, features = ["std", "termios"] }
 

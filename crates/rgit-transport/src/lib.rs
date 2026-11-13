@@ -48,6 +48,7 @@ pub mod local;
 pub mod messages;
 mod os;
 pub mod service;
+pub mod sigpipe;
 pub mod ssh;
 pub mod url;
 

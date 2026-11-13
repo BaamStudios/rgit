@@ -911,11 +911,15 @@ fn receive_pack<C: rgit_protocol::v2::Duplex>(
         .map_err(|e| Die::Fatal(format!("cannot start index-pack: {e}")))?;
     let mut stdin = child.stdin.take();
     let mut progress = rgit_protocol::sideband::Progress::stderr();
+    // If index-pack dies, writing its input must fail with EPIPE (reported
+    // through its exit status below) instead of killing rgit (#262).
+    let sigpipe = rgit_transport::sigpipe::IgnoreSigpipe::new();
     let result = client.fetch(args, negotiator, &mut progress, |data| match &mut stdin {
         Some(s) => s.write_all(data),
         None => Ok(()),
     });
     drop(stdin);
+    drop(sigpipe);
     let status = child.wait().map_err(|e| Die::Fatal(e.to_string()))?;
     match result {
         Err(e) => Err(Die::Fatal(format!("fetch-pack: {e}"))),
