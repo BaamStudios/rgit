@@ -21,6 +21,7 @@ pub mod mv;
 pub mod objects;
 pub mod pack_objects;
 pub mod pack_refs;
+pub mod push;
 pub mod read_tree;
 pub mod reflog;
 pub mod reset;

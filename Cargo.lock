@@ -528,6 +528,7 @@ dependencies = [
  "rgit-transport",
  "rgit-version",
  "rgit-worktree",
+ "rustls",
  "tempfile",
 ]
 

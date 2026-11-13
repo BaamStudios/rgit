@@ -14,6 +14,7 @@ mod global;
 mod history;
 mod messages;
 mod objects;
+mod push;
 mod quote;
 mod refs;
 mod refs_support;
