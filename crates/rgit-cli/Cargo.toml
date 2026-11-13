@@ -32,6 +32,8 @@ rgit-revwalk = { path = "../rgit-revwalk" }
 rgit-trace = { path = "../rgit-trace" }
 rgit-transport = { path = "../rgit-transport" }
 rgit-protocol = { path = "../rgit-protocol" }
+rgit-http = { path = "../rgit-http" }
+rgit-remote = { path = "../rgit-remote" }
 rgit-version = { path = "../rgit-version" }
 rgit-worktree = { path = "../rgit-worktree" }
 regex = { version = "1.13", default-features = false, features = ["std", "perf"] }

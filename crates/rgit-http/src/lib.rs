@@ -36,5 +36,5 @@ pub use auth::{Credential, CredentialProvider};
 pub use error::{Error, Result, Transport};
 pub use options::{FollowRedirects, HttpOptions, HttpVersion, Proxy};
 pub use smart::{Advertisement, RpcBody, RpcResponse, Service, SmartHttp};
-pub use transport::HttpTransport;
+pub use transport::{HttpTransport, transport_for};
 pub use url::{Scheme, Url};

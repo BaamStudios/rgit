@@ -16,6 +16,10 @@ pub const HELP_GET_URL: &str = "take url.<base>.insteadOf into account";
 pub const HELP_EXIT_CODE: &str = "exit with exit code 2 if no matching refs are found";
 pub const HELP_SYMREF: &str = "show underlying ref in addition to the object pointed by it";
 pub const HELP_SERVER_OPTION: &str = "option to transmit";
+pub const READ_FAILED: &str = "Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.";
 pub const NO_REMOTE: &str = "No remote configured to list refs from.";
 pub const HELP_SORT: &str = "field name to sort on";
 
@@ -27,4 +31,9 @@ pub fn unsupported_sort(key: &str) -> String {
 /// No transport handles the URL's scheme.
 pub fn no_remote_helper(scheme: &str) -> String {
     format!("unable to find remote helper for '{scheme}'")
+}
+
+/// An invalid `protocol.version`.
+pub fn unknown_protocol_version(value: &str) -> String {
+    format!("unknown value for config 'protocol.version': {value}")
 }
