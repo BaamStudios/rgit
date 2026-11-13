@@ -518,6 +518,7 @@ dependencies = [
  "rgit-options",
  "rgit-pack",
  "rgit-pathspec",
+ "rgit-protocol",
  "rgit-refs",
  "rgit-repo",
  "rgit-revwalk",
