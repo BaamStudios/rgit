@@ -33,13 +33,17 @@ struct State<'a> {
     prefix: Vec<u8>,
     errors: bool,
     wrote_files: bool,
-    /// Index positions whose stat data changed.
-    refreshed: Vec<(usize, rgit_index::Stat)>,
+    /// Whether `-u` recorded new stat data in the in-memory index.
+    refreshed: bool,
 }
 
 impl State<'_> {
     /// Writes the index entry at `pos` unless an up-to-date file is there.
-    fn checkout(&mut self, index: &Index, pos: usize) -> Result<(), Die> {
+    ///
+    /// With `-u` the entry takes the new file's stat data at once, so a
+    /// later request for the same path (`checkout-index -u b b`) finds the
+    /// file up to date, as git does.
+    fn checkout(&mut self, index: &mut Index, pos: usize) -> Result<(), Die> {
         let entry = &index.entries()[pos];
         let mut target = self.prefix.clone();
         target.extend_from_slice(entry.path());
@@ -82,7 +86,10 @@ impl State<'_> {
         match rgit_unpack::write_entry(&self.root, &target, entry, &data, symlinks) {
             Ok(Some(meta)) => {
                 if self.update && self.prefix.is_empty() {
-                    self.refreshed.push((pos, stat_from_metadata(&meta)));
+                    if let Some(e) = index.entry_mut(pos) {
+                        e.stat = stat_from_metadata(&meta);
+                        self.refreshed = true;
+                    }
                 }
             }
             Ok(None) => {}
@@ -96,7 +103,7 @@ impl State<'_> {
     }
 
     /// `checkout-index <path>`: the stage-0 entry of `path`.
-    fn checkout_path(&mut self, index: &Index, path: &[u8]) -> Result<(), Die> {
+    fn checkout_path(&mut self, index: &mut Index, path: &[u8]) -> Result<(), Die> {
         let range = index.path_range(path);
         if range.is_empty() {
             if !self.quiet {
@@ -208,7 +215,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         prefix: prefix.borrow().clone().unwrap_or_default().into_bytes(),
         errors: false,
         wrote_files: false,
-        refreshed: Vec::new(),
+        refreshed: false,
     };
 
     let mut paths: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
@@ -235,7 +242,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 &root_display(&repo),
             ))
         })?;
-        state.checkout_path(&index, &path)?;
+        state.checkout_path(&mut index, &path)?;
     }
     if all.get() {
         for pos in 0..index.len() {
@@ -243,19 +250,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             if e.stage() != Stage::MERGED || (e.flags.skip_worktree && !ignore_skip.get()) {
                 continue;
             }
-            state.checkout(&index, pos)?;
+            state.checkout(&mut index, pos)?;
         }
     }
     if state.wrote_files && super::add::attributes_may_apply(&repo, &root) {
         eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);
     }
     if let Some(mut lock) = lock.take() {
-        if !state.refreshed.is_empty() {
-            for (pos, stat) in std::mem::take(&mut state.refreshed) {
-                if let Some(e) = index.entry_mut(pos) {
-                    e.stat = stat;
-                }
-            }
+        if state.refreshed {
             let skip_hash = repo.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
             index
                 .write_locked(&mut lock, &WriteOptions { skip_hash })

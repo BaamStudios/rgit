@@ -12,6 +12,11 @@ const ALL: [Check; 5] = [
 ];
 
 fn fixture() -> Fixture {
+    commit(files())
+}
+
+/// The fixture's files, not yet added.
+fn files() -> Fixture {
     let fx = Fixture::new()
         .rgit(env!("CARGO_BIN_EXE_rgit"))
         .git(["init", "-q"])
@@ -21,9 +26,30 @@ fn fixture() -> Fixture {
         .write_executable("sc", "s\n");
     #[cfg(unix)]
     let fx = fx.symlink("a", "l");
+    fx
+}
+
+fn commit(fx: Fixture) -> Fixture {
     fx.git(["add", "."])
         .git(["commit", "-q", "-m", "init"])
         .tick()
+}
+
+/// [`fixture`] with the index entry of `b` stamped long before the index
+/// was written, then `b` removed: a freshly checked out `b` never matches
+/// the cached mtime, not even its seconds (`core.checkStat=minimal`),
+/// whatever the wall clock says while the test runs (#350).
+fn fixture_old_b() -> Fixture {
+    let fx = files();
+    if !fx.is_skipped() {
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(fx.work_dir().join("b"))
+            .and_then(|f| f.set_modified(old))
+            .expect("set mtime of b");
+    }
+    commit(fx).remove("b")
 }
 
 /// Runs `checkout-index <args>`; with `core.checkStat=minimal` and
@@ -82,7 +108,13 @@ fn missing_and_modified_files() {
     run(fixture().remove("b").write("b/z", "z\n"), &["-f", "b"]);
     run(fixture().remove("d").write("d", "q\n"), &["-f", "d/x"]);
     run(fixture().remove("d").write("d", "q\n"), &["d/x"]);
-    run(fixture().remove("b"), &["b", "b"]);
+    // The second `b` sees the file the first one just wrote (#350). Without
+    // `-u` the index keeps the old stat data, so it "already exists"; with
+    // `-u` the entry is refreshed at once and the second `b` is up to date.
+    run(fixture_old_b(), &["b", "b"]);
+    run(fixture_old_b(), &["-u", "b", "b"]);
+    run(fixture_old_b(), &["-u", "-a", "b"]);
+    run(fixture_old_b(), &["-a", "-a"]);
 }
 
 #[test]
