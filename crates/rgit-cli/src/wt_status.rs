@@ -133,6 +133,8 @@ pub struct Header {
     pub tracking: Option<Tracking>,
     /// The branch has no commit yet.
     pub initial: bool,
+    /// A merge is being concluded (`MERGE_HEAD`).
+    pub merging: bool,
 }
 
 fn parents(repo: &Repo, id: &ObjectId) -> Vec<ObjectId> {
@@ -173,6 +175,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
             head: HeadState::Detached(detached_name(repo, head)),
             tracking: None,
             initial,
+            merging: false,
         };
     };
     let branch = target
@@ -184,6 +187,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
         head: HeadState::Branch(branch),
         tracking,
         initial,
+        merging: false,
     }
 }
 
@@ -360,6 +364,13 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
                     line(&l);
                 }
             }
+        }
+        line("");
+    }
+    if header.merging {
+        line(msg::STILL_MERGING);
+        if r.hints {
+            line(msg::HINT_CONCLUDE_MERGE);
         }
         line("");
     }

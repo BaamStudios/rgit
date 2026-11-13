@@ -28,6 +28,17 @@ pub fn load_config(ctx: &Context, setup: &Setup) -> Result<ConfigSet, crate::Die
     revisions::load_config(ctx, setup)
 }
 
+/// `core.sharedRepository` (default `umask`; a bad value counts as the
+/// default here, the config reader reports it elsewhere).
+pub fn shared_repository(config: &ConfigSet) -> rgit_fs::SharedRepository {
+    config
+        .string("core.sharedrepository")
+        .ok()
+        .flatten()
+        .and_then(|v| rgit_fs::SharedRepository::parse(&v.to_string()).ok())
+        .unwrap_or_default()
+}
+
 /// The files reference store of the repository, with
 /// `core.logAllRefUpdates` from the configuration.
 pub fn ref_store(setup: &Setup, config: &ConfigSet) -> FilesStore {
@@ -37,6 +48,7 @@ pub fn ref_store(setup: &Setup, config: &ConfigSet) -> FilesStore {
         .ok()
         .flatten()
         .and_then(|v| LogAllRefUpdates::parse(&v.to_string()));
+    options.shared = shared_repository(config);
     options.log_all_ref_updates = match log_all {
         Some(v) => v,
         None if setup.is_bare() => LogAllRefUpdates::False,
@@ -242,7 +254,8 @@ impl<'a> UpdateHooks<'a> {
             setup.git_dir.clone(),
             setup.common_dir.clone(),
             setup.format.object_format,
-        );
+        )
+        .with_shared(shared_repository(config));
         UpdateHooks {
             objects,
             writer: committer.map(|c| ReflogWriter::new(logs, c)),

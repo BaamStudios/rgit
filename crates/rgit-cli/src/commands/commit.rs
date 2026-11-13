@@ -12,13 +12,16 @@
 //!   `--author`, `--date`, `-q`;
 //! - the summary (`[main (root-commit) abc1234] subject`, ` Author:`,
 //!   ` Date:`, the change counts and create/delete/rename/mode lines), the
-//!   "nothing to commit" status and the reflog entries.
+//!   "nothing to commit" status and the reflog entries;
+//! - concluding a merge prepared by `git merge --no-commit` or a conflict
+//!   (`MERGE_HEAD`, `MERGE_MSG`; reflog `commit (merge): ...`);
+//! - linked worktrees (HEAD and its reflog in the worktree's git dir).
 //!
 //! Hooks are not run (M2); an enabled hook prints a warning instead
 //! (decision on #45). Not yet: templates, `-s`, `--trailer`, `-C`/`-c`,
 //! `--fixup`/`--squash`, `-v`, `--dry-run` and the status formats, `-S`,
-//! `-p`/`--interactive`, concluding merges, similarity renames in the
-//! summary (#145), the implicit-committer notice.
+//! `-p`/`--interactive`, cherry-pick/revert (#58), similarity renames in
+//! the summary (#145), the implicit-committer notice.
 
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -584,10 +587,25 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         eprintln!("warning: Support for 'core.commentChar=auto' is deprecated and will be removed in Git 3.0");
     }
     let git_dir = repo.setup.cwd.join(&repo.setup.git_dir);
-    for f in ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+    for f in ["CHERRY_PICK_HEAD", "REVERT_HEAD"] {
         if git_dir.join(f).exists() {
-            return Err(fatal(msg::MERGE_NOT_SUPPORTED));
+            return Err(fatal(msg::SEQUENCER_NOT_SUPPORTED));
         }
+    }
+    // Concluding a merge: MERGE_HEAD names the other parents.
+    let merge_heads: Vec<ObjectId> = std::fs::read(git_dir.join("MERGE_HEAD"))
+        .map(|d| {
+            d.split(|&b| b == b'\n')
+                .filter_map(|l| ObjectId::from_hex(repo.hash, l.trim_ascii()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let merging = !merge_heads.is_empty();
+    if merging && args.amend {
+        return Err(fatal(msg::AMEND_DURING_MERGE));
+    }
+    if merging && !args.paths.is_empty() && !args.include {
+        return Err(fatal(msg::PARTIAL_DURING_MERGE));
     }
 
     // The commit being replaced (amend) and the parents.
@@ -600,7 +618,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let parents: Vec<ObjectId> = match &old_commit {
         Some(c) => c.parents().unwrap_or_default(),
-        None => head.into_iter().collect(),
+        None => head.into_iter().chain(merge_heads.iter().copied()).collect(),
     };
     let tree_of = |id: &ObjectId| -> Result<Flat, Die> {
         let mut flat = Flat::new();
@@ -775,9 +793,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             std::env::var("GIT_ADVICE").ok().as_deref().map(|v| rgit_config::value::parse_bool(Some(v.as_bytes()))),
             Some(Some(false))
         );
-    let header = wt_status::header(&repo, head);
+    let mut header = wt_status::header(&repo, head);
+    header.merging = merging;
     let staged = tree_changes::diff(&base, &wt_status::index_flat(commit_index), renames);
-    let committable = !staged.is_empty();
+    // A merge (new or amended) is made even when its tree equals the first
+    // parent's.
+    let committable = !staged.is_empty() || parents.len() > 1;
     let prefix = repo.prefix();
     let quote_high = repo.quote_path();
 
@@ -843,6 +864,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if !have_message {
         if let Some(c) = &old_commit {
             message = c.message().to_vec();
+        } else if merging {
+            message = std::fs::read(git_dir.join("MERGE_MSG")).unwrap_or_default();
         }
     }
     let use_editor = args.edit.unwrap_or(!have_message && !args.amend)
@@ -864,6 +887,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .or_else(|| config_bool(&repo, "commit.status"))
             .unwrap_or(true);
         let mut file = message.clone();
+        if include_status && merging {
+            for l in msg::MERGE_NOTICE.lines() {
+                file.extend_from_slice(comment.as_bytes());
+                if !l.is_empty() && !l.starts_with('\t') {
+                    file.push(b' ');
+                }
+                file.extend_from_slice(l.as_bytes());
+                file.push(b'\n');
+            }
+            file.push(b'\n');
+        }
         if include_status {
             file.push(b'\n');
             let mut lines: Vec<String> = Vec::new();
@@ -965,6 +999,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let kind = if args.amend {
         msg::REFLOG_AMEND
+    } else if merging {
+        msg::REFLOG_MERGE
     } else if parents.is_empty() {
         msg::REFLOG_INITIAL
     } else {
@@ -976,16 +1012,67 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let store = refs_support::ref_store(setup, &config);
     let objects = Objects::open(setup);
     let mut hooks = UpdateHooks::new(setup, &config, &objects);
+    let linked = setup.git_dir != setup.common_dir;
+    let head_target = repo.refs.head_target();
+    // In a linked worktree HEAD lives in the worktree's git directory,
+    // which the reference store does not know about yet (#104): update
+    // the branch (or the detached HEAD) directly and log HEAD by hand.
+    let (name, wt_store) = match (&head_target, linked) {
+        (Some(t), true) => (t.clone(), None),
+        (None, true) => (
+            "HEAD".to_owned(),
+            Some(rgit_refs::files::FilesStore::new(
+                setup.git_dir.clone(),
+                setup.format.object_format,
+            )),
+        ),
+        _ => ("HEAD".to_owned(), None),
+    };
     let update = match head {
-        Some(h) => RefUpdate::update("HEAD", oid, Some(h)),
-        None => RefUpdate::create("HEAD", oid),
+        Some(h) => RefUpdate::update(name.clone(), oid, Some(h)),
+        None => RefUpdate::create(name.clone(), oid),
     }
-    .message(reflog);
-    let mut tx = Transaction::new(&store);
+    .message(reflog.clone());
+    let update = if wt_store.is_some() {
+        update.no_deref(true)
+    } else {
+        update
+    };
+    let mut tx = match &wt_store {
+        Some(w) => Transaction::new(w),
+        None => Transaction::new(&store),
+    };
     tx.push(update)
         .and_then(|()| tx.commit(&mut hooks))
         .map_err(|e| fatal(e.to_string()))?;
+    if linked && head_target.is_some() {
+        let logs = rgit_refs::reflog::FilesReflog::new(
+            setup.git_dir.clone(),
+            setup.common_dir.clone(),
+            setup.format.object_format,
+        )
+        .with_shared(refs_support::shared_repository(&config));
+        let mut ident = committer_ident.name.to_vec();
+        ident.extend_from_slice(b" <");
+        ident.extend_from_slice(&committer_ident.email);
+        ident.push(b'>');
+        let entry = rgit_refs::reflog::Entry {
+            old: head.unwrap_or_else(|| ObjectId::null(repo.hash)),
+            new: oid,
+            ident,
+            time: committer_ident.time,
+            tz: committer_ident.tz,
+            message: rgit_refs::reflog::normalize_message(reflog.as_bytes()),
+        };
+        logs.append("HEAD", &entry, true)
+            .map_err(|e| fatal(e.to_string()))?;
+    }
 
+    if merging {
+        for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
+            let _ = std::fs::remove_file(git_dir.join(f));
+        }
+    }
     if deferred {
         write_index(&repo, &mut index.clone(), index_mtime)?;
     }
@@ -1018,7 +1105,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let new_flat = wt_status::index_flat(commit_index);
     // The summary detects renames even with diff.renames=false.
     let pairs = tree_changes::diff(&base, &new_flat, true);
-    out.extend_from_slice(&diff_summary(&repo, &pairs, quote_high));
+    if parents.len() < 2 {
+        out.extend_from_slice(&diff_summary(&repo, &pairs, quote_high));
+    }
     let mut o = std::io::stdout().lock();
     let _ = o.write_all(&out);
     let _ = o.flush();
