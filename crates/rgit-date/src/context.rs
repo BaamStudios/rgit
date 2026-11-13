@@ -55,7 +55,7 @@ impl DateContext {
     }
 
     /// Local offset at instant `t` in git's `±hhmm` integer form.
-    pub(crate) fn local_tz(&self, t: i64) -> i32 {
+    pub fn local_tz(&self, t: i64) -> i32 {
         secs_to_tz(self.local_offset_secs(t))
     }
 

@@ -8,6 +8,7 @@ pub mod cat_file;
 pub mod check_ignore;
 pub mod checkout_index;
 pub mod clone;
+pub mod commit;
 pub mod config;
 pub mod diff_tree;
 pub mod for_each_ref;
@@ -36,6 +37,7 @@ pub mod update_index;
 pub mod update_ref;
 pub mod var;
 pub mod write_tree;
+pub mod wt_status;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
 /// tests compare it).

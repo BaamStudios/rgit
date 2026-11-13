@@ -505,6 +505,7 @@ dependencies = [
  "bstr",
  "libc",
  "regex",
+ "rgit-commit",
  "rgit-config",
  "rgit-date",
  "rgit-diff",
@@ -531,6 +532,16 @@ dependencies = [
  "rgit-worktree",
  "rustls",
  "tempfile",
+]
+
+[[package]]
+name = "rgit-commit"
+version = "0.1.0"
+dependencies = [
+ "rgit-hash",
+ "rgit-index",
+ "rgit-object",
+ "rgit-odb",
 ]
 
 [[package]]
