@@ -117,7 +117,12 @@ pub fn detached_head_advice(name: &str) -> String {
 pub fn unsupported(option: &str) -> String {
     format!("rgit: clone {option} is not supported yet")
 }
-/// rgit-only: smart HTTP and other remote helpers are not wired yet.
-pub fn unsupported_url(url: &str) -> String {
-    format!("rgit: cloning from '{url}' is not supported yet")
+pub const REMOTE_DID_NOT_SEND_ALL: &str = "remote did not send all necessary objects";
+pub const UNABLE_TO_CHECKOUT: &str = "unable to checkout working tree";
+/// After `warning: `; ends with an empty line.
+pub const CHECKOUT_FAILED: &str = "Clone succeeded, but checkout failed.\n\
+You can inspect what was checked out with 'git status'\n\
+and retry with 'git restore --source=HEAD :/'\n\n";
+pub fn unable_to_read_tree(oid: &str) -> String {
+    format!("unable to read tree ({oid})")
 }
