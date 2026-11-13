@@ -15,6 +15,7 @@ use rgit_worktree::ignore::{Excludes, default_excludes_file};
 use rgit_worktree::stat::{Checker, Status};
 
 use crate::abbrev::Abbrev;
+use crate::attributes::PathspecAttrs;
 use crate::format;
 use crate::messages::ls_files as msg;
 use crate::prelude::*;
@@ -86,6 +87,8 @@ struct Lister<'a> {
     /// No pathspec was given: only paths below the prefix are shown.
     implicit: bool,
     seen: Vec<bool>,
+    /// Evaluates `attr:` pathspec magic, when there is any.
+    attrs: Option<RefCell<PathspecAttrs<'a>>>,
     quote_high: bool,
     abbrev: usize,
     format: Option<Result<Vec<format::Piece<Field>>, String>>,
@@ -99,14 +102,32 @@ impl Lister<'_> {
         if self.implicit {
             return path.starts_with(&self.prefix);
         }
-        self.pathspec.is_empty() || self.pathspec.match_path(path).is_some()
+        if self.pathspec.is_empty() {
+            return true;
+        }
+        match &self.attrs {
+            Some(a) => self
+                .pathspec
+                .match_path_with(path, None, &mut |p, spec| a.borrow_mut().check(p, spec))
+                .is_some(),
+            None => self.pathspec.match_path(path).is_some(),
+        }
     }
 
     /// Record which pathspec items matched a path that was shown (for
     /// `--error-unmatch`).
     fn mark_seen(&mut self, path: &[u8]) {
         if !self.implicit && !self.pathspec.is_empty() {
-            let _ = self.pathspec.match_path_seen(path, &mut self.seen);
+            match &self.attrs {
+                Some(a) => {
+                    let _ = self.pathspec.match_path_with(path, Some(&mut self.seen), &mut |p, spec| {
+                        a.borrow_mut().check(p, spec)
+                    });
+                }
+                None => {
+                    let _ = self.pathspec.match_path_seen(path, &mut self.seen);
+                }
+            }
         }
     }
 
@@ -681,6 +702,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
     let implicit = args.is_empty() && !prefix.is_empty();
+    let mut repo = repo;
+    let attr_tree = PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
+    let repo = repo;
 
     let mut show = Show {
         cached: cached.get(),
@@ -727,6 +751,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         pathspec,
         implicit,
         seen: vec![false; n_items],
+        attrs: attr_tree.map(|t| RefCell::new(PathspecAttrs::new(&repo, &index, t))),
         quote_high: repo.quote_path(),
         abbrev: abbrev.get().length(&repo),
         format: fmt.map(|f| format::parse(&f, "ls-files", field_named)),

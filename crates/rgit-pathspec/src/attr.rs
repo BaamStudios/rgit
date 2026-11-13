@@ -43,7 +43,8 @@ impl AttrSpec {
     ///
     /// # Errors
     /// [`PathspecError::EmptyAttr`], [`PathspecError::InvalidAttrName`],
-    /// [`PathspecError::InvalidAttrValue`].
+    /// [`PathspecError::InvalidAttrValue`],
+    /// [`PathspecError::AttrValueEscapeAtEnd`].
     pub fn parse(raw: &[u8]) -> Result<Self, PathspecError> {
         let mut requirements = Vec::new();
         for token in raw.split(u8::is_ascii_whitespace).filter(|t| !t.is_empty()) {
@@ -94,11 +95,11 @@ fn value(raw: &[u8]) -> Result<Vec<u8>, PathspecError> {
     let mut it = raw.iter();
     while let Some(&b) = it.next() {
         let c = if b == b'\\' {
-            it.next().copied().unwrap_or(b'\\')
+            *it.next().ok_or(PathspecError::AttrValueEscapeAtEnd)?
         } else {
             b
         };
-        if matches!(c, b'=' | b')') {
+        if matches!(c, b'=' | b')' | b'\\') {
             return Err(PathspecError::InvalidAttrValue { ch: c });
         }
         out.push(c);
@@ -142,6 +143,14 @@ mod tests {
         assert_eq!(
             AttrSpec::parse(b"a=x\\)y").unwrap_err().to_string(),
             "cannot use ')' for value matching"
+        );
+        assert_eq!(
+            AttrSpec::parse(b"a=x\\").unwrap_err().to_string(),
+            "Escape character '\\' not allowed as last character in attr value"
+        );
+        assert_eq!(
+            AttrSpec::parse(b"a=x\\\\y").unwrap_err().to_string(),
+            "cannot use '\\' for value matching"
         );
         assert_eq!(
             AttrSpec::parse(b"-a=b").unwrap_err().to_string(),

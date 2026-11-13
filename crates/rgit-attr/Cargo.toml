@@ -1,0 +1,21 @@
+[package]
+name = "rgit-attr"
+description = "Git attributes for rgit: .gitattributes parsing, macros, sources and precedence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rgit-hash = { path = "../rgit-hash" }
+rgit-index = { path = "../rgit-index" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+rgit-pathspec = { path = "../rgit-pathspec" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
