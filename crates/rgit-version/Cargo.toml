@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [target.'cfg(unix)'.dependencies]
 # Safe uname(2) for the operating system part of the agent string.
 rustix = { version = "1", default-features = false, features = ["std", "system"] }

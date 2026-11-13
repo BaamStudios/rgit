@@ -16,6 +16,23 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
 
+  # MSRV (#237): the workspace must build and pass its tests on the
+  # `rust-version` declared in Cargo.toml, not only on stable.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read rust-version
+        id: msrv
+        run: |
+          v=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          test -n "$v" || { echo "::error::no rust-version in Cargo.toml"; exit 1; }
+          echo "version=$v" >>"$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - run: cargo test --all --locked
+
   # License guards (#83, #84): SPDX headers and ADR 0002 dependency bans.
   license-headers:
     runs-on: ubuntu-latest
