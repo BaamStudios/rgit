@@ -12,7 +12,10 @@ use rgit_diff::{
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::Object;
 
+use rgit_config::ConfigSet;
+
 use super::collect::{GITLINK_MODE, Pair, Side, TREE_MODE, type_bits};
+use super::color::DiffColors;
 use super::options::{DiffOpts, Formats};
 use super::stat::{self, FileStat, StatKind, StatLayout};
 use crate::Die;
@@ -37,6 +40,8 @@ pub struct Output<'a> {
     pub porcelain: bool,
     /// Unmerged paths would need a combined diff in patch output.
     pub combined_unmerged: bool,
+    /// Colours, when colouring.
+    pub colors: Option<DiffColors>,
 }
 
 /// A side with its contents loaded.
@@ -157,7 +162,29 @@ impl<'a> Output<'a> {
             },
             porcelain,
             combined_unmerged: false,
+            colors: None,
         }
+    }
+
+    /// Decide about colours: `--color` (`opts.color`), and for `git diff`
+    /// (`porcelain`) also `color.diff` and `color.ui`.
+    pub fn set_color(&mut self, opts: &DiffOpts) -> Result<(), Die> {
+        let empty = ConfigSet::new();
+        let config = self.repo.map_or(&empty, |r| &r.config);
+        let on = if self.porcelain {
+            crate::color::want(config, Some("color.diff"), opts.color)?
+        } else {
+            match opts.color {
+                Some(c) => crate::color::want(config, None, Some(c))?,
+                None => false,
+            }
+        };
+        self.colors = if on {
+            Some(DiffColors::from_config(config)?)
+        } else {
+            None
+        };
+        Ok(())
     }
 
     /// Set the mnemonic prefixes (`diff.mnemonicPrefix`) for `git diff`.
@@ -422,7 +449,11 @@ impl<'a> Output<'a> {
             stat::write_numstat(&mut out, &stats, &names, self.nul);
         }
         if f.stat {
-            stat::write_stat(&mut out, &stats, &self.stat);
+            let colors = self
+                .colors
+                .as_ref()
+                .map(|c| (c.new.as_str(), c.old.as_str()));
+            stat::write_stat(&mut out, &stats, &self.stat, colors);
         } else if f.shortstat && !stats.is_empty() {
             stat::write_summary_line(&mut out, &stats);
         }
@@ -482,11 +513,24 @@ impl<'a> Output<'a> {
                     oid: l.oid,
                     data: &l.data,
                 });
+                let new_data = nf.as_ref().map_or(&[][..], |f| f.data);
+                let mut emit =
+                    |old: Option<&PatchFile<'_>>, new: Option<&PatchFile<'_>>| match &self.colors {
+                        None => {
+                            write_file_patch_with(&mut out, old, new, &self.patch, &abbrev);
+                        }
+                        Some(c) => {
+                            let mut plain = Vec::new();
+                            write_file_patch_with(&mut plain, old, new, &self.patch, &abbrev);
+                            let data = if new.is_some() { new_data } else { &[][..] };
+                            super::color::patch(&mut out, c, &plain, data);
+                        }
+                    };
                 if p.status() == b'T' {
-                    write_file_patch_with(&mut out, of.as_ref(), None, &self.patch, &abbrev);
-                    write_file_patch_with(&mut out, None, nf.as_ref(), &self.patch, &abbrev);
+                    emit(of.as_ref(), None);
+                    emit(None, nf.as_ref());
                 } else {
-                    write_file_patch_with(&mut out, of.as_ref(), nf.as_ref(), &self.patch, &abbrev);
+                    emit(of.as_ref(), nf.as_ref());
                 }
             }
         }

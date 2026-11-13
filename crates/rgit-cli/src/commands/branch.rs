@@ -11,7 +11,10 @@
 //! `--no-track`, `branch.autoSetupMerge`, `branch.autoSetupRebase`, shared
 //! with `switch`/`checkout` in [`crate::tracking`]).
 //!
-//! Not yet: `-f`, colors, columns, `--format`, `--sort`,
+//! Colours (`--color`, `color.branch`, `color.branch.<slot>`) and the
+//! pager (`pager.branch`, on for listing) are supported.
+//!
+//! Not yet: `-f`, columns, `--format`, `--sort`,
 //! `--merged`, `--contains`, `--points-at`, `--edit-description`.
 
 use std::io::Write;
@@ -29,6 +32,8 @@ use rgit_refs::{IterItem, IterOptions, RefStore, RefUpdate, Target, Transaction}
 use rgit_remote::{BranchConfig, Remotes, upstream_ref};
 use rgit_repo::Setup;
 use rgit_revwalk::walk::{CommitInfo, CommitSource, Walk, WalkOptions};
+
+use rgit_config::color::ColorBool;
 
 use crate::messages::branch as msg;
 use crate::messages::tracking as tmsg;
@@ -154,6 +159,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let show_current = Cell::new(false);
     let force = Cell::new(false);
     let track = Cell::new(Track::Unspecified);
+    let color: Cell<Option<ColorBool>> = Cell::new(None);
     // Generic options, then the branch actions (the order of `-h`).
     let mut opts = vec![
             Opt::group(msg::GROUP_GENERIC),
@@ -164,6 +170,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     ];
     opts.extend([
             Opt::flag(None, "unset-upstream", &unset_upstream, msg::HELP_UNSET_UPSTREAM),
+            Opt::callback(None, "color", Some("when"), crate::messages::pager::HELP_COLOR, |v, neg| {
+                color.set(Some(crate::color::parse_when(v, neg)?));
+                Ok(())
+            })
+            .optional(None),
             Opt::flag('r', "remotes", &remotes, msg::HELP_REMOTES).noneg(),
             Opt::string(None, "abbrev", &abbrev, "n", msg::HELP_ABBREV).optional(Some("")),
             Opt::group(msg::GROUP_ACTIONS),
@@ -245,7 +256,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return create(&c, &args, &parser, track.get(), force.get());
     }
     let abbrev_len = if no_abbrev { 0 } else { abbrev_len };
-    list_branches(&c, &args, &head, remotes.get(), all.get(), verbose.get(), abbrev_len)
+    crate::pager::setup_for(ctx, &config, "branch", true)?;
+    let colors = if crate::color::want(&config, Some("color.branch"), color.get())? {
+        Some(Colors::from_config(&config)?)
+    } else {
+        None
+    };
+    let list = List {
+        remotes: remotes.get(),
+        all: all.get(),
+        verbose: verbose.get(),
+        abbrev: abbrev_len,
+        colors,
+    };
+    list_branches(&c, &args, &head, &list)
 }
 
 /// A branch name argument of `-d`/`-D`: `@{-<n>}` and
@@ -685,11 +709,20 @@ fn short_ref(full: &str) -> &str {
 }
 
 /// ` [<upstream>: ahead 1, behind 2]` and friends.
-fn tracking(c: &Ctx<'_>, branch: &str, oid: &ObjectId, verbose: i32) -> String {
+fn tracking(
+    c: &Ctx<'_>,
+    branch: &str,
+    oid: &ObjectId,
+    verbose: i32,
+    colors: Option<&Colors>,
+) -> String {
     let Some(up) = c.upstream_of(branch) else {
         return String::new();
     };
-    let name = short_ref(&up);
+    let name = match colors {
+        Some(cs) => format!("{}{}{}", cs.upstream, short_ref(&up), crate::color::RESET),
+        None => short_ref(&up).to_owned(),
+    };
     let up_oid = match c.store.read_raw(&up) {
         Ok(Some(Target::Object(o))) => Some(o),
         Ok(Some(Target::Symbolic(_))) => c.revs.resolve(&up),
@@ -722,21 +755,60 @@ enum Line {
     Detached(ObjectId),
     Ref {
         shown: String,
+        /// Below `refs/remotes/`.
+        remote: bool,
         current: bool,
         branch: Option<String>,
         target: Target,
     },
 }
 
-fn list_branches(
-    c: &Ctx<'_>,
-    patterns: &[String],
-    head: &Option<Target>,
+/// `color.branch.<slot>`.
+struct Colors {
+    current: String,
+    local: String,
+    remote: String,
+    upstream: String,
+}
+
+impl Colors {
+    fn from_config(config: &rgit_config::ConfigSet) -> Result<Colors, Die> {
+        let slot = |name: &str, default: &str| {
+            crate::color::slot(config, &format!("color.branch.{name}"), default)
+        };
+        // Other refs (`plain`) are not listed, but the value is checked.
+        slot("plain", "")?;
+        Ok(Colors {
+            current: slot("current", "\x1b[32m")?,
+            local: slot("local", "")?,
+            remote: slot("remote", "\x1b[31m")?,
+            upstream: slot("upstream", "\x1b[34m")?,
+        })
+    }
+}
+
+/// How to list.
+struct List {
     remotes: bool,
     all: bool,
     verbose: i32,
     abbrev: usize,
-) -> CmdResult {
+    /// Colours, when colouring.
+    colors: Option<Colors>,
+}
+
+fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: &List) -> CmdResult {
+    let List {
+        remotes,
+        all,
+        verbose,
+        abbrev,
+        ..
+    } = *list;
+    let paint = |pick: fn(&Colors) -> &str, text: &str| match &list.colors {
+        Some(cs) => format!("{}{text}{}", pick(cs), crate::color::RESET),
+        None => text.to_owned(),
+    };
     let local = !remotes || all;
     let remote = remotes || all;
     let mut lines: Vec<Line> = Vec::new();
@@ -772,6 +844,7 @@ fn list_branches(
             }
             let is_local = prefix == "refs/heads/";
             lines.push(Line::Ref {
+                remote: !is_local,
                 current: is_local && c.current.as_deref() == Some(short),
                 branch: is_local.then(|| short.to_owned()),
                 shown,
@@ -804,43 +877,50 @@ fn list_branches(
         let text = match line {
             Line::Detached(oid) => {
                 let label = msg::detached_at(&c.abbrev(oid));
+                let label = format!("{label:<width$}");
+                let name = paint(|cs| &cs.current, &label);
                 if verbose > 0 {
-                    format!(
-                        "* {label:<width$} {} {}",
-                        full_hex(oid),
-                        subject(c.objects, oid)
-                    )
+                    format!("* {name} {} {}", full_hex(oid), subject(c.objects, oid))
                 } else {
-                    format!("* {label}")
+                    format!("* {name}")
                 }
             }
             Line::Ref {
                 shown,
+                remote,
                 current,
                 branch,
                 target,
             } => {
                 let marker = if *current { '*' } else { ' ' };
+                let pick: fn(&Colors) -> &str = if *current {
+                    |cs| &cs.current
+                } else if *remote {
+                    |cs| &cs.remote
+                } else {
+                    |cs| &cs.local
+                };
+                let name = paint(pick, &format!("{shown:<width$}"));
                 match target {
                     Target::Symbolic(t) => {
                         let t = t
                             .strip_prefix("refs/remotes/")
                             .or_else(|| t.strip_prefix("refs/heads/"))
                             .unwrap_or(t);
-                        format!("{marker} {shown} -> {t}")
+                        format!("{marker} {name} -> {t}")
                     }
                     Target::Object(oid) if verbose > 0 => {
                         let track = branch
                             .as_deref()
-                            .map(|b| tracking(c, b, oid, verbose))
+                            .map(|b| tracking(c, b, oid, verbose, list.colors.as_ref()))
                             .unwrap_or_default();
                         format!(
-                            "{marker} {shown:<width$} {} {track}{}",
+                            "{marker} {name} {} {track}{}",
                             full_hex(oid),
                             subject(c.objects, oid)
                         )
                     }
-                    Target::Object(_) => format!("{marker} {shown}"),
+                    Target::Object(_) => format!("{marker} {name}"),
                 }
             }
         };

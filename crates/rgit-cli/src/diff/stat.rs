@@ -87,7 +87,28 @@ fn truncate(name: &[u8], width: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
-pub fn write_stat(out: &mut Vec<u8>, files: &[FileStat], layout: &StatLayout) {
+/// Colours of the stat graph: (added, removed), from `color.diff.new`
+/// and `color.diff.old`.
+pub type StatColors<'a> = Option<(&'a str, &'a str)>;
+
+fn painted(out: &mut Vec<u8>, color: Option<&str>, text: &[u8]) {
+    match color {
+        Some(c) => {
+            out.extend_from_slice(c.as_bytes());
+            out.extend_from_slice(text);
+            out.extend_from_slice(crate::color::RESET.as_bytes());
+        }
+        None => out.extend_from_slice(text),
+    }
+}
+
+pub fn write_stat(
+    out: &mut Vec<u8>,
+    files: &[FileStat],
+    layout: &StatLayout,
+    colors: StatColors<'_>,
+) {
+    let (new_color, old_color) = (colors.map(|c| c.0), colors.map(|c| c.1));
     if files.is_empty() {
         return;
     }
@@ -127,7 +148,22 @@ pub fn write_stat(out: &mut Vec<u8>, files: &[FileStat], layout: &StatLayout) {
             StatKind::Unmerged => out.extend_from_slice(msg::UNMERGED_STAT.as_bytes()),
             StatKind::Binary { old_size, new_size } => {
                 write!(out, "{:>number_width$}", "Bin").unwrap();
-                write!(out, "{}", &msg::binary_stat(old_size, new_size)[3..]).unwrap();
+                if colors.is_some() {
+                    let (old, new) = (old_size.to_string(), new_size.to_string());
+                    let text = msg::binary_stat(old_size, new_size);
+                    // "Bin <old> -> <new> bytes" with the sizes coloured.
+                    let after_old = 4 + old.len();
+                    let new_at = text[after_old..]
+                        .find(&new)
+                        .map_or(after_old, |i| i + after_old);
+                    out.extend_from_slice(&text.as_bytes()[3..4]);
+                    painted(out, old_color, old.as_bytes());
+                    out.extend_from_slice(&text.as_bytes()[after_old..new_at]);
+                    painted(out, new_color, new.as_bytes());
+                    out.extend_from_slice(&text.as_bytes()[new_at + new.len()..]);
+                } else {
+                    write!(out, "{}", &msg::binary_stat(old_size, new_size)[3..]).unwrap();
+                }
             }
             StatKind::Text { added, deleted } => {
                 write!(out, "{:>number_width$}", added + deleted).unwrap();
@@ -135,8 +171,12 @@ pub fn write_stat(out: &mut Vec<u8>, files: &[FileStat], layout: &StatLayout) {
                 if plus + minus > 0 {
                     out.push(b' ');
                 }
-                out.extend(std::iter::repeat_n(b'+', plus));
-                out.extend(std::iter::repeat_n(b'-', minus));
+                if plus > 0 {
+                    painted(out, new_color, &vec![b'+'; plus]);
+                }
+                if minus > 0 {
+                    painted(out, old_color, &vec![b'-'; minus]);
+                }
             }
         }
         out.push(b'\n');

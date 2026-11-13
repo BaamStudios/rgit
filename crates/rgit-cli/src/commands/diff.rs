@@ -2,7 +2,7 @@
 //! `git diff` (Documentation/git-diff.adoc): work tree against index,
 //! `--cached`/`--staged [<commit>]`, `<commit>` against the work tree,
 //! `<commit> <commit>`, `A..B`, `A...B` and `--no-index <path> <path>`.
-//! No rename detection, no color, no pager, no blob or combined diffs.
+//! No rename detection, no blob or combined diffs.
 
 use std::path::{Path, PathBuf};
 
@@ -58,7 +58,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         no_index = true;
     }
     if no_index {
-        return run_no_index(repo.as_ref(), &opts, &parsed.args);
+        return run_no_index(ctx, repo.as_ref(), &opts, &parsed.args);
     }
     let mut repo = repo.expect("repository");
 
@@ -167,13 +167,27 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         _ => return Err(Die::Fatal(msg::not_supported("this form of diff"))),
     };
+    page(ctx, Some(&repo), &opts)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true);
+    out.set_color(&opts)?;
     out.combined_unmerged = trees.is_empty() && !cached;
     if let Some((s, d)) = mnemonic {
         out.mnemonic(&opts, s, d);
     }
     let (bytes, changed) = out.render(pairs)?;
     Ok(finish(&bytes, changed, &opts))
+}
+
+/// Start the pager (`pager.diff`, on by default) unless the exit code is
+/// asked for.
+fn page(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts) -> Result<(), Die> {
+    if opts.wants_exit_code() {
+        return Ok(());
+    }
+    match repo {
+        Some(r) => crate::pager::setup_for(ctx, &r.config, "diff", true),
+        None => crate::pager::setup(ctx, "diff", true),
+    }
 }
 
 /// `A..B` or `A...B` (an empty side is `HEAD`): (old, new, symmetric).
@@ -212,7 +226,7 @@ fn range(ctx: &Context, repo: &mut Repo, arg: &str) -> Result<Option<(ObjectId, 
 }
 
 /// `--no-index`: two files or directories outside of git's control.
-fn run_no_index(repo: Option<&Repo>, opts: &DiffOpts, args: &[String]) -> CmdResult {
+fn run_no_index(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts, args: &[String]) -> CmdResult {
     if args.len() != 2 {
         return Err(usage_exit(msg::NO_INDEX_USAGE.to_string()));
     }
@@ -237,7 +251,9 @@ fn run_no_index(repo: Option<&Repo>, opts: &DiffOpts, args: &[String]) -> CmdRes
         }
     }
     no_index_walk(hash, &a, &b, &mut pairs)?;
+    page(ctx, repo, opts)?;
     let mut out = Output::new(repo, hash, opts, formats, true);
+    out.set_color(opts)?;
     if repo.is_some() {
         out.mnemonic(opts, "1", "2");
     }

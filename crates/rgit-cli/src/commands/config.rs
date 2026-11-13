@@ -7,8 +7,10 @@
 //! Reading uses `rgit_config`'s loader, writing its in-place editor
 //! (`rgit_config::edit`) through `config.lock`.
 //!
-//! Not implemented yet (they need other subsystems): `--type=color`,
-//! `--get-color`, `--get-colorbool` (#75) and `--type=expiry-date` on reading (#74).
+//! The listing modes (`list`, `get`, `--get-all`, `--get-regexp`,
+//! `--get-urlmatch`, `-l`) page by default (`pager.config`).
+//!
+//! Not implemented yet: `--type=expiry-date` on reading (#74).
 
 use std::cell::{Cell, RefCell};
 use std::io::Write;
@@ -472,10 +474,12 @@ fn run_subcommand(ctx: &mut Context, sub: &str, argv: &[String]) -> CmdResult {
     match sub {
         "list" => {
             wrong_args(args.len(), 0, 0)?;
+            crate::pager::setup(ctx, "config", true)?;
             cmd.list()
         }
         "get" => {
             wrong_args(args.len(), 1, 1)?;
+            crate::pager::setup(ctx, "config", true)?;
             if o.default.borrow().is_some() && (o.all.get() || o.url.borrow().is_some()) {
                 return Err(Die::Fatal(msg::DEFAULT_ALL.into()));
             }
@@ -604,6 +608,10 @@ fn run_legacy(ctx: &mut Context, argv: &[String]) -> CmdResult {
         v => v == 1,
     };
     let n = args.len();
+    // The listing modes page (`pager.config`), the others never do.
+    if matches!(act, GET_ALL | GET_REGEXP | GET_URLMATCH | LIST) {
+        crate::pager::setup(ctx, "config", true)?;
+    }
     match act {
         GET if o.action.get() == 0 => {
             // `git config name=value`: probably meant to set.
@@ -1396,10 +1404,13 @@ impl<'o> Cmd<'o> {
             ColorBool::Always => true,
             ColorBool::Never => false,
             ColorBool::Auto => {
-                tty && self
-                    .env
-                    .var("TERM")
-                    .is_some_and(|t| !t.is_empty() && t != "dumb")
+                // Output for a pager counts as a terminal (`color.pager`
+                // is not consulted here).
+                (tty || crate::pager::in_use())
+                    && self
+                        .env
+                        .var("TERM")
+                        .is_some_and(|t| !t.is_empty() && t != "dumb")
             }
         };
         if stdout_is_tty.is_some() {

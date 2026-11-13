@@ -9,6 +9,7 @@ pub mod pretty;
 use std::io::Write;
 
 use rgit_config::ConfigSet;
+use rgit_config::color::ColorBool;
 use rgit_date::{DateContext, DateMode};
 use rgit_hash::ObjectId;
 use rgit_object::{Commit, ObjectKind};
@@ -23,6 +24,9 @@ use crate::repo::{self, Mode};
 use crate::revisions::{self, Config, IndexFile, Objects, Refs, WorkTree};
 use crate::{Context, Die};
 use pretty::{Entry, Pretty, Style};
+
+/// The default `color.diff.commit`.
+const YELLOW: &str = "\x1b[33m";
 
 /// The shortest `--abbrev` (smaller values are raised to it).
 const MIN_ABBREV: usize = 4;
@@ -74,6 +78,8 @@ pub struct Options {
     date_mode: DateMode,
     /// `--[no-]mailmap`; `None` = the command's default.
     mailmap: Option<bool>,
+    /// `--color[=<when>]` / `--no-color` (only `log` colours).
+    color: Option<ColorBool>,
 }
 
 fn parse_count(s: &str) -> Result<usize, Die> {
@@ -107,6 +113,7 @@ impl Options {
             pretty: (cmd == Command::Log).then_some(Pretty::Medium),
             date_mode: DateMode::default(),
             mailmap: None,
+            color: None,
         };
         let mut negate = false;
         let mut i = 0;
@@ -163,13 +170,18 @@ impl Options {
                     o.abbrev_commit = true;
                 }
                 "--pretty" => o.pretty = Some(Pretty::Medium),
-                "--no-decorate" | "--no-color" | "--no-show-signature" => {}
+                "--no-decorate" | "--no-show-signature" => {}
                 "--mailmap" | "--use-mailmap" => o.mailmap = Some(true),
                 "--no-mailmap" | "--no-use-mailmap" => o.mailmap = Some(false),
                 "-n" | "--max-count" => {
                     o.walk.max_count = Some(parse_count(&value(&mut i, a)?)?);
                 }
                 "--skip" => o.walk.skip = parse_count(&value(&mut i, a)?)?,
+                _ if crate::color::parse_arg(a).is_some() => {
+                    if let Some(c) = crate::color::parse_arg(a) {
+                        o.color = Some(c?);
+                    }
+                }
                 _ => {
                     if let Some(v) = a.strip_prefix("--max-count=") {
                         o.walk.max_count = Some(parse_count(v)?);
@@ -194,7 +206,7 @@ impl Options {
                     } else if let Some(v) = a.strip_prefix("--date=") {
                         o.date_mode = rgit_date::parse_date_mode(v, false)
                             .map_err(|e| Die::Fatal(e.to_string()))?;
-                    } else if a == "--decorate=no" || a == "--color=never" {
+                    } else if a == "--decorate=no" {
                     } else if a.starts_with("--branches=")
                         || a.starts_with("--tags=")
                         || a.starts_with("--remotes=")
@@ -552,18 +564,35 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
             }
             Command::Log => {
                 if let Some(branch) = repo.unborn_branch() {
+                    crate::pager::setup_for(ctx, &config, "log", true)?;
                     return Err(Die::Fatal(msg::unborn_branch(&branch)));
                 }
                 opts.push_head();
             }
         }
     }
-    run(&repo, cmd, &opts)
+    run(ctx, &repo, cmd, &opts)
 }
 
 /// Run the walk and print the result.
-fn run(repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
+fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
     let tips = resolve_tips(repo, opts)?;
+    let commit_color = match cmd {
+        Command::Log => {
+            crate::pager::setup_for(ctx, repo.config, "log", true)?;
+            let on = crate::color::want(repo.config, Some("color.diff"), opts.color)?;
+            if on {
+                Some(crate::color::slot(
+                    repo.config,
+                    "color.diff.commit",
+                    YELLOW,
+                )?)
+            } else {
+                None
+            }
+        }
+        Command::RevList => None,
+    };
     if opts.left_right {
         return left_right_count(repo, opts);
     }
@@ -599,6 +628,7 @@ fn run(repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
         pretty: opts.pretty.unwrap_or(Pretty::Medium),
         date_mode: opts.date_mode.clone(),
         date_ctx: DateContext::from_env(),
+        commit_color,
     };
     let stdout = std::io::stdout();
     let mut out = Vec::with_capacity(1 << 16);

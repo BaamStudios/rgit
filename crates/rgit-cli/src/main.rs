@@ -6,6 +6,7 @@
 
 mod abbrev;
 mod attributes;
+mod color;
 mod commands;
 mod context;
 mod diff;
@@ -15,6 +16,7 @@ mod global;
 mod history;
 mod messages;
 mod objects;
+mod pager;
 mod push;
 mod quote;
 mod refs;
@@ -119,6 +121,12 @@ fn print_main_help(to_stdout: bool) {
     }
 }
 
+/// Start the pager for `cmd` when `--paginate` or `pager.<cmd>` asks for
+/// it (only possible when stdout is a terminal).
+fn start_pager(ctx: &Context, cmd: &str) -> Result<(), Die> {
+    pager::setup(ctx, cmd, false)
+}
+
 /// Run a command; `argv[0]` is its name.
 fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
     // `git <cmd> --help` is `git help <cmd>`.
@@ -143,7 +151,19 @@ fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
             }
         };
     }
-    match commands::find(&name) {
+    let builtin = commands::find(&name);
+    ctx.command.clone_from(&name);
+    // Commands that decide about the pager themselves (some of their modes
+    // page by default); `--paginate` pages them at once.
+    let own_pager = matches!(
+        name.as_str(),
+        "log" | "diff" | "branch" | "config" | "reflog"
+    ) && ctx.paginate != Some(true);
+    // `pager.version` is ignored.
+    if !own_pager && (name != "version" || ctx.paginate == Some(true)) {
+        start_pager(ctx, &name)?;
+    }
+    match builtin {
         Some(cmd) => {
             rgit_trace::trace_builtin(&argv);
             (cmd.run)(ctx, &argv)
@@ -174,6 +194,9 @@ fn run(args: Vec<String>) -> CmdResult {
     match global::parse(&mut ctx, &args[1.min(args.len())..])? {
         global::Action::Exit(code) => Ok(code),
         global::Action::NoCommand => {
+            if ctx.paginate == Some(true) {
+                start_pager(&ctx, "")?;
+            }
             print_main_help(true);
             Ok(1)
         }
@@ -194,5 +217,6 @@ fn main() {
     let _ = std::io::stdout().flush();
     // GIT_TRACE_PERFORMANCE: the whole command line as invoked.
     rgit_trace::trace_command_performance(start, &args);
+    pager::finish();
     std::process::exit(code);
 }

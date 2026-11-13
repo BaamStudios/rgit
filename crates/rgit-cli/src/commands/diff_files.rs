@@ -45,6 +45,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let pairs = collect::files(&index, &pathspec, &wt, false)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false);
+    out.set_color(&opts)?;
     out.combined_unmerged = true;
     let (bytes, changed) = out.render(pairs)?;
     Ok(finish(&bytes, changed, &opts))

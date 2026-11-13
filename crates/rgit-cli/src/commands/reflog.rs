@@ -152,6 +152,8 @@ struct ShowOptions {
     abbrev: Option<Option<usize>>,
     revs: Vec<String>,
     paths: Vec<String>,
+    /// `--color[=<when>]` / `--no-color`.
+    color: Option<rgit_config::color::ColorBool>,
 }
 
 fn parse_count(v: &str) -> Result<usize, Die> {
@@ -185,7 +187,13 @@ fn parse_show(args: &[String]) -> Result<Result<ShowOptions, CmdResult>, Die> {
                     .ok_or_else(|| Die::Fatal(msg::not_supported(&format!("'{a}' without a value"))))?;
                 o.max_count = Some(parse_count(v)?);
             }
-            "--abbrev-commit" | "--oneline" | "--pretty=oneline" | "--format=oneline" => {}
+            "--abbrev-commit" | "--oneline" | "--pretty=oneline" | "--format=oneline"
+            | "--no-decorate" => {}
+            _ if crate::color::parse_arg(a).is_some() => {
+                if let Some(c) = crate::color::parse_arg(a) {
+                    o.color = Some(c?);
+                }
+            }
             "--no-abbrev-commit" | "--no-abbrev" => o.abbrev = Some(None),
             _ => {
                 if let Some(v) = a.strip_prefix("--max-count=") {
@@ -236,6 +244,12 @@ fn show(ctx: &mut Context, args: &[String]) -> CmdResult {
     }
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::load_config(ctx, &setup)?;
+    crate::pager::setup_for(ctx, &config, "reflog", true)?;
+    let color = if crate::color::want(&config, Some("color.diff"), o.color)? {
+        Some(crate::color::slot(&config, "color.diff.commit", "\x1b[33m")?)
+    } else {
+        None
+    };
     let refs = Refs::new(&setup);
     let logs = refs.logs();
     let kind = refs.kind;
@@ -343,6 +357,10 @@ fn show(ctx: &mut Context, args: &[String]) -> CmdResult {
                 .unwrap_or_else(|_| rgit_date::format_raw(e.time, e.tz))
         } else {
             k.to_string()
+        };
+        let id = match &color {
+            Some(c) => format!("{c}{id}{}", crate::color::RESET),
+            None => id,
         };
         let mut line = format!("{id} {display}@{{{label}}}: ").into_bytes();
         line.extend_from_slice(&e.message);
