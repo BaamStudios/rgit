@@ -91,32 +91,34 @@ pub fn own_upstream(name: &str) -> String {
     format!("not setting branch '{name}' as its own upstream")
 }
 
-/// `switch`/`checkout <name>` found `<name>` in several remotes.
-#[allow(dead_code)] // for switch/checkout (#42, #49)
+/// Advice `checkoutAmbiguousRemoteBranchName`: `switch`/`checkout <name>`
+/// found `<name>` in several remotes (shown without the "Disable this
+/// message" line).
 pub fn hint_ambiguous_remote_branch(name: &str, remotes: &[String], command: &str) -> String {
-    let mut s = format!("hint: Branch name '{name}' appears in multiple remotes:\n");
+    let mut s = format!("Branch name '{name}' appears in multiple remotes:\n");
     for r in remotes {
-        s.push_str(&format!("hint:   {r}\n"));
+        s.push_str(&format!("  {r}\n"));
     }
     s.push_str(&format!(
-        "hint: If you meant to check out a remote tracking branch on <remote>,\n\
-         hint: you can do so by fully qualifying the name with the --track option:\n\
-         hint:\n\
-         hint:     git {command} --track <remote>/{name}\n\
-         hint:\n\
-         hint: If you'd like to always have checkouts of an ambiguous name prefer\n\
-         hint: one remote, e.g. the 'origin' remote, consider setting\n\
-         hint: checkout.defaultRemote=origin in your config.\n"
+        "If you meant to check out a remote tracking branch on <remote>,\n\
+         you can do so by fully qualifying the name with the --track option:\n\
+         \n\
+         \x20   git {command} --track <remote>/{name}\n\
+         \n\
+         If you'd like to always have checkouts of an ambiguous name prefer\n\
+         one remote, e.g. the 'origin' remote, consider setting\n\
+         checkout.defaultRemote=origin in your config."
     ));
     s
 }
 
-#[allow(dead_code)] // for switch/checkout (#42, #49)
 pub fn matched_multiple_remotes(name: &str, n: usize) -> String {
     format!("'{name}' matched multiple ({n}) remote tracking branches")
 }
 
-#[allow(dead_code)] // for switch/checkout (#42, #49)
 pub fn missing_branch_name(create_option: &str) -> String {
     format!("missing branch name; try -{create_option}")
 }
+
+/// `switch`/`checkout` with `-t`/`--no-track` but no branch or start point.
+pub const TRACK_NEEDS_NAME: &str = "--track needs a branch name";

@@ -23,7 +23,6 @@ pub const HELP_PROGRESS: &str = "force progress reporting";
 pub const HELP_MERGE: &str = "perform a 3-way merge with the new branch";
 pub const HELP_CONFLICT: &str = "conflict style (merge, diff3, or zdiff3)";
 pub const HELP_DETACH: &str = "detach HEAD at named commit";
-pub const HELP_TRACK: &str = "set branch tracking configuration";
 pub const HELP_FORCE: &str = "force checkout (throw away local modifications)";
 pub const HELP_ORPHAN: &str = "new unborn branch";
 pub const HELP_OVERWRITE_IGNORE: &str = "update ignored files (default)";
@@ -71,9 +70,6 @@ pub fn created_from(start: &str) -> String {
 pub fn reset_to(start: &str) -> String {
     format!("branch: Reset to {start}")
 }
-pub fn set_up_to_track(branch: &str, upstream: &str) -> String {
-    format!("branch '{branch}' set up to track '{upstream}'.")
-}
 pub fn not_a_commit_for_branch(start: &str, branch: &str) -> String {
     format!("'{start}' is not a commit and a branch '{branch}' cannot be created from it")
 }
@@ -112,6 +108,8 @@ pub fn hint_detach_branch_expected() -> &'static str {
 pub const MISSING_BRANCH_OR_COMMIT: &str = "missing branch or commit argument";
 pub const ONE_REFERENCE_EXPECTED: &str = "only one reference expected";
 pub const DETACH_WITH_CREATE: &str = "'--detach' cannot be used with '-b/-B/--orphan'";
+pub const ORPHAN_WITH_TRACK: &str = "'--orphan' cannot be used with '-t'";
+pub const TRACK_WITH_PATHS: &str = "'--track' cannot be used with updating paths";
 pub const HINT_PULL_DIVERGED: &str =
     "  (use \"git pull\" if you want to integrate the remote branch with yours)";
 
@@ -141,4 +139,33 @@ pub fn detached_advice(name: &str) -> String {
 /// rgit-only: an option that is accepted but not implemented yet.
 pub fn not_supported(what: &str) -> String {
     format!("rgit: '{what}' is not implemented yet")
+}
+
+/// Leaving a detached `HEAD` whose commits no ref reaches: the warning up
+/// to the commit list. `n` is the number of commits.
+pub fn leaving_behind(n: usize) -> String {
+    let what = if n == 1 { "commit" } else { "commits" };
+    format!("Warning: you are leaving {n} {what} behind, not connected to\nany of your branches:\n")
+}
+
+/// One line of the [`leaving_behind`] list.
+pub fn leaving_behind_commit(abbrev: &str, subject: &str) -> String {
+    format!("  {abbrev} {subject}")
+}
+
+/// The last line of a shortened [`leaving_behind`] list.
+pub fn leaving_behind_more(n: usize) -> String {
+    format!(" ... and {n} more.")
+}
+
+/// After [`leaving_behind`] (`advice.detachedHead`): how to keep the
+/// commits; `n` commits, `abbrev` the old `HEAD`.
+pub fn leaving_behind_advice(n: usize, abbrev: &str) -> String {
+    let what = if n == 1 { "it" } else { "them" };
+    format!(
+        "If you want to keep {what} by creating a new branch, this may be a good time\n\
+         to do so with:\n\
+         \n\
+         \x20git branch <new-branch-name> {abbrev}\n"
+    )
 }

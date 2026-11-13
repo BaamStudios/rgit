@@ -18,7 +18,7 @@ use rgit_index::{Entry, Index, Stage, WriteOptions};
 use rgit_object::ObjectKind;
 use rgit_refs::files::FilesStore;
 use rgit_refs::{RefStore, RefUpdate, Target as RefTarget, Transaction};
-use rgit_remote::Remotes;
+use rgit_revwalk::walk::{CommitInfo, CommitSource, Walk, WalkOptions};
 use rgit_unpack::{Identity, Merge, Options, Porcelain, Worktree};
 use rgit_worktree::stat::{Checker, Status, smudge_racy_entries};
 
@@ -26,8 +26,9 @@ use crate::commands::read_tree::{lock_failed, path_options, unpack_failed};
 use crate::messages::switch as msg;
 use crate::messages::wt_status as wmsg;
 use crate::prelude::*;
-use crate::refs_support::{self, Objects, UpdateHooks};
+use crate::refs_support::{self, Objects, Revs, UpdateHooks};
 use crate::repository::Repo;
+use crate::tracking;
 
 /// Where `HEAD` goes.
 pub enum Target {
@@ -46,8 +47,8 @@ pub struct Create {
     pub start: String,
     /// `-B`/`-C`: an existing branch is reset.
     pub reset: bool,
-    /// Upstream configuration: `(remote, merge ref, shown name)`.
-    pub track: Option<(String, String, String)>,
+    /// Upstream tracking, from [`tracking::plan`].
+    pub track: Option<(tracking::Plan, tracking::AutoSetup)>,
     /// A start point was given; without one the index and work tree are
     /// left alone.
     pub start_given: bool,
@@ -294,129 +295,9 @@ fn local_changes(
     Ok(out)
 }
 
-// TODO(#48): replace `default_upstream`, `upstream_of_ref` and
-// `guess_remote_branch` with the shared tracking API from #48 once it is
-// on main (it also covers `--track=inherit` and checkout.defaultRemote).
-
-/// The upstream a new branch starting at `start` gets by default
-/// (`branch.autoSetupMerge`): `(remote, merge ref, shown name)` when
-/// `start` names a remote-tracking branch.
-pub fn default_upstream(
-    repo: &Repo,
-    store: &FilesStore,
-    start: &str,
-) -> Option<(String, String, String)> {
-    let setting = repo
-        .config
-        .string("branch.autosetupmerge")
-        .ok()
-        .flatten()
-        .map(|v| String::from_utf8_lossy(v.as_ref()).to_ascii_lowercase());
-    match setting.as_deref() {
-        Some("false" | "no" | "off" | "0") => return None,
-        Some("always") => return upstream_of_ref(repo, store, start, true),
-        _ => {}
-    }
-    upstream_of_ref(repo, store, start, false)
-}
-
-/// The upstream configuration for tracking the ref `start` names (a
-/// remote-tracking branch, or with `local` also a local branch).
-pub fn upstream_of_ref(
-    repo: &Repo,
-    store: &FilesStore,
-    start: &str,
-    local: bool,
-) -> Option<(String, String, String)> {
-    let candidates = [
-        start.to_owned(),
-        format!("refs/{start}"),
-        format!("refs/tags/{start}"),
-        format!("refs/heads/{start}"),
-        format!("refs/remotes/{start}"),
-        format!("refs/remotes/{start}/HEAD"),
-    ];
-    let full = candidates.iter().find_map(|cand| {
-        if !cand.starts_with("refs/") {
-            return None;
-        }
-        match store.read_raw(cand) {
-            Ok(Some(RefTarget::Object(_))) => Some(cand.clone()),
-            Ok(Some(RefTarget::Symbolic(t))) => match store.read_raw(&t) {
-                Ok(Some(RefTarget::Object(_))) => Some(t),
-                _ => None,
-            },
-            _ => None,
-        }
-    })?;
-    if let Some(short) = full.strip_prefix("refs/heads/") {
-        return local.then(|| (".".to_owned(), full.clone(), short.to_owned()));
-    }
-    // Any ref a remote's fetch refspec maps to (normally refs/remotes/).
-    let remotes = Remotes::from_config(&repo.config).ok()?;
-    let names: Vec<String> = remotes
-        .names()
-        .map(|n| String::from_utf8_lossy(n.as_ref()).into_owned())
-        .collect();
-    for n in names {
-        let Ok(r) = remotes.get(n.as_bytes(), Some(&repo.setup.git_dir)) else {
-            continue;
-        };
-        if let Some(src) = r.fetch.map_dst(full.as_bytes()) {
-            let src = String::from_utf8_lossy(src.as_ref()).into_owned();
-            let short = src.strip_prefix("refs/heads/").unwrap_or(&src).to_owned();
-            let shown = format!("{n}/{short}");
-            return Some((n, src, shown));
-        }
-    }
-    None
-}
-
-/// `--guess`: the single remote-tracking branch `refs/remotes/<r>/<name>`.
-pub fn guess_remote_branch(repo: &Repo, store: &FilesStore, name: &str) -> Option<String> {
-    let remotes = Remotes::from_config(&repo.config).ok()?;
-    let mut found = Vec::new();
-    let names: Vec<String> = remotes
-        .names()
-        .map(|n| String::from_utf8_lossy(n.as_ref()).into_owned())
-        .collect();
-    for n in names {
-        let Ok(r) = remotes.get(n.as_bytes(), Some(&repo.setup.git_dir)) else {
-            continue;
-        };
-        let Some(dst) = r.fetch.map_src(format!("refs/heads/{name}").as_bytes()) else {
-            continue;
-        };
-        let dst = String::from_utf8_lossy(dst.as_ref()).into_owned();
-        if matches!(store.read_raw(&dst), Ok(Some(RefTarget::Object(_)))) {
-            found.push(dst);
-        }
-    }
-    if found.len() == 1 { found.pop() } else { None }
-}
-
-fn config_set(repo: &Repo, key: &str, value: &str) -> Result<(), Die> {
-    use rgit_config::write as config_write;
-    use rgit_config::{SetRequest, ValuePattern};
-    let pattern = ValuePattern::Any;
-    let req = SetRequest {
-        key: key.as_bytes(),
-        value: Some(value.as_bytes()),
-        pattern: &pattern,
-        all: true,
-        comment: None,
-    };
-    config_write::set_in_file(
-        &repo.setup.common_dir.join("config"),
-        &Default::default(),
-        &req,
-    )
-    .map_err(|e| Die::Fatal(e.to_string()))
-}
-
 /// Carries out `req`: index and work tree, branch creation, `HEAD` and
 /// its reflog, and the messages.
-pub fn switch(repo: &Repo, req: Request) -> CmdResult {
+pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
     let store = refs_support::ref_store(&repo.setup, &repo.config);
     let objects = Objects::open(&repo.setup);
     let mut hooks = UpdateHooks::new(&repo.setup, &repo.config, &objects);
@@ -477,12 +358,14 @@ pub fn switch(repo: &Repo, req: Request) -> CmdResult {
             None => RefUpdate::update(full.as_str(), new_oid, Some(ObjectId::null(hash))),
         };
         run(update.message(reason.as_str()), &mut hooks)?;
-        if let Some((remote, merge, shown)) = &c.track {
-            config_set(repo, &format!("branch.{}.remote", c.name), remote)?;
-            config_set(repo, &format!("branch.{}.merge", c.name), merge)?;
-            if !req.quiet {
-                println!("{}", msg::set_up_to_track(&c.name, shown));
-            }
+        if let Some((plan, auto)) = &c.track {
+            let trepo = tracking::Repo {
+                setup: &repo.setup,
+                config: &repo.config,
+                store: &store,
+                revs,
+            };
+            plan.apply(&trepo, &c.name, auto, req.quiet)?;
         }
     }
 
@@ -496,14 +379,13 @@ pub fn switch(repo: &Repo, req: Request) -> CmdResult {
         }
     };
     let old_detached = old_branch.is_none();
-    let previous = |say: &dyn Fn(&str)| {
-        if let Some(o) = old_oid {
-            if old_detached && o != new_oid {
-                say(&msg::previous_head(
-                    &objects.abbrev(&o, 7),
-                    &subject(&objects, &o),
-                ));
+    let abbrev_len = repo.default_abbrev();
+    let previous = || -> Result<(), Die> {
+        match old_oid {
+            Some(o) if old_detached && o != new_oid && !req.quiet => {
+                report_old_head(repo, &store, &objects, o, Some(new_oid))
             }
+            _ => Ok(()),
         }
     };
 
@@ -516,7 +398,7 @@ pub fn switch(repo: &Repo, req: Request) -> CmdResult {
                     .message(reason.as_str()),
                 &mut hooks,
             )?;
-            previous(&say);
+            previous()?;
             let advice = advisor(repo)?
                 .enabled(Advice::DetachedHead)
                 .map_err(Die::Fatal)?;
@@ -524,7 +406,7 @@ pub fn switch(repo: &Repo, req: Request) -> CmdResult {
                 eprintln!("{}", msg::detached_advice(name));
             }
             say(&msg::head_now_at(
-                &objects.abbrev(&new_oid, 7),
+                &objects.abbrev(&new_oid, abbrev_len),
                 &subject(&objects, &new_oid),
             ));
         }
@@ -538,7 +420,7 @@ pub fn switch(repo: &Repo, req: Request) -> CmdResult {
                     .message(reason.as_str()),
                 &mut hooks,
             )?;
-            previous(&say);
+            previous()?;
             let same = old_branch.as_deref() == Some(full.as_str());
             match &req.create {
                 Some(c) if c.reset && existed => {
@@ -558,6 +440,105 @@ pub fn switch(repo: &Repo, req: Request) -> CmdResult {
         }
     }
     Ok(0)
+}
+
+/// Leaving the detached `HEAD` at `old` for `new`: "Previous HEAD position
+/// was ...", or the warning about commits no ref reaches any more (with
+/// the `detachedHead` advice on how to keep them).
+pub fn report_old_head(
+    repo: &Repo,
+    store: &FilesStore,
+    objects: &Objects,
+    old: ObjectId,
+    new: Option<ObjectId>,
+) -> Result<(), Die> {
+    let abbrev_len = repo.default_abbrev();
+    let lost = lost_commits(store, objects, old, new);
+    if lost.is_empty() {
+        eprintln!(
+            "{}",
+            msg::previous_head(&objects.abbrev(&old, abbrev_len), &subject(objects, &old))
+        );
+        return Ok(());
+    }
+    let mut out = msg::leaving_behind(lost.len());
+    out.push('\n');
+    // Up to five commits; more than that shows four and a count.
+    let shown = if lost.len() > 5 { 4 } else { lost.len() };
+    for id in &lost[..shown] {
+        out.push_str(&msg::leaving_behind_commit(
+            &objects.abbrev(id, abbrev_len),
+            &subject(objects, id),
+        ));
+        out.push('\n');
+    }
+    if shown < lost.len() {
+        out.push_str(&msg::leaving_behind_more(lost.len() - shown));
+        out.push('\n');
+    }
+    out.push('\n');
+    if advisor(repo)?
+        .enabled(Advice::DetachedHead)
+        .map_err(Die::Fatal)?
+    {
+        out.push_str(&msg::leaving_behind_advice(
+            lost.len(),
+            &objects.abbrev(&old, abbrev_len),
+        ));
+        out.push('\n');
+    }
+    eprint!("{out}");
+    Ok(())
+}
+
+/// Commits reachable from `old` but neither from `new` (if any) nor from
+/// any ref,
+/// newest first.
+fn lost_commits(
+    store: &FilesStore,
+    objects: &Objects,
+    old: ObjectId,
+    new: Option<ObjectId>,
+) -> Vec<ObjectId> {
+    let mut walk = Walk::new(CommitReader(objects), WalkOptions::default());
+    if walk.push(&old, false).is_err() {
+        return Vec::new();
+    }
+    if let Some(new) = new {
+        let _ = walk.push(&new, true);
+    }
+    let refs = store
+        .iter(&rgit_refs::IterOptions::prefix(""))
+        .unwrap_or_default();
+    for item in refs {
+        if let rgit_refs::IterItem::Ref(r) = item {
+            if let Some(c) = r.oid.and_then(|id| peel_commit(objects, &id)) {
+                let _ = walk.push(&c, true);
+            }
+        }
+    }
+    walk.collect_all().unwrap_or_default()
+}
+
+/// Commits for the walk, read from the object database.
+struct CommitReader<'a>(&'a Objects);
+
+impl CommitSource for CommitReader<'_> {
+    type Error = ();
+    fn load(&mut self, id: &ObjectId) -> Result<CommitInfo, ()> {
+        let (kind, data) = self.0.read(id).ok_or(())?;
+        if kind != ObjectKind::Commit {
+            return Err(());
+        }
+        let commit = rgit_object::Commit::parse(self.0.hash(), &data).map_err(|_| ())?;
+        Ok(CommitInfo {
+            parents: commit.parents().map_err(|_| ())?,
+            time: commit
+                .committer()
+                .and_then(|s| s.time())
+                .map_or(0, |t| t.seconds),
+        })
+    }
 }
 
 /// "Your branch is ..." for `branch` at `head`, on stdout.
@@ -646,6 +627,10 @@ pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool) -> CmdResult {
     if store.resolve_oid(&full).ok().flatten().is_some() {
         return Err(Die::Fatal(msg::branch_exists(name)));
     }
+    let detached_at = match store.read_raw("HEAD") {
+        Ok(Some(RefTarget::Object(id))) => Some(id),
+        _ => None,
+    };
     if clear {
         let old = store.resolve_oid("HEAD").ok().flatten();
         let empty = ObjectId::empty_tree(repo.hash);
@@ -660,6 +645,11 @@ pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool) -> CmdResult {
         .and_then(|()| tx.commit(&mut hooks))
         .map_err(|e| Die::Fatal(e.to_string()))?;
     if !quiet {
+        // `checkout --orphan` keeps the index and work tree and says
+        // nothing about the old `HEAD`.
+        if let Some(old) = detached_at.filter(|_| clear) {
+            report_old_head(repo, &store, &objects, old, None)?;
+        }
         eprintln!("{}", msg::switched_new(name));
     }
     Ok(0)
