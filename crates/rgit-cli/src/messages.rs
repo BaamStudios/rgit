@@ -31,6 +31,7 @@ pub mod push;
 pub mod read_tree;
 pub mod reflog;
 pub mod reset;
+pub mod restore;
 pub mod rev_list;
 pub mod rm;
 pub mod show_ref;
