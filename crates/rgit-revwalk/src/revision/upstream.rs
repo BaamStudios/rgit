@@ -102,6 +102,13 @@ impl Resolver<'_> {
         }
     }
 
+    /// The full name of the upstream ref configured for the local branch
+    /// `branch` (which need not exist yet), whether or not that ref
+    /// exists; `None` without a usable configuration.
+    pub fn upstream_ref(&self, branch: &str) -> Option<String> {
+        self.upstream_of(branch).ok()
+    }
+
     /// `branch.<name>.remote` + `branch.<name>.merge`, mapped through the
     /// remote's fetch refspecs.
     fn upstream_of(&self, branch: &str) -> Result<String, Error> {
