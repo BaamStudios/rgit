@@ -529,6 +529,8 @@ fn diff_summary(repo: &Repo, pairs: &[Pair], quote_high: bool) -> Vec<u8> {
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let args = parse_args(argv)?;
     let mut repo = Repo::open(ctx, Mode::Required)?;
+    let advisor = ctx.advisor(&repo.config)?;
+    advisor.check_env().map_err(Die::Fatal)?;
     let head = repo.resolve("HEAD").filter(|_| repo.refs.resolve("HEAD").is_some());
     let head = head.and_then(|h| repo.peel_to(h, ObjectKind::Commit));
     let repo = repo;
@@ -763,7 +765,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let _ = std::io::stdout().write_all(&listed);
         let _ = std::io::stdout().flush();
         eprintln!("error: {}", msg::UNMERGED);
-        eprintln!("{}", msg::UNMERGED_HINT);
+        advisor
+            .advise_without_footer(Advice::ResolveConflict, msg::UNMERGED_HINT)
+            .map_err(Die::Fatal)?;
         return Err(fatal(msg::UNRESOLVED));
     }
 
@@ -793,11 +797,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         || args.date.is_some();
 
     let renames = !matches!(config_bool(&repo, "diff.renames"), Some(false));
-    let hints = config_bool(&repo, "advice.statushints").unwrap_or(true)
-        && !matches!(
-            std::env::var("GIT_ADVICE").ok().as_deref().map(|v| rgit_config::value::parse_bool(Some(v.as_bytes()))),
-            Some(Some(false))
-        );
+    let hints = advisor.enabled(Advice::StatusHints).map_err(Die::Fatal)?;
     let mut header = wt_status::header(&repo, head);
     header.merging = merging;
     let staged = tree_changes::diff(&base, &wt_status::index_flat(commit_index), renames);
@@ -956,7 +956,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Die::Exit(rgit_options::EXIT_FATAL)
         })?;
         let opts = rgit_ident::editor::LaunchOptions {
-            hint: rgit_ident::editor::waiting_hint_enabled(&repo.config, &env) && !ctx.no_advice,
+            hint: advisor
+                .enabled(Advice::WaitingForEditor)
+                .map_err(Die::Fatal)?,
             env: ctx.child_env(),
             cwd: None,
         };

@@ -96,7 +96,7 @@ pub fn merge_bases(
     let setup = crate::repo::setup(ctx, crate::repo::Mode::RequiredQuiet)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
-    let rev_opts = revisions::options(&config, kind)?;
+    let rev_opts = revisions::options(ctx, &config, kind)?;
     let shallow = setup.common_dir.join("shallow");
     let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
