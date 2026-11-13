@@ -98,9 +98,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let Some(mut transport) =
         rgit_transport::transport_for(url, &settings).map_err(|e| fatal(&e))?
     else {
-        return Err(Die::Fatal(format!(
-            "unable to find remote helper for '{}'",
-            url.split("://").next().unwrap_or(url)
+        return Err(Die::Fatal(msg::no_remote_helper(
+            url.split("://").next().unwrap_or(url),
         )));
     };
     let mut options = ConnectOptions::new(Service::UploadPack);

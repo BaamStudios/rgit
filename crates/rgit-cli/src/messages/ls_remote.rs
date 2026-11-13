@@ -23,3 +23,8 @@ pub const HELP_SORT: &str = "field name to sort on";
 pub fn unsupported_sort(key: &str) -> String {
     format!("rgit: ls-remote --sort={key} is not supported yet")
 }
+
+/// No transport handles the URL's scheme.
+pub fn no_remote_helper(scheme: &str) -> String {
+    format!("unable to find remote helper for '{scheme}'")
+}
