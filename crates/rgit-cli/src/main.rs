@@ -5,6 +5,7 @@
 //! `git-<cmd>` (e.g. `git-upload-pack`) it runs `<cmd>` directly.
 
 mod abbrev;
+mod attributes;
 mod commands;
 mod context;
 mod diff;

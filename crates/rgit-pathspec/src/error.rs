@@ -74,6 +74,9 @@ pub enum PathspecError {
         /// The character.
         ch: u8,
     },
+    /// A value in `attr:NAME=VALUE` ends with an escaping backslash.
+    #[error("Escape character '\\' not allowed as last character in attr value")]
+    AttrValueEscapeAtEnd,
     /// The pathspec names a path outside the work tree.
     #[error("{}: '{}' is outside repository at '{}'", lossy(.arg), lossy(.path), lossy(.root))]
     OutsideRepository {
