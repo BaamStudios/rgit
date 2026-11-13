@@ -13,8 +13,14 @@
 //! - `[<tree-ish>] [--] <pathspec>...` and `--pathspec-from-file`: the same
 //!   for the matching paths only; `HEAD` does not move.
 //!
-//! Not yet: `--hard`, `--merge`, `--keep` (they need the tree unpacking
-//! engine, #107), `--patch` (#109), `--recurse-submodules` (#121).
+//! - `--hard [<commit>]`: also makes the work tree match (one-way reset
+//!   through `rgit-unpack`) and prints "HEAD is now at ...".
+//! - `--merge` and `--keep` as in the DISCUSSION tables of git-reset(1):
+//!   a one-way merge that requires changed entries to be up to date, and a
+//!   two-way merge from `HEAD` whose index then becomes the target.
+//!
+//! Not yet: `--merge` with unmerged entries (needs three-way merges,
+//! #158), `--patch` (#109), `--recurse-submodules` (#121).
 
 use std::path::{Path, PathBuf};
 
@@ -499,7 +505,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(Die::Fatal(msg::SOFT_IN_MERGE.to_owned()));
     }
     if matches!(mode, HARD | MERGE | KEEP) {
-        return Err(Die::Fatal(msg::not_supported(&format!("--{}", mode_name(mode)))));
+        let empty = ObjectId::empty_tree(repo.hash);
+        let head_tree = head.and_then(|h| tree_of(&objects, &h)).unwrap_or(empty);
+        reset_worktree(&repo, mode, head_tree, tree.unwrap_or(empty), &rev_name)?;
     }
 
     if mode == MIXED {
@@ -564,7 +572,92 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .and_then(|()| tx.commit(&mut hooks))
         .map_err(|e| Die::Error(e.to_string(), 1))?;
     remove_branch_state(&repo.setup.git_dir, repo.hash);
+    if mode == HARD && !quiet {
+        println!(
+            "{}",
+            crate::messages::switch::head_now_at(
+                &objects.abbrev(&commit, 7),
+                &crate::switch_branch::subject(&objects, &commit)
+            )
+        );
+    }
     Ok(0)
+}
+
+/// `--hard`, `--merge`, `--keep`: moves the index and the work tree from
+/// `head` to `target` (trees) as the DISCUSSION tables of git-reset(1)
+/// describe. `--hard` is a one-way reset; `--merge` a one-way merge that
+/// requires changed entries to be up to date; `--keep` a two-way merge
+/// from `HEAD` whose index then becomes `target` (local changes stay in
+/// the work tree).
+fn reset_worktree(
+    repo: &Repo,
+    mode: i32,
+    head: ObjectId,
+    target: ObjectId,
+    rev: &str,
+) -> Result<(), Die> {
+    use crate::commands::read_tree::{lock_failed, path_options, unpack_failed};
+    use rgit_fs::{LockFile, LockOptions};
+    use rgit_unpack::{Identity, Merge, Options, Worktree};
+
+    let work_tree = repo.work_tree()?;
+    let index_path = repo.setup.cwd.join(repo.index_path());
+    let lock = LockFile::acquire(&index_path, &LockOptions::default()).map_err(lock_failed)?;
+    let (index, mtime) = repo.read_index()?;
+    let checker = repo.checker(mtime)?;
+    // No refresh: like git, a touched file counts as not up to date.
+    if mode == MERGE && index.has_conflicts() {
+        return Err(Die::Fatal(msg::not_supported("--merge with unmerged entries")));
+    }
+    let mut excludes = crate::commands::add::build_excludes(repo, &work_tree);
+    let wt = Worktree {
+        root: &work_tree,
+        checker: &checker,
+    };
+    let merge = match mode {
+        KEEP => Merge::TwoWay {
+            old: head,
+            new: target,
+        },
+        _ => Merge::OneWay(target),
+    };
+    let mut opts = Options {
+        reset: mode == HARD,
+        update: true,
+        paths: path_options(repo),
+        excludes: Some(&mut excludes),
+        ..Options::default()
+    };
+    let plan = match rgit_unpack::plan(repo.odb(), &index, &merge, Some(&wt), &mut opts) {
+        Ok(p) => p,
+        Err(rgit_unpack::Error::Rejected(r)) => {
+            for m in r.plumbing_messages() {
+                eprintln!("error: {m}");
+            }
+            return Err(Die::Fatal(msg::could_not_reset_index(rev)));
+        }
+        Err(rgit_unpack::Error::Unmerged) => {
+            return Err(Die::Fatal(msg::could_not_reset_index(rev)));
+        }
+        Err(e) => return Err(unpack_failed(e)),
+    };
+    let applied = plan.apply(repo.odb(), &wt, &Identity);
+    let mut index = applied.index;
+    if mode == KEEP {
+        reset_index(repo, &mut index, Some(&target), &|_| true, false)?;
+    }
+    if let Some(reference) = mtime {
+        let _ = smudge_racy_entries(&mut index, reference, &checker);
+    }
+    crate::switch_branch::write_index(repo, &index, lock)?;
+    if !applied.errors.is_empty() {
+        for e in &applied.errors {
+            eprintln!("error: {e}");
+        }
+        return Err(Die::Exit(128));
+    }
+    Ok(())
 }
 
 /// Forgets an operation in progress after a whole reset: the merge state
