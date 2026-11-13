@@ -26,7 +26,7 @@ pub struct Context {
     pub namespace: Option<String>,
     /// `--bare` was given.
     pub bare: bool,
-    /// `-p` (`Some(true)`) or `-P` (`Some(false)`); pager handling is #75.
+    /// `-p` (`Some(true)`) or `-P` (`Some(false)`), see [`crate::pager`].
     pub paginate: Option<bool>,
     pub no_replace_objects: bool,
     pub no_lazy_fetch: bool,
@@ -38,6 +38,8 @@ pub struct Context {
     pub icase_pathspecs: bool,
     /// `--attr-source`.
     pub attr_source: Option<String>,
+    /// The command being run (for `pager.<cmd>`).
+    pub command: String,
 }
 
 /// Quote `s` for the shell like git's `sq_quote`: `'...'`, with `'` and `!`
@@ -144,6 +146,15 @@ impl Context {
         }
         if let Some(a) = &self.attr_source {
             set("GIT_ATTR_SOURCE", a);
+        }
+        if crate::pager::started() {
+            set("GIT_PAGER_IN_USE", "true");
+        } else if self.paginate == Some(false)
+            || (self.paginate.is_none()
+                && !self.command.is_empty()
+                && crate::pager::disabled(self, &crate::pager::config(self)))
+        {
+            set("GIT_PAGER", "cat");
         }
         env.push((
             "GIT_EXEC_PATH".into(),

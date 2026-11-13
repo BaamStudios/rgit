@@ -63,7 +63,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         };
         collect::index(&repo, &tree, &index, &pathspec, Some(&wt), false)?
     };
-    let out = Output::new(Some(&repo), repo.hash, &opts, formats, false);
+    let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false);
+    out.set_color(&opts)?;
     let (bytes, changed) = out.render(pairs)?;
     Ok(finish(&bytes, changed, &opts))
 }

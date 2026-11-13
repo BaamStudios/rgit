@@ -5,6 +5,7 @@
 //! No rename detection, no combined diffs.
 
 pub mod collect;
+pub mod color;
 pub mod options;
 pub mod output;
 mod stat;

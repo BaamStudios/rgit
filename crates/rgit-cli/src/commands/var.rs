@@ -67,6 +67,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let env = SystemEnv::default();
     let set = load_config(ctx, &env)?;
+    // `--no-pager` and `pager.var=false` set `GIT_PAGER=cat` for us too.
+    let env = PagerEnv {
+        inner: env,
+        cat: crate::pager::disabled(ctx, &set),
+    };
     // Everything goes out at the end, after any error message, like git's
     // buffered stdout.
     let mut buf = Vec::new();
@@ -90,6 +95,29 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let _ = out.write_all(&buf);
     let _ = out.flush();
     result
+}
+
+/// The process environment, with `GIT_PAGER=cat` when paging is off.
+struct PagerEnv {
+    inner: SystemEnv,
+    cat: bool,
+}
+
+impl Environment for PagerEnv {
+    fn var(&self, name: &str) -> Option<std::ffi::OsString> {
+        if self.cat && name == "GIT_PAGER" {
+            return Some("cat".into());
+        }
+        self.inner.var(name)
+    }
+
+    fn user_home(&self, user: &str) -> Option<PathBuf> {
+        self.inner.user_home(user)
+    }
+
+    fn runtime_prefix(&self) -> Option<PathBuf> {
+        self.inner.runtime_prefix()
+    }
 }
 
 /// `-l`: the configuration, then every variable that has a value.

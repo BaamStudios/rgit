@@ -143,17 +143,24 @@ pub struct Style {
     pub mailmap: Option<Mailmap>,
     pub date_mode: DateMode,
     pub date_ctx: DateContext,
+    /// Colour of the commit name (`color.diff.commit`) when colouring.
+    pub commit_color: Option<String>,
 }
 
 /// Append one entry. `first` is false for every entry after the first,
 /// which then gets the separator line of the multi-line formats.
 pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool) {
     let lines = message_lines(e.commit.message());
+    let color = style.commit_color.as_deref();
     if style.pretty == Pretty::Oneline {
+        out.extend_from_slice(color.unwrap_or("").as_bytes());
         out.extend_from_slice(e.name.as_bytes());
         for p in e.shown_parents {
             out.push(b' ');
             out.extend_from_slice(p.as_bytes());
+        }
+        if color.is_some() {
+            out.extend_from_slice(crate::color::RESET.as_bytes());
         }
         out.push(b' ');
         out.extend_from_slice(&subject(&lines));
@@ -163,11 +170,15 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
     if !first {
         out.push(b'\n');
     }
+    out.extend_from_slice(color.unwrap_or("").as_bytes());
     out.extend_from_slice(b"commit ");
     out.extend_from_slice(e.name.as_bytes());
     for p in e.shown_parents {
         out.push(b' ');
         out.extend_from_slice(p.as_bytes());
+    }
+    if color.is_some() {
+        out.extend_from_slice(crate::color::RESET.as_bytes());
     }
     out.push(b'\n');
     let author = e.commit.author();

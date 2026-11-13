@@ -41,6 +41,8 @@ pub struct DiffOpts {
     pub stat_name_width: Option<usize>,
     pub stat_graph_width: Option<usize>,
     pub stat_count: Option<usize>,
+    /// `--color[=<when>]` / `--no-color`.
+    pub color: Option<rgit_config::color::ColorBool>,
 }
 
 /// The output formats after resolving overrides and the default.
@@ -142,15 +144,19 @@ impl DiffOpts {
             "--no-prefix" => self.no_prefix = true,
             "--default-prefix" => self.default_prefix = true,
             "--no-renames"
-            | "--no-color"
-            | "--color=never"
             | "--no-ext-diff"
             | "--no-textconv"
             | "--myers"
             | "--default"
             | "--diff-algorithm=myers"
             | "--diff-algorithm=default" => {}
-            _ => return self.parse_valued(arg),
+            _ => {
+                if let Some(c) = crate::color::parse_arg(arg) {
+                    self.color = Some(c?);
+                    return Ok(true);
+                }
+                return self.parse_valued(arg);
+            }
         }
         Ok(true)
     }
