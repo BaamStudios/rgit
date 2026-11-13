@@ -283,15 +283,23 @@ fn find_author(repo: &Repo, pattern: &str) -> Option<(Vec<u8>, Vec<u8>)> {
 
 /// The comment string (`core.commentString`, `core.commentChar`); `auto`
 /// picks a character the message does not use.
-fn comment_string(repo: &Repo, text: &[u8]) -> String {
-    let v = config_str(repo, "core.commentstring").or_else(|| config_str(repo, "core.commentchar"));
-    match v.as_deref() {
+fn comment_string(repo: &Repo, text: &[u8]) -> Result<String, Die> {
+    // The last of core.commentChar and core.commentString wins.
+    let v = repo
+        .config
+        .entries()
+        .iter()
+        .rev()
+        .find(|e| e.name == "core.commentchar" || e.name == "core.commentstring")
+        .and_then(|e| e.value.as_ref())
+        .map(|v| String::from_utf8_lossy(v).into_owned());
+    Ok(match v.as_deref() {
         Some("auto") => cmsg::auto_comment_char(text)
             .map(|c| (c as char).to_string())
-            .unwrap_or_else(|| "#".into()),
+            .ok_or_else(|| fatal(msg::NO_COMMENT_CHAR))?,
         Some(s) if !s.is_empty() => s.to_owned(),
         _ => "#".into(),
-    }
+    })
 }
 
 fn os_path(root: &Path, rel: &[u8]) -> PathBuf {
@@ -633,6 +641,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .author()
                 .and_then(|a| a.to_owned())
                 .ok_or_else(|| fatal(msg::NOTHING_TO_AMEND))?;
+            if a.name.is_empty() {
+                return Err(fatal(rgit_ident::messages::empty_ident_name(&lossy(&a.email))));
+            }
             let (t, tz) = sig_time(&a);
             (a.name, a.email, t, tz)
         }
@@ -663,13 +674,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let (mut index, index_mtime) = repo.read_index()?;
     let checker = repo.checker(index_mtime)?;
     let mut commit_index: Option<Index> = None;
-    let mut index_written = false;
-    let mut real_untouched = false;
+    // With -a, -i and -o the updated index is only written once the
+    // commit is made (git keeps it locked until then).
+    let mut deferred = false;
     if args.all {
-        if update_all(&repo, &checker, &root, &mut index)? {
-            write_index(&repo, &mut index, index_mtime)?;
-            index_written = true;
-        }
+        deferred = update_all(&repo, &checker, &root, &mut index)?;
     } else if !args.paths.is_empty() {
         let opts = ParseOptions {
             prefix: repo.prefix(),
@@ -695,34 +704,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 if args.include { 128 } else { 1 },
             ));
         }
-        // Paths only in HEAD (removed from the index) are matched, but a
-        // file still on disk is not added back (observed with git).
-        let kept_from_head: Vec<&Vec<u8>> = matched
-            .iter()
-            .filter(|p| {
-                index.path_range(p).is_empty()
-                    && std::fs::symlink_metadata(os_path(&root, p)).is_ok()
-            })
-            .collect();
         for p in &matched {
-            if !kept_from_head.contains(&p) {
-                update_path(&repo, &checker, &root, &mut index, p)?;
-            }
+            update_path(&repo, &checker, &root, &mut index, p)?;
         }
-        // With nothing to take from the work tree git leaves the index
-        // file (and its cache tree) alone.
-        if matched.len() == kept_from_head.len() {
-            real_untouched = true;
-        } else {
-            write_index(&repo, &mut index, index_mtime)?;
-        }
-        index_written = true;
+        deferred = true;
         if !args.include {
             let mut temp = index_from_flat(repo.hash, &head_flat)?;
             for p in &matched {
-                if kept_from_head.contains(&p) {
-                    continue;
-                }
                 temp.remove_path(p);
                 for e in index.entries_for_path(p) {
                     temp.add(e.clone(), AddOptions::default())
@@ -755,10 +743,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     // git writes the index (refreshed) and the trees before it looks
     // for changes and asks for the message.
-    if !index_written {
+    if !deferred && !args.all && !args.only {
         write_index(&repo, &mut index.clone(), index_mtime)?;
     }
-    if !real_untouched && !index.has_conflicts() {
+    if !index.has_conflicts() {
         let _ = rgit_commit::write_tree(repo.odb(), &index, &Default::default());
     }
     let tree = super::write_tree::write_tree(&repo, commit_index, false, None)?;
@@ -860,7 +848,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let use_editor = args.edit.unwrap_or(!have_message && !args.amend)
         || (args.edit.is_none() && args.amend && !have_message);
     let mode = cleanup.resolve(use_editor);
-    let comment = comment_string(&repo, &message);
+    if use_editor && cleanup != Cleanup::Verbatim {
+        message = cmsg::stripspace(&message, None);
+    }
+    let comment = if use_editor {
+        comment_string(&repo, &message)?
+    } else {
+        comment_string(&repo, b"")?
+    };
     let editmsg = git_dir.join("COMMIT_EDITMSG");
 
     if use_editor {
@@ -991,6 +986,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .and_then(|()| tx.commit(&mut hooks))
         .map_err(|e| fatal(e.to_string()))?;
 
+    if deferred {
+        write_index(&repo, &mut index.clone(), index_mtime)?;
+    }
     if args.quiet {
         return Ok(0);
     }

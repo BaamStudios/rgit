@@ -64,6 +64,8 @@ pub fn could_not_read_log(path: &str, err: &str) -> String {
 }
 
 pub const COULD_NOT_READ_STDIN: &str = "could not read log from standard input";
+pub const NO_COMMENT_CHAR: &str =
+    "unable to select a comment character that is not used\nin the current commit message";
 pub const EMPTY_MESSAGE: &str = "Aborting commit due to empty commit message.";
 pub const SUPPLY_MESSAGE: &str = "Please supply the message using either -m or -F option.";
 
