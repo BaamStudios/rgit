@@ -132,7 +132,17 @@ impl Lab {
     }
 
     fn same(&self, env: &[(&str, &str)], args: &[&str]) {
-        let mut want = self.run(&self.git, env, args);
+        // A reference with another sysconfdir would read a different system
+        // config file than rgit; point it at the stock one.
+        let mut ref_env = env.to_vec();
+        let reads_system = env
+            .iter()
+            .any(|(k, v)| *k == "GIT_CONFIG_NOSYSTEM" && *v == "0")
+            && !env.iter().any(|(k, _)| *k == "GIT_CONFIG_SYSTEM");
+        if self.sysconfdir.is_some() && reads_system {
+            ref_env.push(("GIT_CONFIG_SYSTEM", "/etc/gitconfig"));
+        }
+        let mut want = self.run(&self.git, &ref_env, args);
         if let Some(dir) = &self.sysconfdir {
             want = want.replace(dir.as_str(), "/etc/");
         }
