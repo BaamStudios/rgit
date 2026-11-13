@@ -27,6 +27,7 @@ pub mod lookup;
 pub mod messages;
 mod parse;
 mod range;
+mod reach;
 mod refname;
 mod upstream;
 

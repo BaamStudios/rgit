@@ -12,6 +12,7 @@ pub mod hash_object;
 pub mod init;
 pub mod ls_files;
 pub mod ls_tree;
+pub mod merge_base;
 pub mod mktag;
 pub mod mktree;
 pub mod objects;
