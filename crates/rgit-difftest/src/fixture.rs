@@ -783,7 +783,16 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         if ft.is_symlink() {
             let target = fs::read_link(&src)?;
             #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &dst)?;
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                std::os::unix::fs::symlink(&target, &dst)?;
+                // The index records the link's own mtime: a copy made in a
+                // later second looks stat-dirty, and as the two sides copy one
+                // after the other, possibly to one side only (CI run
+                // 43354712156, checkout_index::basics).
+                let meta = fs::symlink_metadata(&src)?;
+                set_symlink_mtime(&dst, meta.mtime(), meta.mtime_nsec())?;
+            }
             #[cfg(not(unix))]
             {
                 let _ = target;
@@ -803,4 +812,76 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Sets the modification time of the symbolic link `link` itself (not of
+/// its target); the access time is left alone.
+#[cfg(unix)]
+fn set_symlink_mtime(link: &Path, secs: i64, nsecs: i64) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let path = CString::new(link.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let times = [
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
+        libc::timespec {
+            tv_sec: secs as libc::time_t,
+            tv_nsec: nsecs as _,
+        },
+    ];
+    // SAFETY: `path` is a NUL-terminated string and `times` holds the two
+    // timespecs utimensat(2) reads; both outlive the call.
+    let rc = unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt as _;
+
+    /// A copied symbolic link keeps the link's own mtime, so an index entry
+    /// staged from it stays stat-clean on both sides however many seconds
+    /// pass before or between the copies (CI run 43354712156).
+    #[test]
+    fn copy_tree_keeps_symlink_mtime() {
+        let dir = TempDir::new().unwrap();
+        let from = dir.path().join("from");
+        fs::create_dir(&from).unwrap();
+        fs::write(from.join("a"), "a\n").unwrap();
+        std::os::unix::fs::symlink("a", from.join("l")).unwrap();
+        // Far in the past, so a copy made now cannot match it by luck.
+        set_symlink_mtime(&from.join("l"), 1_000_000_000, 123_456_789).unwrap();
+        let link = fs::symlink_metadata(from.join("l")).unwrap();
+        assert_eq!(
+            (link.mtime(), link.mtime_nsec()),
+            (1_000_000_000, 123_456_789)
+        );
+        assert_ne!(fs::metadata(from.join("a")).unwrap().mtime(), 1_000_000_000);
+
+        let to = dir.path().join("to");
+        copy_tree(&from, &to).unwrap();
+        let copy = fs::symlink_metadata(to.join("l")).unwrap();
+        assert!(copy.file_type().is_symlink());
+        assert_eq!(fs::read_link(to.join("l")).unwrap(), Path::new("a"));
+        assert_eq!(
+            (copy.mtime(), copy.mtime_nsec()),
+            (1_000_000_000, 123_456_789)
+        );
+    }
 }
