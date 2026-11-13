@@ -210,6 +210,23 @@ fn subdirectory() {
 }
 
 #[test]
+fn linked_worktree() {
+    // HEAD and its reflog live in the worktree's git directory.
+    check_in(
+        history()
+            .git(["worktree", "add", "-q", "-b", "branch", "wt"])
+            .in_dir_fixture("wt"),
+        &["commit", "--allow-empty", "-m", "in worktree"],
+    );
+    check_in(
+        history()
+            .git(["worktree", "add", "-q", "--detach", "wt"])
+            .in_dir_fixture("wt"),
+        &["commit", "--allow-empty", "-m", "detached in worktree"],
+    );
+}
+
+#[test]
 fn all_and_paths() {
     let cases: &[&[&str]] = &[
         &["commit", "-a", "-m", "x"],
@@ -450,6 +467,25 @@ fn hooks_warn() {
             Check::Objects,
         ])
         .run();
+}
+
+#[test]
+fn conclude_merge() {
+    let merge = || {
+        history()
+            .git(["checkout", "-q", "-b", "side", "HEAD~1"])
+            .write("s", "s\n")
+            .git(["add", "s"])
+            .git(["commit", "-q", "-m", "side"])
+            .git(["checkout", "-q", "main"])
+            .git(["merge", "-q", "--no-commit", "side"])
+    };
+    check(merge(), &["commit", "-m", "merged"]);
+    check(merge(), &["commit", "-m", "x", "a"]);
+    check(merge(), &["commit", "--amend", "-m", "x"]);
+    check(merge().write("u", "u\n"), &["commit", "-a", "-m", "merged"]);
+    check_env(merge(), &["commit"], &[("GIT_EDITOR", EDITOR)]);
+    check_env(merge(), &["commit", "--no-edit"], &[("GIT_EDITOR", EDITOR)]);
 }
 
 #[test]
