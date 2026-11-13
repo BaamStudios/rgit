@@ -22,6 +22,7 @@ rgit-date = { path = "../rgit-date" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-options = { path = "../rgit-options" }
 rgit-ident = { path = "../rgit-ident" }
+rgit-messages = { path = "../rgit-messages" }
 rgit-pathspec = { path = "../rgit-pathspec" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-repo = { path = "../rgit-repo" }

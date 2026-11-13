@@ -34,7 +34,9 @@ pub enum Problem {
 }
 
 #[must_use]
-pub fn problem(kind: Problem, paths: &[String], cached: bool) -> String {
+/// The up-to-date check failure for `paths`; `hints` adds the
+/// `(use ...)` line (advice `rmHints`).
+pub fn problem(kind: Problem, paths: &[String], cached: bool, hints: bool) -> String {
     let many = paths.len() > 1;
     let head = match (kind, many) {
         (Problem::Both, false) => {
@@ -58,7 +60,9 @@ pub fn problem(kind: Problem, paths: &[String], cached: bool) -> String {
         s.push_str("\n    ");
         s.push_str(p);
     }
-    s.push('\n');
-    s.push_str(hint);
+    if hints {
+        s.push('\n');
+        s.push_str(hint);
+    }
     s
 }

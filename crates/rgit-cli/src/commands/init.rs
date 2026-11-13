@@ -3,13 +3,12 @@
 //! `<directory>` argument and `GIT_DIR`/`GIT_WORK_TREE`; the repository is
 //! created by [`rgit_repo::init`].
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use rgit_config::color::{ColorBool, parse_color, parse_colorbool};
-use rgit_config::value::parse_bool;
-use rgit_config::{ConfigSet, Environment, SystemEnv};
+use rgit_config::{Environment, SystemEnv};
 use rgit_fs::SharedRepository;
+use rgit_messages::{Level, prefixed};
 use rgit_repo::init::{self as repo_init, InitError, InitOptions, Notice, Template};
 use rgit_repo::path;
 
@@ -199,12 +198,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         initial_branch: branch.into_inner(),
     };
     // `--quiet` also silences advice.
-    let advice = AdviceOutput::new(ctx, &env, &early, !quiet.get());
+    let advisor = ctx
+        .advisor_with_env(&early, &env)?
+        .without_color_ui()
+        .silenced(quiet.get());
+    let mut advice_error = None;
     let outcome = repo_init::init(&opts, &env, &cl, early, &mut |n| match n {
-        Notice::Warning(w) => eprintln!("warning: {w}"),
-        Notice::DefaultBranchName => advice.print(msg::DEFAULT_BRANCH_ADVICE),
+        Notice::Warning(w) => eprintln!("{}", prefixed(Level::Warning, &w)),
+        Notice::DefaultBranchName => {
+            if let Err(e) = advisor.advise(Advice::DefaultBranchName, msg::DEFAULT_BRANCH_ADVICE) {
+                advice_error.get_or_insert(e);
+            }
+        }
     })
     .map_err(|e| fail(&e))?;
+    if let Some(e) = advice_error {
+        return Err(Die::Fatal(e));
+    }
     if !quiet.get() {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(
@@ -248,63 +258,4 @@ fn fail(e: &InitError) -> Die {
         };
     }
     Die::Exit(e.exit_code())
-}
-
-/// Whether and how advice is printed (`advice.*`, `color.advice`).
-struct AdviceOutput {
-    enabled: bool,
-    color: Option<String>,
-}
-
-impl AdviceOutput {
-    fn new(ctx: &Context, env: &dyn Environment, config: &ConfigSet, allowed: bool) -> Self {
-        let env_off = env
-            .var("GIT_ADVICE")
-            .and_then(|v| parse_bool(Some(v.as_encoded_bytes())))
-            == Some(false);
-        let enabled = allowed
-            && !ctx.no_advice
-            && !env_off
-            && config.bool("advice.defaultbranchname").ok().flatten() != Some(false);
-        let colorbool = config
-            .get("color.advice")
-            .or_else(|| config.get("color.ui"))
-            .and_then(|e| parse_colorbool(e.value.as_ref().map(|v| v.as_slice())))
-            .unwrap_or(ColorBool::Auto);
-        let use_color = match colorbool {
-            ColorBool::Always => true,
-            ColorBool::Never => false,
-            ColorBool::Auto => {
-                std::io::stderr().is_terminal()
-                    && env.var("TERM").is_none_or(|t| t != "dumb")
-            }
-        };
-        let color = use_color.then(|| {
-            config
-                .string("color.advice.hint")
-                .ok()
-                .flatten()
-                .and_then(|v| parse_color(&String::from_utf8_lossy(v)))
-                .unwrap_or_else(|| "\x1b[33m".to_string())
-        });
-        AdviceOutput { enabled, color }
-    }
-
-    fn print(&self, lines: &[&str]) {
-        if !self.enabled {
-            return;
-        }
-        let mut err = std::io::stderr().lock();
-        for line in lines {
-            let text = if line.is_empty() {
-                "hint:".to_string()
-            } else {
-                format!("hint: {line}")
-            };
-            let _ = match &self.color {
-                Some(c) => writeln!(err, "{c}{text}\x1b[m"),
-                None => writeln!(err, "{text}"),
-            };
-        }
-    }
 }

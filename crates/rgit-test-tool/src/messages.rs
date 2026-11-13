@@ -247,3 +247,6 @@ pub fn rename_symref(name: &str) -> String {
 
 /// `for-each-ref` with a prefix that does not end in `/`.
 pub const BUG_TRAILING_SLASH: &str = "BUG: ref pattern must end in a trailing slash when trimming";
+
+/// `advise` called without exactly one argument (printed as `fatal: `).
+pub const ADVISE_USAGE: &str = "usage: advise <advice>";

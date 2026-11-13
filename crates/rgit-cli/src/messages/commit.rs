@@ -74,9 +74,10 @@ it empty. You can repeat your command with --allow-empty, or you can
 remove the commit entirely with \"git reset HEAD^\".";
 
 pub const UNMERGED: &str = "Committing is not possible because you have unmerged files.";
-pub const UNMERGED_HINT: &str =
-    "hint: Fix them up in the work tree, and then use 'git add/rm <file>'
-hint: as appropriate to mark resolution and make a commit.";
+/// Advice `resolveConflict` (shown without the "Disable" line).
+pub const UNMERGED_HINT: &str = "\
+Fix them up in the work tree, and then use 'git add/rm <file>'
+as appropriate to mark resolution and make a commit.";
 pub const UNRESOLVED: &str = "Exiting because of an unresolved conflict.";
 
 pub fn instructions_strip(c: &str) -> String {

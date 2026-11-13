@@ -30,9 +30,8 @@ pub const HELP_SHOW_CURRENT: &str = "show current branch name";
 pub const HELP_DELETE: &str = "delete fully merged branch";
 pub const HELP_FORCE_DELETE: &str = "delete branch (even if not merged)";
 
-pub const HINT_REF_SYNTAX: &str = "hint: See 'git help check-ref-format'
-hint: Disable this message with \"git config set advice.refSyntax false\"
-";
+/// Advice `refSyntax`.
+pub const HINT_REF_SYNTAX: &str = "See 'git help check-ref-format'";
 pub const BRANCH_NAME_REQUIRED: &str = "branch name required";
 
 pub fn already_exists(name: &str) -> String {
@@ -101,11 +100,9 @@ pub fn not_fully_merged(name: &str) -> String {
     format!("the branch '{name}' is not fully merged")
 }
 
+/// Advice `forceDeleteBranch`.
 pub fn hint_force_delete(name: &str) -> String {
-    format!(
-        "hint: If you are sure you want to delete it, run 'git branch -D {name}'\n\
-         hint: Disable this message with \"git config set advice.forceDeleteBranch false\"\n"
-    )
+    format!("If you are sure you want to delete it, run 'git branch -D {name}'")
 }
 
 pub fn merged_to_upstream_not_head(name: &str, upstream: &str) -> String {

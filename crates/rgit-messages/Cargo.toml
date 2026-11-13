@@ -1,0 +1,11 @@
+[package]
+name = "rgit-messages"
+description = "rgit: conventions of user-visible messages (fatal/error/warning/hint) and the advice.* framework (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-config = { path = "../rgit-config" }

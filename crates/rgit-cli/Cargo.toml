@@ -26,6 +26,7 @@ rgit-fetch = { path = "../rgit-fetch" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-index = { path = "../rgit-index" }
+rgit-messages = { path = "../rgit-messages" }
 rgit-object = { path = "../rgit-object" }
 rgit-odb = { path = "../rgit-odb" }
 rgit-options = { path = "../rgit-options" }

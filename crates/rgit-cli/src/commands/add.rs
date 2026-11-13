@@ -378,6 +378,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     let repo = Repo::open(ctx, RepoMode::Required)?;
+    let advisor = ctx.advisor(&repo.config)?;
     let root = repo.work_tree()?;
     if let Some(name) = &from_file {
         // A relative file name is relative to the original directory.
@@ -397,7 +398,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     if args.is_empty() && !update && !all {
         eprintln!("{}", msg::NOTHING_SPECIFIED);
-        eprintln!("{}", msg::HINT_ADD_DOT);
+        advisor
+            .advise(Advice::AddEmptyPathspec, msg::HINT_ADD_DOT)
+            .map_err(Die::Fatal)?;
         return Ok(0);
     }
     let prefix = repo.prefix();
@@ -667,9 +670,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             };
             if warn_embedded.get() {
                 eprintln!("warning: {}", msg::embedded_repo(&lossy(path)));
-                let advice = repo.config.bool("advice.addembeddedrepo").ok().flatten();
-                if !hint_shown && advice != Some(false) {
-                    eprintln!("{}", msg::embedded_repo_hint(&lossy(path)));
+                if !hint_shown {
+                    advisor
+                        .advise(Advice::AddEmbeddedRepo, &msg::embedded_repo_hint(&lossy(path)))
+                        .map_err(Die::Fatal)?;
                 }
                 hint_shown = true;
             }
@@ -732,7 +736,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         for p in &ignored {
             eprintln!("{}", lossy(p));
         }
-        eprintln!("{}", msg::IGNORED_HINT);
+        advisor
+            .advise(Advice::AddIgnoredFile, msg::IGNORED_HINT)
+            .map_err(Die::Fatal)?;
         code = 1;
     }
 

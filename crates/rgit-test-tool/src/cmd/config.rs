@@ -67,19 +67,19 @@ impl Out {
     }
 }
 
-fn fatal(msg: impl std::fmt::Display) -> i32 {
+pub(crate) fn fatal(msg: impl std::fmt::Display) -> i32 {
     eprintln!("{}", messages::fatal(msg));
     128
 }
 
-fn print_fatal(lines: &[String]) -> i32 {
+pub(crate) fn print_fatal(lines: &[String]) -> i32 {
     for l in lines {
         eprintln!("{l}");
     }
     128
 }
 
-fn report(err: &Error) -> i32 {
+pub(crate) fn report(err: &Error) -> i32 {
     for (level, msg) in err.report() {
         eprintln!("{} {msg}", level.prefix());
     }
@@ -100,7 +100,7 @@ fn facts(repo: &Repo, early: bool) -> StaticRepoFacts {
 }
 
 /// Loads the standard stack. `repo` is `None` outside a repository.
-fn load(repo: Option<&Repo>, early: bool) -> Result<ConfigSet, Error> {
+pub(crate) fn load(repo: Option<&Repo>, early: bool) -> Result<ConfigSet, Error> {
     let env = SystemEnv::default();
     let facts = repo.map(|r| facts(r, early));
     let opts = LoadOptions {

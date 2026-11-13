@@ -28,16 +28,15 @@ pub fn upstream_does_not_exist(name: &str) -> String {
     format!("the requested upstream branch '{name}' does not exist")
 }
 
-pub const HINT_SET_UPSTREAM_FAILURE: &str = "hint:
-hint: If you are planning on basing your work on an upstream
-hint: branch that already exists at the remote, you may need to
-hint: run \"git fetch\" to retrieve it.
-hint:
-hint: If you are planning to push out a new local branch that
-hint: will track its remote counterpart, you may want to use
-hint: \"git push -u\" to set the upstream config as you push.
-hint: Disable this message with \"git config set advice.setUpstreamFailure false\"
-";
+/// Advice `setUpstreamFailure` (starts with an empty `hint:` line).
+pub const HINT_SET_UPSTREAM_FAILURE: &str = "
+If you are planning on basing your work on an upstream
+branch that already exists at the remote, you may need to
+run \"git fetch\" to retrieve it.
+
+If you are planning to push out a new local branch that
+will track its remote counterpart, you may want to use
+\"git push -u\" to set the upstream config as you push.";
 
 pub fn inherit_no_remote(name: &str) -> String {
     format!("asked to inherit tracking from '{name}', but no remote is set")

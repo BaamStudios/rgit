@@ -517,7 +517,9 @@ pub fn switch(repo: &Repo, req: Request) -> CmdResult {
                 &mut hooks,
             )?;
             previous(&say);
-            let advice = !matches!(repo.config.bool("advice.detachedhead"), Ok(Some(false)));
+            let advice = advisor(repo)?
+                .enabled(Advice::DetachedHead)
+                .map_err(Die::Fatal)?;
             if req.advise_detach && !old_detached && advice && !req.quiet {
                 eprintln!("{}", msg::detached_advice(name));
             }
@@ -563,7 +565,10 @@ pub fn print_tracking(repo: &Repo, branch: &str, head: ObjectId) {
     let Some(t) = crate::wt_status::tracking(repo, branch, Some(head)) else {
         return;
     };
-    let hints = !matches!(repo.config.bool("advice.statushints"), Ok(Some(false)));
+    let hints = advisor(repo)
+        .ok()
+        .and_then(|a| a.enabled(Advice::StatusHints).ok())
+        .unwrap_or(true);
     let mut lines: Vec<String> = Vec::new();
     match t.counts {
         None => {
@@ -620,10 +625,16 @@ pub fn check_new_branch_name(repo: &Repo, name: &str) -> Result<(), Die> {
         return Ok(());
     }
     eprintln!("fatal: {}", msg::not_valid_branch_name(name));
-    if !matches!(repo.config.bool("advice.refsyntax"), Ok(Some(false))) {
-        eprint!("{}", crate::messages::branch::HINT_REF_SYNTAX);
-    }
+    advisor(repo)?
+        .advise(Advice::RefSyntax, crate::messages::branch::HINT_REF_SYNTAX)
+        .map_err(Die::Fatal)?;
     Err(Die::Exit(128))
+}
+
+/// The advice settings of `repo` (`--no-advice` is known process-wide).
+fn advisor(repo: &Repo) -> Result<rgit_messages::Advisor, Die> {
+    rgit_messages::Advisor::new(&repo.config, &rgit_config::SystemEnv::default(), false)
+        .map_err(Die::Fatal)
 }
 
 /// `--orphan <name>`: `HEAD` becomes the unborn branch `name`; with

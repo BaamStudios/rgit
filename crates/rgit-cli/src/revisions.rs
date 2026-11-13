@@ -23,7 +23,7 @@ use rgit_revwalk::revision::{
     RefValue, ReflogEntry, WorkTreeInfo, WorkTreeLookup,
 };
 
-use crate::Die;
+use crate::{Context, Die};
 
 /// The object database (loose objects and packs) for the revision parser.
 pub struct Objects {
@@ -409,7 +409,7 @@ pub(crate) fn unable_to_parse(key: &str, e: &rgit_config::Entry) -> String {
 
 /// Read the revision settings from the configuration. Invalid values end
 /// the command like git does.
-pub fn options(config: &ConfigSet, kind: HashKind) -> Result<Options, Die> {
+pub fn options(ctx: &Context, config: &ConfigSet, kind: HashKind) -> Result<Options, Die> {
     let mut o = Options::default();
     let bool_of = |key: &str| -> Result<Option<bool>, Die> {
         config.bool(key).map_err(|e| Die::Fatal(e.to_string()))
@@ -417,9 +417,12 @@ pub fn options(config: &ConfigSet, kind: HashKind) -> Result<Options, Die> {
     if let Some(b) = bool_of("core.warnAmbiguousRefs")? {
         o.warn_ambiguous_refs = b;
     }
-    if let Some(b) = bool_of("advice.objectNameWarning")? {
-        o.advice_object_name_warning = b;
-    }
+    // An invalid `GIT_ADVICE` is not reported here (git reports it only
+    // when the warning is about to be shown); the advice then stays on.
+    o.advice_object_name_warning = ctx
+        .advisor(config)?
+        .enabled(rgit_messages::Advice::ObjectNameWarning)
+        .unwrap_or(true);
     if let Some(e) = config.get("core.disambiguate") {
         let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
         match Hint::from_config(&v) {

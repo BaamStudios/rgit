@@ -30,11 +30,7 @@ fn usage_error(text: &str) -> Die {
 
 /// `strerror`-style text of an I/O error (without Rust's "(os error N)").
 pub fn strerror(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error ") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_messages::strerror(e)
 }
 
 /// Take the value of `--name=<v>` or `--name <v>`.
@@ -102,7 +98,10 @@ pub fn parse(ctx: &mut Context, args: &[String]) -> Result<Action, Die> {
             "--no-replace-objects" => ctx.no_replace_objects = true,
             "--no-lazy-fetch" => ctx.no_lazy_fetch = true,
             "--no-optional-locks" => ctx.no_optional_locks = true,
-            "--no-advice" => ctx.no_advice = true,
+            "--no-advice" => {
+                ctx.no_advice = true;
+                rgit_messages::advice::disable_all();
+            }
             "--literal-pathspecs" => ctx.literal_pathspecs = true,
             "--glob-pathspecs" => ctx.glob_pathspecs = true,
             "--noglob-pathspecs" => ctx.noglob_pathspecs = true,

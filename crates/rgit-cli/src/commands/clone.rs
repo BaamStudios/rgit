@@ -21,7 +21,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use bstr::ByteSlice;
-use rgit_config::{ConfigSet, Environment, SystemEnv};
+use rgit_config::{ConfigSet, SystemEnv};
 use rgit_fetch::{ConnectSettings, LocalRepo, PackOptions, ReceivedPack, Session, graph, refmap};
 use rgit_hash::ObjectId;
 use rgit_object::ObjectKind;
@@ -798,7 +798,18 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     // From here on the repository stays, even when the checkout fails.
     junk.armed = false;
     if let (Some(oid), false, Some(_)) = (checkout_oid, opts.no_checkout, &work_tree) {
-        let advice = advice_enabled(ctx, &env, config, "advice.detachedhead");
+        // An invalid GIT_ADVICE fails the checkout step (observed).
+        let advice = match ctx
+            .advisor_with_env(config, &env)
+            .and_then(|a| a.enabled(Advice::DetachedHead).map_err(Die::Fatal))
+        {
+            Ok(a) => a,
+            Err(e) => {
+                let _ = e.emit();
+                eprint!("warning: {}", msg::CHECKOUT_FAILED);
+                return Err(Die::Exit(128));
+            }
+        };
         drop(hooks);
         drop(repo);
         if let Err(e) = initial_checkout(ctx, setup, oid) {
@@ -808,7 +819,8 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             return Err(Die::Exit(128));
         }
         if let Some(name) = detached_name {
-            if !opts.quiet && advice {
+            // Shown with --quiet as well (observed from git 2.56).
+            if advice {
                 eprint!("{}", msg::detached_head_advice(&name));
             }
         }
@@ -882,14 +894,6 @@ enum Our {
     Tag(String, ObjectId),
     /// The remote's HEAD is detached.
     Detached(ObjectId),
-}
-
-fn advice_enabled(ctx: &Context, env: &dyn Environment, config: &ConfigSet, key: &str) -> bool {
-    let env_off = env
-        .var("GIT_ADVICE")
-        .and_then(|v| rgit_config::value::parse_bool(Some(v.as_encoded_bytes())))
-        == Some(false);
-    !ctx.no_advice && !env_off && config.bool(key).ok().flatten() != Some(false)
 }
 
 fn open_new_repository(

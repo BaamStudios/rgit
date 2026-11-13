@@ -286,12 +286,16 @@ pub fn plan(
                 return Err(Die::Fatal(msg::not_a_branch(start)));
             }
             eprintln!("fatal: {}", msg::upstream_does_not_exist(start));
-            if !matches!(
-                repo.config.bool("advice.setupstreamfailure"),
-                Ok(Some(false))
-            ) {
-                eprint!("{}", msg::HINT_SET_UPSTREAM_FAILURE);
-            }
+            // `--no-advice` reaches this advisor through
+            // `rgit_messages::advice::disable_all`.
+            rgit_messages::Advisor::new(repo.config, &rgit_config::SystemEnv::default(), false)
+                .and_then(|a| {
+                    a.advise(
+                        rgit_messages::Advice::SetUpstreamFailure,
+                        msg::HINT_SET_UPSTREAM_FAILURE,
+                    )
+                })
+                .map_err(Die::Fatal)?;
             return Err(Die::Exit(128));
         }
         return Ok(None);

@@ -517,7 +517,7 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
-    let rev_opts = revisions::options(&config, kind)?;
+    let rev_opts = revisions::options(ctx, &config, kind)?;
     let shallow = std::env::var_os("GIT_SHALLOW_FILE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| setup.common_dir.join("shallow"));

@@ -26,6 +26,7 @@ type Tool = (&'static str, fn(&[String]) -> i32);
 
 /// Implemented subcommands, in the order the usage lists them.
 const TOOLS: &[Tool] = &[
+    ("advise", cmd::advise::advise),
     ("config", cmd::config::config),
     ("date", cmd::date::date),
     ("parse-options", cmd::parse_options::parse_options),

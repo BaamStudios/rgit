@@ -61,6 +61,24 @@ pub fn sq_quote(s: &str) -> String {
 }
 
 impl Context {
+    /// The advice settings (`advice.*`, `GIT_ADVICE`, `--no-advice`,
+    /// `color.advice`). An `advice.*` value that is not a boolean is fatal.
+    pub fn advisor(
+        &self,
+        config: &rgit_config::ConfigSet,
+    ) -> Result<rgit_messages::Advisor, crate::Die> {
+        self.advisor_with_env(config, &rgit_config::SystemEnv::default())
+    }
+
+    /// [`Context::advisor`] with the given environment.
+    pub fn advisor_with_env(
+        &self,
+        config: &rgit_config::ConfigSet,
+        env: &dyn rgit_config::Environment,
+    ) -> Result<rgit_messages::Advisor, crate::Die> {
+        rgit_messages::Advisor::new(config, env, self.no_advice).map_err(crate::Die::Fatal)
+    }
+
     /// The value of `GIT_CONFIG_PARAMETERS` children should see: the
     /// inherited value followed by our `-c`/`--config-env` entries.
     pub fn config_parameters_env(&self) -> Option<String> {
