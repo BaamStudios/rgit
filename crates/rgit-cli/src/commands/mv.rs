@@ -143,7 +143,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let repo = Repo::open(ctx, Mode::Required)?;
     let root = repo.work_tree()?;
     let index_path = repo.setup.cwd.join(repo.index_path());
-    let mut lock = rgit_fs::LockFile::acquire(&index_path, &rgit_fs::LockOptions::default())
+    let mut lock = rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options())
         .map_err(|e| {
             if let Some(w) = e.warning() {
                 eprintln!("warning: {w}");

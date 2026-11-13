@@ -340,7 +340,7 @@ fn write_index(repo: &Repo, index: &mut Index, mtime: Option<rgit_index::Time>) 
     let path = repo.setup.cwd.join(repo.index_path());
     let skip_hash = config_bool(repo, "index.skiphash").unwrap_or(false);
     index
-        .write_file(&path, &rgit_fs::LockOptions::default(), &WriteOptions { skip_hash })
+        .write_file(&path, &repo.index_lock_options(), &WriteOptions { skip_hash })
         .map_err(|e| fatal(e.to_string()))
 }
 

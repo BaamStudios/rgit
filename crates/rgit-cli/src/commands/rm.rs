@@ -221,7 +221,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let path = repo.setup.cwd.join(repo.index_path());
     let skip_hash = repo.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
     index
-        .write_file(&path, &rgit_fs::LockOptions::default(), &WriteOptions { skip_hash })
+        .write_file(&path, &repo.index_lock_options(), &WriteOptions { skip_hash })
         .map_err(|e| Die::Fatal(e.to_string()))?;
     Ok(0)
 }

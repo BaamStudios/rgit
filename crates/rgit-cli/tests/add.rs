@@ -329,6 +329,22 @@ fn beyond_symlink() {
     }
 }
 
+/// A tracked file (here the symlink `lnk`) replaced by a directory.
+#[test]
+fn tracked_file_turned_directory() {
+    for args in [
+        &["-v", "lnk/f"][..],
+        &["-v", "lnk"],
+        &["-v", "-A"],
+        &["-v", "."],
+    ] {
+        let mut fx = fixture().remove("lnk").write("lnk/f", "f\n");
+        let mut argv = vec!["add"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).checks(STATE).run();
+    }
+}
+
 #[test]
 fn filemode_off_new_file() {
     let mut fx = fixture()
