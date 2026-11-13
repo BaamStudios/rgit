@@ -11,8 +11,13 @@ fn rgit(args: &[&str]) -> Output {
 }
 
 fn cmd(prog: &Path, args: &[&str]) -> Output {
+    // Never read or write the real user configuration.
+    let home = std::env::temp_dir().join(format!("rgit-cli-home-{}", std::process::id()));
     Command::new(prog)
         .args(args)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("GIT_EXEC_PATH")
         .env_remove("GIT_DIR")
         .env_remove("GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS")
@@ -87,6 +92,9 @@ fn exec_path() {
     let o = Command::new(dir.join("git"))
         .arg("--exec-path")
         .env("GIT_EXEC_PATH", "/from/env")
+        .env("HOME", &dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
     assert_eq!(text(&o.stdout), "/from/env\n");
@@ -222,6 +230,12 @@ fn dies_quietly_on_sigpipe() {
     reader.wait().unwrap();
     let o = Command::new(RGIT)
         .args(["version", "--build-options"])
+        .env("HOME", std::env::temp_dir().join("rgit-cli-home-sigpipe"))
+        .env(
+            "XDG_CONFIG_HOME",
+            std::env::temp_dir().join("rgit-cli-home-sigpipe/.config"),
+        )
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .stdout(Stdio::from(write_end))
         .stderr(Stdio::piped())
         .output()

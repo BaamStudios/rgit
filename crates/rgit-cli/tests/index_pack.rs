@@ -70,6 +70,8 @@ fn pack_of(fx: &Fixture, revs: &str, extra: &[&str]) -> Vec<u8> {
         .arg(&script)
         .current_dir(fx.work_dir())
         .env("GIT", fx.reference_git())
+        .env("HOME", fx.work_dir())
+        .env("XDG_CONFIG_HOME", fx.work_dir().join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()

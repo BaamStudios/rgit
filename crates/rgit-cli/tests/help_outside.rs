@@ -11,6 +11,9 @@ fn help_outside_a_repository() {
     std::fs::create_dir_all(&dir).unwrap();
     let out = Command::new(rgit)
         .arg("--list-cmds=builtins")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", &dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
         .output()
         .expect("run rgit");
     let list = String::from_utf8(out.stdout).expect("utf-8");
@@ -23,6 +26,7 @@ fn help_outside_a_repository() {
                 .env("GIT_CEILING_DIRECTORIES", &dir)
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("HOME", &dir)
+                .env("XDG_CONFIG_HOME", dir.join(".config"))
                 .output()
                 .expect("run rgit");
             let stdout = String::from_utf8_lossy(&out.stdout);

@@ -49,6 +49,7 @@ pub fn git(dir: &Path) -> Option<Command> {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
         .env("LC_ALL", "C")
         .env("LANG", "C")
         .env_remove("GIT_DIR")

@@ -29,6 +29,8 @@ fn git_input(dir: &Path, args: &[&str], input: &[u8]) -> Vec<u8> {
     let mut child = Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_AUTHOR_NAME", "A U Thor")

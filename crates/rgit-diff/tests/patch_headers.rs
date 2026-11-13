@@ -24,6 +24,7 @@ fn git(dir: &Path, args: &[&str]) -> Vec<u8> {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
         .env("LC_ALL", "C")
         .env("GIT_AUTHOR_NAME", "A")
         .env("GIT_AUTHOR_EMAIL", "a@example.com")

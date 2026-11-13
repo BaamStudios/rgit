@@ -20,6 +20,8 @@ fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
     let mut child = Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env_remove("GIT_DIR")

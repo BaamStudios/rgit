@@ -109,6 +109,8 @@ fn setup() -> Option<(PathBuf, tempfile::TempDir)> {
     let status = Command::new(&git)
         .args(["init", "-q"])
         .arg(t.join("repo"))
+        .env("HOME", t)
+        .env("XDG_CONFIG_HOME", t.join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .status()
@@ -141,6 +143,7 @@ fn run_git(git: &Path, t: &Path, c: &Case) -> (Vec<u8>, String) {
     }
     cmd.arg(c.url);
     cmd.env("HOME", t)
+        .env("XDG_CONFIG_HOME", t.join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("OUT", &out)

@@ -26,6 +26,8 @@ pub fn git_available() -> bool {
 pub fn git_cmd(dir: &Path) -> Command {
     let mut c = Command::new(reference().expect("reference git"));
     c.current_dir(dir)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_AUTHOR_NAME", "A U Thor")
