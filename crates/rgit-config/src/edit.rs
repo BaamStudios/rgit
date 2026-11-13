@@ -692,6 +692,60 @@ pub fn rename_section(data: &[u8], old: &[u8], new: Option<&[u8]>) -> Result<Vec
     Ok(out)
 }
 
+/// Copy every section whose header, as written, equals `old` to a new
+/// section `new`, placed right after the original (`git branch -c`).
+pub fn copy_section(data: &[u8], old: &[u8], new: &[u8]) -> Result<Vec<u8>, EditError> {
+    if !valid_section_name(new) {
+        return Err(EditError::InvalidSectionName(new.into()));
+    }
+    let header = section_header(section_part(new), subsection_part_any(new));
+    let mut out = Vec::with_capacity(data.len() * 2);
+    // Body lines of the section being copied.
+    let mut copying: Option<Vec<u8>> = None;
+    let mut found = false;
+    let flush = |out: &mut Vec<u8>, body: Vec<u8>| {
+        if !out.is_empty() && !out.ends_with(b"\n") {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(&header);
+        out.push(b'\n');
+        out.extend_from_slice(&body);
+    };
+    for (index, line) in data.lines_with_terminator().enumerate() {
+        let content = line.strip_suffix(b"\n").unwrap_or(line);
+        if content.len() >= MAX_SECTION_LINE {
+            return Err(EditError::OverlongLine { line: index + 1 });
+        }
+        if let Some((name, after)) = line_header(line) {
+            if let Some(body) = copying.take() {
+                flush(&mut out, body);
+            }
+            if name == old {
+                found = true;
+                let rest = &line[after..];
+                let ws = rest.iter().take_while(|c| is_space(**c)).count();
+                let rest = &rest[ws..];
+                let mut body = Vec::new();
+                if !rest.is_empty() {
+                    body.push(b'\t');
+                    body.extend_from_slice(rest);
+                }
+                copying = Some(body);
+            }
+        } else if let Some(body) = copying.as_mut() {
+            body.extend_from_slice(line);
+        }
+        out.extend_from_slice(line);
+    }
+    if let Some(body) = copying.take() {
+        flush(&mut out, body);
+    }
+    if !found {
+        return Err(EditError::NoSuchSection(old.into()));
+    }
+    Ok(out)
+}
+
 /// Like [`subsection_part`], but everything after the first dot (rename
 /// targets may contain more dots, `a.` gives an empty subsection).
 fn subsection_part_any(name: &[u8]) -> Option<&[u8]> {
@@ -712,6 +766,22 @@ mod tests {
             comment: None,
         };
         set(data.as_bytes(), &req).map(|v| String::from_utf8(v).unwrap())
+    }
+
+    #[test]
+    fn copy_section_after_original() {
+        let data = "[core]\n\tbare = false\n[branch \"a\"]\n\tremote = .\n[x]\n\ty = 1\n";
+        let out = copy_section(data.as_bytes(), b"branch.a", b"branch.b").unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "[core]\n\tbare = false\n[branch \"a\"]\n\tremote = .\n[branch \"b\"]\n\tremote = .\n[x]\n\ty = 1\n"
+        );
+        let out = copy_section(b"[branch \"a\"]\n\tk = v", b"branch.a", b"branch.b").unwrap();
+        assert_eq!(out, b"[branch \"a\"]\n\tk = v\n[branch \"b\"]\n\tk = v");
+        assert!(matches!(
+            copy_section(b"[x]\n", b"branch.a", b"branch.b"),
+            Err(EditError::NoSuchSection(_))
+        ));
     }
 
     #[test]

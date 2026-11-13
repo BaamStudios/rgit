@@ -213,6 +213,23 @@ impl Revs {
         };
         resolver.resolve_with(name, flags).ok()
     }
+
+    /// Whether commit `anc` is reachable from (or equal to) commit `desc`.
+    pub fn is_ancestor(&self, anc: &ObjectId, desc: &ObjectId) -> bool {
+        let cfg = revisions::Config(&self.config);
+        let repo = Repo {
+            objects: &self.objects,
+            refs: &self.refs,
+            config: &cfg,
+            index: Some(&self.index),
+            work_tree: self.work_tree.as_ref().map(|w| w as &dyn WorkTreeLookup),
+            work_tree_info: self.info.clone(),
+        };
+        let resolver = Resolver::new(repo, self.opts.clone());
+        resolver
+            .is_ancestor_of_any(anc, std::slice::from_ref(desc))
+            .unwrap_or(false)
+    }
 }
 
 /// Hooks for reference updates from the command line: object checks, and
@@ -248,6 +265,28 @@ impl<'a> UpdateHooks<'a> {
             writer: committer.map(|c| ReflogWriter::new(logs, c)),
             store: ref_store(setup, config),
             symbolic: Default::default(),
+        }
+    }
+
+    /// Hooks that write no reflog entries (the caller writes them with
+    /// [`UpdateHooks::log`]).
+    pub fn without_reflogs(mut self) -> Self {
+        self.writer = None;
+        self
+    }
+
+    /// The reflog files.
+    pub fn reflogs(&self) -> Option<&FilesReflog> {
+        self.writer.as_ref().map(|w| &w.store)
+    }
+
+    /// Appends `<old> <new> <committer>\t<message>` to the log of `name`;
+    /// with `create`, a missing log is created.
+    pub fn log(&self, name: &str, old: ObjectId, new: ObjectId, message: &str, create: bool) {
+        if let Some(w) = &self.writer {
+            let _ = w
+                .store
+                .log_update(name, old, new, &w.committer, message.as_bytes(), create);
         }
     }
 
