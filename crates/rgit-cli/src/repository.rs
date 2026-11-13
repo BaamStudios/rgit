@@ -192,6 +192,12 @@ impl Repo {
         }
     }
 
+    /// Lock options for writing the index: permissions follow
+    /// `core.sharedRepository`.
+    pub fn index_lock_options(&self) -> rgit_fs::LockOptions {
+        rgit_fs::LockOptions::new().shared(crate::refs_support::shared_repository(&self.config))
+    }
+
     /// The index file (`$GIT_INDEX_FILE` or `<git-dir>/index`).
     pub fn index_path(&self) -> PathBuf {
         rgit_index::index_path(&self.setup.git_dir)

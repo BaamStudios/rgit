@@ -129,8 +129,11 @@ impl Walk<'_> {
             let mut path = dir.to_vec();
             path.extend_from_slice(&name);
             if ft.is_dir() {
-                if !self.index.path_range(&path).is_empty() {
-                    continue; // submodule or tracked file turned directory
+                // A submodule is handled with the tracked files; a tracked
+                // file that turned into a directory is walked (adding a
+                // file below it replaces the entry).
+                if self.index.entries_for_path(&path).iter().any(|e| e.mode.is_gitlink()) {
+                    continue;
                 }
                 if !self.pathspec.is_empty()
                     && self.pathspec.dir_interest(&path) == DirInterest::None
@@ -775,7 +778,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let path = repo.setup.cwd.join(repo.index_path());
         let skip_hash = repo.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
         index
-            .write_file(&path, &rgit_fs::LockOptions::default(), &WriteOptions { skip_hash })
+            .write_file(&path, &repo.index_lock_options(), &WriteOptions { skip_hash })
             .map_err(|e| Die::Fatal(e.to_string()))?;
     }
     Ok(code)
