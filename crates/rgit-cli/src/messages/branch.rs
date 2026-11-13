@@ -76,16 +76,6 @@ pub const TOO_MANY_SET_UPSTREAM: &str = "too many arguments to set new upstream"
 pub const TOO_MANY_UNSET_UPSTREAM: &str = "too many arguments to unset upstream";
 pub const UNSET_UPSTREAM_DETACHED: &str =
     "could not unset upstream of HEAD when it does not point to any branch";
-pub const HINT_SET_UPSTREAM_FAILURE: &str = "hint:
-hint: If you are planning on basing your work on an upstream
-hint: branch that already exists at the remote, you may need to
-hint: run \"git fetch\" to retrieve it.
-hint:
-hint: If you are planning to push out a new local branch that
-hint: will track its remote counterpart, you may want to use
-hint: \"git push -u\" to set the upstream config as you push.
-hint: Disable this message with \"git config set advice.setUpstreamFailure false\"
-";
 
 pub fn ahead(n: usize) -> String {
     format!("ahead {n}")
@@ -156,26 +146,6 @@ pub fn set_upstream_detached(upstream: &str) -> String {
 
 pub fn branch_does_not_exist(name: &str) -> String {
     format!("branch '{name}' does not exist")
-}
-
-pub fn not_a_branch(name: &str) -> String {
-    format!("cannot set up tracking information; starting point '{name}' is not a branch")
-}
-
-pub fn upstream_does_not_exist(name: &str) -> String {
-    format!("the requested upstream branch '{name}' does not exist")
-}
-
-pub fn own_upstream(name: &str) -> String {
-    format!("not setting branch '{name}' as its own upstream")
-}
-
-pub fn set_up_to_track(branch: &str, upstream: &str, rebase: bool) -> String {
-    if rebase {
-        format!("branch '{branch}' set up to track '{upstream}' by rebasing.")
-    } else {
-        format!("branch '{branch}' set up to track '{upstream}'.")
-    }
 }
 
 pub fn no_upstream_information(name: &str) -> String {
