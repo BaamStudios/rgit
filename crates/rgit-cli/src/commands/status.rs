@@ -24,7 +24,7 @@ use crate::repo::Mode;
 use crate::repository::{self, Repo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Untracked {
+pub(crate) enum Untracked {
     No,
     Normal,
     All,
@@ -32,18 +32,18 @@ enum Untracked {
 
 /// One tracked path with its HEAD, index and work tree state.
 #[derive(Default, Clone)]
-struct Change {
-    head: Option<(u32, ObjectId)>,
+pub(crate) struct Change {
+    pub(crate) head: Option<(u32, ObjectId)>,
     /// Stage 0 entry (mode, id, intent-to-add).
-    index: Option<(u32, ObjectId, bool)>,
+    pub(crate) index: Option<(u32, ObjectId, bool)>,
     /// Conflict stages 1..=3.
-    stages: [Option<(u32, ObjectId)>; 3],
+    pub(crate) stages: [Option<(u32, ObjectId)>; 3],
     /// Work tree mode; `None` when deleted.
-    wt_mode: Option<u32>,
-    wt: u8,
+    pub(crate) wt_mode: Option<u32>,
+    pub(crate) wt: u8,
 }
 
-fn collect_tree(
+pub(crate) fn collect_tree(
     repo: &Repo,
     tree: &ObjectId,
     base: &[u8],
@@ -108,12 +108,12 @@ fn conflict_code(c: &Change) -> Option<&'static str> {
     })
 }
 
-struct Walker<'a> {
-    root: &'a Path,
-    tracked: &'a BTreeMap<Vec<u8>, Change>,
-    excludes: Excludes,
-    mode: Untracked,
-    out: Vec<Vec<u8>>,
+pub(crate) struct Walker<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) tracked: &'a BTreeMap<Vec<u8>, Change>,
+    pub(crate) excludes: Excludes,
+    pub(crate) mode: Untracked,
+    pub(crate) out: Vec<Vec<u8>>,
 }
 
 fn os_path(root: &Path, rel: &[u8]) -> std::path::PathBuf {
@@ -146,7 +146,7 @@ impl Walker<'_> {
 
     /// Walk `dir` (empty or ending in `/`); collect untracked paths into
     /// `found`. Returns whether anything untracked was found.
-    fn walk(&mut self, dir: &[u8], found: &mut Vec<Vec<u8>>) {
+    pub(crate) fn walk(&mut self, dir: &[u8], found: &mut Vec<Vec<u8>>) {
         let Ok(rd) = std::fs::read_dir(os_path(self.root, dir)) else {
             return;
         };
@@ -448,7 +448,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     Ok(0)
 }
 
-fn check_worktree(repo: &Repo, checker: &Checker, work_tree: &Path, e: &Entry, c: &mut Change) {
+pub(crate) fn check_worktree(repo: &Repo, checker: &Checker, work_tree: &Path, e: &Entry, c: &mut Change) {
     let meta = checker.lstat(e.path()).ok().flatten();
     let Some(meta) = meta else {
         c.wt = b'D';

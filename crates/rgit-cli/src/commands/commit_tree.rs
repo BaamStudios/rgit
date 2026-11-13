@@ -7,7 +7,7 @@ use std::io::Read;
 use rgit_config::SystemEnv;
 use rgit_hash::ObjectId;
 use rgit_ident::ident::{IdentConfig, Resolver, Role, Strictness};
-use rgit_object::{Commit, ObjectKind, Signature, SignatureRef};
+use rgit_object::{ObjectKind, Signature, SignatureRef};
 
 use crate::messages::write_tree as msg;
 use crate::prelude::*;
@@ -106,18 +106,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .filter(|e| !e.eq_ignore_ascii_case(b"utf-8") && !e.eq_ignore_ascii_case(b"utf8"))
         .map(|e| e.to_vec());
 
-    let commit = Commit::new(
+    let new = rgit_commit::NewCommit {
         tree,
-        &parents,
-        &author,
-        &committer,
-        encoding.as_deref(),
-        Vec::new(),
-        message,
-    );
-    let oid = repo
-        .odb()
-        .write(ObjectKind::Commit, &commit.serialize())
+        parents: &parents,
+        author: &author,
+        committer: &committer,
+        encoding: encoding.as_deref(),
+        message: &message,
+    };
+    let oid = rgit_commit::create_commit(repo.odb(), &new)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     println!("{oid}");
     Ok(0)

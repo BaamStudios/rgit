@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-commit = { path = "../rgit-commit" }
 rgit-config = { path = "../rgit-config" }
 rgit-ident = { path = "../rgit-ident" }
 rgit-date = { path = "../rgit-date" }
@@ -33,9 +34,7 @@ rgit-repo = { path = "../rgit-repo" }
 rgit-revwalk = { path = "../rgit-revwalk" }
 rgit-trace = { path = "../rgit-trace" }
 rgit-transport = { path = "../rgit-transport" }
-rgit-protocol = { path = "../rgit-protocol" }
 rgit-http = { path = "../rgit-http" }
-rgit-remote = { path = "../rgit-remote" }
 rgit-version = { path = "../rgit-version" }
 rgit-worktree = { path = "../rgit-worktree" }
 regex = { version = "1.13", default-features = false, features = ["std", "perf"] }

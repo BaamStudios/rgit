@@ -158,7 +158,7 @@ fn build_excludes(repo: &Repo, root: &Path) -> Excludes {
 
 /// Hash (and unless `dry_run`, store) the work tree file `path` and build
 /// its stage-0 entry.
-fn entry_for(
+pub(crate) fn entry_for(
     repo: &Repo,
     checker: &Checker,
     root: &Path,

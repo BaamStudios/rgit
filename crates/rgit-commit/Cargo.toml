@@ -1,0 +1,14 @@
+[package]
+name = "rgit-commit"
+description = "Creating commits for rgit: trees from the index, commit objects, message cleanup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-hash = { path = "../rgit-hash" }
+rgit-index = { path = "../rgit-index" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }

@@ -22,6 +22,8 @@ mod repo_objects;
 mod repository;
 mod revision;
 mod revisions;
+mod tree_changes;
+mod wt_status;
 
 use std::io::Write;
 
