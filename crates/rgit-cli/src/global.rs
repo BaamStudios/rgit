@@ -119,7 +119,7 @@ pub fn parse(ctx: &mut Context, args: &[String]) -> Result<Action, Die> {
                     ctx.exec_path = p.into();
                     ctx.exec_path_overridden = true;
                 } else if let Some(groups) = a.strip_prefix("--list-cmds=") {
-                    list_cmds(groups)?;
+                    list_cmds(ctx, groups)?;
                     return Ok(Action::Exit(0));
                 } else if let Some(v) = value_of(args, &mut i, "--git-dir") {
                     let v = v.ok_or_else(|| usage_error(&msg::no_directory_given("--git-dir")))?;
@@ -158,7 +158,7 @@ pub fn parse(ctx: &mut Context, args: &[String]) -> Result<Action, Die> {
 
 /// rgit installs no HTML/man/info pages; report where they would live
 /// relative to the installation prefix.
-fn doc_path(exec_path: &Path, which: &str) -> std::path::PathBuf {
+pub fn doc_path(exec_path: &Path, which: &str) -> std::path::PathBuf {
     let prefix = exec_path.parent().unwrap_or(exec_path);
     match which {
         "--html-path" => prefix.join("share/doc/rgit"),
@@ -168,24 +168,54 @@ fn doc_path(exec_path: &Path, which: &str) -> std::path::PathBuf {
 }
 
 /// `--list-cmds=<group>[,<group>...]`.
-fn list_cmds(groups: &str) -> Result<(), Die> {
-    let mut names: Vec<&str> = Vec::new();
+fn list_cmds(ctx: &Context, groups: &str) -> Result<(), Die> {
+    use crate::cmdlist::{self, Category};
+    let mut names: Vec<String> = Vec::new();
+    let mut early = None;
     for g in groups.split(',').filter(|g| !g.is_empty()) {
         match g {
-            "builtins" | "parseopt" | "main" => {
-                names.extend(commands::COMMANDS.iter().map(|c| c.name));
+            "builtins" | "parseopt" => {
+                names.extend(commands::COMMANDS.iter().map(|c| c.name.to_string()));
             }
-            // We have no helpers, deprecated commands, external commands,
-            // aliases or category lists yet.
-            "nohelpers" | "deprecated" | "others" | "alias" | "config" => {}
-            _ if g.starts_with("list-") => {}
-            _ => return Err(Die::Fatal(msg::unsupported_listing(g))),
+            "main" => names.extend(cmdlist::main_commands(ctx)),
+            "others" => {
+                let main = cmdlist::main_commands(ctx);
+                names.extend(cmdlist::other_commands(ctx, &main));
+            }
+            "alias" => {
+                if early.is_none() {
+                    early = Some(crate::alias::EarlyConfig::load(ctx)?);
+                }
+                if let Some(e) = &early {
+                    names.extend(crate::alias::list(&e.config).into_iter().map(|(n, _)| n));
+                }
+            }
+            "deprecated" => names.extend(cmdlist::DEPRECATED.iter().map(|s| s.to_string())),
+            // No helpers to leave out; no completion.commands handling yet.
+            "nohelpers" | "config" => {}
+            _ => match g.strip_prefix("list-") {
+                Some(cat) => {
+                    let found = Category::ALL_LISTED
+                        .iter()
+                        .chain([&Category::Guide])
+                        .find(|c| c.list_name() == cat);
+                    if let Some(c) = found {
+                        names.extend(
+                            cmdlist::implemented_in(*c)
+                                .iter()
+                                .map(|e| e.name.to_string()),
+                        );
+                    }
+                }
+                None => return Err(Die::Fatal(msg::unsupported_listing(g))),
+            },
         }
     }
-    names.sort_unstable();
-    names.dedup();
+    let mut out = String::new();
     for n in names {
-        println!("{n}");
+        out.push_str(&n);
+        out.push('\n');
     }
+    print!("{out}");
     Ok(())
 }

@@ -5,7 +5,10 @@
 //! `git-<cmd>` (e.g. `git-upload-pack`) it runs `<cmd>` directly.
 
 mod abbrev;
+mod alias;
 mod attributes;
+mod autocorrect;
+mod cmdlist;
 mod color;
 mod commands;
 mod comment;
@@ -113,13 +116,33 @@ fn program_name(argv0: &str) -> &str {
     base.strip_suffix(".exe").unwrap_or(base)
 }
 
-fn print_main_help(to_stdout: bool) {
-    let names: Vec<&str> = commands::COMMANDS.iter().map(|c| c.name).collect();
-    let text = format!("{}{}", messages::GIT_USAGE, messages::help_fallback(&names));
-    if to_stdout {
-        let _ = std::io::stdout().write_all(text.as_bytes());
-    } else {
-        let _ = std::io::stderr().write_all(text.as_bytes());
+fn print_main_help() {
+    let mut text = String::new();
+    commands::help::common_help(&mut text);
+    let _ = std::io::stdout().write_all(text.as_bytes());
+}
+
+/// Run a command; `argv[0]` is its name: a built-in, else an external
+/// `git-<name>` program, else an alias, else an unknown command.
+fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
+    // `git <cmd> --help` is `git help <cmd>`, for commands only.
+    if argv.get(1).map(String::as_str) == Some("--help") {
+        argv = vec!["help".into(), "--exclude-guides".into(), argv[0].clone()];
+    }
+    if let Some(result) = run_command(ctx, &argv) {
+        return result;
+    }
+    let early = alias::EarlyConfig::load(ctx)?;
+    if alias::lookup(&early.config, &argv[0])?.is_some() {
+        return expand_alias(ctx, early, argv);
+    }
+    match autocorrect::unknown(ctx, &early, &argv[0]) {
+        Ok(Some(corrected)) => {
+            argv[0] = corrected;
+            dispatch(ctx, argv)
+        }
+        Ok(None) => Ok(1),
+        Err(result) => result,
     }
 }
 
@@ -129,32 +152,15 @@ fn start_pager(ctx: &Context, cmd: &str) -> Result<(), Die> {
     pager::setup(ctx, cmd, false)
 }
 
-/// Run a command; `argv[0]` is its name.
-fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
-    // `git <cmd> --help` is `git help <cmd>`.
-    if argv.get(1).map(String::as_str) == Some("--help") && commands::find("help").is_some() {
-        argv = vec!["help".into(), argv[0].clone()];
+/// Run `argv` as a built-in or external command; `None` if it is neither.
+fn run_command(ctx: &mut Context, argv: &[String]) -> Option<CmdResult> {
+    let name = &argv[0];
+    let builtin = commands::find(name);
+    if builtin.is_none() && external::find(ctx, name).is_none() {
+        // Still trace the attempt, as git does.
+        return external::run(ctx, argv);
     }
-    let name = argv[0].clone();
-    if name == "help" && commands::find("help").is_none() {
-        // Until `help` exists (#179): usage for `git help`, the command's
-        // short help for `git help <cmd>`.
-        return match argv.get(1) {
-            Some(cmd) if commands::find(cmd).is_some() => {
-                dispatch(ctx, vec![cmd.clone(), "-h".into()])
-            }
-            Some(cmd) if !cmd.starts_with('-') => {
-                eprintln!("{}", messages::not_a_git_command(cmd));
-                Ok(1)
-            }
-            _ => {
-                print_main_help(true);
-                Ok(0)
-            }
-        };
-    }
-    let builtin = commands::find(&name);
-    ctx.command.clone_from(&name);
+    ctx.command.clone_from(name);
     // Commands that decide about the pager themselves (some of their modes
     // page by default); `--paginate` pages them at once.
     let own_pager = matches!(
@@ -163,21 +169,77 @@ fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
     ) && ctx.paginate != Some(true);
     // `pager.version` is ignored.
     if !own_pager && (name != "version" || ctx.paginate == Some(true)) {
-        start_pager(ctx, &name)?;
-    }
-    match builtin {
-        Some(cmd) => {
-            rgit_trace::trace_builtin(&argv);
-            (cmd.run)(ctx, &argv)
+        if let Err(e) = start_pager(ctx, name) {
+            return Some(Err(e));
         }
-        None => match external::run(ctx, &argv) {
-            Some(result) => result,
-            None => {
-                eprintln!("{}", messages::not_a_git_command(&name));
-                Ok(1)
-            }
-        },
     }
+    if let Some(cmd) = builtin {
+        rgit_trace::trace_builtin(argv);
+        return Some((cmd.run)(ctx, argv));
+    }
+    external::run(ctx, argv)
+}
+
+/// Expand the alias `argv[0]` (and the aliases it expands to) and run the
+/// result.
+fn expand_alias(
+    ctx: &mut Context,
+    mut early: alias::EarlyConfig,
+    mut argv: Vec<String>,
+) -> CmdResult {
+    let first = argv[0].clone();
+    let mut seen: Vec<String> = Vec::new();
+    loop {
+        let name = argv[0].clone();
+        let Some(value) = alias::lookup(&early.config, &name)? else {
+            eprintln!("{}", messages::help::alias_expansion_failed(&first, &name));
+            return Ok(1);
+        };
+        if let Some(pos) = seen.iter().position(|s| *s == name) {
+            return Err(Die::Fatal(alias_loop(&first, &seen, pos)));
+        }
+        seen.push(name.clone());
+        if argv.len() == 2 && argv[1] == "-h" {
+            eprintln!("{}", messages::help::is_aliased_to(&name, &value));
+        }
+        if let Some(cmd) = value.strip_prefix('!') {
+            return alias::run_shell(ctx, &early, &name, cmd, &argv[1..]);
+        }
+        let words = alias::split(&value)
+            .map_err(|reason| Die::Fatal(messages::help::bad_alias_string(&name, reason)))?;
+        rgit_trace::trace_alias_expansion(&name, &words);
+        let before = ctx.config_parameters.len();
+        let words = match alias::global_options(ctx, &name, words)? {
+            Ok(w) => w,
+            Err(code) => return Ok(code),
+        };
+        if words[0] == name {
+            return Err(Die::Fatal(messages::help::recursive_alias(&name)));
+        }
+        argv.splice(0..1, words);
+        if let Some(result) = run_command(ctx, &argv) {
+            return result;
+        }
+        if ctx.config_parameters.len() != before {
+            early = alias::EarlyConfig::load(ctx)?;
+        }
+    }
+}
+
+/// The report of an alias loop: the chain, the repeated alias marked.
+fn alias_loop(first: &str, seen: &[String], repeated: usize) -> String {
+    let mut m = messages::help::alias_loop(first);
+    for (i, s) in seen.iter().enumerate() {
+        m.push_str("\n  ");
+        m.push_str(s);
+        if i == repeated {
+            m.push_str(" <==");
+        }
+        if i + 1 == seen.len() {
+            m.push_str(" ==>");
+        }
+    }
+    m
 }
 
 fn run(args: Vec<String>) -> CmdResult {
@@ -189,6 +251,11 @@ fn run(args: Vec<String>) -> CmdResult {
         ..Default::default()
     };
     if let Some(cmd) = prog.strip_prefix("git-") {
+        // A dashed name runs the built-in; there is nothing else to look
+        // up (a `git-<cmd>` link to rgit would find itself again).
+        if commands::find(cmd).is_none() {
+            return Err(Die::Fatal(messages::help::cannot_handle_as_builtin(cmd)));
+        }
         let mut argv = vec![cmd.to_string()];
         argv.extend(args.into_iter().skip(1));
         return dispatch(&mut ctx, argv);
@@ -199,7 +266,7 @@ fn run(args: Vec<String>) -> CmdResult {
             if ctx.paginate == Some(true) {
                 start_pager(&ctx, "")?;
             }
-            print_main_help(true);
+            print_main_help();
             Ok(1)
         }
         global::Action::Run(argv) => dispatch(&mut ctx, argv),
