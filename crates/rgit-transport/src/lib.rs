@@ -43,6 +43,7 @@
 mod child;
 pub mod command;
 pub mod credential;
+pub mod daemon;
 mod error;
 pub mod local;
 pub mod messages;
@@ -53,6 +54,7 @@ pub mod ssh;
 pub mod url;
 
 pub use child::ChildConnection;
+pub use daemon::{DaemonTarget, DaemonTransport};
 pub use error::{Error, Result};
 pub use local::LocalTransport;
 pub use service::{ConnectOptions, Service};
@@ -89,9 +91,9 @@ pub struct Settings<'a> {
 }
 
 /// Choose the transport of this crate for `url`: local paths and
-/// `file://` get a [`LocalTransport`], SSH locations an [`SshTransport`].
-/// Other schemes return `Ok(None)` (smart HTTP lives in `rgit-http`,
-/// `git://` elsewhere).
+/// `file://` get a [`LocalTransport`], SSH locations an [`SshTransport`],
+/// `git://` URLs a [`DaemonTransport`]. Other schemes return `Ok(None)`
+/// (smart HTTP lives in `rgit-http`, whose `transport_for` covers all).
 pub fn transport_for(url: &str, settings: &Settings<'_>) -> Result<Option<Box<dyn Transport>>> {
     let exists = |p: &str| std::path::Path::new(p).exists();
     Ok(match url::parse_remote(url, &exists)? {
@@ -105,6 +107,12 @@ pub fn transport_for(url: &str, settings: &Settings<'_>) -> Result<Option<Box<dy
             ip: settings.ip,
             base_env: settings.base_env.clone(),
         })),
+        Remote::Other { scheme } if scheme == "git" => {
+            let rest = &url[url.find("://").map_or(0, |i| i + 3)..];
+            Some(Box::new(DaemonTransport {
+                target: DaemonTarget::parse(rest)?,
+            }))
+        }
         Remote::Other { .. } => None,
     })
 }

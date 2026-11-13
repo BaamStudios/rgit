@@ -135,3 +135,22 @@ pub fn username_for(url: &str) -> String {
 pub fn password_for(url: &str) -> String {
     format!("Password for '{url}'")
 }
+
+// ---- git:// ---------------------------------------------------------------
+
+/// `fatal:` when the host name of a `git://` URL cannot be resolved.
+pub fn unable_to_look_up(host: &str, port: u16) -> String {
+    format!("unable to look up {host} (port {port}) (Name or service not known)")
+}
+
+/// One failed connection attempt in [`unable_to_connect`]:
+/// `<host>[<n>: <address>]: errno=<reason>` and a newline.
+pub fn connect_attempt_failed(host: &str, n: usize, addr: &str, reason: &str) -> String {
+    format!("{host}[{n}: {addr}]: errno={reason}\n")
+}
+
+/// `fatal:` when no address of a `git://` host accepts the connection;
+/// `attempts` are the lines of [`connect_attempt_failed`].
+pub fn unable_to_connect(host: &str, attempts: &str) -> String {
+    format!("unable to connect to {host}:\n{attempts}")
+}

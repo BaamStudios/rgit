@@ -1,0 +1,28 @@
+[package]
+name = "rgit-fetch"
+description = "Fetching objects and refs from another repository (git fetch) for rgit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-config = { path = "../rgit-config" }
+rgit-fs = { path = "../rgit-fs" }
+rgit-hash = { path = "../rgit-hash" }
+rgit-http = { path = "../rgit-http" }
+rgit-ident = { path = "../rgit-ident" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+rgit-pack = { path = "../rgit-pack" }
+rgit-protocol = { path = "../rgit-protocol" }
+rgit-refs = { path = "../rgit-refs" }
+rgit-remote = { path = "../rgit-remote" }
+rgit-repo = { path = "../rgit-repo" }
+rgit-transport = { path = "../rgit-transport" }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
