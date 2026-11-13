@@ -17,7 +17,9 @@ mod patch;
 mod unified;
 
 pub use lines::{BINARY_CHECK_BYTES, is_binary, split_lines};
-pub use patch::{MODE_SYMLINK, PatchFile, PatchOptions, quote_path, write_file_patch};
+pub use patch::{
+    MODE_SYMLINK, PatchFile, PatchOptions, quote_path, write_file_patch, write_file_patch_with,
+};
 pub use unified::default_funcname;
 
 /// Options for the line diff and its unified output.

@@ -115,6 +115,20 @@ pub fn write_file_patch(
     new: Option<&PatchFile<'_>>,
     opts: &PatchOptions,
 ) -> Stats {
+    let abbrev = |id: &ObjectId| id.to_hex_with_len(opts.abbrev);
+    write_file_patch_with(out, old, new, opts, &abbrev)
+}
+
+/// Like [`write_file_patch`], with the object ids on the `index` line
+/// rendered by `abbrev` (for abbreviations that are unique in a
+/// repository, or full ids).
+pub fn write_file_patch_with(
+    out: &mut Vec<u8>,
+    old: Option<&PatchFile<'_>>,
+    new: Option<&PatchFile<'_>>,
+    opts: &PatchOptions,
+    abbrev: &dyn Fn(&ObjectId) -> String,
+) -> Stats {
     let q = opts.quote_path;
     let (old_path, new_path) = match (old, new) {
         (Some(o), Some(n)) => (o.path, n.path),
@@ -157,13 +171,7 @@ pub fn write_file_patch(
     let null = ObjectId::null(kind);
     let oa = old.map_or(null, |f| f.oid);
     let ob = new.map_or(null, |f| f.oid);
-    write!(
-        out,
-        "index {}..{}",
-        oa.to_hex_with_len(opts.abbrev),
-        ob.to_hex_with_len(opts.abbrev)
-    )
-    .unwrap();
+    write!(out, "index {}..{}", abbrev(&oa), abbrev(&ob)).unwrap();
     if let (Some(o), Some(n)) = (old, new) {
         if o.mode == n.mode {
             write!(out, " {:06o}", o.mode).unwrap();
