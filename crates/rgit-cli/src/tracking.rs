@@ -78,7 +78,6 @@ impl Track {
 
     /// Whether the option was given at all (`switch`/`checkout`: `-t` and
     /// `--no-track` imply branch creation).
-    #[allow(dead_code)] // for switch/checkout (#42, #49)
     pub fn is_given(self) -> bool {
         self != Track::Unspecified
     }
@@ -216,7 +215,6 @@ impl Repo<'_> {
         Ok(out)
     }
 
-    #[allow(dead_code)] // for switch/checkout (#42, #49)
     fn ref_exists(&self, full: &str) -> bool {
         match self.store.read_raw(full) {
             Ok(Some(Target::Object(_))) => true,
@@ -499,7 +497,6 @@ fn config_edit(path: &Path, key: &str, value: Option<&str>, add: bool) -> Result
 
 /// Result of [`guess_remote_branch`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // for switch/checkout (#42, #49)
 pub enum Guess {
     /// No remote has a matching remote-tracking branch.
     None,
@@ -515,7 +512,6 @@ pub enum Guess {
 /// remote-tracking branch for `refs/heads/<name>` in exactly one remote
 /// (through the remotes' fetch refspecs), or in the remote named by
 /// `checkout.defaultRemote` when several have one.
-#[allow(dead_code)] // for switch/checkout (#42, #49)
 pub fn guess_remote_branch(repo: &Repo<'_>, name: &str) -> Result<Guess, Die> {
     let remotes = repo.remotes()?;
     let names: Vec<String> = remotes
@@ -554,19 +550,19 @@ pub fn guess_remote_branch(repo: &Repo<'_>, name: &str) -> Result<Guess, Die> {
     })
 }
 
-/// Print the hint (unless `advice.checkoutAmbiguousRemoteBranchName` is
-/// false) for [`Guess::Ambiguous`] and return the fatal error. `command` is
-/// `switch` or `checkout`, used in the hint.
-#[allow(dead_code)] // for switch/checkout (#42, #49)
+/// Print the hint (advice `checkoutAmbiguousRemoteBranchName`) for
+/// [`Guess::Ambiguous`] and return the fatal error. `command` is `switch`
+/// or `checkout`, used in the hint.
 pub fn ambiguous_guess(config: &ConfigSet, name: &str, remotes: &[String], command: &str) -> Die {
-    if !matches!(
-        config.bool("advice.checkoutambiguousremotebranchname"),
-        Ok(Some(false))
-    ) {
-        eprint!(
-            "{}",
-            msg::hint_ambiguous_remote_branch(name, remotes, command)
-        );
+    let advised = rgit_messages::Advisor::new(config, &rgit_config::SystemEnv::default(), false)
+        .and_then(|a| {
+            a.advise_without_footer(
+                rgit_messages::Advice::CheckoutAmbiguousRemoteBranchName,
+                &msg::hint_ambiguous_remote_branch(name, remotes, command),
+            )
+        });
+    if let Err(e) = advised {
+        return Die::Fatal(e);
     }
     Die::Fatal(msg::matched_multiple_remotes(name, remotes.len()))
 }
@@ -575,7 +571,6 @@ pub fn ambiguous_guess(config: &ConfigSet, name: &str, remotes: &[String], comma
 /// name after the remote part (`origin/hack`, `remotes/origin/hack` and
 /// `refs/remotes/origin/hack` all give `hack`). `None` when there is no
 /// slash or nothing after it; report that with [`missing_branch_name`].
-#[allow(dead_code)] // for switch/checkout (#42, #49)
 pub fn derive_branch_name(start: &str) -> Option<String> {
     let s = start.strip_prefix("refs/").unwrap_or(start);
     let s = s.strip_prefix("remotes/").unwrap_or(s);
@@ -585,7 +580,6 @@ pub fn derive_branch_name(start: &str) -> Option<String> {
 
 /// "fatal: missing branch name; try -c" (`create_option` `c` for switch,
 /// `b` for checkout).
-#[allow(dead_code)] // for switch/checkout (#42, #49)
 pub fn missing_branch_name(create_option: &str) -> Die {
     Die::Fatal(msg::missing_branch_name(create_option))
 }

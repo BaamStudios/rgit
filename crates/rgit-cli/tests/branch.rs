@@ -546,3 +546,54 @@ fn tracking_detached_and_unborn() {
         ],
     );
 }
+
+/// `-f`/`--force`: resetting an existing branch, refused for the
+/// checked-out one; also for `-d`, `-m` and `-c`.
+#[test]
+fn force() {
+    each(
+        tracking,
+        &[
+            &["branch", "-f", "side"],
+            &["branch", "-f", "side", "HEAD~1"],
+            &["branch", "--force", "merged", "work"],
+            &["branch", "-f", "main", "HEAD~1"],
+            &["branch", "-f", "new", "HEAD~1"],
+            &["branch", "-f", "-t", "merged", "main"],
+            &["branch", "-f", "--no-track", "side", "origin/main"],
+            &["branch", "-f", "side", "nope"],
+            &["branch", "--no-force", "side"],
+            &["branch", "-d", "-f", "work"],
+            &["branch", "-m", "-f", "merged", "side"],
+            &["branch", "-c", "-f", "merged", "side"],
+            &["branch", "-f"],
+        ],
+    );
+    let detached = || tracking().git(["checkout", "-q", "--detach"]);
+    each(detached, &[&["branch", "-f", "main", "HEAD~1"]]);
+}
+
+/// `-d` with `@{-<n>}` and `[<branch>]@{upstream}`.
+#[test]
+fn delete_interpreted_names() {
+    each(
+        || tracking().git(["switch", "-q", "loc"]),
+        &[
+            &["branch", "-d", "@{u}"],
+            &["branch", "-D", "@{upstream}"],
+            &["branch", "-d", "@{-1}"],
+            &["branch", "-d", "loc@{u}"],
+            &["branch", "-d", "nope@{u}"],
+            &["branch", "-d", "merged@{u}"],
+            &["branch", "-d", "-r", "side@{u}"],
+        ],
+    );
+    each(
+        || {
+            tracking()
+                .git(["checkout", "-q", "-t", "-b", "x", "merged"])
+                .git(["branch", "-D", "merged"])
+        },
+        &[&["branch", "-D", "@{u}"]],
+    );
+}

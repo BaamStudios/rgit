@@ -27,6 +27,7 @@ pub const HELP_REMOTES: &str = "act on remote-tracking branches";
 pub const HELP_ALL: &str = "list both remote-tracking and local branches";
 pub const HELP_LIST: &str = "list branch names";
 pub const HELP_SHOW_CURRENT: &str = "show current branch name";
+pub const HELP_FORCE: &str = "force creation, move/rename, deletion";
 pub const HELP_DELETE: &str = "delete fully merged branch";
 pub const HELP_FORCE_DELETE: &str = "delete branch (even if not merged)";
 
@@ -56,6 +57,10 @@ pub fn cannot_delete_checked_out(name: &str, path: &str) -> String {
 
 pub fn deleted(name: &str, abbrev: &str) -> String {
     format!("Deleted branch {name} (was {abbrev}).")
+}
+
+pub fn reset_to(start: &str) -> String {
+    format!("branch: Reset to {start}")
 }
 
 pub fn created_from(start: &str) -> String {

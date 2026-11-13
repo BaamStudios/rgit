@@ -3,7 +3,8 @@
 //!
 //! Implemented: `<branch>`, `<commit>`/`--detach [<commit>]` (with the
 //! detached-HEAD advice), `-b`/`-B <new-branch> [<start-point>]`,
-//! `--orphan`, `--guess`, `-t`/`--no-track`, `-f`, `-q`, no argument (show
+//! `--orphan`, `--guess` (`checkout.guess`, `checkout.defaultRemote`),
+//! `-t`/`--track[=direct|inherit]`/`--no-track`, `-f`, `-q`, no argument (show
 //! local changes and the upstream state), and paths: `[--] <pathspec>...`
 //! from the index and `<tree-ish> [--] <pathspec>...` from a tree (overlay
 //! mode). Branch switching is shared with `switch` (`switch_branch`).
@@ -19,7 +20,7 @@ use rgit_pathspec::{ParseOptions, Pathspec};
 use rgit_refs::RefStore;
 use rgit_worktree::stat::{Status, smudge_racy_entries};
 
-use super::switch::{self as sw, Named, NewBranch, Track};
+use super::switch::{self as sw, CreateOptions, Named, NewBranch};
 use crate::commands::read_tree::{lock_failed, unpack_failed};
 use crate::messages::switch as msg;
 use crate::prelude::*;
@@ -27,6 +28,7 @@ use crate::refs_support::{self, Objects, Revs};
 use crate::repo::Mode;
 use crate::repository::{self, Repo};
 use crate::switch_branch::{self as sb, Request, Target};
+use crate::tracking::{AutoSetup, Track};
 
 /// A boolean option with only a long name.
 fn long<'a>(name: &'a str, cell: &'a Cell<bool>, help: &'a str) -> Opt<'a> {
@@ -37,7 +39,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let new_b = RefCell::new(None);
     let new_bb = RefCell::new(None);
     let reflog = Cell::new(false);
-    let guess = Cell::new(true);
+    let guess = Cell::new(-1);
     let overlay = Cell::new(true);
     let auto_advance = Cell::new(false);
     let quiet = Cell::new(0);
@@ -46,7 +48,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let merge = Cell::new(false);
     let conflict = RefCell::new(None);
     let detach = Cell::new(false);
-    let track = Cell::new(Track::Default);
+    let track = Cell::new(Track::Unspecified);
     let force = Cell::new(false);
     let orphan = RefCell::new(None);
     let overwrite_ignore = Cell::new(true);
@@ -65,7 +67,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string('b', None, &new_b, "branch", msg::HELP_CHECKOUT_B),
             Opt::string('B', None, &new_bb, "branch", msg::HELP_CHECKOUT_FORCE_B),
             Opt::flag('l', None, &reflog, msg::HELP_REFLOG),
-            long("guess", &guess, msg::HELP_GUESS_CHECKOUT),
+            Opt::bool(None, "guess", &guess, msg::HELP_GUESS_CHECKOUT),
             long("overlay", &overlay, msg::HELP_OVERLAY),
             long("auto-advance", &auto_advance, crate::messages::reset::HELP_AUTO_ADVANCE),
             Opt::quiet(&quiet, msg::HELP_QUIET),
@@ -75,18 +77,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('m', "merge", &merge, msg::HELP_MERGE),
             Opt::string(None, "conflict", &conflict, "style", msg::HELP_CONFLICT),
             Opt::flag('d', "detach", &detach, msg::HELP_DETACH),
-            Opt::callback(
-                't',
-                "track",
-                Some("(direct|inherit)"),
-                msg::HELP_TRACK,
-                |_, unset| {
-                    track.set(if unset { Track::No } else { Track::Yes });
-                    Ok(())
-                },
-            )
-            .optional(None)
-            .literal_argh(),
+            Track::option(&track),
             Opt::flag('f', "force", &force, msg::HELP_FORCE),
             Opt::string(None, "orphan", &orphan, "new-branch", msg::HELP_ORPHAN),
             long("overwrite-ignore", &overwrite_ignore, msg::HELP_OVERWRITE_IGNORE),
@@ -122,7 +113,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let quiet = quiet.get() > 0;
     let force = force.get();
     let track = track.get();
-    let new_b = new_b.borrow().clone();
+    let mut new_b = new_b.borrow().clone();
     let new_bb = new_bb.borrow().clone();
     let orphan_name = orphan.borrow().clone();
     let unsupported = |what: &str| Err(Die::Fatal(msg::not_supported(what)));
@@ -144,7 +135,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if recurse.borrow().is_some() {
         return unsupported("git checkout --recurse-submodules");
     }
-    let creating = new_b.is_some() || new_bb.is_some() || orphan_name.is_some();
+    if track.is_given() && orphan_name.is_some() {
+        return Err(Die::Fatal(msg::ORPHAN_WITH_TRACK.to_owned()));
+    }
+    let implied = track.is_given() && new_b.is_none() && new_bb.is_none();
+    let creating = implied || new_b.is_some() || new_bb.is_some() || orphan_name.is_some();
     if detach.get() && creating {
         return Err(Die::Fatal(msg::DETACH_WITH_CREATE.to_owned()));
     }
@@ -154,8 +149,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(p) => (args[..p].to_vec(), Some(args[p + 1..].to_vec())),
         None => (args.clone(), None),
     };
+    // `-t`/`--no-track` alone create a branch named after the start point.
+    if implied {
+        if before.len() > 1 || paths.as_ref().is_some_and(|p| !p.is_empty()) {
+            return Err(Die::Fatal(msg::TRACK_WITH_PATHS.to_owned()));
+        }
+        new_b = Some(sw::implied_branch(&before, "b")?);
+    }
 
     let repo = Repo::open(ctx, Mode::Required)?;
+    let auto = AutoSetup::from_config(&repo.config)?;
+    let guess = sw::guess_enabled(&repo, guess.get());
     let objects = Objects::open(&repo.setup);
     let revs = Revs::new(ctx, &repo.setup)?;
 
@@ -174,17 +178,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         let invalid = |s: &str| msg::not_a_commit_for_branch(s, &name);
         return sw::create_and_switch(
-            ctx,
             &repo,
+            &revs,
             NewBranch {
                 name: name.clone(),
                 start: before.first().cloned(),
                 reset: new_b.is_none(),
             },
-            track,
-            force,
-            quiet,
-            &invalid,
+            &CreateOptions {
+                track,
+                auto,
+                force,
+                quiet,
+                invalid_start: &invalid,
+            },
         );
     }
 
@@ -194,14 +201,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(Die::Fatal(msg::ONE_REFERENCE_EXPECTED.to_owned()));
         }
         if let Some(t) = before.first() {
-            let name = sw::expand_previous(&repo, t);
+            let name = sw::expand_previous(&repo, &revs, t)?;
+            if paths.is_empty() {
+                // `<branch> --`: a branch switch, with `--guess`.
+                return switch_or_guess(&repo, &revs, &objects, &name, guess, track, auto, force, quiet, None);
+            }
             let tree = revs
                 .resolve(&name)
                 .and_then(|id| tree_of(&repo, &objects, &id))
                 .ok_or_else(|| Die::Fatal(msg::invalid_ref(&name)))?;
-            if paths.is_empty() {
-                return switch_to(ctx, &repo, &revs, &objects, &name, detach.get(), force, quiet, false);
-            }
             return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, Some(tree), &paths, false, quiet);
         }
         if paths.is_empty() {
@@ -212,7 +220,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let Some(first) = before.first().cloned() else {
         if detach.get() {
-            return switch_to(ctx, &repo, &revs, &objects, "HEAD", true, force, quiet, true);
+            return switch_to(&repo, &revs, &objects, "HEAD", true, force, quiet, true);
         }
         return stay(&repo, force, quiet);
     };
@@ -220,7 +228,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if before.len() > 1 {
             return Err(Die::Fatal(msg::detach_takes_no_path(&before[1])));
         }
-        let name = sw::expand_previous(&repo, &first);
+        let name = sw::expand_previous(&repo, &revs, &first)?;
         if revs
             .resolve(&name)
             .and_then(|id| sb::peel_commit(&objects, &id))
@@ -228,9 +236,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         {
             return Err(Die::Fatal(msg::detach_takes_no_path(&first)));
         }
-        return switch_to(ctx, &repo, &revs, &objects, &name, true, force, quiet, true);
+        return switch_to(&repo, &revs, &objects, &name, true, force, quiet, true);
     }
-    let name = sw::expand_previous(&repo, &first);
+    let name = sw::expand_previous(&repo, &revs, &first)?;
     if before.len() > 1 {
         // `<tree-ish> <paths>...` when the first argument names a tree.
         if let Some(tree) = revs
@@ -244,29 +252,57 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if name == "HEAD" {
         return stay(&repo, force, quiet);
     }
-    match sw::lookup(&repo, &revs, &objects, &name, guess.get()) {
+    let globals = repository::pathspec_globals(ctx);
+    switch_or_guess(&repo, &revs, &objects, &name, guess, track, auto, force, quiet, Some((globals, &before)))
+}
+
+/// `checkout <name>` (`paths`: without `--`, falling back to restoring
+/// the paths `paths.1` when `name` names nothing): the branch or commit,
+/// else a new branch from the remote-tracking branch `--guess` finds.
+#[allow(clippy::too_many_arguments)]
+fn switch_or_guess(
+    repo: &Repo,
+    revs: &Revs,
+    objects: &Objects,
+    name: &str,
+    guess: bool,
+    track: Track,
+    auto: AutoSetup,
+    force: bool,
+    quiet: bool,
+    paths: Option<(rgit_pathspec::GlobalFlags, &[String])>,
+) -> CmdResult {
+    match sw::lookup(repo, revs, objects, name, guess, "checkout")? {
         Named::Branch(..) | Named::Commit(_) => {
-            switch_to(ctx, &repo, &revs, &objects, &name, false, force, quiet, false)
+            switch_to(repo, revs, objects, name, false, force, quiet, false)
         }
-        Named::Missing(Some((remote_ref, _))) => sw::create_and_switch(
-            ctx,
-            &repo,
+        Named::Missing(Some(remote_ref)) => sw::create_and_switch(
+            repo,
+            revs,
             NewBranch {
-                name: name.clone(),
-                start: Some(remote_ref.clone()),
+                name: name.to_owned(),
+                start: Some(remote_ref),
                 reset: false,
             },
-            track,
-            force,
-            quiet,
-            &|s: &str| msg::not_a_commit_for_branch(s, &name),
+            &CreateOptions {
+                track,
+                auto,
+                force,
+                quiet,
+                invalid_start: &|s: &str| msg::not_a_commit_for_branch(s, name),
+            },
         ),
         Named::Missing(None) => {
-            if let Some(id) = revs.resolve(&name) {
+            if let Some(id) = revs.resolve(name) {
                 let id = objects.peel(&id).unwrap_or(id);
                 return Err(Die::Fatal(msg::unable_to_read_tree(&id.to_hex())));
             }
-            checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, None, &before, true, quiet)
+            match paths {
+                Some((globals, specs)) => {
+                    checkout_paths(globals, repo, objects, None, specs, true, quiet)
+                }
+                None => Err(Die::Fatal(msg::invalid_ref(name))),
+            }
         }
     }
 }
@@ -284,7 +320,6 @@ fn tree_of(repo: &Repo, objects: &Objects, id: &ObjectId) -> Option<ObjectId> {
 /// Switches to the branch or commit `name` (`detach`: always detached).
 #[allow(clippy::too_many_arguments)]
 fn switch_to(
-    _ctx: &Context,
     repo: &Repo,
     revs: &Revs,
     objects: &Objects,
@@ -300,7 +335,7 @@ fn switch_to(
             None => Named::Missing(None),
         }
     } else {
-        sw::lookup(repo, revs, objects, name, false)
+        sw::lookup(repo, revs, objects, name, false, "checkout")?
     };
     let (target, commit) = match named {
         Named::Branch(b, id) => (Target::Branch(b), id),
@@ -314,6 +349,7 @@ fn switch_to(
     };
     sb::switch(
         repo,
+        revs,
         Request {
             target,
             commit,

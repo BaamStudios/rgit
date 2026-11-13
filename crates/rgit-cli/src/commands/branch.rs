@@ -105,6 +105,11 @@ impl Ctx<'_> {
             .map(|r| r.to_str_lossy().into_owned())
     }
 
+    /// Whether `HEAD` is a symbolic ref (not detached).
+    fn head_attached(&self) -> bool {
+        matches!(self.store.read_raw("HEAD"), Ok(Some(Target::Symbolic(_))))
+    }
+
     fn config_set(&self, key: &str, value: Option<&str>) -> Result<(), Die> {
         let pattern = ValuePattern::Any;
         let req = SetRequest {
@@ -147,6 +152,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let copy = Cell::new(0);
     let list = Cell::new(false);
     let show_current = Cell::new(false);
+    let force = Cell::new(false);
     let track = Cell::new(Track::Unspecified);
     // Generic options, then the branch actions (the order of `-h`).
     let mut opts = vec![
@@ -170,6 +176,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::set_int('C', None, &copy, msg::HELP_FORCE_COPY, 2).noneg(),
             Opt::flag('l', "list", &list, msg::HELP_LIST),
             Opt::flag(None, "show-current", &show_current, msg::HELP_SHOW_CURRENT),
+            Opt::flag('f', "force", &force, msg::HELP_FORCE),
     ]);
     let mut parser = Parser::new(msg::USAGE, opts);
     let args = parser.parse(argv)?.args;
@@ -211,7 +218,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if args.is_empty() {
             return Err(Die::Fatal(msg::BRANCH_NAME_REQUIRED.to_owned()));
         }
-        return delete_branches(&c, &args, delete.get() > 1, remotes.get());
+        let names = args
+            .iter()
+            .map(|a| interpret_name(&c, a, remotes.get()))
+            .collect::<Result<Vec<_>, _>>()?;
+        return delete_branches(&c, &names, delete.get() > 1 || force.get(), remotes.get());
     }
     if show_current.get() {
         if let Some(cur) = &c.current {
@@ -221,7 +232,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if rename.get() > 0 || copy.get() > 0 {
         let is_copy = rename.get() == 0;
-        let force = if is_copy { copy.get() > 1 } else { rename.get() > 1 };
+        let force = force.get() || if is_copy { copy.get() > 1 } else { rename.get() > 1 };
         return rename_or_copy(&c, &args, is_copy, force);
     }
     if let Some(up) = set_upstream.borrow().clone() {
@@ -231,13 +242,45 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return unset_upstream_of(&c, &args);
     }
     if !list.get() && !remotes.get() && !all.get() && verbose.get() == 0 && !args.is_empty() {
-        return create(&c, &args, &parser, track.get());
+        return create(&c, &args, &parser, track.get(), force.get());
     }
     let abbrev_len = if no_abbrev { 0 } else { abbrev_len };
     list_branches(&c, &args, &head, remotes.get(), all.get(), verbose.get(), abbrev_len)
 }
 
-fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>, track: Track) -> CmdResult {
+/// A branch name argument of `-d`/`-D`: `@{-<n>}` and
+/// `[<branch>]@{upstream}` stand for the branch they name (`remote`:
+/// below `refs/remotes/`).
+fn interpret_name(c: &Ctx<'_>, arg: &str, remote: bool) -> Result<String, Die> {
+    if !arg.contains("@{") {
+        return Ok(arg.to_owned());
+    }
+    let d = c
+        .revs
+        .with_resolver(|r| r.dwim_ref(arg))
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    let prefix = if remote { "refs/remotes/" } else { "refs/heads/" };
+    let full = if d.count == 1 {
+        Some(d.full_name)
+    } else {
+        // An upstream that does not exist (any more) still names it.
+        let lower = arg.to_ascii_lowercase();
+        ["@{u}", "@{upstream}"]
+            .iter()
+            .find_map(|s| lower.strip_suffix(s).map(|b| &arg[..b.len()]))
+            .and_then(|b| match b {
+                "" => c.current.clone(),
+                b => Some(b.to_owned()),
+            })
+            .and_then(|b| c.upstream_of(&b))
+    };
+    Ok(match full.as_deref().and_then(|f| f.strip_prefix(prefix)) {
+        Some(short) => short.to_owned(),
+        None => arg.to_owned(),
+    })
+}
+
+fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>, track: Track, force: bool) -> CmdResult {
     if args.len() > 2 {
         return Err(parser.usage_error().into());
     }
@@ -246,8 +289,16 @@ fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>, track: Track) -> Cm
         return Err(not_valid_name(c, name));
     }
     let refname = format!("refs/heads/{name}");
-    if matches!(c.store.read_raw(&refname), Ok(Some(_))) {
-        return Err(Die::Fatal(msg::already_exists(name)));
+    let existing = match c.store.read_raw(&refname) {
+        Ok(Some(_)) if !force => return Err(Die::Fatal(msg::already_exists(name))),
+        Ok(Some(_)) => c.store.resolve_oid(&refname).ok().flatten(),
+        _ => None,
+    };
+    if existing.is_some() && c.current.as_deref() == Some(name.as_str()) && c.head_attached() {
+        return Err(Die::Fatal(msg::cannot_force_update_checked_out(
+            name,
+            &c.worktree_path(),
+        )));
     }
     let start = match args.get(1) {
         Some(s) => s.clone(),
@@ -262,12 +313,11 @@ fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>, track: Track) -> Cm
     let plan = tracking::plan(&repo, name, start, oid.is_some(), track, &c.auto)?;
     let oid = oid.ok_or_else(|| Die::Fatal(msg::not_valid_object_name(start)))?;
     let mut hooks = c.hooks();
-    c.run_tx(
-        RefUpdate::create(refname.as_str(), oid)
-            .message(msg::created_from(start))
-            .create_reflog(true),
-        &mut hooks,
-    )?;
+    let update = match existing {
+        Some(old) => RefUpdate::update(refname.as_str(), oid, Some(old)).message(msg::reset_to(start)),
+        None => RefUpdate::create(refname.as_str(), oid).message(msg::created_from(start)),
+    };
+    c.run_tx(update.create_reflog(true), &mut hooks)?;
     if let Some(plan) = plan {
         plan.apply(&repo, name, &c.auto, c.quiet)?;
     }

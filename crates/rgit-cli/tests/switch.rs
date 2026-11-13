@@ -246,3 +246,203 @@ fn switch_from_unborn() {
     let mut fx = fx;
     fx.compare(["switch", "other"]).in_dir("u").repo("u").run();
 }
+
+/// Runs each case in the clone of a fresh fixture prepared by `prep`.
+fn clone_cases(prep: fn(Fixture) -> Fixture, cases: &[&[&str]]) {
+    for args in cases {
+        let fx = prep(fixture().git(["clone", "-q", ".", "clone"]).git([
+            "-C",
+            "clone",
+            "config",
+            "user.name",
+            "C",
+        ]));
+        if fx.is_skipped() {
+            return;
+        }
+        let mut fx = fx;
+        fx.compare(*args).in_dir("clone").repo("clone").run();
+    }
+}
+
+/// `-t`/`--no-track` without `-c`/`-b`, `--track=inherit`,
+/// `branch.autoSetupMerge`/`autoSetupRebase` and `checkout.guess`
+/// through the tracking code shared with `branch`.
+#[test]
+fn switch_track_options() {
+    clone_cases(
+        |fx| fx.git(["-C", "clone", "branch", "-q", "--no-track", "loc", "main"]),
+        &[
+            &["switch", "-t", "origin/feat"],
+            &["switch", "--track", "refs/remotes/origin/feat"],
+            &["switch", "--no-track", "origin/feat"],
+            &["checkout", "-t", "origin/feat"],
+            &["checkout", "--no-track", "origin/feat"],
+            &["checkout", "-t", "origin/feat", "--"],
+            &["checkout", "-t", "origin/feat", "a"],
+            &["switch", "-t", "main"],
+            &["checkout", "-t", "main"],
+            &["switch", "-t"],
+            &["checkout", "--no-track"],
+            &["switch", "-t", "-d", "origin/feat"],
+            &["switch", "-t", "--orphan", "o"],
+            &["switch", "-t", "origin/feat", "origin/side"],
+            &["switch", "-c", "x", "--track=inherit", "main"],
+            &["checkout", "--track=inherit", "-b", "x", "main"],
+            &["checkout", "--track=inherit", "-b", "x", "loc"],
+            &["checkout", "--track=inherit", "-b", "x", "origin/feat"],
+            &["switch", "-c", "x", "--track=direct", "origin/feat"],
+            &["switch", "-c", "x", "--track=bogus", "origin/feat"],
+            &["switch", "-c", "x", "-t"],
+            &["switch", "-c", "x", "-t", "main"],
+            &["switch", "-c", "x", "--track", "HEAD"],
+            &["switch", "-c", "x", "-t", "nope"],
+            &["switch", "-C", "loc", "-t", "origin/feat"],
+            &["switch", "-c", "x", "origin/feat~0"],
+            &["checkout", "-b", "x", "origin"],
+            &["-c", "branch.autoSetupMerge=always", "switch", "-c", "x"],
+            &[
+                "-c",
+                "branch.autoSetupMerge=always",
+                "checkout",
+                "-b",
+                "x",
+                "loc",
+            ],
+            &["-c", "branch.autoSetupMerge=false", "switch", "feat"],
+            &[
+                "-c",
+                "branch.autoSetupMerge=simple",
+                "switch",
+                "-c",
+                "x",
+                "origin/feat",
+            ],
+            &[
+                "-c",
+                "branch.autoSetupMerge=simple",
+                "switch",
+                "-c",
+                "feat",
+                "origin/feat",
+            ],
+            &[
+                "-c",
+                "branch.autoSetupRebase=always",
+                "switch",
+                "-c",
+                "x",
+                "origin/feat",
+            ],
+            &["-c", "branch.autoSetupMerge=bogus", "switch", "main"],
+            &["-c", "branch.autoSetupRebase=bogus", "checkout", "main"],
+            &["-c", "checkout.guess=false", "checkout", "feat"],
+            &["-c", "checkout.guess=false", "switch", "feat"],
+            &["-c", "checkout.guess=false", "switch", "--guess", "feat"],
+            &["checkout", "feat", "--"],
+            &["checkout", "feat", "--", "a"],
+            &["checkout", "nope", "--"],
+        ],
+    );
+}
+
+/// `--guess` with the branch in two remotes: refused with the advice,
+/// unless `checkout.defaultRemote` picks one.
+#[test]
+fn switch_guess_ambiguous() {
+    clone_cases(
+        |fx| {
+            fx.git(["-C", "clone", "remote", "add", "second", ".."])
+                .git(["-C", "clone", "fetch", "-q", "second"])
+        },
+        &[
+            &["switch", "feat"],
+            &["checkout", "feat"],
+            &["-c", "checkout.defaultRemote=second", "switch", "feat"],
+            &["-c", "checkout.defaultRemote=origin", "checkout", "feat"],
+            &["-c", "checkout.defaultRemote=nope", "checkout", "feat"],
+            &[
+                "-c",
+                "advice.checkoutAmbiguousRemoteBranchName=false",
+                "switch",
+                "feat",
+            ],
+            &[
+                "-c",
+                "advice.checkoutAmbiguousRemoteBranchName=true",
+                "switch",
+                "feat",
+            ],
+            &["--no-advice", "checkout", "feat"],
+            &["switch", "-t", "second/feat"],
+        ],
+    );
+}
+
+/// `@{upstream}` as the branch to switch to.
+#[test]
+fn switch_to_upstream() {
+    clone_cases(
+        |fx| fx.git(["-C", "clone", "checkout", "-q", "-t", "-b", "loc", "main"]),
+        &[
+            &["checkout", "@{u}"],
+            &["switch", "@{upstream}"],
+            &["switch", "loc@{u}"],
+            &["checkout", "main@{u}"],
+            &["switch", "main@{u}"],
+            &["switch", "--detach", "main@{u}"],
+            &["checkout", "-b", "x", "@{u}"],
+            &["checkout", "nope@{u}"],
+            &["switch", "feat@{u}"],
+        ],
+    );
+}
+
+/// Leaving a detached `HEAD` with commits no ref reaches.
+#[test]
+fn switch_leaving_commits_behind() {
+    fn commits(fx: Fixture, n: usize) -> Fixture {
+        let mut fx = fx.git(["checkout", "-q", "--detach", "main"]);
+        for i in 0..n {
+            let m = format!("lost {i}\n\nbody");
+            fx = fx
+                .tick()
+                .git(["commit", "-q", "--allow-empty", "-m", m.as_str()]);
+        }
+        fx
+    }
+    let leaving: &[&[&str]] = &[
+        &["switch", "main"],
+        &["checkout", "main"],
+        &["checkout", "feat"],
+        &["switch", "-q", "main"],
+        &["switch", "--detach", "feat"],
+        &["checkout", "v1"],
+        &["switch", "-c", "x", "v1"],
+        &["switch", "-c", "x"],
+        &["switch", "--orphan", "o"],
+        &["checkout", "--orphan", "o"],
+        &["checkout", "-f", "main"],
+        &["checkout", "HEAD~1"],
+        &["-c", "advice.detachedHead=false", "checkout", "main"],
+        &["-c", "core.abbrev=12", "checkout", "main"],
+    ];
+    cases(|fx| commits(fx, 1), leaving);
+    cases(
+        |fx| commits(fx, 5),
+        &[&["switch", "main"], &["checkout", "HEAD~2"]],
+    );
+    cases(
+        |fx| commits(fx, 6),
+        &[&["switch", "main"], &["checkout", "main"]],
+    );
+    // Commits reachable from another ref are not lost.
+    cases(
+        |fx| commits(fx, 2).git(["update-ref", "refs/x/keep", "HEAD~1"]),
+        &[&["switch", "main"]],
+    );
+    cases(
+        |fx| commits(fx, 2).git(["tag", "t"]),
+        &[&["switch", "main"]],
+    );
+}
