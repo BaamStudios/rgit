@@ -33,6 +33,8 @@ pub struct FetchOptions {
     pub update_head_ok: bool,
     /// Write `FETCH_HEAD` (`--no-write-fetch-head` clears it).
     pub write_fetch_head: bool,
+    /// `--append`: add to `FETCH_HEAD` instead of replacing it.
+    pub append: bool,
     /// Reflog action (`fetch <args>` or `$GIT_REFLOG_ACTION`).
     pub reflog_action: String,
     /// Ask the server not to send progress.
@@ -154,7 +156,7 @@ pub fn fetch(
     // FETCH_HEAD is emptied before connecting (git leaves an empty file
     // behind when the fetch fails).
     let fetch_head = repo.git_dir.join("FETCH_HEAD");
-    if opts.write_fetch_head && !opts.dry_run {
+    if opts.write_fetch_head && !opts.dry_run && !opts.append {
         std::fs::write(&fetch_head, "").map_err(|e| {
             Error::fatal(messages::cannot_open_fetch_head(
                 &fetch_head,
@@ -333,7 +335,17 @@ pub fn fetch(
     if opts.write_fetch_head && !opts.dry_run {
         let path = repo.git_dir.join("FETCH_HEAD");
         let text = display::fetch_head(&result.url, &entries);
-        std::fs::write(&path, text).map_err(|e| {
+        let written = if opts.append {
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+                .and_then(|mut f| f.write_all(text.as_bytes()))
+        } else {
+            std::fs::write(&path, text)
+        };
+        written.map_err(|e| {
             Error::fatal(messages::cannot_open_fetch_head(
                 &path,
                 &rgit_transport_strerror(&e),
