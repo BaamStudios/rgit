@@ -21,4 +21,5 @@ rgit-date = { path = "../rgit-date" }
 rustix = { version = "1", default-features = false, features = ["std", "process", "system"] }
 
 [dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
 tempfile = "3"

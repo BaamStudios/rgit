@@ -4,22 +4,16 @@
 
 #![cfg(unix)]
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use rgit_config::{Level, MapEnv};
 use rgit_ident::editor::{LaunchOptions, launch_with_term};
 
-/// Both tests write executable scripts and then spawn processes. If one test
-/// forks while the other still holds a script open for writing, the child
-/// inherits that descriptor and exec fails with ETXTBSY ("Text file busy").
-/// Serialise the tests so no write descriptor is open during a spawn.
-static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn script(dir: &Path, name: &str, body: &str) {
     let p = dir.join(name);
-    std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Never through a write descriptor of this process: see
+    // `rgit_difftest::write_executable` (ETXTBSY with parallel spawns).
+    rgit_difftest::write_executable(&p, format!("#!/bin/sh\n{body}\n"));
 }
 
 fn lines(r: Result<(), rgit_ident::editor::EditorError>) -> Vec<(Level, String)> {
@@ -28,7 +22,6 @@ fn lines(r: Result<(), rgit_ident::editor::EditorError>) -> Vec<(Level, String)>
 
 #[test]
 fn runs_editor_on_file() {
-    let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     script(
@@ -64,7 +57,6 @@ fn runs_editor_on_file() {
 
 #[test]
 fn editor_failures() {
-    let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("MSG");
     std::fs::write(&file, "x").unwrap();

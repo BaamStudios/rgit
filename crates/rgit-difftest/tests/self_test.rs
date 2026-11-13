@@ -33,13 +33,10 @@ fn git_vs_wrapper(script: &str) -> Fixture {
         .join("wrapper");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("fake-rgit");
-    std::fs::write(
+    rgit_difftest::write_executable(
         &path,
         format!("#!/bin/sh\nREAL='{}'\n{script}\n", reference.display()),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     fx.rgit(path)
 }
 
