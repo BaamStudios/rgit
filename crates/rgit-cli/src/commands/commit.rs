@@ -740,6 +740,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else if args.only {
         commit_index = Some(index_from_flat(repo.hash, &head_flat)?);
     }
+    // git writes the trees of the index it keeps and records them in its
+    // cache tree (rev-list --indexed-objects and later write-trees use it).
+    if !index.has_conflicts() {
+        let cached = rgit_commit::write_tree_cached(repo.odb(), &index, &Default::default())
+            .ok()
+            .and_then(|(_, c)| c);
+        index.set_cache_tree(cached);
+    }
     let commit_index = commit_index.as_ref().unwrap_or(&index);
     if commit_index.has_conflicts() {
         let mut listed = Vec::new();
@@ -763,9 +771,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // for changes and asks for the message.
     if !deferred && !args.all && !args.only {
         write_index(&repo, &mut index.clone(), index_mtime)?;
-    }
-    if !index.has_conflicts() {
-        let _ = rgit_commit::write_tree(repo.odb(), &index, &Default::default());
     }
     let tree = super::write_tree::write_tree(&repo, commit_index, false, None)?;
 
