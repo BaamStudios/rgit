@@ -520,6 +520,7 @@ dependencies = [
  "rgit-pathspec",
  "rgit-protocol",
  "rgit-refs",
+ "rgit-remote",
  "rgit-repo",
  "rgit-revwalk",
  "rgit-trace",
