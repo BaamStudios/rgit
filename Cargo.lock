@@ -511,6 +511,7 @@ dependencies = [
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",
+ "rgit-http",
  "rgit-ident",
  "rgit-index",
  "rgit-object",
