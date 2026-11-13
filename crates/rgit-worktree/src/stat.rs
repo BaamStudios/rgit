@@ -223,7 +223,8 @@ fn is_executable(_meta: &Metadata) -> bool {
 
 /// The index mode for a work tree file, as `git add` records it. `old` is
 /// the existing entry's mode: with `core.fileMode=false` its executable bit
-/// is kept, with `core.symlinks=false` a regular file stays a symlink entry.
+/// is kept (a new file is `100644`), with `core.symlinks=false` a regular
+/// file stays a symlink entry.
 /// `None` for directories and other file types.
 #[must_use]
 pub fn mode_from_metadata(meta: &Metadata, opts: &StatOptions, old: Option<Mode>) -> Option<Mode> {
@@ -242,7 +243,8 @@ pub fn mode_from_metadata(meta: &Metadata, opts: &StatOptions, old: Option<Mode>
             return Some(old);
         }
     }
-    Some(if is_executable(meta) {
+    // Without core.fileMode a new file never gets the executable bit.
+    Some(if opts.file_mode && is_executable(meta) {
         Mode::EXECUTABLE
     } else {
         Mode::FILE

@@ -393,14 +393,61 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut updates: Vec<Entry> = Vec::new();
     let mut removals: Vec<Vec<u8>> = Vec::new();
     let mut failed = false;
-    for e in index.entries() {
+    let entries = index.entries();
+    for (pos, e) in entries.iter().enumerate() {
         if !pathspec.is_empty() && pathspec.match_path_seen(e.path(), &mut seen).is_none() {
             continue;
         }
         if pathspec.is_empty() && !prefix.is_empty() && !update && !all {
             continue;
         }
-        if e.stage() != Stage::MERGED || e.mode.is_gitlink() {
+        if e.stage() != Stage::MERGED {
+            // An unmerged path, once: the work tree file resolves it. The
+            // mode is taken over from stage 2, else the first stage.
+            if pos > 0 && entries[pos - 1].path() == e.path() {
+                continue;
+            }
+            let path = e.path();
+            let stages = index.entries_for_path(path);
+            let base = stages
+                .iter()
+                .find(|s| s.stage() == Stage::OURS)
+                .unwrap_or(e);
+            if checker.lstat(path).ok().flatten().is_none() {
+                if show {
+                    println!("{}", msg::remove(&lossy(path)));
+                }
+                removals.push(path.to_vec());
+                continue;
+            }
+            let resolved = if intent {
+                write_empty_blob()?;
+                Ok(intent_entry(&repo, &checker, path)?)
+            } else {
+                entry_for(&repo, &checker, &root, path, Some(base), dry_run)
+            };
+            match resolved {
+                Ok(n) => {
+                    if show {
+                        println!("{}", msg::add(&lossy(path)));
+                    }
+                    if let Some(mut n) = n {
+                        n.flags = Default::default();
+                        if intent {
+                            n.flags.intent_to_add = true;
+                        }
+                        removals.push(path.to_vec());
+                        updates.push(n);
+                    }
+                }
+                Err(err) => {
+                    report_failure(path, &err);
+                    failed = true;
+                }
+            }
+            continue;
+        }
+        if e.mode.is_gitlink() {
             continue;
         }
         if intent && e.flags.intent_to_add {

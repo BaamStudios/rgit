@@ -203,6 +203,64 @@ fn pathspec_from_file() {
         .run();
 }
 
+/// The fixture with `cf` unmerged (stages given as `<mode> <stage>` pairs),
+/// set up through a shell alias because the index info comes on stdin.
+fn unmerged(stages: &[(&str, u8)], config: &[&str]) -> Fixture {
+    let mut script = String::from("!h=$(git hash-object -w a) && printf '");
+    for (mode, stage) in stages {
+        script.push_str(&format!("{mode} %s {stage}\\tcf\\n"));
+    }
+    script.push('\'');
+    for _ in stages {
+        script.push_str(" $h");
+    }
+    script.push_str(" | git update-index --index-info");
+    let mut fx = fixture().git(["-c", &format!("alias.mk={script}"), "mk"]);
+    for kv in config {
+        let (k, v) = kv.split_once('=').expect("key=value");
+        fx = fx.git(["config", k, v]);
+    }
+    fx
+}
+
+#[test]
+fn unmerged_paths() {
+    let both: &[(&str, u8)] = &[("100755", 1), ("100644", 2)];
+    let cases: &[(&[(&str, u8)], &[&str], bool, &[&str])] = &[
+        (both, &[], true, &["-v", "cf"]),
+        (both, &[], false, &["-v", "cf"]),
+        (both, &[], false, &["-v", "-u"]),
+        (both, &[], true, &["-v", "-A"]),
+        (both, &[], true, &["-n", "cf"]),
+        (both, &[], true, &["-N", "-v", "cf"]),
+        (both, &[], true, &["--chmod=+x", "-v", "cf"]),
+        (both, &["core.filemode=false"], true, &["cf"]),
+        (
+            &[("100755", 1), ("120000", 3)],
+            &["core.filemode=false", "core.symlinks=false"],
+            true,
+            &["cf"],
+        ),
+    ];
+    for (stages, config, file, args) in cases {
+        let mut fx = unmerged(stages, config);
+        if *file {
+            fx = fx.write("cf", "resolved\n");
+        }
+        let mut argv = vec!["add"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).checks(STATE).run();
+    }
+}
+
+#[test]
+fn filemode_off_new_file() {
+    let mut fx = fixture()
+        .git(["config", "core.filemode", "false"])
+        .write_executable("x", "x\n");
+    fx.compare(["add", "x"]).checks(STATE).run();
+}
+
 #[test]
 fn ignore_errors_option() {
     // Unreadable files cannot be copied into the fixture; t3700 covers
