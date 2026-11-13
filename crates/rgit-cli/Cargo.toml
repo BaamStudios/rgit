@@ -18,6 +18,7 @@ rgit-config = { path = "../rgit-config" }
 rgit-ident = { path = "../rgit-ident" }
 rgit-date = { path = "../rgit-date" }
 rgit-diff = { path = "../rgit-diff" }
+rgit-fetch = { path = "../rgit-fetch" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-index = { path = "../rgit-index" }
@@ -27,6 +28,7 @@ rgit-options = { path = "../rgit-options" }
 rgit-pack = { path = "../rgit-pack" }
 rgit-pathspec = { path = "../rgit-pathspec" }
 rgit-refs = { path = "../rgit-refs" }
+rgit-remote = { path = "../rgit-remote" }
 rgit-repo = { path = "../rgit-repo" }
 rgit-revwalk = { path = "../rgit-revwalk" }
 rgit-trace = { path = "../rgit-trace" }

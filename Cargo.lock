@@ -509,6 +509,7 @@ dependencies = [
  "rgit-date",
  "rgit-diff",
  "rgit-difftest",
+ "rgit-fetch",
  "rgit-fs",
  "rgit-hash",
  "rgit-ident",
@@ -519,6 +520,7 @@ dependencies = [
  "rgit-pack",
  "rgit-pathspec",
  "rgit-refs",
+ "rgit-remote",
  "rgit-repo",
  "rgit-revwalk",
  "rgit-trace",
@@ -559,6 +561,28 @@ version = "0.1.0"
 dependencies = [
  "regex",
  "tempfile",
+]
+
+[[package]]
+name = "rgit-fetch"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
+ "rgit-fs",
+ "rgit-hash",
+ "rgit-http",
+ "rgit-ident",
+ "rgit-object",
+ "rgit-odb",
+ "rgit-pack",
+ "rgit-protocol",
+ "rgit-refs",
+ "rgit-remote",
+ "rgit-repo",
+ "rgit-transport",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
