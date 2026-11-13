@@ -106,9 +106,27 @@ fn setup_inner(
     let setup = if required {
         rgit_repo::setup(&opts, &mut protected).map_err(die)?
     } else {
-        match rgit_repo::discover(&opts, &mut protected).map_err(die)? {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
+        match rgit_repo::discover(&opts, &mut protected) {
+            // Like git's gentle setup: a repository of an unknown format
+            // is ignored with a warning.
+            Err(
+                e @ (Error::VersionTooNew(_)
+                | Error::UnknownExtensions(_)
+                | Error::V1OnlyExtensions(_)),
+            ) => {
+                let dir = ignored_git_dir(&opts);
+                let mut err = std::io::stderr();
+                let _ = writeln!(err, "warning: {e}");
+                let _ = writeln!(
+                    err,
+                    "warning: {}",
+                    crate::messages::ignoring_git_dir(&dir, &e.to_string())
+                );
+                return Ok(None);
+            }
+            Err(e) => return Err(die(e)),
+            Ok(Ok(s)) => s,
+            Ok(Err(_)) => return Ok(None),
         }
     };
     let mut err = std::io::stderr();
@@ -175,6 +193,29 @@ pub fn die(e: Error) -> Die {
         let _ = writeln!(err, "{} {msg}", level.prefix());
     }
     Die::Exit(rgit_options::EXIT_FATAL)
+}
+
+/// The git directory a gentle setup ignores, as git shows it: `.git` in
+/// the current directory, else the path found above it.
+fn ignored_git_dir(opts: &SetupOptions) -> String {
+    if let Some(d) = &opts.git_dir {
+        return d.display().to_string();
+    }
+    let mut dir = opts.cwd.as_path();
+    loop {
+        let candidate = dir.join(".git");
+        if candidate.exists() {
+            return if dir == opts.cwd {
+                ".git".to_string()
+            } else {
+                candidate.display().to_string()
+            };
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => return ".git".to_string(),
+        }
+    }
 }
 
 /// The configuration of the repository (all scopes plus `-c`), or as much
