@@ -12,7 +12,15 @@ use std::process::{Command, Stdio};
 fn batch_output_to_full_device_is_fatal() {
     let rgit = env!("CARGO_BIN_EXE_rgit");
     let dir = tempfile::tempdir().unwrap();
-    let st = Command::new(rgit)
+    // Never read or write the real user configuration.
+    let isolated = |c: &mut Command| {
+        c.env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path().join(".config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+    };
+    let mut c = Command::new(rgit);
+    isolated(&mut c);
+    let st = c
         .args(["init", "-q", "r"])
         .current_dir(dir.path())
         .status()
@@ -22,7 +30,9 @@ fn batch_output_to_full_device_is_fatal() {
     // A blob larger than the 64 KiB output buffer.
     let big = repo.join("big");
     std::fs::write(&big, vec![b'x'; 200_000]).unwrap();
-    let st = Command::new(rgit)
+    let mut c = Command::new(rgit);
+    isolated(&mut c);
+    let st = c
         .args(["hash-object", "-w", "big"])
         .current_dir(&repo)
         .stdout(Stdio::null())
@@ -34,7 +44,9 @@ fn batch_output_to_full_device_is_fatal() {
         &["cat-file", "--batch-all-objects", "--batch"][..],
         &["cat-file", "--batch-all-objects", "--batch-check"],
     ] {
-        let out = Command::new(rgit)
+        let mut c = Command::new(rgit);
+        isolated(&mut c);
+        let out = c
             .args(args)
             .current_dir(&repo)
             .stdout(File::create("/dev/full").unwrap())

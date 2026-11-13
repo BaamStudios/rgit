@@ -40,6 +40,8 @@ fn setup() -> Option<Env> {
         let st = Command::new(&git)
             .args(args)
             .current_dir(&root)
+            .env("HOME", &root)
+            .env("XDG_CONFIG_HOME", root.join(".config"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_AUTHOR_NAME", "A")
@@ -65,6 +67,11 @@ fn setup() -> Option<Env> {
         (OsString::from("PATH"), std::env::join_paths(dirs).unwrap()),
         ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
         ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+        ("HOME".into(), root.clone().into_os_string()),
+        (
+            "XDG_CONFIG_HOME".into(),
+            root.join(".config").into_os_string(),
+        ),
     ];
     Some(Env {
         _dir: dir,

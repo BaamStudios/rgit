@@ -23,6 +23,8 @@ fn git_available() -> bool {
 fn git_cmd(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(dir)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("LC_ALL", "C")

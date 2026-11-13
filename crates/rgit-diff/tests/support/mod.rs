@@ -50,6 +50,7 @@ pub fn git_diff(dir: &Path, a: &Path, b: &Path, extra: &[&str]) -> Vec<u8> {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
         .env("LC_ALL", "C")
         .args([
             "-c",

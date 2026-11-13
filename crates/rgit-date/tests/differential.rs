@@ -271,7 +271,9 @@ impl Git {
             .env_remove("GIT_TEST_DATE_NOW")
             .env_remove("GIT_COMMITTER_DATE")
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null");
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("HOME", &self.dir)
+            .env("XDG_CONFIG_HOME", self.dir.join(".config"));
         for (k, v) in env {
             c.env(k, v);
         }
