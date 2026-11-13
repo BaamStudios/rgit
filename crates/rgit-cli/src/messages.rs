@@ -15,6 +15,7 @@ pub mod ls_files;
 pub mod ls_tree;
 pub mod mktag;
 pub mod mktree;
+pub mod mv;
 pub mod objects;
 pub mod pack_objects;
 pub mod pack_refs;
