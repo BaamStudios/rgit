@@ -23,6 +23,7 @@
 //! shared between crates.
 
 pub mod advice;
+mod messages;
 
 pub use advice::{Advice, Advisor};
 
@@ -126,11 +127,7 @@ pub fn with_strerror(msg: &str, e: &std::io::Error) -> String {
     format!("{msg}: {}", strerror(e))
 }
 
-/// The fatal message for an environment variable that must be a boolean.
-#[must_use]
-pub fn bad_bool_env(name: &str, value: &str) -> String {
-    format!("bad boolean environment value '{value}' for '{name}'")
-}
+pub use messages::bad_bool_env;
 
 #[cfg(test)]
 mod tests {

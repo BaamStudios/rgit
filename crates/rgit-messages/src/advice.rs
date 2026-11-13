@@ -26,6 +26,7 @@
 //! [`Advisor::enabled`].
 
 use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rgit_config::color::{ColorBool, parse_color, parse_colorbool};
 use rgit_config::value::parse_bool;
@@ -137,10 +138,16 @@ impl Advice {
 /// The last line of an advice whose `advice.<name>` is not configured.
 #[must_use]
 pub fn footer(advice: Advice) -> String {
-    format!(
-        "Disable this message with \"git config set advice.{} false\"",
-        advice.name()
-    )
+    crate::messages::advice_footer(advice.name())
+}
+
+/// Set by [`disable_all`]: `git --no-advice` for the whole process.
+static NO_ADVICE: AtomicBool = AtomicBool::new(false);
+
+/// Switch all advice off for the rest of the process (`git --no-advice`),
+/// also for advisors created where the command line is not at hand.
+pub fn disable_all() {
+    NO_ADVICE.store(true, Ordering::Relaxed);
 }
 
 /// The default `color.advice.hint`: yellow.
@@ -176,7 +183,7 @@ impl Advisor {
         let color = hint_color(config, env, true);
         let color_without_ui = hint_color(config, env, false);
         Ok(Advisor {
-            off: no_advice,
+            off: no_advice || NO_ADVICE.load(Ordering::Relaxed),
             env: env
                 .var("GIT_ADVICE")
                 .map(|v| v.to_string_lossy().into_owned()),

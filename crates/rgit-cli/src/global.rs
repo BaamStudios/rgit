@@ -98,7 +98,10 @@ pub fn parse(ctx: &mut Context, args: &[String]) -> Result<Action, Die> {
             "--no-replace-objects" => ctx.no_replace_objects = true,
             "--no-lazy-fetch" => ctx.no_lazy_fetch = true,
             "--no-optional-locks" => ctx.no_optional_locks = true,
-            "--no-advice" => ctx.no_advice = true,
+            "--no-advice" => {
+                ctx.no_advice = true;
+                rgit_messages::advice::disable_all();
+            }
             "--literal-pathspecs" => ctx.literal_pathspecs = true,
             "--glob-pathspecs" => ctx.glob_pathspecs = true,
             "--noglob-pathspecs" => ctx.noglob_pathspecs = true,
