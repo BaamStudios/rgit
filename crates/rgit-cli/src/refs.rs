@@ -112,6 +112,16 @@ impl Refs {
             .collect()
     }
 
+    /// The full entries of the reflog of `name`, oldest first.
+    pub fn reflog_entries(&self, name: &str) -> Option<Vec<rgit_refs::reflog::Entry>> {
+        if !valid_name(name) {
+            return None;
+        }
+        let file = self.dir_for(name).join("logs").join(name);
+        let data = std::fs::read(file).ok()?;
+        Some(rgit_refs::reflog::Entry::parse_all(&data, self.hash))
+    }
+
     /// The new ids recorded in the reflog of `name`, oldest first.
     pub fn reflog(&self, name: &str) -> Option<Vec<ObjectId>> {
         if !valid_name(name) {

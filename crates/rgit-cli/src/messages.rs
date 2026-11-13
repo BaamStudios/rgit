@@ -2,10 +2,12 @@
 //! User-visible messages of the front end, in one place for review
 //! (see CLEANROOM.md, "User-visible messages").
 
+pub mod add;
 pub mod branch;
 pub mod cat_file;
 pub mod check_ignore;
 pub mod config;
+pub mod diff_tree;
 pub mod for_each_ref;
 pub mod hash_object;
 pub mod init;
@@ -16,12 +18,18 @@ pub mod mktree;
 pub mod objects;
 pub mod pack_objects;
 pub mod pack_refs;
+pub mod read_tree;
 pub mod reflog;
+pub mod reset;
 pub mod rev_list;
+pub mod rm;
 pub mod show_ref;
+pub mod status;
+pub mod switch;
 pub mod update_index;
 pub mod update_ref;
 pub mod var;
+pub mod write_tree;
 
 /// The top-level usage (git's SYNOPSIS, reproduced because scripts and
 /// tests compare it).
@@ -84,6 +92,11 @@ pub fn unsupported_listing(group: &str) -> String {
 
 pub fn not_a_git_command(cmd: &str) -> String {
     format!("git: '{cmd}' is not a git command. See 'git --help'.")
+}
+
+/// An external `git-<cmd>` was killed by a signal.
+pub fn died_of_signal(prog: &str, sig: i32) -> String {
+    format!("{prog} died of signal {sig}")
 }
 
 pub fn cannot_get_cwd(err: &str) -> String {

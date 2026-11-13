@@ -883,13 +883,7 @@ impl<'o> Cmd<'o> {
                 *f = format!("{prefix}{f}");
             }
         }
-        let mut command_line = CommandLine::default();
-        for (k, v) in &ctx.config_parameters {
-            command_line.parameters.push(rgit_config::cmdline::Parameter {
-                key: k.as_str().into(),
-                value: v.as_deref().map(BString::from),
-            });
-        }
+        let command_line = crate::repo::command_line(ctx);
         Ok(Cmd {
             o,
             location,
