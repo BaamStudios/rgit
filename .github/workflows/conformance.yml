@@ -121,6 +121,12 @@ jobs:
         run: |
           f=conformance/results/default/STATUS.generated.md
           test -f "$f" && sed -n '/^## Summary/,/^## Per-case/p' "$f" | sed '$d' >>"$GITHUB_STEP_SUMMARY" || true
+      - name: Drop the trash directories before the upload
+        if: always()
+        # Kept trash directories can hold symlink loops (t1006 "loop1"), which
+        # make upload-artifact's glob fail with ELOOP. Only the result files
+        # below are uploaded anyway.
+        run: rm -rf conformance/results/*/*/output
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
