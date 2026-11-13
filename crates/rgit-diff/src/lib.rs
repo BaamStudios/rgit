@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! Line diff with git's default algorithm (Myers) and unified patch output.
+//! Line diff with git's default algorithm (Myers), unified patch output and
+//! the three-way merge of one text ([`merge`]).
 //!
 //! The output is meant to be byte-identical to `git diff` with default
 //! options. Where the documentation does not specify behaviour (which of
@@ -11,6 +12,7 @@
 mod compact;
 mod indent;
 mod lines;
+pub mod merge;
 pub mod messages;
 mod myers;
 mod patch;

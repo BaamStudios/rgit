@@ -349,3 +349,60 @@ pub fn run_cases(
     }
     report
 }
+
+/// Generates a merge triple (base, ours, theirs): two independent edits of
+/// one base. Some cases use CRLF line ends.
+pub fn generate_triple(kind: Gen, rng: &mut Rng) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let alpha = 2 + rng.below(6);
+    type Fresh = Box<dyn Fn(&mut Rng) -> Vec<u8>>;
+    let (base, fresh): (Vec<Vec<u8>>, Fresh) = match kind {
+        Gen::Tiny => {
+            let max = 4 + rng.below(20);
+            (
+                tiny_file(rng, alpha, max),
+                Box::new(move |r: &mut Rng| vec![b'a' + r.below(alpha + 2) as u8, b'\n']),
+            )
+        }
+        Gen::Code => {
+            let n = rng.below(80);
+            (
+                (0..n).map(|_| code_line(rng)).collect(),
+                Box::new(code_line),
+            )
+        }
+        _ => {
+            let alpha = 3 + rng.below(40);
+            let n = rng.below(200);
+            (
+                (0..n)
+                    .map(|_| format!("line {}\n", rng.below(alpha)).into_bytes())
+                    .collect(),
+                Box::new(move |r: &mut Rng| format!("line {}\n", r.below(alpha + 5)).into_bytes()),
+            )
+        }
+    };
+    let mut fresh = |r: &mut Rng| fresh(r);
+    let mut ours = edit_copy(rng, &base, &mut fresh);
+    let mut theirs = if rng.chance(1, 4) {
+        // Both sides start from the same edit (identical changes).
+        let t = ours.clone();
+        if rng.chance(1, 2) {
+            edit_copy(rng, &t, &mut fresh)
+        } else {
+            t
+        }
+    } else {
+        edit_copy(rng, &base, &mut fresh)
+    };
+    let mut base = base;
+    if rng.chance(1, 6) {
+        for f in [&mut base, &mut ours, &mut theirs] {
+            for l in f.iter_mut() {
+                if rng.chance(3, 4) && l.ends_with(b"\n") && !l.ends_with(b"\r\n") {
+                    l.insert(l.len() - 1, b'\r');
+                }
+            }
+        }
+    }
+    (join(&base, rng), join(&ours, rng), join(&theirs, rng))
+}
