@@ -727,12 +727,12 @@ fn random_transactions() {
         let n = 1 + rng.below(2);
         let mut steps = Vec::new();
         for _ in 0..n {
-            let name = r(rng.pick(&names));
+            let name = r(rng.pick::<&str>(&names));
             // Symbolic references are only created at `symrefs` and only
             // point at the other names, so chains have one level. git's
             // handling of longer chains and cycles depends on the order of
             // the names involved and is not reproduced (see the PR).
-            let sym_name = r(rng.pick(&symrefs));
+            let sym_name = r(rng.pick::<&str>(&symrefs));
             let regular: Vec<&str> = names
                 .iter()
                 .copied()
@@ -765,16 +765,19 @@ fn random_transactions() {
                 }
                 7 => Cmd::Verify(name, maybe_old(&mut rng)),
                 8 | 9 => {
-                    let target = r(rng.pick(later));
+                    let target = r(rng.pick::<&str>(later));
                     let old = match rng.below(3) {
                         0 => None,
-                        1 => Some(OldValue::Symbolic(r(rng.pick(later)))),
+                        1 => Some(OldValue::Symbolic(r(rng.pick::<&str>(later)))),
                         _ => maybe_old(&mut rng).map(OldValue::Object),
                     };
                     Cmd::SymrefUpdate(sym_name, target, old)
                 }
-                10 => Cmd::SymrefCreate(sym_name, r(rng.pick(later))),
-                _ => Cmd::SymrefDelete(sym_name, (rng.below(2) == 0).then(|| r(rng.pick(&names)))),
+                10 => Cmd::SymrefCreate(sym_name, r(rng.pick::<&str>(later))),
+                _ => Cmd::SymrefDelete(
+                    sym_name,
+                    (rng.below(2) == 0).then(|| r(rng.pick::<&str>(&names))),
+                ),
             };
             let no_deref = matches!(
                 cmd,
