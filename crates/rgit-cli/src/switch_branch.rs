@@ -52,6 +52,9 @@ pub struct Create {
     /// A start point was given; without one the index and work tree are
     /// left alone.
     pub start_given: bool,
+    /// `-l`: create the branch's reflog even when `core.logAllRefUpdates`
+    /// would not.
+    pub reflog: bool,
 }
 
 /// What to do.
@@ -65,6 +68,41 @@ pub struct Request {
     pub quiet: bool,
     /// `checkout` (not `switch`, not `--detach`): advise when detaching.
     pub advise_detach: bool,
+    /// `switch`: refuse while a merge, rebase, am, cherry-pick or revert
+    /// is in progress (warn while bisecting).
+    pub refuse_in_progress: bool,
+}
+
+/// `switch` refuses to leave a merge, rebase, am session, cherry-pick or
+/// revert in progress (git-switch.adoc); bisecting only gets a warning.
+pub fn check_in_progress(repo: &Repo) -> Result<(), Die> {
+    let dir = &repo.setup.git_dir;
+    let store = refs_support::ref_store(&repo.setup, &repo.config);
+    let pseudo = |name: &str| store.resolve_oid(name).ok().flatten().is_some();
+    let refuse =
+        |what: &str, command: &str| Err(Die::Fatal(msg::cannot_switch_in_progress(what, command)));
+    if dir.join("MERGE_HEAD").is_file() {
+        return refuse("while merging", "merge");
+    }
+    if dir.join("rebase-apply").is_dir() {
+        if dir.join("rebase-apply/applying").exists() {
+            return refuse("in the middle of an am session", "am");
+        }
+        return refuse("while rebasing", "rebase");
+    }
+    if dir.join("rebase-merge").is_dir() {
+        return refuse("while rebasing", "rebase");
+    }
+    if pseudo("CHERRY_PICK_HEAD") {
+        return refuse("while cherry-picking", "cherry-pick");
+    }
+    if pseudo("REVERT_HEAD") {
+        return refuse("while reverting", "revert");
+    }
+    if dir.join("BISECT_LOG").is_file() {
+        eprintln!("warning: {}", msg::SWITCHING_WHILE_BISECTING);
+    }
+    Ok(())
 }
 
 /// The `tree` of commit `id`.
@@ -302,6 +340,9 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
     let objects = Objects::open(&repo.setup);
     let mut hooks = UpdateHooks::new(&repo.setup, &repo.config, &objects);
     let hash = repo.hash;
+    if req.refuse_in_progress {
+        check_in_progress(repo)?;
+    }
 
     let head_raw = store.read_raw("HEAD").ok().flatten();
     let old_branch: Option<String> = match &head_raw {
@@ -357,7 +398,10 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
             Some(o) => RefUpdate::update(full.as_str(), new_oid, Some(o)),
             None => RefUpdate::update(full.as_str(), new_oid, Some(ObjectId::null(hash))),
         };
-        run(update.message(reason.as_str()), &mut hooks)?;
+        run(
+            update.message(reason.as_str()).create_reflog(c.reflog),
+            &mut hooks,
+        )?;
         if let Some((plan, auto)) = &c.track {
             let trepo = tracking::Repo {
                 setup: &repo.setup,
@@ -368,6 +412,10 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
             plan.apply(&trepo, &c.name, auto, req.quiet)?;
         }
     }
+
+    // Like git, leaving for another commit or branch ends a merge,
+    // cherry-pick or revert in progress.
+    let cancelled = crate::commands::reset::remove_branch_state(&repo.setup.git_dir, hash);
 
     let from = match &old_branch {
         Some(r) => r.strip_prefix("refs/heads/").unwrap_or(r).to_owned(),
@@ -406,7 +454,7 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
                 eprintln!("{}", msg::detached_advice(name));
             }
             say(&msg::head_now_at(
-                &objects.abbrev(&new_oid, abbrev_len),
+                &head_abbrev(&objects, &new_oid, abbrev_len),
                 &subject(&objects, &new_oid),
             ));
         }
@@ -439,7 +487,29 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
             }
         }
     }
+    warn_cancelled(cancelled, req.quiet);
     Ok(0)
+}
+
+/// "warning: cancelling a ... in progress" after [`remove_branch_state`]
+/// ended a cherry-pick or revert.
+///
+/// [`remove_branch_state`]: crate::commands::reset::remove_branch_state
+pub fn warn_cancelled(cancelled: Option<&str>, quiet: bool) {
+    if let Some(what) = cancelled.filter(|_| !quiet) {
+        eprintln!("warning: {}", msg::cancelling(what));
+    }
+}
+
+/// `id` abbreviated for "HEAD is now at" and "Previous HEAD position
+/// was", followed by "..." when `GIT_PRINT_SHA1_ELLIPSIS` is `yes` (any
+/// case).
+fn head_abbrev(objects: &Objects, id: &ObjectId, len: usize) -> String {
+    let mut s = objects.abbrev(id, len);
+    if std::env::var("GIT_PRINT_SHA1_ELLIPSIS").is_ok_and(|v| v.eq_ignore_ascii_case("yes")) {
+        s.push_str("...");
+    }
+    s
 }
 
 /// Leaving the detached `HEAD` at `old` for `new`: "Previous HEAD position
@@ -457,7 +527,10 @@ pub fn report_old_head(
     if lost.is_empty() {
         eprintln!(
             "{}",
-            msg::previous_head(&objects.abbrev(&old, abbrev_len), &subject(objects, &old))
+            msg::previous_head(
+                &head_abbrev(objects, &old, abbrev_len),
+                &subject(objects, &old)
+            )
         );
         return Ok(());
     }
@@ -619,13 +692,17 @@ fn advisor(repo: &Repo) -> Result<rgit_messages::Advisor, Die> {
 }
 
 /// `--orphan <name>`: `HEAD` becomes the unborn branch `name`; with
-/// `clear` (`switch`) the tracked files are removed first.
-pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool) -> CmdResult {
+/// `clear` (`switch`) the tracked files are removed first. `reflog`
+/// (`-l`): create the branch's (empty) reflog now.
+pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool, reflog: bool) -> CmdResult {
     check_new_branch_name(repo, name)?;
     let store = refs_support::ref_store(&repo.setup, &repo.config);
     let full = format!("refs/heads/{name}");
     if store.resolve_oid(&full).ok().flatten().is_some() {
         return Err(Die::Fatal(msg::branch_exists(name)));
+    }
+    if clear {
+        check_in_progress(repo)?;
     }
     let detached_at = match store.read_raw("HEAD") {
         Ok(Some(RefTarget::Object(id))) => Some(id),
@@ -644,6 +721,15 @@ pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool) -> CmdResult {
     tx.push(RefUpdate::symref_update("HEAD", full.as_str(), None).no_deref(true))
         .and_then(|()| tx.commit(&mut hooks))
         .map_err(|e| Die::Fatal(e.to_string()))?;
+    let cancelled = crate::commands::reset::remove_branch_state(&repo.setup.git_dir, repo.hash);
+    if reflog {
+        let logs = rgit_refs::reflog::FilesReflog::new(
+            repo.setup.git_dir.clone(),
+            repo.setup.common_dir.clone(),
+            repo.hash,
+        );
+        logs.create(&full).map_err(|e| Die::Fatal(e.to_string()))?;
+    }
     if !quiet {
         // `checkout --orphan` keeps the index and work tree and says
         // nothing about the old `HEAD`.
@@ -652,6 +738,7 @@ pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool) -> CmdResult {
         }
         eprintln!("{}", msg::switched_new(name));
     }
+    warn_cancelled(cancelled, quiet);
     Ok(0)
 }
 

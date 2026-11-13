@@ -210,7 +210,22 @@ pub(crate) fn tracking(repo: &Repo, branch: &str, head: Option<ObjectId>) -> Opt
         .find_map(|p| full.strip_prefix(p))
         .unwrap_or(&full)
         .to_string();
-    let up = repo.refs.resolve(&full);
+    // A local upstream may be configured by its short name
+    // (`branch.<name>.merge = main`); it is looked up like a ref name.
+    let up = if remote == "." && !full.starts_with("refs/") {
+        [
+            full.clone(),
+            format!("refs/{full}"),
+            format!("refs/tags/{full}"),
+            format!("refs/heads/{full}"),
+            format!("refs/remotes/{full}"),
+            format!("refs/remotes/{full}/HEAD"),
+        ]
+        .iter()
+        .find_map(|f| repo.refs.resolve(f))
+    } else {
+        repo.refs.resolve(&full)
+    };
     let counts = match (up, head) {
         (None, _) => None,
         (Some(u), Some(h)) => Some(ahead_behind(repo, h, u)),

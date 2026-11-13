@@ -116,6 +116,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut new_b = new_b.borrow().clone();
     let new_bb = new_bb.borrow().clone();
     let orphan_name = orphan.borrow().clone();
+    let creating = [new_b.is_some(), new_bb.is_some(), orphan_name.is_some()];
+    if creating.iter().filter(|&&c| c).count() > 1 {
+        return Err(Die::Fatal(msg::CREATE_OPTIONS_CHECKOUT.to_owned()));
+    }
     let unsupported = |what: &str| Err(Die::Fatal(msg::not_supported(what)));
     if merge.get() || conflict.borrow().is_some() {
         return unsupported("git checkout --merge");
@@ -135,10 +139,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if recurse.borrow().is_some() {
         return unsupported("git checkout --recurse-submodules");
     }
-    if track.is_given() && orphan_name.is_some() {
-        return Err(Die::Fatal(msg::ORPHAN_WITH_TRACK.to_owned()));
-    }
-    let implied = track.is_given() && new_b.is_none() && new_bb.is_none();
+    let implied = track.is_given() && new_b.is_none() && new_bb.is_none() && orphan_name.is_none();
     let creating = implied || new_b.is_some() || new_bb.is_some() || orphan_name.is_some();
     if detach.get() && creating {
         return Err(Die::Fatal(msg::DETACH_WITH_CREATE.to_owned()));
@@ -149,12 +150,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(p) => (args[..p].to_vec(), Some(args[p + 1..].to_vec())),
         None => (args.clone(), None),
     };
+    let paths_given = paths.as_ref().is_some_and(|p| !p.is_empty());
+    // A start point followed by paths.
+    let start_and_paths = before.len() > 1 || (before.len() == 1 && paths_given);
     // `-t`/`--no-track` alone create a branch named after the start point.
     if implied {
-        if before.len() > 1 || paths.as_ref().is_some_and(|p| !p.is_empty()) {
+        new_b = Some(sw::implied_branch(&before, "b")?);
+    }
+    if creating && (start_and_paths || (implied && paths_given)) {
+        if track.is_given() {
             return Err(Die::Fatal(msg::TRACK_WITH_PATHS.to_owned()));
         }
-        new_b = Some(sw::implied_branch(&before, "b")?);
+        if reflog.get() {
+            return Err(Die::Fatal(msg::REFLOG_WITH_PATHS.to_owned()));
+        }
+    }
+    if track.is_given() && orphan_name.is_some() {
+        return Err(Die::Fatal(msg::ORPHAN_WITH_TRACK.to_owned()));
     }
 
     let repo = Repo::open(ctx, Mode::Required)?;
@@ -163,19 +175,26 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let objects = Objects::open(&repo.setup);
     let revs = Revs::new(ctx, &repo.setup)?;
 
-    if let Some(name) = orphan_name {
-        if before.len() > 1 || paths.as_ref().is_some_and(|p| !p.is_empty()) {
+    // `-b`/`-B`/`--orphan` with a start point and paths.
+    let with_paths = |name: &str| -> Result<(), Die> {
+        if start_and_paths {
+            return Err(Die::Fatal(msg::cannot_update_paths_and_switch(name)));
+        }
+        if paths_given {
             return Err(Die::Fatal(msg::ONE_REFERENCE_EXPECTED.to_owned()));
         }
+        Ok(())
+    };
+    if let Some(name) = orphan_name {
+        let name = sw::expand_new_name(&repo, &name);
+        with_paths(&name)?;
         if let Some(start) = before.first() {
-            return orphan_from(ctx, &repo, &name, start, quiet);
+            return orphan_from(ctx, &repo, &name, start, quiet, reflog.get());
         }
-        return sb::orphan(&repo, &name, false, quiet);
+        return sb::orphan(&repo, &name, false, quiet, reflog.get());
     }
     if let Some(name) = new_bb.clone().or(new_b.clone()) {
-        if before.len() > 1 || paths.as_ref().is_some_and(|p| !p.is_empty()) {
-            return Err(Die::Fatal(msg::ONE_REFERENCE_EXPECTED.to_owned()));
-        }
+        with_paths(&sw::expand_new_name(&repo, &name))?;
         let invalid = |s: &str| msg::not_a_commit_for_branch(s, &name);
         return sw::create_and_switch(
             &repo,
@@ -190,6 +209,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 auto,
                 force,
                 quiet,
+                reflog: reflog.get(),
+                refuse_in_progress: false,
                 invalid_start: &invalid,
             },
         );
@@ -198,10 +219,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // `<tree-ish> -- <paths>` / `-- <paths>`.
     if let Some(paths) = paths {
         if before.len() > 1 {
-            return Err(Die::Fatal(msg::ONE_REFERENCE_EXPECTED.to_owned()));
+            return Err(Die::Fatal(msg::one_reference_expected_given(before.len())));
         }
         if let Some(t) = before.first() {
             let name = sw::expand_previous(&repo, &revs, t)?;
+            if paths.is_empty() && is_head(&name) {
+                return stay(&repo, force, quiet);
+            }
             if paths.is_empty() {
                 // `<branch> --`: a branch switch, with `--guess`.
                 return switch_or_guess(&repo, &revs, &objects, &name, guess, track, auto, force, quiet, None);
@@ -210,12 +234,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .resolve(&name)
                 .and_then(|id| tree_of(&repo, &objects, &id))
                 .ok_or_else(|| Die::Fatal(msg::invalid_ref(&name)))?;
-            return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, Some(tree), &paths, false, quiet);
+            return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, Some(tree), &paths, false, quiet, force);
         }
         if paths.is_empty() {
             return stay(&repo, force, quiet);
         }
-        return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, None, &paths, false, quiet);
+        return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, None, &paths, false, quiet, force);
     }
 
     let Some(first) = before.first().cloned() else {
@@ -229,11 +253,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(Die::Fatal(msg::detach_takes_no_path(&before[1])));
         }
         let name = sw::expand_previous(&repo, &revs, &first)?;
-        if revs
-            .resolve(&name)
-            .and_then(|id| sb::peel_commit(&objects, &id))
-            .is_none()
-        {
+        if sw::resolve_commit(&revs, &objects, &name).is_none() {
             return Err(Die::Fatal(msg::detach_takes_no_path(&first)));
         }
         return switch_to(&repo, &revs, &objects, &name, true, force, quiet, true);
@@ -245,11 +265,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .resolve(&name)
             .and_then(|id| tree_of(&repo, &objects, &id))
         {
-            return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, Some(tree), &before[1..], true, quiet);
+            // Without `--` a revision must not also name a file.
+            if !first.starts_with('-') && names_file(&repo, &first) {
+                return Err(Die::Fatal(crate::messages::reset::both_revision_and_filename(&first)));
+            }
+            return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, Some(tree), &before[1..], true, quiet, force);
         }
-        return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, None, &before, true, quiet);
+        return checkout_paths(repository::pathspec_globals(ctx), &repo, &objects, None, &before, true, quiet, force);
     }
-    if name == "HEAD" {
+    if is_head(&name) {
         return stay(&repo, force, quiet);
     }
     let globals = repository::pathspec_globals(ctx);
@@ -273,8 +297,11 @@ fn switch_or_guess(
     paths: Option<(rgit_pathspec::GlobalFlags, &[String])>,
 ) -> CmdResult {
     match sw::lookup(repo, revs, objects, name, guess, "checkout")? {
-        Named::Branch(..) | Named::Commit(_) => {
-            switch_to(repo, revs, objects, name, false, force, quiet, false)
+        named @ (Named::Branch(..) | Named::Commit(_)) => {
+            switch_named(repo, revs, name, named, force, quiet, false)
+        }
+        Named::Missing(Some(_)) if paths.is_some() && names_file(repo, name) => {
+            Err(Die::Fatal(msg::file_and_tracking_branch(name)))
         }
         Named::Missing(Some(remote_ref)) => sw::create_and_switch(
             repo,
@@ -289,6 +316,8 @@ fn switch_or_guess(
                 auto,
                 force,
                 quiet,
+                reflog: false,
+                refuse_in_progress: false,
                 invalid_start: &|s: &str| msg::not_a_commit_for_branch(s, name),
             },
         ),
@@ -299,12 +328,30 @@ fn switch_or_guess(
             }
             match paths {
                 Some((globals, specs)) => {
-                    checkout_paths(globals, repo, objects, None, specs, true, quiet)
+                    checkout_paths(globals, repo, objects, None, specs, true, quiet, false)
                 }
                 None => Err(Die::Fatal(msg::invalid_ref(name))),
             }
         }
     }
+}
+
+/// `HEAD` or its short form `@`: `checkout` stays where it is.
+fn is_head(name: &str) -> bool {
+    name == "HEAD" || name == "@"
+}
+
+/// Whether the command-line argument `arg` names an existing file (git's
+/// check before it takes an argument as a revision without `--`).
+fn names_file(repo: &Repo, arg: &str) -> bool {
+    if arg.starts_with(':') {
+        return false;
+    }
+    let path = match &repo.setup.prefix {
+        Some(p) if !std::path::Path::new(arg).is_absolute() => std::path::Path::new(p).join(arg),
+        _ => std::path::PathBuf::from(arg),
+    };
+    std::fs::symlink_metadata(path).is_ok()
 }
 
 /// The tree of the tree-ish `id`.
@@ -330,13 +377,26 @@ fn switch_to(
     explicit_detach: bool,
 ) -> CmdResult {
     let named = if detach {
-        match revs.resolve(name).and_then(|id| sb::peel_commit(objects, &id)) {
+        match sw::resolve_commit(revs, objects, name) {
             Some(id) => Named::Commit(id),
             None => Named::Missing(None),
         }
     } else {
         sw::lookup(repo, revs, objects, name, false, "checkout")?
     };
+    switch_named(repo, revs, name, named, force, quiet, explicit_detach)
+}
+
+/// Switches to what [`sw::lookup`] found for `name`.
+fn switch_named(
+    repo: &Repo,
+    revs: &Revs,
+    name: &str,
+    named: Named,
+    force: bool,
+    quiet: bool,
+    explicit_detach: bool,
+) -> CmdResult {
     let (target, commit) = match named {
         Named::Branch(b, id) => (Target::Branch(b), id),
         Named::Commit(id) => (
@@ -357,6 +417,7 @@ fn switch_to(
             force,
             quiet,
             advise_detach: !explicit_detach,
+            refuse_in_progress: false,
         },
     )
 }
@@ -371,6 +432,7 @@ fn stay(repo: &Repo, force: bool, quiet: bool) -> CmdResult {
     let tree = sb::commit_tree(repo, &head)
         .ok_or_else(|| Die::Fatal(msg::unable_to_read_tree(&head.to_hex())))?;
     let moved = sb::move_index(repo, tree, tree, force)?;
+    let cancelled = crate::commands::reset::remove_branch_state(&repo.setup.git_dir, repo.hash);
     if !quiet {
         use std::io::Write;
         let mut o = std::io::stdout().lock();
@@ -383,12 +445,20 @@ fn stay(repo: &Repo, force: bool, quiet: bool) -> CmdResult {
             }
         }
     }
+    sb::warn_cancelled(cancelled, quiet);
     Ok(0)
 }
 
 /// `checkout --orphan <name> <start>`: index and work tree move to
 /// `start`, then `HEAD` becomes the unborn branch.
-fn orphan_from(ctx: &Context, repo: &Repo, name: &str, start: &str, quiet: bool) -> CmdResult {
+fn orphan_from(
+    ctx: &Context,
+    repo: &Repo,
+    name: &str,
+    start: &str,
+    quiet: bool,
+    reflog: bool,
+) -> CmdResult {
     let objects = Objects::open(&repo.setup);
     let revs = Revs::new(ctx, &repo.setup)?;
     let id = revs
@@ -405,12 +475,13 @@ fn orphan_from(ctx: &Context, repo: &Repo, name: &str, start: &str, quiet: bool)
         .unwrap_or(empty);
     let new = sb::commit_tree(repo, &id).unwrap_or(empty);
     sb::move_index(repo, old, new, false)?;
-    sb::orphan(repo, name, false, quiet)
+    sb::orphan(repo, name, false, quiet, reflog)
 }
 
 /// Restores the files matching `specs` from the index (`tree` is `None`)
 /// or from `tree` (which also updates their index entries). `report`:
 /// print "Updated N paths ..." (git does when no `--` was given).
+#[allow(clippy::too_many_arguments)]
 fn checkout_paths(
     globals: rgit_pathspec::GlobalFlags,
     repo: &Repo,
@@ -419,6 +490,7 @@ fn checkout_paths(
     specs: &[String],
     report: bool,
     quiet: bool,
+    force: bool,
 ) -> CmdResult {
     let work_tree = repo.work_tree()?;
     let opts = ParseOptions {
@@ -491,6 +563,13 @@ fn checkout_paths(
                 if e.stage().is_conflict() {
                     if unmerged.last().map(Vec::as_slice) != Some(e.path()) {
                         unmerged.push(e.path().to_vec());
+                        // `-f` leaves unmerged paths alone.
+                        if force {
+                            eprintln!(
+                                "warning: {}",
+                                msg::path_unmerged(&String::from_utf8_lossy(e.path()))
+                            );
+                        }
                     }
                     continue;
                 }
@@ -504,7 +583,7 @@ fn checkout_paths(
             if report_unmatched(&ps, &seen) {
                 return Err(Die::Exit(1));
             }
-            if !unmerged.is_empty() {
+            if !unmerged.is_empty() && !force {
                 for p in &unmerged {
                     eprintln!("error: {}", msg::path_unmerged(&String::from_utf8_lossy(p)));
                 }
