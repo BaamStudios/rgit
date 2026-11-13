@@ -94,3 +94,7 @@ pub fn moving_to(arg: &str) -> String {
 }
 
 pub const UPDATING_ORIG_HEAD: &str = "updating ORIG_HEAD";
+
+pub fn could_not_reset_index(rev: &str) -> String {
+    format!("Could not reset index file to revision '{rev}'.")
+}

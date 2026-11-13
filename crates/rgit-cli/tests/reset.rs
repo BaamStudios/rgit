@@ -280,3 +280,97 @@ fn conflicts_and_flags() {
         ],
     );
 }
+
+fn busy_clean() -> Fixture {
+    busy().git(["reset", "-q", "--hard"])
+}
+
+#[test]
+fn hard_merge_keep() {
+    run(
+        busy,
+        &[
+            &["reset", "--hard"],
+            &["reset", "--hard", "HEAD~1"],
+            &["reset", "--hard", "-q", "HEAD~1"],
+            &["reset", "--merge"],
+            &["reset", "--merge", "HEAD~1"],
+            &["reset", "--keep"],
+            &["reset", "--keep", "HEAD~1"],
+        ],
+    );
+    // The fixture copies the work tree for each side, so every file looks
+    // touched; with minimal stat checks the copies match their entries.
+    const MIN: [&str; 4] = [
+        "-c",
+        "core.checkStat=minimal",
+        "-c",
+        "core.trustCtime=false",
+    ];
+    let cases: &[&[&str]] = &[
+        &["reset", "--merge", "HEAD~1"],
+        &["reset", "--keep", "HEAD~1"],
+        &["reset", "--hard", "HEAD~1"],
+        &[MIN[0], MIN[1], MIN[2], MIN[3], "reset", "--merge", "HEAD~1"],
+        &[MIN[0], MIN[1], MIN[2], MIN[3], "reset", "--keep", "HEAD~1"],
+        &[MIN[0], MIN[1], MIN[2], MIN[3], "reset", "--merge"],
+        &[MIN[0], MIN[1], MIN[2], MIN[3], "reset", "--keep"],
+    ];
+    // A staged change of a file the reset does not touch, an unstaged one,
+    // and an unstaged change of a file it does touch.
+    run(|| busy_clean().write("x", "s\n").git(["add", "x"]), cases);
+    run(|| busy_clean().write("x", "u\n"), cases);
+    run(|| busy_clean().write("a", "u\n"), cases);
+    run(|| busy_clean().write("a", "u\n").git(["add", "a"]), cases);
+    // A directory replaced by a file, with an untracked file in it; an
+    // untracked file where the target has a tracked one.
+    run(
+        || {
+            busy_clean()
+                .git(["rm", "-q", "-r", "d"])
+                .write("d", "file\n")
+                .git(["add", "d"])
+                .git(["commit", "-q", "-m", "three"])
+                .tick()
+                .write("u", "untracked\n")
+        },
+        cases,
+    );
+    run(
+        || {
+            busy_clean()
+                .git(["rm", "-q", "c"])
+                .git(["commit", "-q", "-m", "three"])
+                .tick()
+                .write("c", "untracked\n")
+        },
+        cases,
+    );
+}
+
+#[test]
+fn hard_with_conflicts() {
+    let make = || {
+        let fx = rgit()
+            .git(["init", "-q"])
+            .write("a", "a\n")
+            .git(["add", "."])
+            .git(["commit", "-q", "-m", "one"])
+            .tick()
+            .git(["branch", "side"])
+            .write("a", "ours\n")
+            .git(["commit", "-q", "-a", "-m", "ours"])
+            .tick()
+            .git(["switch", "-q", "side"])
+            .write("a", "theirs\n")
+            .git(["commit", "-q", "-a", "-m", "theirs"])
+            .tick()
+            .git(["switch", "-q", "main"]);
+        let _ = fx.git_output(["merge", "-q", "side"]);
+        fx.tick()
+    };
+    run(
+        make,
+        &[&["reset", "--hard"], &["reset", "--hard", "HEAD~1"]],
+    );
+}

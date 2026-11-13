@@ -23,6 +23,7 @@ mod repo_objects;
 mod repository;
 mod revision;
 mod revisions;
+mod switch_branch;
 mod tracking;
 mod tree_changes;
 mod wt_status;

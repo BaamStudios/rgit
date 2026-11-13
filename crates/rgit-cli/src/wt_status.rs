@@ -191,7 +191,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
     }
 }
 
-fn tracking(repo: &Repo, branch: &str, head: Option<ObjectId>) -> Option<Tracking> {
+pub(crate) fn tracking(repo: &Repo, branch: &str, head: Option<ObjectId>) -> Option<Tracking> {
     let get = |k: String| repo.config.string(k).ok().flatten().map(|s| s.to_string());
     let remote = get(format!("branch.{branch}.remote"))?;
     let merge = get(format!("branch.{branch}.merge"))?;

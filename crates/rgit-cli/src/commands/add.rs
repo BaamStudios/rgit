@@ -73,15 +73,23 @@ pub(crate) fn attributes_may_apply(repo: &Repo, root: &Path) -> bool {
     let Ok(text) = std::fs::read(root.join(".gitattributes")) else {
         return false;
     };
+    // `* -text -eol` in `$GIT_DIR/info/attributes` (which wins over every
+    // `.gitattributes`) switches eol conversion off.
+    let no_eol = std::fs::read(repo.setup.git_dir.join("info/attributes"))
+        .ok()
+        .is_some_and(|t| {
+            String::from_utf8_lossy(&t).lines().any(|l| {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                w.first() == Some(&"*") && w.contains(&"-text") && w.contains(&"-eol")
+            })
+        });
     let text = String::from_utf8_lossy(&text);
     text.lines().any(|l| {
         let l = l.trim();
         !l.starts_with('#')
             && l.split_whitespace().skip(1).any(|a| {
                 let a = a.trim_start_matches(['-', '!']);
-                a.starts_with("text")
-                    || a.starts_with("eol")
-                    || a.starts_with("crlf")
+                (!no_eol && (a.starts_with("text") || a.starts_with("eol") || a.starts_with("crlf")))
                     || a.starts_with("filter")
                     || a.starts_with("ident")
                     || a.starts_with("working-tree-encoding")
