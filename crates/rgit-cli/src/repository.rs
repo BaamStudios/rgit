@@ -77,6 +77,15 @@ impl Repo {
         })
     }
 
+    /// Open the repository of an existing `setup` (e.g. one a command
+    /// just created).
+    pub fn from_setup(ctx: &Context, setup: rgit_repo::Setup) -> Result<Repo, Die> {
+        Ok(Repo {
+            inner: repo_objects::Repo::open(ctx, setup)?,
+            auto_abbrev: OnceCell::new(),
+        })
+    }
+
     /// Like [`Repo::open`], `None` outside a repository (`RUN_SETUP_GENTLY`).
     pub fn open_gently(ctx: &Context) -> Result<Option<Repo>, Die> {
         let Some(setup) = repo::setup_gently(ctx)? else {
