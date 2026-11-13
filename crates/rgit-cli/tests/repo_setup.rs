@@ -113,6 +113,30 @@ fn rev_parse_locations() {
     );
 }
 
+/// A linked work tree (`.git` file -> `<git-dir>` with a `commondir`)
+/// ignores `core.worktree` and `core.bare` of the common configuration.
+#[test]
+fn linked_work_tree_ignores_common_core_worktree() {
+    for key in ["core.worktree", "core.bare"] {
+        let value = if key == "core.bare" {
+            "true"
+        } else {
+            "/nonexistent"
+        };
+        let mut fx = Fixture::new()
+            .rgit(env!("CARGO_BIN_EXE_rgit"))
+            .git(["init", "-q", "--bare", "common.git"])
+            .git(["--git-dir=common.git", "config", key, value])
+            .write("common.git/wts/foo/commondir", "../..\n")
+            .write("common.git/wts/foo/HEAD", "ref: refs/heads/main\n")
+            .write("wt/.git", "gitdir: ../common.git/wts/foo\n")
+            .write("wt/sub/f", "");
+        let mut args = vec!["rev-parse"];
+        args.extend_from_slice(&LOCATION);
+        same(&mut fx, "wt/sub", &[], &args);
+    }
+}
+
 #[test]
 fn symbolic_ref_trace() {
     let mut fx = fixture();

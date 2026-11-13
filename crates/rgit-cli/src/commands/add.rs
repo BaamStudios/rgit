@@ -1,16 +1,37 @@
 // SPDX-License-Identifier: MIT
-//! `git add` (Documentation/git-add.adoc), first slice: new and modified
-//! files and removals under the given pathspecs, `-A`, `-u`, `-n`, `-v`,
-//! `-f`. Ignore rules come from rgit-worktree, the index is written with
-//! racy entries smudged.
+//! `git add` (Documentation/git-add.adoc): new and modified files and
+//! removals under the given pathspecs, `-A`, `-u`, `-n`, `-v`, `-f`,
+//! `-N`/`--intent-to-add`, `--chmod=(+|-)x`, `--ignore-errors`
+//! (`add.ignoreErrors`), `--ignore-missing` (with `--dry-run`),
+//! `--pathspec-from-file`/`--pathspec-file-nul`; `--sparse` is accepted.
+//! Ignore rules come from rgit-worktree, the index is written with racy
+//! entries smudged.
+//!
+//! Behaviour determined against the reference git (spec gaps, issue #41):
+//!
+//! - With `-N`, matched tracked files are listed (`add '<path>'`) but not
+//!   updated, deleted ones are removed; new files get an empty
+//!   intent-to-add entry without being read.
+//! - `--chmod` applies to every index entry matched by the pathspecs after
+//!   adding, also to unchanged ones; without pathspecs it does nothing.
+//!   Symbolic links and submodules fail with `cannot chmod` (exit 255).
+//! - A file that cannot be read fails the tracked phase ("updating files
+//!   failed") or the new-file phase ("adding files failed"), unless
+//!   `--ignore-errors` is given; then the others are added and the exit
+//!   code is 1.
+//! - An ignored directory is reported (instead of its files) when a
+//!   pathspec names it or a path below it. A pathspec that matched nothing
+//!   is accepted when it names an existing ignored path; with
+//!   `--ignore-missing` a missing path that would be ignored is reported
+//!   as ignored and other missing paths are accepted.
 //!
 //! Not done yet: eol/filter attributes (a warning is printed instead, see
-//! issue #107), `--intent-to-add`, `--chmod`, `--renormalize`,
-//! `--ignore-errors`, interactive modes, untracked nested repositories.
+//! issue #107), `--renormalize`, `--refresh`, interactive modes, untracked
+//! nested repositories.
 
 use std::path::{Path, PathBuf};
 
-use rgit_index::{AddOptions, Entry, Index, Stage, WriteOptions};
+use rgit_index::{AddOptions, Entry, Index, Mode, Stage, WriteOptions};
 use rgit_object::ObjectKind;
 use rgit_pathspec::{DirInterest, MatchKind, ParseOptions, Pathspec};
 use rgit_worktree::ignore::{Excludes, default_excludes_file};
@@ -20,7 +41,7 @@ use rgit_worktree::stat::{
 
 use crate::messages::add as msg;
 use crate::prelude::*;
-use crate::repo::Mode;
+use crate::repo::Mode as RepoMode;
 use crate::repository::{self, Repo};
 
 fn lossy(p: &[u8]) -> String {
@@ -75,11 +96,23 @@ struct Walk<'a> {
     excludes: Excludes,
     force: bool,
     seen: Vec<bool>,
-    found: Vec<Vec<u8>>,
+    found: Vec<(Vec<u8>, bool)>,
     ignored: Vec<Vec<u8>>,
 }
 
 impl Walk<'_> {
+    /// Whether a pathspec names the directory `dir` or a path below it.
+    fn names_inside(&self, dir: &[u8]) -> bool {
+        self.pathspec.items().iter().any(|it| {
+            if it.is_exclude() {
+                return false;
+            }
+            let p = it.pattern();
+            let p = p.strip_suffix(b"/").unwrap_or(p);
+            p == dir || (p.len() > dir.len() && p.starts_with(dir) && p[dir.len()] == b'/')
+        })
+    }
+
     fn walk(&mut self, dir: &[u8], parent_excluded: bool) {
         let Ok(rd) = std::fs::read_dir(os_path(&self.root, dir)) else {
             return;
@@ -104,12 +137,38 @@ impl Walk<'_> {
                 {
                     continue;
                 }
+                let excluded = parent_excluded || self.excludes.is_excluded(&path, true);
                 if self.index.dir_range(&path).is_empty()
                     && std::fs::symlink_metadata(os_path(&self.root, &path).join(".git")).is_ok()
                 {
-                    continue; // untracked nested repository: not handled yet
+                    // An embedded repository: added as a gitlink when a
+                    // pathspec names it (not a path inside it).
+                    if excluded && !self.force {
+                        if self.names_inside(&path) {
+                            self.ignored.push(path);
+                        }
+                        continue;
+                    }
+                    let mut slashed = path.clone();
+                    slashed.push(b'/');
+                    if !self.pathspec.is_empty() {
+                        let hit = self.pathspec.match_path_seen(&path, &mut self.seen).is_some()
+                            | self.pathspec.match_path_seen(&slashed, &mut self.seen).is_some();
+                        if !hit {
+                            continue;
+                        }
+                    }
+                    self.found.push((path, true));
+                    continue;
                 }
-                let excluded = parent_excluded || self.excludes.is_excluded(&path, true);
+                if excluded && !self.force {
+                    // Nothing below is added; the directory itself is
+                    // reported when a pathspec reaches into it.
+                    if self.names_inside(&path) {
+                        self.ignored.push(path);
+                    }
+                    continue;
+                }
                 path.push(b'/');
                 self.walk(&path, excluded);
             } else {
@@ -132,7 +191,7 @@ impl Walk<'_> {
                 if !self.pathspec.is_empty() {
                     let _ = self.pathspec.match_path_seen(&path, &mut self.seen);
                 }
-                self.found.push(path);
+                self.found.push((path, false));
             }
         }
     }
@@ -157,7 +216,7 @@ pub(crate) fn build_excludes(repo: &Repo, root: &Path) -> Excludes {
 }
 
 /// Hash (and unless `dry_run`, store) the work tree file `path` and build
-/// its stage-0 entry.
+/// its stage-0 entry. `Err` is git's error text for an unreadable file.
 pub(crate) fn entry_for(
     repo: &Repo,
     checker: &Checker,
@@ -165,11 +224,12 @@ pub(crate) fn entry_for(
     path: &[u8],
     old: Option<&Entry>,
     dry_run: bool,
-) -> Result<Option<Entry>, Die> {
+) -> Result<Option<Entry>, String> {
     let shown = lossy(path);
+    let strerror = |e: &std::io::Error| crate::global::strerror(e);
     let Some(meta) = checker
         .lstat(path)
-        .map_err(|e| Die::Fatal(format!("lstat(\"{shown}\"): {e}")))?
+        .map_err(|e| format!("lstat(\"{shown}\"): {}", strerror(&e)))?
     else {
         return Ok(None);
     };
@@ -180,16 +240,16 @@ pub(crate) fn entry_for(
     let data = if meta.file_type().is_symlink() {
         std::fs::read_link(&full)
             .map(|t| t.as_os_str().as_encoded_bytes().to_vec())
-            .map_err(|e| Die::Fatal(format!("readlink(\"{shown}\"): {e}")))?
+            .map_err(|e| format!("readlink(\"{shown}\"): {}", strerror(&e)))?
     } else {
-        std::fs::read(&full).map_err(|e| Die::Fatal(format!("open(\"{shown}\"): {e}")))?
+        std::fs::read(&full).map_err(|e| format!("open(\"{shown}\"): {}", strerror(&e)))?
     };
     let id = if dry_run {
-        rgit_hash::hash_object(repo.hash, "blob", &data).map_err(|e| Die::Fatal(e.to_string()))?
+        rgit_hash::hash_object(repo.hash, "blob", &data).map_err(|e| e.to_string())?
     } else {
         repo.odb()
             .write(ObjectKind::Blob, &data)
-            .map_err(|e| Die::Fatal(e.to_string()))?
+            .map_err(|e| e.to_string())?
     };
     let mut entry = Entry::new(path.to_vec(), Stage::MERGED, mode, id);
     entry.stat = stat_from_metadata(&meta);
@@ -200,12 +260,53 @@ pub(crate) fn entry_for(
     Ok(Some(entry))
 }
 
+/// The empty intent-to-add entry for the new file `path` (`-N`).
+fn intent_entry(repo: &Repo, checker: &Checker, path: &[u8]) -> Result<Option<Entry>, Die> {
+    let Ok(Some(meta)) = checker.lstat(path) else {
+        return Ok(None);
+    };
+    let Some(mode) = mode_from_metadata(&meta, checker.options(), None) else {
+        return Ok(None);
+    };
+    let id = rgit_hash::hash_object(repo.hash, "blob", b"").map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut entry = Entry::new(path.to_vec(), Stage::MERGED, mode, id);
+    entry.flags.intent_to_add = true;
+    Ok(Some(entry))
+}
+
+fn report_failure(path: &[u8], err: &str) {
+    eprintln!("error: {err}");
+    eprintln!("error: {}", msg::unable_to_index(&lossy(path)));
+}
+
+/// Reads the `--pathspec-from-file` input.
+fn read_pathspec_file(name: &str, full: &Path, nul: bool) -> Result<Vec<Vec<u8>>, Die> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    let read = if name == "-" {
+        std::io::stdin().read_to_end(&mut data).map(|_| ())
+    } else {
+        std::fs::File::open(full).and_then(|mut f| f.read_to_end(&mut data).map(|_| ()))
+    };
+    read.map_err(|e| Die::Fatal(msg::could_not_open(name, &crate::global::strerror(&e))))?;
+    rgit_pathspec::parse_pathspec_file(&data, nul).map_err(|e| Die::Fatal(e.to_string()))
+}
+
+#[allow(clippy::too_many_lines)]
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let dry_run = Cell::new(false);
     let verbose = Cell::new(false);
     let force = Cell::new(false);
     let update = Cell::new(false);
+    let intent = Cell::new(false);
     let all = Cell::new(false);
+    let ignore_errors = Cell::new(-1);
+    let ignore_missing = Cell::new(false);
+    let sparse = Cell::new(false);
+    let chmod: RefCell<Option<String>> = RefCell::new(None);
+    let from_file: RefCell<Option<String>> = RefCell::new(None);
+    let file_nul = Cell::new(false);
+    let warn_embedded = Cell::new(true);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -214,19 +315,75 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::group(""),
             Opt::flag('f', "force", &force, msg::HELP_FORCE),
             Opt::flag('u', "update", &update, msg::HELP_UPDATE),
+            Opt::flag('N', "intent-to-add", &intent, msg::HELP_INTENT_TO_ADD),
             Opt::flag('A', "all", &all, msg::HELP_ALL),
+            Opt::bool(None, "ignore-errors", &ignore_errors, msg::HELP_IGNORE_ERRORS),
+            Opt::flag(None, "ignore-missing", &ignore_missing, msg::HELP_IGNORE_MISSING),
+            Opt::flag(None, "sparse", &sparse, msg::HELP_SPARSE),
+            Opt::string(None, "chmod", &chmod, "(+|-)x", msg::HELP_CHMOD).literal_argh(),
+            Opt::string(None, "pathspec-from-file", &from_file, "file", msg::HELP_PATHSPEC_FROM_FILE),
+            Opt::flag(None, "pathspec-file-nul", &file_nul, msg::HELP_PATHSPEC_FILE_NUL),
+            Opt::flag(None, "warn-embedded-repo", &warn_embedded, msg::HELP_NO_WARN_EMBEDDED_REPO)
+                .hidden(),
         ],
     );
-    let args = parser.parse(argv)?.args;
+    let mut args: Vec<Vec<u8>> = parser
+        .parse(argv)?
+        .args
+        .into_iter()
+        .map(String::into_bytes)
+        .collect();
     drop(parser);
-    let (dry_run, verbose, force, update, all) =
-        (dry_run.get(), verbose.get(), force.get(), update.get(), all.get());
+    let (dry_run, verbose, force, update, intent, all) = (
+        dry_run.get(),
+        verbose.get(),
+        force.get(),
+        update.get(),
+        intent.get(),
+        all.get(),
+    );
+    let chmod = chmod.into_inner();
+    let from_file = from_file.into_inner();
     if update && all {
         return Err(Die::Fatal(msg::UPDATE_AND_ALL.to_string()));
     }
+    let flip = match chmod.as_deref() {
+        None => None,
+        Some("+x") => Some('+'),
+        Some("-x") => Some('-'),
+        Some(other) => return Err(Die::Fatal(msg::bad_chmod(other))),
+    };
+    if ignore_missing.get() && !dry_run {
+        return Err(Die::Fatal(msg::option_requires("--ignore-missing", "--dry-run")));
+    }
+    if from_file.is_some() && !args.is_empty() {
+        return Err(Die::Fatal(msg::FROM_FILE_WITH_ARGS.to_string()));
+    }
+    if file_nul.get() && from_file.is_none() {
+        return Err(Die::Fatal(msg::option_requires(
+            "--pathspec-file-nul",
+            "--pathspec-from-file",
+        )));
+    }
 
-    let repo = Repo::open(ctx, Mode::Required)?;
+    let repo = Repo::open(ctx, RepoMode::Required)?;
     let root = repo.work_tree()?;
+    if let Some(name) = &from_file {
+        // A relative file name is relative to the original directory.
+        let full = if name == "-" || Path::new(name).is_absolute() {
+            PathBuf::from(name)
+        } else {
+            os_path(&root, &repo.prefix()).join(name)
+        };
+        args = read_pathspec_file(name, &full, file_nul.get())?;
+    }
+    let ignore_errors = match ignore_errors.get() {
+        -1 => ["add.ignore-errors", "add.ignoreerrors"]
+            .iter()
+            .find_map(|k| repo.config.bool(k).ok().flatten())
+            .unwrap_or(false),
+        v => v != 0,
+    };
     if args.is_empty() && !update && !all {
         eprintln!("{}", msg::NOTHING_SPECIFIED);
         eprintln!("{}", msg::HINT_ADD_DOT);
@@ -240,60 +397,48 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ..Default::default()
     };
     let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
+    // A pathspec whose literal leading directories pass a symbolic link.
+    for item in pathspec.items() {
+        let literal = &item.pattern()[..item.nowildcard_len()];
+        for (i, _) in literal.iter().enumerate().filter(|(_, b)| **b == b'/') {
+            let leading = std::fs::symlink_metadata(os_path(&root, &literal[..i]));
+            if leading.is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(Die::Fatal(msg::beyond_symlink(&lossy(item.original()))));
+            }
+        }
+    }
     let (mut index, index_mtime) = repo.read_index()?;
     let checker = repo.checker(index_mtime)?;
     let mut seen = vec![false; pathspec.items().len()];
     let warn_attrs = attributes_may_apply(&repo, &root);
+    let show = verbose || dry_run;
+    // With -N, git stores the empty blob for every file it lists as added
+    // (tracked or new), with --dry-run too.
+    let write_empty_blob = || {
+        repo.odb()
+            .write(ObjectKind::Blob, b"")
+            .map_err(|e| Die::Fatal(e.to_string()))
+    };
 
-    // Tracked files first, in index order.
-    let mut lines: Vec<String> = Vec::new();
-    let mut updates: Vec<Entry> = Vec::new();
-    let mut removals: Vec<Vec<u8>> = Vec::new();
-    for e in index.entries() {
-        if !pathspec.is_empty() && pathspec.match_path_seen(e.path(), &mut seen).is_none() {
-            continue;
-        }
-        if pathspec.is_empty() && !prefix.is_empty() && !update && !all {
-            continue;
-        }
-        if e.stage() != Stage::MERGED || e.mode.is_gitlink() {
-            continue;
-        }
-        let status = checker
-            .check(e)
-            .map_err(|err| Die::Fatal(format!("{}: {err}", lossy(e.path()))))?;
-        match status {
-            Status::Unchanged => {}
-            Status::StatOnly => {
-                if let Some(n) = entry_for(&repo, &checker, &root, e.path(), Some(e), true)? {
-                    updates.push(n);
-                }
-            }
-            Status::Modified | Status::TypeChanged => {
-                lines.push(msg::add(&lossy(e.path())));
-                if let Some(n) = entry_for(&repo, &checker, &root, e.path(), Some(e), dry_run)? {
-                    if warn_attrs {
-                        eprintln!("warning: {}", msg::attributes_not_applied(&lossy(e.path())));
-                    }
-                    updates.push(n);
-                }
-            }
-            Status::Deleted => {
-                lines.push(msg::remove(&lossy(e.path())));
-                removals.push(e.path().to_vec());
-            }
+    // Which pathspecs match tracked paths; checked together with the
+    // untracked files before anything is updated or printed.
+    if !pathspec.is_empty() {
+        for e in index.entries() {
+            let _ = pathspec.match_path_seen(e.path(), &mut seen);
         }
     }
+
 
     // Then untracked files in directory order.
     let mut found = Vec::new();
     let mut ignored = Vec::new();
+    let mut excludes = build_excludes(&repo, &root);
     if !update {
         let mut walk = Walk {
             root: root.clone(),
             index: &index,
             pathspec: &pathspec,
-            excludes: build_excludes(&repo, &root),
+            excludes,
             force,
             seen,
             found: Vec::new(),
@@ -306,57 +451,322 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         seen = walk.seen;
         found = walk.found;
         ignored = walk.ignored;
+        excludes = walk.excludes;
     }
     for item in pathspec.unmatched(&seen) {
-        if ignored.iter().any(|p| p.as_slice() == item.original()) {
+        let pattern = item.pattern();
+        let path = pattern.strip_suffix(b"/").unwrap_or(pattern);
+        let meta = std::fs::symlink_metadata(os_path(&root, pattern)).ok();
+        let exists = meta.is_some();
+        let is_dir = pattern.len() != path.len() || meta.is_some_and(|m| m.is_dir());
+        let is_ignored = !force
+            && excludes
+                .match_with_leading_dirs(path, is_dir)
+                .is_some_and(|m| m.is_excluded());
+        if exists {
+            continue; // ignored ones were reported by the walk
+        }
+        if ignore_missing.get() {
+            if !exists && is_ignored {
+                ignored.push(pattern.to_vec());
+            }
             continue;
         }
         return Err(Die::Fatal(rgit_pathspec::messages::did_not_match_any_files(
             item.original(),
         )));
     }
+    if update {
+        // With -u only tracked files count.
+        let mut any = false;
+        for item in pathspec.unmatched(&seen) {
+            eprintln!(
+                "error: {}",
+                rgit_pathspec::messages::did_not_match_known_to_git(item.original())
+            );
+            any = true;
+        }
+        if any {
+            return Err(Die::Exit(128));
+        }
+    }
 
-    for path in &found {
-        lines.push(msg::add(&lossy(path)));
-        if warn_attrs {
-            eprintln!("warning: {}", msg::attributes_not_applied(&lossy(path)));
+    // Tracked files, in index order.
+    let mut updates: Vec<Entry> = Vec::new();
+    let mut removals: Vec<Vec<u8>> = Vec::new();
+    let mut failed = false;
+    let entries = index.entries();
+    for (pos, e) in entries.iter().enumerate() {
+        if !pathspec.is_empty() && pathspec.match_path(e.path()).is_none() {
+            continue;
         }
-        if let Some(n) = entry_for(&repo, &checker, &root, path, None, dry_run)? {
-            updates.push(n);
+        if pathspec.is_empty() && !prefix.is_empty() && !update && !all {
+            continue;
+        }
+        if e.stage() != Stage::MERGED {
+            // An unmerged path, once: the work tree file resolves it. The
+            // mode is taken over from stage 2, else the first stage.
+            if pos > 0 && entries[pos - 1].path() == e.path() {
+                continue;
+            }
+            let path = e.path();
+            let stages = index.entries_for_path(path);
+            let base = stages
+                .iter()
+                .find(|s| s.stage() == Stage::OURS)
+                .unwrap_or(e);
+            if checker.lstat(path).ok().flatten().is_none() {
+                if show {
+                    println!("{}", msg::remove(&lossy(path)));
+                }
+                removals.push(path.to_vec());
+                continue;
+            }
+            let resolved = if intent {
+                write_empty_blob()?;
+                Ok(intent_entry(&repo, &checker, path)?)
+            } else {
+                entry_for(&repo, &checker, &root, path, Some(base), dry_run)
+            };
+            match resolved {
+                Ok(n) => {
+                    if show {
+                        println!("{}", msg::add(&lossy(path)));
+                    }
+                    if let Some(mut n) = n {
+                        n.flags = Default::default();
+                        if intent {
+                            n.flags.intent_to_add = true;
+                        }
+                        removals.push(path.to_vec());
+                        updates.push(n);
+                    }
+                }
+                Err(err) => {
+                    report_failure(path, &err);
+                    failed = true;
+                    if !ignore_errors {
+                        return Err(Die::Fatal(msg::UPDATING_FAILED.to_string()));
+                    }
+                }
+            }
+            continue;
+        }
+        if e.mode.is_gitlink() {
+            // A tracked submodule: record the commit checked out there.
+            let full = os_path(&root, e.path());
+            let meta = std::fs::symlink_metadata(&full).ok();
+            if !meta.as_ref().is_some_and(std::fs::Metadata::is_dir) {
+                if show {
+                    println!("{}", msg::remove(&lossy(e.path())));
+                }
+                removals.push(e.path().to_vec());
+                continue;
+            }
+            if intent {
+                write_empty_blob()?;
+                if show {
+                    println!("{}", msg::add(&lossy(e.path())));
+                }
+                continue;
+            }
+            if let Some(head) = repository::submodule_head(&full, repo.hash) {
+                if head != e.id {
+                    if show {
+                        println!("{}", msg::add(&lossy(e.path())));
+                    }
+                    let mut n = Entry::new(e.path().to_vec(), Stage::MERGED, Mode::GITLINK, head);
+                    if let Some(m) = &meta {
+                        n.stat = stat_from_metadata(m);
+                    }
+                    n.flags = e.flags;
+                    updates.push(n);
+                }
+            }
+            continue;
+        }
+        if intent && e.flags.intent_to_add {
+            continue;
+        }
+        let status = checker
+            .check(e)
+            .map_err(|err| Die::Fatal(format!("{}: {err}", lossy(e.path()))))?;
+        match status {
+            Status::Deleted => {
+                if show {
+                    println!("{}", msg::remove(&lossy(e.path())));
+                }
+                removals.push(e.path().to_vec());
+            }
+            _ if intent => {
+                write_empty_blob()?;
+                if show {
+                    println!("{}", msg::add(&lossy(e.path())));
+                }
+            }
+            Status::Unchanged => {}
+            Status::StatOnly => {
+                if let Ok(Some(n)) = entry_for(&repo, &checker, &root, e.path(), Some(e), true) {
+                    updates.push(n);
+                }
+            }
+            Status::Modified | Status::TypeChanged => {
+                match entry_for(&repo, &checker, &root, e.path(), Some(e), dry_run) {
+                    Ok(n) => {
+                        if show {
+                            println!("{}", msg::add(&lossy(e.path())));
+                        }
+                        if let Some(n) = n {
+                            if warn_attrs {
+                                eprintln!("warning: {}", msg::attributes_not_applied(&lossy(e.path())));
+                            }
+                            updates.push(n);
+                        }
+                    }
+                    Err(err) => {
+                        report_failure(e.path(), &err);
+                        failed = true;
+                        if !ignore_errors {
+                            return Err(Die::Fatal(msg::UPDATING_FAILED.to_string()));
+                        }
+                    }
+                }
+            }
         }
     }
-    if verbose || dry_run {
-        let mut out = String::new();
-        for l in &lines {
-            out.push_str(l);
-            out.push('\n');
-        }
-        print!("{out}");
+    if failed && !ignore_errors {
+        return Err(Die::Fatal(msg::UPDATING_FAILED.to_string()));
     }
-    let code = if ignored.is_empty() {
-        0
-    } else {
+
+    let mut add_failed = false;
+    let mut hint_shown = false;
+    for (path, is_repo) in &found {
+        if *is_repo {
+            // An embedded repository becomes a gitlink to its HEAD.
+            let mut shown = path.clone();
+            shown.push(b'/');
+            let full = os_path(&root, path);
+            let Some(head) = repository::submodule_head(&full, repo.hash) else {
+                report_failure(&shown, &msg::no_commit_checked_out(&lossy(&shown)));
+                add_failed = true;
+                if !ignore_errors {
+                    return Err(Die::Fatal(msg::ADDING_FAILED.to_string()));
+                }
+                continue;
+            };
+            if warn_embedded.get() {
+                eprintln!("warning: {}", msg::embedded_repo(&lossy(path)));
+                let advice = repo.config.bool("advice.addembeddedrepo").ok().flatten();
+                if !hint_shown && advice != Some(false) {
+                    eprintln!("{}", msg::embedded_repo_hint(&lossy(path)));
+                }
+                hint_shown = true;
+            }
+            if show {
+                println!("{}", msg::add(&lossy(&shown)));
+            }
+            let mut entry = if intent {
+                let id = write_empty_blob()?;
+                let mut e = Entry::new(path.clone(), Stage::MERGED, Mode::GITLINK, id);
+                e.flags.intent_to_add = true;
+                e
+            } else {
+                let mut e = Entry::new(path.clone(), Stage::MERGED, Mode::GITLINK, head);
+                if let Ok(meta) = std::fs::symlink_metadata(&full) {
+                    e.stat = stat_from_metadata(&meta);
+                }
+                e
+            };
+            entry.flags.assume_valid = false;
+            updates.push(entry);
+            continue;
+        }
+        if intent {
+            write_empty_blob()?;
+            if let Some(n) = intent_entry(&repo, &checker, path)? {
+                updates.push(n);
+            }
+            if show {
+                println!("{}", msg::add(&lossy(path)));
+            }
+            continue;
+        }
+        match entry_for(&repo, &checker, &root, path, None, dry_run) {
+            Ok(n) => {
+                if show {
+                    println!("{}", msg::add(&lossy(path)));
+                }
+                if warn_attrs {
+                    eprintln!("warning: {}", msg::attributes_not_applied(&lossy(path)));
+                }
+                if let Some(n) = n {
+                    updates.push(n);
+                }
+            }
+            Err(err) => {
+                report_failure(path, &err);
+                add_failed = true;
+                if !ignore_errors {
+                    return Err(Die::Fatal(msg::ADDING_FAILED.to_string()));
+                }
+            }
+        }
+    }
+    if add_failed && !ignore_errors {
+        return Err(Die::Fatal(msg::ADDING_FAILED.to_string()));
+    }
+    let mut code = if failed || add_failed { 1 } else { 0 };
+    if !ignored.is_empty() {
         eprintln!("{}", msg::IGNORED_HEADER);
         for p in &ignored {
             eprintln!("{}", lossy(p));
         }
         eprintln!("{}", msg::IGNORED_HINT);
-        1
-    };
-    if dry_run {
-        return Ok(code);
+        code = 1;
     }
 
-    let changed = !updates.is_empty() || !removals.is_empty();
-    for p in removals {
-        index.remove_path(&p);
+    let mut changed = !updates.is_empty() || !removals.is_empty();
+    if !dry_run {
+        for p in removals {
+            index.remove_path(&p);
+        }
+        for e in updates {
+            let path = e.path().to_vec();
+            index
+                .add(e, AddOptions { ok_to_replace: true, ..Default::default() })
+                .map_err(|err| Die::Fatal(err.to_string()))?;
+            index.invalidate_path(&path);
+        }
     }
-    for e in updates {
-        let path = e.path().to_vec();
-        index
-            .add(e, AddOptions { ok_to_replace: true, ..Default::default() })
-            .map_err(|err| Die::Fatal(err.to_string()))?;
-        index.invalidate_path(&path);
+
+    // --chmod: every index entry the pathspecs match.
+    if let (Some(flip), false) = (flip, pathspec.is_empty()) {
+        let mode = if flip == '+' { Mode::EXECUTABLE } else { Mode::FILE };
+        let mut flipped = Vec::new();
+        for (pos, e) in index.entries().iter().enumerate() {
+            if !pathspec.matches(e.path()) {
+                continue;
+            }
+            if !e.mode.is_file() {
+                eprintln!("error: {}", msg::cannot_chmod(flip, &lossy(e.path())));
+                code = 255;
+            } else if e.mode != mode {
+                flipped.push(pos);
+            }
+        }
+        if !dry_run {
+            for pos in flipped {
+                if let Some(e) = index.entry_mut(pos) {
+                    e.mode = mode;
+                    let path = e.path().to_vec();
+                    index.invalidate_path(&path);
+                    changed = true;
+                }
+            }
+        }
+    }
+    if dry_run {
+        return Ok(code);
     }
     if changed {
         if let Some(reference) = index_mtime {
