@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "rgit-test-tool"
 path = "src/main.rs"

@@ -131,20 +131,7 @@ pub fn write_stat(out: &mut Vec<u8>, files: &[FileStat], layout: &StatLayout) {
             }
             StatKind::Text { added, deleted } => {
                 write!(out, "{:>number_width$}", added + deleted).unwrap();
-                let (mut plus, mut minus) = (added, deleted);
-                if graph_width < max_change {
-                    let mut total = scale(added + deleted, graph_width, max_change);
-                    if total < 2 && added > 0 && deleted > 0 {
-                        total = 2;
-                    }
-                    if added < deleted {
-                        plus = scale(added, graph_width, max_change);
-                        minus = total - plus;
-                    } else {
-                        minus = scale(deleted, graph_width, max_change);
-                        plus = total - minus;
-                    }
-                }
+                let (plus, minus) = bar_lengths(added, deleted, graph_width, max_change);
                 if plus + minus > 0 {
                     out.push(b' ');
                 }
@@ -169,5 +156,29 @@ pub fn write_numstat(out: &mut Vec<u8>, files: &[FileStat], names: &[Vec<u8>], n
         }
         out.extend_from_slice(name);
         out.push(if nul { 0 } else { b'\n' });
+    }
+}
+
+/// Splits the `+`/`-` bar of one stat line. When the largest change does not
+/// fit into `width` columns, the whole bar is scaled first (keeping room for
+/// one sign of each kind when both kinds are present) and the smaller side is
+/// scaled on its own; the larger side receives the remaining columns.
+fn bar_lengths(added: usize, deleted: usize, width: usize, max_change: usize) -> (usize, usize) {
+    if width >= max_change {
+        return (added, deleted);
+    }
+    let both = added > 0 && deleted > 0;
+    let bar = scale(added + deleted, width, max_change).max(if both { 2 } else { 0 });
+    let smaller_is_added = added < deleted;
+    let small = scale(
+        if smaller_is_added { added } else { deleted },
+        width,
+        max_change,
+    );
+    let large = bar - small;
+    if smaller_is_added {
+        (small, large)
+    } else {
+        (large, small)
     }
 }

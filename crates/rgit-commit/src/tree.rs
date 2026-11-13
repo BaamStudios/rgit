@@ -2,7 +2,7 @@
 //! Tree objects from an index (Documentation/git-write-tree.adoc).
 
 use rgit_hash::ObjectId;
-use rgit_index::Index;
+use rgit_index::{CacheTree, Index, TreeNode};
 use rgit_object::{EntryMode, ObjectKind, Tree, TreeEntry};
 use rgit_odb::ObjectDatabase;
 
@@ -55,6 +55,18 @@ pub fn write_tree(
     index: &Index,
     opts: &WriteTreeOptions<'_>,
 ) -> Result<ObjectId, WriteTreeError> {
+    write_tree_cached(odb, index, opts).map(|(id, _)| id)
+}
+
+/// [`write_tree`], also returning the cache tree (`TREE` extension) that
+/// describes the written trees. There is none for a `prefix` or when the
+/// index has intent-to-add entries (their directories have no valid tree).
+pub fn write_tree_cached(
+    odb: &ObjectDatabase,
+    index: &Index,
+    opts: &WriteTreeOptions<'_>,
+) -> Result<(ObjectId, Option<CacheTree>), WriteTreeError> {
+    let has_ita = index.entries().iter().any(|e| e.flags.intent_to_add);
     let mut items: Vec<Item<'_>> = Vec::new();
     let mut unmerged: Vec<Vec<u8>> = Vec::new();
     for e in index.entries() {
@@ -98,10 +110,11 @@ pub fn write_tree(
             if sub.is_empty() {
                 return Err(WriteTreeError::PrefixNotFound(p.to_owned()));
             }
-            return build(odb, &sub, want.len());
+            return build(odb, &sub, want.len(), b"").map(|(id, _)| (id, None));
         }
     }
-    build(odb, &items, 0)
+    let (id, root) = build(odb, &items, 0, b"")?;
+    Ok((id, (!has_ita).then_some(CacheTree { root })))
 }
 
 /// Build the tree for `items` (in index order), whose paths all share the
@@ -110,8 +123,10 @@ fn build(
     odb: &ObjectDatabase,
     items: &[Item<'_>],
     strip: usize,
-) -> Result<ObjectId, WriteTreeError> {
+    name: &[u8],
+) -> Result<(ObjectId, TreeNode), WriteTreeError> {
     let mut tree = Tree::new();
+    let mut children = Vec::new();
     let mut i = 0;
     while i < items.len() {
         let rest = &items[i].0[strip..];
@@ -128,7 +143,8 @@ fn build(
                 while j < items.len() && items[j].0[strip..].starts_with(name) {
                     j += 1;
                 }
-                let oid = build(odb, &items[i..j], strip + slash + 1)?;
+                let (oid, node) = build(odb, &items[i..j], strip + slash + 1, &rest[..slash])?;
+                children.push(node);
                 let mode = EntryMode::from_octal(b"40000").ok_or(WriteTreeError::BadMode)?;
                 tree.entries.push(TreeEntry::new(mode, &rest[..slash], oid));
                 i = j;
@@ -136,6 +152,13 @@ fn build(
         }
     }
     tree.entries.sort_by(TreeEntry::cmp_tree_order);
-    odb.write(ObjectKind::Tree, &tree.serialize())
-        .map_err(WriteTreeError::Odb)
+    let id = odb
+        .write(ObjectKind::Tree, &tree.serialize())
+        .map_err(WriteTreeError::Odb)?;
+    // Subtrees are kept ordered by name length, then name.
+    children.sort_by(|a, b| a.name.len().cmp(&b.name.len()).then(a.name.cmp(&b.name)));
+    let count = u32::try_from(items.len()).unwrap_or(u32::MAX);
+    let mut node = TreeNode::new_valid(name.to_vec(), count, id);
+    node.children = children;
+    Ok((id, node))
 }

@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BaamStudios/rgit"
-rust-version = "1.85"
+rust-version = "1.88"
 
 # Keep build directories small: many agents build in parallel worktrees.
 [profile.dev]
@@ -18,3 +18,9 @@ debug = false
 
 [profile.test]
 debug = "line-tables-only"
+
+# Lints the MSRV bump to 1.88 (#237) newly enables. They only suggest let
+# chains and `is_multiple_of`; existing code is not rewritten wholesale.
+[workspace.lints.clippy]
+collapsible_if = "allow"
+manual_is_multiple_of = "allow"

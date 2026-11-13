@@ -74,3 +74,6 @@ pub const NOTHING_INITIAL_HINT: &str =
 pub const NOTHING_NO_UNTRACKED_HINT: &str = "nothing to commit (use -u to show untracked files)";
 pub const NOTHING: &str = "nothing to commit";
 pub const NOTHING_CLEAN: &str = "nothing to commit, working tree clean";
+
+pub const STILL_MERGING: &str = "All conflicts fixed but you are still merging.";
+pub const HINT_CONCLUDE_MERGE: &str = "  (use \"git commit\" to conclude merge)";

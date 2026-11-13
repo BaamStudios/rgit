@@ -137,6 +137,16 @@ pub fn reflog_message(kind: &str, first_line: &str) -> String {
 pub const REFLOG_COMMIT: &str = "commit";
 pub const REFLOG_INITIAL: &str = "commit (initial)";
 pub const REFLOG_AMEND: &str = "commit (amend)";
+pub const REFLOG_MERGE: &str = "commit (merge)";
+
+pub const AMEND_DURING_MERGE: &str = "You are in the middle of a merge -- cannot amend.";
+pub const PARTIAL_DURING_MERGE: &str = "cannot do a partial commit during a merge.";
+pub const MERGE_NOTICE: &str = "
+It looks like you may be committing a merge.
+If this is not correct, please run
+\tgit update-ref -d MERGE_HEAD
+and try again.
+";
 
 // Messages of rgit itself.
 
@@ -145,5 +155,5 @@ pub fn hook_not_run(name: &str) -> String {
     format!("warning: rgit does not run hooks yet; the '{name}' hook was not run")
 }
 
-pub const MERGE_NOT_SUPPORTED: &str =
-    "rgit: commit: concluding a merge, cherry-pick or revert is not supported yet";
+pub const SEQUENCER_NOT_SUPPORTED: &str =
+    "rgit: commit: concluding a cherry-pick or revert is not supported yet";

@@ -14,7 +14,7 @@
 pub mod message;
 mod tree;
 
-pub use tree::{WriteTreeError, WriteTreeOptions, write_tree};
+pub use tree::{WriteTreeError, WriteTreeOptions, write_tree, write_tree_cached};
 
 use rgit_hash::ObjectId;
 use rgit_object::{Commit, ObjectKind, Signature};

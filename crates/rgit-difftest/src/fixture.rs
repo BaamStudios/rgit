@@ -534,7 +534,7 @@ impl Comparison<'_> {
 
         match report {
             None => {
-                let _ = fs::remove_dir_all(&snapshot);
+                retire(&root, &snapshot);
                 let _ = fs::remove_dir_all(&rgit_result);
                 Ok(Some(Outcome {
                     git: git_run,
@@ -550,7 +550,7 @@ impl Comparison<'_> {
                         root.display()
                     ));
                 } else {
-                    let _ = fs::remove_dir_all(&snapshot);
+                    retire(&root, &snapshot);
                     let _ = fs::remove_dir_all(&rgit_result);
                     report.push_str(&format!(
                         "\n(set {}=1 to keep the temporary directories)\n",
@@ -751,6 +751,25 @@ fn link_binary(dir: &Path, binary: &Path) {
     std::os::unix::fs::symlink(&target, &link).expect("link binary");
     #[cfg(not(unix))]
     fs::copy(&target, &link).map(|_| ()).expect("copy binary");
+}
+
+/// Moves a used snapshot to `<root>/retired/<n>` instead of deleting it.
+///
+/// The index records the inode numbers of the files it was staged from, and
+/// both sides run on copies with new inodes, so every entry looks stat-dirty
+/// to git and to rgit alike. Deleting the snapshot would free exactly the
+/// recorded inode numbers; on file systems that reuse them (ext4, the CI
+/// runners) a later copy could get the recorded number back for one side
+/// only, and that side would see the entry as stat-clean. Keeping the
+/// snapshots until the fixture is dropped keeps those numbers allocated
+/// (#332).
+fn retire(root: &Path, snapshot: &Path) {
+    let retired = root.join("retired");
+    let _ = fs::create_dir_all(&retired);
+    let n = fs::read_dir(&retired).map_or(0, Iterator::count);
+    if fs::rename(snapshot, retired.join(n.to_string())).is_err() {
+        let _ = fs::remove_dir_all(snapshot);
+    }
 }
 
 /// Recursively copies `from` to `to`, keeping symlinks, permissions and modification times.
