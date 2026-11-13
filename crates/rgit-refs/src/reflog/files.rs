@@ -116,8 +116,21 @@ impl FilesReflog {
             let _ = fs::remove_dir_all(path);
         }
         if let Some(parent) = path.parent() {
+            // Directories created here get the core.sharedRepository mode.
+            let mut missing = Vec::new();
+            let mut dir = Some(parent);
+            while let Some(d) = dir {
+                if d.exists() {
+                    break;
+                }
+                missing.push(d.to_path_buf());
+                dir = d.parent();
+            }
             // A failure shows up as the open error below.
             let _ = fs::create_dir_all(parent);
+            for d in missing.iter().rev() {
+                let _ = self.shared.apply(d);
+            }
         }
         Ok(())
     }
