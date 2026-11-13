@@ -216,3 +216,13 @@ pub fn rename_section_in_file(
         edit::rename_section(data, old, new)
     })
 }
+
+/// Copy a section in `path` (see [`edit::copy_section`]).
+pub fn copy_section_in_file(
+    path: &Path,
+    lock: &LockOptions,
+    old: &[u8],
+    new: &[u8],
+) -> Result<(), WriteError> {
+    edit_file(path, lock, true, |data| edit::copy_section(data, old, new))
+}
