@@ -1,0 +1,54 @@
+# M2 acceptance (issue #163): clone -> edit -> commit -> push with rgit alone.
+#
+# - gitea: a pinned Gitea container, the scenario over HTTPS (credential helper
+#   and askpass) and SSH, verified on the server with the reference git.
+#   Runs for every pull request and push to main.
+# - github-public: anonymous HTTPS ls-remote and clone of public repositories
+#   on github.com. Nightly and on demand, non-blocking.
+#
+# Both run the scripts in scripts/acceptance/, which also run locally.
+name: Acceptance
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 2 * * *" # nightly, 02:41 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  gitea:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GITEA_IMAGE: gitea/gitea:1.24.6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Pull Gitea
+        run: docker pull "$GITEA_IMAGE"
+      - name: Build rgit
+        run: cargo build --release -p rgit-cli
+      - name: Scenario (HTTPS helper, HTTPS askpass, SSH)
+        run: scripts/acceptance/m2-gitea.sh --rgit target/release/rgit
+
+  github-public:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Non-blocking: depends on github.com and on the size of git/git.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build rgit
+        run: cargo build --release -p rgit-cli
+      - name: Small repository
+        run: scripts/acceptance/github-public.sh --rgit target/release/rgit https://github.com/octocat/Hello-World.git
+      - name: git/git
+        if: ${{ !cancelled() }}
+        run: scripts/acceptance/github-public.sh --rgit target/release/rgit https://github.com/git/git.git
