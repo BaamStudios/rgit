@@ -105,11 +105,50 @@ pub fn unable_to_read_tree(id: &str) -> String {
 pub fn hint_detach_branch_expected() -> &'static str {
     "hint: If you want to detach HEAD at the commit, try again with the --detach option.\n"
 }
+/// `switch HEAD` and full ref names: the ref the argument names.
+pub fn branch_expected_ref(full: &str) -> String {
+    format!("a branch is expected, got '{full}'")
+}
+/// `checkout <a> <b>... --`.
+pub fn one_reference_expected_given(n: usize) -> String {
+    format!("only one reference expected, {n} given.")
+}
+/// `checkout -b <new> <start> <path>...`.
+pub fn cannot_update_paths_and_switch(branch: &str) -> String {
+    format!("Cannot update paths and switch to branch '{branch}' at the same time.")
+}
+/// `checkout <name>` without `--` when `--guess` would create a branch
+/// and `<name>` is also a file.
+pub fn file_and_tracking_branch(name: &str) -> String {
+    format!(
+        "'{name}' could be both a local file and a tracking branch.\n\
+         Please use -- (and optionally --no-guess) to disambiguate"
+    )
+}
+pub const CREATE_OPTIONS_CHECKOUT: &str =
+    "options '-b', '-B', and '--orphan' cannot be used together";
+pub const CREATE_OPTIONS_SWITCH: &str =
+    "options '-c', '-C', and '--orphan' cannot be used together";
+/// `switch` while an operation is in progress: `what` is "while merging"
+/// and the like, `command` the command whose `--quit` ends it.
+pub fn cannot_switch_in_progress(what: &str, command: &str) -> String {
+    format!(
+        "cannot switch branch {what}\n\
+         Consider \"git {command} --quit\" or \"git worktree add\"."
+    )
+}
+/// After leaving a cherry-pick or revert in progress (`what`: "cherry
+/// picking" or "revert").
+pub fn cancelling(what: &str) -> String {
+    format!("cancelling a {what} in progress")
+}
+pub const SWITCHING_WHILE_BISECTING: &str = "you are switching branch while bisecting";
 pub const MISSING_BRANCH_OR_COMMIT: &str = "missing branch or commit argument";
 pub const ONE_REFERENCE_EXPECTED: &str = "only one reference expected";
 pub const DETACH_WITH_CREATE: &str = "'--detach' cannot be used with '-b/-B/--orphan'";
 pub const ORPHAN_WITH_TRACK: &str = "'--orphan' cannot be used with '-t'";
 pub const TRACK_WITH_PATHS: &str = "'--track' cannot be used with updating paths";
+pub const REFLOG_WITH_PATHS: &str = "'-l' cannot be used with updating paths";
 pub const HINT_PULL_DIVERGED: &str =
     "  (use \"git pull\" if you want to integrate the remote branch with yours)";
 

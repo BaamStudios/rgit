@@ -57,6 +57,44 @@ pub fn tracking_ref(revs: &Revs, arg: &str) -> Result<Option<String>, Die> {
     Ok((d.count == 1).then_some(d.full_name))
 }
 
+/// A new branch name given as `@{-<n>}`: the branch checked out before.
+pub fn expand_new_name(repo: &Repo, name: &str) -> String {
+    if name.starts_with("@{-") {
+        previous_name(repo, name)
+    } else {
+        name.to_owned()
+    }
+}
+
+/// Resolves `name` to a commit; `<a>...<b>` (either side defaulting to
+/// `HEAD`) names their merge base when there is exactly one.
+pub fn resolve_commit(revs: &Revs, objects: &Objects, name: &str) -> Option<ObjectId> {
+    if let Some(id) = revs.resolve(name).and_then(|id| sb::peel_commit(objects, &id)) {
+        return Some(id);
+    }
+    let (a, b) = name.split_once("...")?;
+    let side = |s: &str| {
+        let s = if s.is_empty() { "HEAD" } else { s };
+        revs.resolve(s).and_then(|id| sb::peel_commit(objects, &id))
+    };
+    let (a, b) = (side(a)?, side(b)?);
+    let bases = revs.with_resolver(|r| r.merge_bases(&a, &b)).ok()?;
+    match bases.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    }
+}
+
+/// "warning: refname '<name>' is ambiguous." when `name` matches more
+/// than one ref.
+pub fn warn_if_ambiguous(revs: &Revs, name: &str) {
+    if let Ok(d) = revs.with_resolver(|r| r.dwim_ref(name)) {
+        if d.count > 1 {
+            eprintln!("warning: {}", tmsg::refname_ambiguous(name));
+        }
+    }
+}
+
 /// `-` and `@{-<n>}`.
 fn previous_name(repo: &Repo, arg: &str) -> String {
     let n = if arg == "-" {
@@ -101,10 +139,11 @@ pub fn lookup(
     let full = format!("refs/heads/{name}");
     if let Ok(Some(id)) = store.resolve_oid(&full) {
         if rgit_refs::name::check_branch_name(name.as_bytes()).is_ok() {
+            warn_if_ambiguous(revs, name);
             return Ok(Named::Branch(name.to_owned(), id));
         }
     }
-    if let Some(id) = revs.resolve(name).and_then(|id| sb::peel_commit(objects, &id)) {
+    if let Some(id) = resolve_commit(revs, objects, name) {
         return Ok(Named::Commit(id));
     }
     if guess && rgit_refs::name::check_branch_name(name.as_bytes()).is_ok() {
@@ -153,6 +192,10 @@ pub struct CreateOptions<'a> {
     pub auto: AutoSetup,
     pub force: bool,
     pub quiet: bool,
+    /// `-l`: create the reflog of the new branch.
+    pub reflog: bool,
+    /// `switch`: refuse while an operation is in progress.
+    pub refuse_in_progress: bool,
     /// The command's message for a start point that is not a commit.
     pub invalid_start: &'a dyn Fn(&str) -> String,
 }
@@ -164,6 +207,10 @@ pub fn create_and_switch(
     nb: NewBranch,
     opts: &CreateOptions<'_>,
 ) -> CmdResult {
+    let nb = NewBranch {
+        name: expand_new_name(repo, &nb.name),
+        ..nb
+    };
     sb::check_new_branch_name(repo, &nb.name)?;
     let store = refs_support::ref_store(&repo.setup, &repo.config);
     let full = format!("refs/heads/{}", nb.name);
@@ -175,9 +222,7 @@ pub fn create_and_switch(
     let (start_name, commit) = match &nb.start {
         Some(s) => {
             let s = expand_previous(repo, revs, s)?;
-            let id = revs
-                .resolve(&s)
-                .and_then(|id| sb::peel_commit(&objects, &id))
+            let id = resolve_commit(revs, &objects, &s)
                 .ok_or_else(|| Die::Fatal((opts.invalid_start)(&s)))?;
             (s, id)
         }
@@ -185,7 +230,7 @@ pub fn create_and_switch(
             Some(id) => ("HEAD".to_owned(), id),
             None => {
                 // An unborn branch: only HEAD moves.
-                return sb::orphan(repo, &nb.name, false, opts.quiet);
+                return sb::orphan(repo, &nb.name, false, opts.quiet, opts.reflog);
             }
         },
     };
@@ -214,10 +259,12 @@ pub fn create_and_switch(
                 reset: nb.reset,
                 track: plan.map(|p| (p, opts.auto)),
                 start_given: nb.start.is_some(),
+                reflog: opts.reflog,
             }),
             force: opts.force,
             quiet: opts.quiet,
             advise_detach: false,
+            refuse_in_progress: opts.refuse_in_progress,
         },
     )
 }
@@ -267,6 +314,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut create = create.borrow().clone();
     let force_create = force_create.borrow().clone();
     let orphan_name = orphan.borrow().clone();
+    let creating = [create.is_some(), force_create.is_some(), orphan_name.is_some()];
+    if creating.iter().filter(|&&c| c).count() > 1 {
+        return Err(Die::Fatal(msg::CREATE_OPTIONS_SWITCH.to_owned()));
+    }
     if merge.get() || conflict.borrow().is_some() {
         return Err(Die::Fatal(msg::not_supported("git switch --merge")));
     }
@@ -298,7 +349,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if !args.is_empty() {
             return Err(Die::Fatal(msg::ONE_REFERENCE_EXPECTED.to_owned()));
         }
-        return sb::orphan(&repo, &name, true, quiet);
+        let name = expand_new_name(&repo, &name);
+        return sb::orphan(&repo, &name, true, quiet, false);
     }
     let revs = Revs::new(ctx, &repo.setup)?;
     let opts = CreateOptions {
@@ -306,6 +358,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         auto,
         force,
         quiet,
+        reflog: false,
+        refuse_in_progress: true,
         invalid_start: &msg::invalid_ref,
     };
     if let Some(name) = force_create.or(create.clone()) {
@@ -328,7 +382,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let name = expand_previous(&repo, &revs, &arg)?;
     let objects = Objects::open(&repo.setup);
     let named = if detach.get() {
-        match revs.resolve(&name).and_then(|id| sb::peel_commit(&objects, &id)) {
+        match resolve_commit(&revs, &objects, &name) {
             Some(id) => Named::Commit(id),
             None => Named::Missing(None),
         }
@@ -353,6 +407,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 force,
                 quiet,
                 advise_detach: false,
+                refuse_in_progress: true,
             },
         ),
         Named::Commit(id) if detach.get() => sb::switch(
@@ -365,24 +420,38 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 force,
                 quiet,
                 advise_detach: false,
+                refuse_in_progress: true,
             },
         ),
         Named::Commit(_) => {
-            let store = refs_support::ref_store(&repo.setup, &repo.config);
-            let tracked = tracking_ref(&revs, &name)?;
-            let (kind, shown) = if let Some(r) = tracked.as_deref().and_then(|t| t.strip_prefix("refs/remotes/")) {
-                ("remote branch", r.to_owned())
-            } else if let Some(t) = tracked.as_deref().and_then(|t| t.strip_prefix("refs/tags/")) {
-                ("tag", t.to_owned())
-            } else if matches!(store.read_raw(&format!("refs/tags/{name}")), Ok(Some(_))) {
-                ("tag", name.clone())
-            } else if matches!(store.read_raw(&format!("refs/remotes/{name}")), Ok(Some(_))) {
-                ("remote branch", name.clone())
-            } else {
-                ("commit", name.clone())
+            // How git names what the argument resolved to: a tag or
+            // remote-tracking branch by its short name, any other ref by its
+            // full name, anything else as a commit.
+            let dwim = revs
+                .with_resolver(|r| r.dwim_ref(&name))
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+            let full = (dwim.count >= 1 && !dwim.full_name.is_empty()).then_some(dwim.full_name);
+            let text = match full.as_deref() {
+                Some(f) if f.starts_with("refs/remotes/") => {
+                    msg::branch_expected("remote branch", &f["refs/remotes/".len()..])
+                }
+                Some(f) if f.starts_with("refs/tags/") => {
+                    msg::branch_expected("tag", &f["refs/tags/".len()..])
+                }
+                Some(f) => msg::branch_expected_ref(f),
+                None => msg::branch_expected("commit", &name),
             };
-            eprintln!("fatal: {}", msg::branch_expected(kind, &shown));
-            eprint!("{}", msg::hint_detach_branch_expected());
+            eprintln!("fatal: {text}");
+            let suggest = rgit_messages::Advisor::new(
+                &repo.config,
+                &rgit_config::SystemEnv::default(),
+                false,
+            )
+            .and_then(|a| a.enabled(rgit_messages::Advice::SuggestDetachingHead))
+            .map_err(Die::Fatal)?;
+            if suggest {
+                eprint!("{}", msg::hint_detach_branch_expected());
+            }
             Err(Die::Exit(128))
         }
         Named::Missing(Some(remote_ref)) => create_and_switch(

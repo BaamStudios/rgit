@@ -662,20 +662,25 @@ fn reset_worktree(
 
 /// Forgets an operation in progress after a whole reset: the merge state
 /// files, and a cherry-pick or revert (with its sequencer directory).
-fn remove_branch_state(git_dir: &Path, hash: rgit_hash::HashKind) {
+/// Returns what was cancelled ("cherry picking" or "revert"), for
+/// `checkout`'s warning.
+pub(crate) fn remove_branch_state(
+    git_dir: &Path,
+    hash: rgit_hash::HashKind,
+) -> Option<&'static str> {
     let holds_oid = |name: &str| {
         std::fs::read_to_string(git_dir.join(name))
             .ok()
             .is_some_and(|s| ObjectId::from_hex(hash, s.trim_end().as_bytes()).is_ok())
     };
-    let mut picking = false;
-    for name in ["CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+    let mut cancelled = None;
+    for (name, what) in [("CHERRY_PICK_HEAD", "cherry picking"), ("REVERT_HEAD", "revert")] {
         if holds_oid(name) {
-            picking = true;
+            cancelled = cancelled.or(Some(what));
             let _ = std::fs::remove_file(git_dir.join(name));
         }
     }
-    if picking {
+    if cancelled.is_some() {
         let _ = std::fs::remove_dir_all(git_dir.join("sequencer"));
     }
     for name in ["MERGE_HEAD", "MERGE_RR", "MERGE_MSG", "MERGE_MODE", "SQUASH_MSG"] {
@@ -684,4 +689,5 @@ fn remove_branch_state(git_dir: &Path, hash: rgit_hash::HashKind) {
     if holds_oid("AUTO_MERGE") {
         let _ = std::fs::remove_file(git_dir.join("AUTO_MERGE"));
     }
+    cancelled
 }

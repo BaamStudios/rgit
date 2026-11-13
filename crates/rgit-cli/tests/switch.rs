@@ -446,3 +446,211 @@ fn switch_leaving_commits_behind() {
         &[&["switch", "main"]],
     );
 }
+
+/// [`cases`] with a capturing preparation.
+fn cases_with(prep: &dyn Fn(Fixture) -> Fixture, cases: &[&[&str]]) {
+    for args in cases {
+        let fx = prep(fixture());
+        if fx.is_skipped() {
+            return;
+        }
+        let mut fx = fx;
+        fx.compare(*args).run();
+    }
+}
+
+/// Cases from the conformance scripts t2010–t2060 and t7201 (#42).
+#[test]
+fn switch_conformance_cases() {
+    // Argument checks and their messages.
+    cases(
+        clean,
+        &[
+            &["checkout", "-b", "x", "--orphan", "y"],
+            &["checkout", "-B", "x", "-b", "y"],
+            &["switch", "-c", "x", "--orphan", "y"],
+            &["switch", "-c", "x", "-C", "y"],
+            &["checkout", "main", "feat", "--"],
+            &["checkout", "-b", "x", "main", "a"],
+            &["checkout", "-b", "x", "main", "--", "a"],
+            &["checkout", "--orphan", "y", "main", "a"],
+            &["checkout", "--track", "-b", "x", "main", "a"],
+            &["checkout", "--no-track", "-b", "x", "main", "a"],
+            &["checkout", "-l", "-b", "x", "main", "a"],
+            &["checkout", "-t", "main", "a"],
+            &["checkout", "@"],
+            &["checkout", "@", "--"],
+            &["checkout", "HEAD", "--"],
+            &["switch", "@"],
+            &["switch", "HEAD"],
+            &["switch", "refs/heads/feat"],
+            &["switch", "heads/feat"],
+            &["-c", "advice.suggestDetachingHead=false", "switch", "v1"],
+        ],
+    );
+    // A revision that also names a file needs `--` before paths.
+    cases(
+        |fx| fx.git(["branch", "a"]).write("b", "changed\n"),
+        &[
+            &["checkout", "a", "b"],
+            &["checkout", "a", "--", "b"],
+            &["checkout", "a"],
+        ],
+    );
+    // A branch and a tag of the same name.
+    cases(
+        |fx| fx.git(["tag", "feat"]),
+        &[&["checkout", "feat"], &["switch", "feat"]],
+    );
+    // `<a>...<b>`: the merge base.
+    cases(
+        |fx| {
+            fx.git(["checkout", "-q", "feat"])
+                .write("f", "f\n")
+                .git(["add", "f"])
+                .git(["commit", "-q", "-m", "on feat"])
+                .tick()
+        },
+        &[
+            &["checkout", "main..."],
+            &["checkout", "...main"],
+            &["checkout", "feat...main"],
+            &["switch", "--detach", "main..."],
+            &["switch", "main..."],
+            &["checkout", "-b", "x", "main..."],
+            &["checkout", "-B", "x", "feat...main"],
+            &["checkout", "main...nope"],
+        ],
+    );
+    // `@{-1}` as the name of a new branch.
+    cases(
+        |fx| {
+            fx.git(["checkout", "-q", "feat"])
+                .git(["checkout", "-q", "main"])
+        },
+        &[
+            &["checkout", "-b", "@{-1}"],
+            &["switch", "-c", "@{-1}"],
+            &["checkout", "-B", "@{-1}"],
+            &["checkout", "--orphan", "@{-1}"],
+        ],
+    );
+    // `-l` creates the reflog.
+    cases(
+        |fx| fx.git(["config", "core.logAllRefUpdates", "false"]),
+        &[
+            &["checkout", "-l", "--orphan", "o"],
+            &["checkout", "-l", "-b", "x"],
+            &["checkout", "-b", "x"],
+        ],
+    );
+    // `GIT_PRINT_SHA1_ELLIPSIS`.
+    for args in [&["checkout", "HEAD^"][..], &["switch", "-d", "v1"]] {
+        let mut fx = fixture().git(["checkout", "-q", "--detach"]);
+        if fx.is_skipped() {
+            return;
+        }
+        fx.compare(args).env("GIT_PRINT_SHA1_ELLIPSIS", "Yes").run();
+    }
+}
+
+/// An operation in progress: `switch` refuses, `checkout` ends it.
+#[test]
+fn switch_operation_in_progress() {
+    let ops: &[&[&str]] = &[
+        &["switch", "feat"],
+        &["switch", "-d", "v1"],
+        &["switch", "-c", "x"],
+        &["switch", "--orphan", "o"],
+        &["switch", "-c", "main"],
+        &["switch", "nope"],
+        &["checkout", "feat"],
+        &["checkout"],
+        &["checkout", "--orphan", "o"],
+    ];
+    for file in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "BISECT_LOG",
+    ] {
+        let prep = move |fx: Fixture| {
+            if fx.is_skipped() {
+                return fx;
+            }
+            let head = fx.git_stdout(["rev-parse", "HEAD"]);
+            fx.write(format!(".git/{file}"), head)
+        };
+        cases_with(&prep, ops);
+    }
+    for dir in ["rebase-merge/x", "rebase-apply/x", "rebase-apply/applying"] {
+        let prep = move |fx: Fixture| fx.write(format!(".git/{dir}"), "");
+        cases_with(&prep, &[&["switch", "feat"], &["checkout", "feat"]]);
+    }
+}
+
+/// Upstreams outside `refs/remotes/` and in short form; `--guess` with a
+/// file of the same name.
+#[test]
+fn switch_tracking_unusual() {
+    fn remote(fx: Fixture) -> Fixture {
+        fx.git(["update-ref", "refs/other/topic", "v1"])
+            .git(["update-ref", "refs/remotes/o/a", "v1"])
+            .git(["config", "remote.o.url", "/nowhere"])
+            .git(["config", "remote.o.fetch", "+refs/heads/*:refs/remotes/o/*"])
+            .git(["config", "remote.p.url", "/nowhere"])
+            .git(["config", "remote.p.fetch", "+refs/heads/*:refs/other/*"])
+    }
+    cases(
+        remote,
+        &[
+            &["checkout", "topic"],
+            &["switch", "topic"],
+            &["checkout", "-b", "x", "refs/other/topic"],
+            &["checkout", "--track", "-b", "x", "refs/other/topic"],
+            &["checkout", "a"],
+            &["checkout", "a", "--"],
+            &["checkout", "--no-guess", "a"],
+        ],
+    );
+    // `a` is a file in the work tree: ambiguous without `--`.
+    cases(
+        |fx| remote(fx).write("a", "changed\n"),
+        &[&["checkout", "a"], &["checkout", "a", "--"]],
+    );
+    cases(
+        |fx| {
+            fx.git(["config", "branch.feat.remote", "."]).git([
+                "config",
+                "branch.feat.merge",
+                "main",
+            ])
+        },
+        &[&["checkout", "feat"], &["switch", "feat"]],
+    );
+}
+
+/// `checkout -f <paths>` skips unmerged paths with a warning.
+#[test]
+fn checkout_force_paths_unmerged() {
+    fn conflict(fx: Fixture) -> Fixture {
+        let fx = fx
+            .git(["checkout", "-q", "-b", "c", "v1"])
+            .write("a", "c\n")
+            .git(["commit", "-q", "-a", "-m", "c"])
+            .git(["checkout", "-q", "main"]);
+        if !fx.is_skipped() {
+            // The merge stops with a conflict in a.
+            let _ = fx.git_output(["merge", "-q", "c"]);
+        }
+        fx.write("a", "local\n").write("b", "local\n")
+    }
+    cases(
+        conflict,
+        &[
+            &["checkout", "-f", "a", "b"],
+            &["checkout", "-f", "--", "b", "a"],
+            &["checkout", "a", "b"],
+        ],
+    );
+}
