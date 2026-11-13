@@ -526,6 +526,7 @@ dependencies = [
  "rgit-revwalk",
  "rgit-trace",
  "rgit-transport",
+ "rgit-unpack",
  "rgit-version",
  "rgit-worktree",
  "rustls",
@@ -770,6 +771,18 @@ dependencies = [
  "rgit-trace",
  "rustix",
  "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "rgit-unpack"
+version = "0.1.0"
+dependencies = [
+ "rgit-hash",
+ "rgit-index",
+ "rgit-object",
+ "rgit-odb",
+ "rgit-worktree",
  "thiserror",
 ]
 

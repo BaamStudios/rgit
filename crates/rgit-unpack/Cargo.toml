@@ -1,0 +1,16 @@
+[package]
+name = "rgit-unpack"
+description = "Tree unpacking for rgit: one- and two-way read-tree merges and work tree checkout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rgit-hash = { path = "../rgit-hash" }
+rgit-index = { path = "../rgit-index" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+rgit-worktree = { path = "../rgit-worktree" }
+thiserror = "2.0.18"

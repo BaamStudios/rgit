@@ -42,7 +42,7 @@ fn os_path(root: &Path, rel: &[u8]) -> PathBuf {
 /// Whether eol or filter attributes may apply (core.autocrlf, or a
 /// top-level `.gitattributes` mentioning them). Decision on #107: warn,
 /// never convert silently.
-fn attributes_may_apply(repo: &Repo, root: &Path) -> bool {
+pub(crate) fn attributes_may_apply(repo: &Repo, root: &Path) -> bool {
     if let Ok(Some(v)) = repo.config.string("core.autocrlf") {
         let v = String::from_utf8_lossy(v).to_ascii_lowercase();
         if ["true", "input", "yes", "on", "1"].contains(&v.as_str()) {
@@ -138,7 +138,7 @@ impl Walk<'_> {
     }
 }
 
-fn build_excludes(repo: &Repo, root: &Path) -> Excludes {
+pub(crate) fn build_excludes(repo: &Repo, root: &Path) -> Excludes {
     let mut ex = Excludes::new(root.to_path_buf());
     ex.set_ignore_case(repo.config.bool("core.ignorecase").ok().flatten().unwrap_or(false));
     ex.set_per_directory(b".gitignore".to_vec());

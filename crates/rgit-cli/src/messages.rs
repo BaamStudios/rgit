@@ -6,6 +6,7 @@ pub mod add;
 pub mod branch;
 pub mod cat_file;
 pub mod check_ignore;
+pub mod checkout_index;
 pub mod clone;
 pub mod config;
 pub mod diff_tree;
