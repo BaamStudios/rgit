@@ -197,6 +197,15 @@ impl Revs {
 
     /// The object `name` stands for, if any (no messages).
     pub fn resolve(&self, name: &str) -> Option<ObjectId> {
+        let flags = Flags {
+            quiet: true,
+            ..Flags::default()
+        };
+        self.with_resolver(|r| r.resolve_with(name, flags).ok())
+    }
+
+    /// Run `f` with a revision parser over this repository.
+    pub fn with_resolver<T>(&self, f: impl FnOnce(&Resolver<'_>) -> T) -> T {
         let cfg = revisions::Config(&self.config);
         let repo = Repo {
             objects: &self.objects,
@@ -207,11 +216,7 @@ impl Revs {
             work_tree_info: self.info.clone(),
         };
         let resolver = Resolver::new(repo, self.opts.clone());
-        let flags = Flags {
-            quiet: true,
-            ..Flags::default()
-        };
-        resolver.resolve_with(name, flags).ok()
+        f(&resolver)
     }
 
     /// Whether commit `anc` is reachable from (or equal to) commit `desc`.

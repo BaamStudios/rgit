@@ -397,7 +397,7 @@ pub fn load_config(ctx: &crate::Context, setup: &Setup) -> Result<ConfigSet, Die
 }
 
 /// The fatal text for an unusable configuration value.
-fn unable_to_parse(key: &str, e: &rgit_config::Entry) -> String {
+pub(crate) fn unable_to_parse(key: &str, e: &rgit_config::Entry) -> String {
     match &e.source.origin {
         Origin::File(p) => {
             crate::messages::bad_config_variable(key, &p.display().to_string(), e.line)

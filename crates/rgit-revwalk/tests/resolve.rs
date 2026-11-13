@@ -451,3 +451,60 @@ fn ambiguity_and_abbreviation() {
     assert_eq!(r.resolve(&la).unwrap(), a);
     assert_eq!(r.default_abbrev(), 7);
 }
+
+#[test]
+fn reachability_queries() {
+    let mut m = Mem::default();
+    let t = m.tree(&[]);
+    let root = m.commit(t, &[], 100, "root");
+    let a1 = m.commit(t, &[root], 200, "a1");
+    let a2 = m.commit(t, &[a1], 300, "a2");
+    let b1 = m.commit(t, &[root], 150, "b1");
+    let b2 = m.commit(t, &[b1], 250, "b2");
+    // Criss-cross: two best merge bases.
+    let m1 = m.commit(t, &[a2, b2], 400, "m1");
+    let m2 = m.commit(t, &[b2, a2], 410, "m2");
+    // Skewed: descendants older than their parents.
+    let x1 = m.commit(t, &[root], 50, "x1");
+    let x2 = m.commit(t, &[x1], 60, "x2");
+    let r = resolver(&m);
+
+    assert_eq!(r.merge_bases_many(&m1, &[m2]).unwrap(), vec![a2, b2]);
+    assert_eq!(r.merge_bases_many(&m2, &[m1]).unwrap(), vec![a2, b2]);
+    assert_eq!(r.merge_bases_many(&a2, &[b2, x2]).unwrap(), vec![root]);
+    assert_eq!(r.merge_bases_many(&a2, &[a1]).unwrap(), vec![a1]);
+    assert_eq!(r.merge_bases_many(&x2, &[a2]).unwrap(), vec![root]);
+    assert_eq!(r.octopus_merge_bases(&[m1, m2, a2]).unwrap(), vec![a2]);
+    assert_eq!(r.octopus_merge_bases(&[m1, m2]).unwrap(), vec![a2, b2]);
+    assert_eq!(r.independent(&[a1, m1, b2, m1, x2]).unwrap(), vec![m1, x2]);
+
+    assert!(r.is_ancestor(&root, &x2).unwrap());
+    assert!(r.is_ancestor(&a2, &a2).unwrap());
+    assert!(!r.is_ancestor(&x2, &a2).unwrap());
+    assert!(r.is_ancestor(&b1, &m1).unwrap());
+
+    assert_eq!(r.ahead_behind(&m1, &m2).unwrap(), (1, 1));
+    assert_eq!(r.ahead_behind(&x2, &a2).unwrap(), (2, 2));
+    assert_eq!(r.ahead_behind(&a2, &root).unwrap(), (2, 0));
+    assert_eq!(r.ahead_behind(&root, &m1).unwrap(), (0, 5));
+    assert_eq!(r.ahead_behind(&a2, &a2).unwrap(), (0, 0));
+}
+
+#[test]
+fn ahead_behind_with_skewed_dates() {
+    let mut m = Mem::default();
+    let t = m.tree(&[]);
+    let c0 = m.commit(t, &[], 1000, "c0");
+    let c1 = m.commit(t, &[c0], 1001, "c1");
+    let c2 = m.commit(t, &[c1], 1002, "c2");
+    let c3 = m.commit(t, &[c2], 1003, "c3");
+    let a = m.commit(t, &[c3], 2000, "a");
+    // Far older than its parent: the walk reaches it last.
+    let b = m.commit(t, &[c3], 1, "b");
+    let r = resolver(&m);
+    assert_eq!(r.ahead_behind(&a, &b).unwrap(), (1, 1));
+    assert_eq!(r.ahead_behind(&b, &a).unwrap(), (1, 1));
+    assert_eq!(r.merge_bases_many(&a, &[b]).unwrap(), vec![c3]);
+    assert!(!r.is_ancestor(&b, &a).unwrap());
+    assert!(r.is_ancestor(&c1, &b).unwrap());
+}

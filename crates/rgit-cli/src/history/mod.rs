@@ -65,6 +65,8 @@ pub struct Options {
     pub walk: WalkOptions,
     tips: Vec<Tip>,
     pub count: bool,
+    /// `--left-right` (only with `--count` and one `A...B` so far).
+    left_right: bool,
     pub parents: bool,
     abbrev_commit: bool,
     abbrev: Abbrev,
@@ -98,6 +100,7 @@ impl Options {
             walk: WalkOptions::default(),
             tips: Vec::new(),
             count: false,
+            left_right: false,
             parents: false,
             abbrev_commit: false,
             abbrev: Abbrev::Default,
@@ -150,6 +153,7 @@ impl Options {
                 "--first-parent" => o.walk.first_parent = true,
                 "--parents" => o.parents = true,
                 "--count" if cmd == Command::RevList => o.count = true,
+                "--left-right" => o.left_right = true,
                 "--abbrev-commit" => o.abbrev_commit = true,
                 "--no-abbrev-commit" => o.abbrev_commit = false,
                 "--abbrev" => o.abbrev = Abbrev::Default,
@@ -465,6 +469,38 @@ fn resolve_tips(repo: &Repo<'_>, opts: &Options) -> Result<Vec<(ObjectId, bool)>
     Ok(out)
 }
 
+/// `rev-list --left-right --count A...B`: the ahead/behind counts of the
+/// two sides, separated by a tab. Other uses of `--left-right` are not
+/// implemented yet.
+fn left_right_count(repo: &Repo<'_>, opts: &Options) -> Result<i32, Die> {
+    let unsupported = || Die::Fatal(msg::not_supported("--left-right without --count A...B"));
+    let w = &opts.walk;
+    if !opts.count || w.first_parent || w.max_count.is_some() || w.skip > 0 {
+        return Err(unsupported());
+    }
+    let [Tip::Rev { arg, negate: false }] = opts.tips.as_slice() else {
+        return Err(unsupported());
+    };
+    let Some(pos) = arg.find("...") else {
+        return Err(unsupported());
+    };
+    let side = |s: &str| -> Result<ObjectId, Die> {
+        let s = if s.is_empty() { "HEAD" } else { s };
+        let id = repo.resolver.resolve(s).map_err(|_| unsupported())?;
+        repo.resolver.peel_to_commit(&id).map_err(|_| unsupported())
+    };
+    let a = side(&arg[..pos])?;
+    let b = side(&arg[pos + 3..])?;
+    let (ahead, behind) = repo
+        .resolver
+        .ahead_behind(&a, &b)
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut o = std::io::stdout().lock();
+    let _ = writeln!(o, "{ahead}\t{behind}");
+    let _ = o.flush();
+    Ok(0)
+}
+
 /// Set up the repository, parse `argv` and run `cmd`.
 pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
     // `-h` and `--help-all` work outside a repository and print to stdout.
@@ -528,6 +564,9 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
 /// Run the walk and print the result.
 fn run(repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
     let tips = resolve_tips(repo, opts)?;
+    if opts.left_right {
+        return left_right_count(repo, opts);
+    }
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
     let mut walk = Walk::new(Commits(repo), opts.walk.clone());
     for (id, negative) in &tips {

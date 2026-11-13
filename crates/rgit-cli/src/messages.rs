@@ -16,6 +16,7 @@ pub mod init;
 pub mod ls_files;
 pub mod ls_remote;
 pub mod ls_tree;
+pub mod merge_base;
 pub mod mktag;
 pub mod mktree;
 pub mod mv;

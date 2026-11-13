@@ -91,7 +91,7 @@ impl Resolver<'_> {
     /// Peel to a commit (git's `lookup_commit_reference`): reports
     /// "object X is a Y, not a commit" for other types, naming `oid` itself
     /// (also in quiet lookups, like git).
-    pub(crate) fn peel_to_commit(&self, oid: &ObjectId) -> Result<ObjectId, Error> {
+    pub fn peel_to_commit(&self, oid: &ObjectId) -> Result<ObjectId, Error> {
         match self.peel_tags(oid)? {
             None => Err(Error::NotFound),
             Some((c, ObjectKind::Commit)) => Ok(c),
@@ -130,7 +130,11 @@ impl Resolver<'_> {
     /// a date-ordered queue, commits painted PARENT1/PARENT2, common ones
     /// recorded and their ancestors painted STALE; the walk stops once the
     /// queue holds only stale commits.
-    fn paint_down(&self, one: &ObjectId, twos: &[ObjectId]) -> Result<Vec<ObjectId>, Error> {
+    pub(super) fn paint_down(
+        &self,
+        one: &ObjectId,
+        twos: &[ObjectId],
+    ) -> Result<Vec<ObjectId>, Error> {
         const P1: u8 = 1;
         const P2: u8 = 2;
         const STALE: u8 = 4;
@@ -221,7 +225,10 @@ impl Resolver<'_> {
     }
 
     /// Drop candidates that are ancestors of other candidates.
-    fn remove_redundant(&self, candidates: Vec<ObjectId>) -> Result<Vec<ObjectId>, Error> {
+    pub(super) fn remove_redundant(
+        &self,
+        candidates: Vec<ObjectId>,
+    ) -> Result<Vec<ObjectId>, Error> {
         if candidates.len() < 2 {
             return Ok(candidates);
         }
