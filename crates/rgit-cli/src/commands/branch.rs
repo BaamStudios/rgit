@@ -7,9 +7,11 @@
 //! (merged into the upstream, else into `HEAD`) and `-D`, also `-r`;
 //! renaming and copying with `-m`/`-M`/`-c`/`-C` (ref, reflog and the
 //! `branch.<name>` configuration section), `-u`/`--set-upstream-to` and
-//! `--unset-upstream`.
+//! `--unset-upstream`; upstream tracking of new branches (`-t`/`--track`,
+//! `--no-track`, `branch.autoSetupMerge`, `branch.autoSetupRebase`, shared
+//! with `switch`/`checkout` in [`crate::tracking`]).
 //!
-//! Not yet: `-f`, `-t`/`--track`, colors, columns, `--format`, `--sort`,
+//! Not yet: `-f`, colors, columns, `--format`, `--sort`,
 //! `--merged`, `--contains`, `--points-at`, `--edit-description`.
 
 use std::io::Write;
@@ -29,9 +31,11 @@ use rgit_repo::Setup;
 use rgit_revwalk::walk::{CommitInfo, CommitSource, Walk, WalkOptions};
 
 use crate::messages::branch as msg;
+use crate::messages::tracking as tmsg;
 use crate::prelude::*;
 use crate::refs_support::{self, Objects, Revs, UpdateHooks};
 use crate::repo::{self, Mode};
+use crate::tracking::{self, AutoSetup, Track};
 
 /// What the command works on.
 struct Ctx<'a> {
@@ -43,9 +47,19 @@ struct Ctx<'a> {
     /// The branch `HEAD` points to (short name), also when unborn.
     current: Option<String>,
     quiet: bool,
+    auto: AutoSetup,
 }
 
 impl Ctx<'_> {
+    fn tracking_repo(&self) -> tracking::Repo<'_> {
+        tracking::Repo {
+            setup: self.setup,
+            config: self.config,
+            store: &self.store,
+            revs: &self.revs,
+        }
+    }
+
     fn hooks(&self) -> UpdateHooks<'_> {
         UpdateHooks::new(self.setup, self.config, self.objects)
     }
@@ -132,11 +146,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let copy = Cell::new(0);
     let list = Cell::new(false);
     let show_current = Cell::new(false);
+    let track = Cell::new(Track::Unspecified);
     // Generic options, then the branch actions (the order of `-h`).
     let mut opts = vec![
             Opt::group(msg::GROUP_GENERIC),
             Opt::verbose(&verbose, msg::HELP_VERBOSE),
             Opt::quiet(&quiet, msg::HELP_QUIET),
+            Track::option(&track),
             Opt::string('u', "set-upstream-to", &set_upstream, "upstream", msg::HELP_SET_UPSTREAM),
     ];
     opts.extend([
@@ -168,6 +184,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = refs_support::load_config(ctx, &setup)?;
+    let auto = AutoSetup::from_config(&config)?;
     let store = refs_support::ref_store(&setup, &config);
     let objects = Objects::open(&setup);
     let revs = Revs::new(ctx, &setup)?;
@@ -184,6 +201,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         revs,
         current,
         quiet: quiet.get() > 0,
+        auto,
     };
 
     if delete.get() > 0 {
@@ -210,13 +228,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return unset_upstream_of(&c, &args);
     }
     if !list.get() && !remotes.get() && !all.get() && verbose.get() == 0 && !args.is_empty() {
-        return create(&c, &args, &parser);
+        return create(&c, &args, &parser, track.get());
     }
     let abbrev_len = if no_abbrev { 0 } else { abbrev_len };
     list_branches(&c, &args, &head, remotes.get(), all.get(), verbose.get(), abbrev_len)
 }
 
-fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>) -> CmdResult {
+fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>, track: Track) -> CmdResult {
     if args.len() > 2 {
         return Err(parser.usage_error().into());
     }
@@ -228,12 +246,18 @@ fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>) -> CmdResult {
     if matches!(c.store.read_raw(&refname), Ok(Some(_))) {
         return Err(Die::Fatal(msg::already_exists(name)));
     }
-    let start = args.get(1).map(String::as_str).unwrap_or("HEAD");
+    let start = match args.get(1) {
+        Some(s) => s.clone(),
+        None => tracking::default_start(&c.store),
+    };
+    let start = start.as_str();
     let oid = c
         .revs
         .resolve(start)
-        .and_then(|id| c.objects.peel(&id).or(Some(id)))
-        .ok_or_else(|| Die::Fatal(msg::not_valid_object_name(start)))?;
+        .and_then(|id| c.objects.peel(&id).or(Some(id)));
+    let repo = c.tracking_repo();
+    let plan = tracking::plan(&repo, name, start, oid.is_some(), track, &c.auto)?;
+    let oid = oid.ok_or_else(|| Die::Fatal(msg::not_valid_object_name(start)))?;
     let mut hooks = c.hooks();
     c.run_tx(
         RefUpdate::create(refname.as_str(), oid)
@@ -241,6 +265,9 @@ fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>) -> CmdResult {
             .create_reflog(true),
         &mut hooks,
     )?;
+    if let Some(plan) = plan {
+        plan.apply(&repo, name, &c.auto, c.quiet)?;
+    }
     Ok(0)
 }
 
@@ -513,83 +540,17 @@ fn set_upstream_to(c: &Ctx<'_>, upstream: &str, args: &[String]) -> CmdResult {
         _ => return Err(Die::Fatal(msg::TOO_MANY_SET_UPSTREAM.to_owned())),
     };
 
-    // Which ref the upstream names.
-    let candidates = [
-        upstream.to_owned(),
-        format!("refs/{upstream}"),
-        format!("refs/tags/{upstream}"),
-        format!("refs/heads/{upstream}"),
-        format!("refs/remotes/{upstream}"),
-        format!("refs/remotes/{upstream}/HEAD"),
-    ];
-    let full = candidates.iter().find_map(|cand| {
-        if !(cand == "HEAD" || cand.starts_with("refs/")) {
-            return None;
-        }
-        match c.store.read_raw(cand) {
-            Ok(Some(Target::Object(_))) => Some(cand.clone()),
-            Ok(Some(Target::Symbolic(t))) => match c.store.read_raw(&t) {
-                Ok(Some(Target::Object(_))) => Some(t),
-                _ => None,
-            },
-            _ => None,
-        }
-    });
-    let Some(full) = full else {
-        if c.revs.resolve(upstream).is_some() {
-            return Err(Die::Fatal(msg::not_a_branch(upstream)));
-        }
-        eprintln!("fatal: {}", msg::upstream_does_not_exist(upstream));
-        if !matches!(c.config.bool("advice.setupstreamfailure"), Ok(Some(false))) {
-            eprint!("{}", msg::HINT_SET_UPSTREAM_FAILURE);
-        }
-        return Err(Die::Exit(128));
+    let repo = c.tracking_repo();
+    let resolves = c.revs.resolve(upstream).is_some();
+    let Some(plan) = tracking::plan(&repo, &branch, upstream, resolves, Track::Direct, &c.auto)?
+    else {
+        return Err(Die::Fatal(tmsg::not_a_branch(upstream)));
     };
-    let (remote, merge, shown) = if let Some(short) = full.strip_prefix("refs/heads/") {
-        (".".to_owned(), full.clone(), short.to_owned())
-    } else if full.starts_with("refs/remotes/") {
-        let remotes = Remotes::from_config(c.config).map_err(|e| Die::Fatal(e.to_string()))?;
-        let names: Vec<String> = remotes.names().map(|n| n.to_str_lossy().into_owned()).collect();
-        let mut found = None;
-        for n in names {
-            let Ok(r) = remotes.get(n.as_bytes(), Some(&c.setup.git_dir)) else {
-                continue;
-            };
-            if let Some(src) = r.fetch.map_dst(full.as_bytes()) {
-                found = Some((n, src.to_str_lossy().into_owned()));
-                break;
-            }
-        }
-        let Some((r, src)) = found else {
-            return Err(Die::Fatal(msg::not_a_branch(upstream)));
-        };
-        let short = src.strip_prefix("refs/heads/").unwrap_or(&src);
-        let shown = format!("{r}/{short}");
-        (r, src, shown)
-    } else {
-        return Err(Die::Fatal(msg::not_a_branch(upstream)));
-    };
-    if remote == "." && merge == format!("refs/heads/{branch}") {
-        eprintln!("warning: {}", msg::own_upstream(&branch));
+    if plan.is_own_upstream(&branch) {
+        eprintln!("warning: {}", tmsg::own_upstream(&branch));
         return Ok(0);
     }
-    let rebase = match c.config.string("branch.autosetuprebase") {
-        Ok(Some(v)) => match v.as_ref() as &[u8] {
-            b"always" => true,
-            b"local" => remote == ".",
-            b"remote" => remote != ".",
-            _ => false,
-        },
-        _ => false,
-    };
-    c.config_set(&format!("branch.{branch}.remote"), Some(&remote))?;
-    c.config_set(&format!("branch.{branch}.merge"), Some(&merge))?;
-    if rebase {
-        c.config_set(&format!("branch.{branch}.rebase"), Some("true"))?;
-    }
-    if !c.quiet {
-        println!("{}", msg::set_up_to_track(&branch, &shown, rebase));
-    }
+    plan.apply(&repo, &branch, &c.auto, c.quiet)?;
     Ok(0)
 }
 
