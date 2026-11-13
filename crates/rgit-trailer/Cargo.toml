@@ -1,0 +1,15 @@
+[package]
+name = "rgit-trailer"
+description = "Trailers for rgit: finding the trailer block of a message, trailer configuration and interpret-trailers processing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-config = { path = "../rgit-config" }

@@ -39,6 +39,7 @@ rgit-remote = { path = "../rgit-remote" }
 rgit-repo = { path = "../rgit-repo" }
 rgit-revwalk = { path = "../rgit-revwalk" }
 rgit-trace = { path = "../rgit-trace" }
+rgit-trailer = { path = "../rgit-trailer" }
 rgit-unpack = { path = "../rgit-unpack" }
 rgit-transport = { path = "../rgit-transport" }
 rgit-http = { path = "../rgit-http" }

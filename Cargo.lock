@@ -541,6 +541,7 @@ dependencies = [
  "rgit-repo",
  "rgit-revwalk",
  "rgit-trace",
+ "rgit-trailer",
  "rgit-transport",
  "rgit-unpack",
  "rgit-version",
@@ -817,6 +818,14 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "libc",
+]
+
+[[package]]
+name = "rgit-trailer"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ mod abbrev;
 mod attributes;
 mod color;
 mod commands;
+mod comment;
 mod context;
 mod diff;
 mod external;
