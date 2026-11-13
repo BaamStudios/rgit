@@ -1,6 +1,6 @@
 [package]
 name = "rgit-diff"
-description = "Line diff (Myers) and unified patch output for rgit"
+description = "Line diff (Myers), unified patch output and three-way text merge for rgit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
