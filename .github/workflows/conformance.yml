@@ -99,7 +99,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build rgit
         run: cargo build --locked --bin rgit --bin rgit-test-tool
+      - name: Install Apache for lib-httpd.sh (#87)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apache2
+          sudo systemctl stop apache2 || :
       - name: Run conformance suite and regression gate
+        env:
+          # A missing web server or git daemon fails the HTTP/daemon scripts
+          # instead of skipping them (#87).
+          GIT_TEST_HTTPD: "true"
+          GIT_TEST_GIT_DAEMON: "true"
         run: |
           # Lead decision 2026-11-12: only regressions (pass -> fail) fail the build.
           # STATUS.md/baseline are refreshed in rgit-conformance, not per rgit PR.
