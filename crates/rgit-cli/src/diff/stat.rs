@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: MIT
+//! `--stat`, `--numstat` and `--shortstat` (Documentation/diff-options.adoc).
+//!
+//! The layout of `--stat` was derived from the documentation and from
+//! differential tests against the `git` binary: the line is
+//! ` <name> | <count> <graph>`; when it does not fit into the width, the
+//! graph shrinks first (down to 3/8 of the width minus the fixed columns),
+//! then names are cut at the front to `...` plus a trailing part starting
+//! at a `/`.
+
+use std::io::Write;
+
+use crate::messages::diff as msg;
+
+/// One line of the stat.
+pub struct FileStat {
+    /// The name as shown (quoted).
+    pub name: Vec<u8>,
+    pub kind: StatKind,
+}
+
+pub enum StatKind {
+    Unmerged,
+    Binary { old_size: usize, new_size: usize },
+    Text { added: usize, deleted: usize },
+}
+
+/// Width settings.
+#[derive(Debug, Clone, Copy)]
+pub struct StatLayout {
+    pub width: usize,
+    pub name_width: Option<usize>,
+    pub graph_width: Option<usize>,
+    pub count: Option<usize>,
+}
+
+fn display_width(name: &[u8]) -> usize {
+    String::from_utf8_lossy(name).chars().count()
+}
+
+/// `count` scaled from `0..=max` to `0..=width`: at least one column for
+/// a non-zero count.
+fn scale(count: usize, width: usize, max: usize) -> usize {
+    if count == 0 || max == 0 {
+        return 0;
+    }
+    1 + count * width.saturating_sub(1) / max
+}
+
+/// Totals over all files: (files, insertions, deletions).
+pub fn totals(files: &[FileStat]) -> (usize, usize, usize) {
+    let mut t = (0, 0, 0);
+    for f in files {
+        match f.kind {
+            StatKind::Unmerged => {}
+            StatKind::Binary { .. } => t.0 += 1,
+            StatKind::Text { added, deleted } => {
+                t.0 += 1;
+                t.1 += added;
+                t.2 += deleted;
+            }
+        }
+    }
+    t
+}
+
+pub fn write_summary_line(out: &mut Vec<u8>, files: &[FileStat]) {
+    let (n, ins, del) = totals(files);
+    out.extend_from_slice(msg::stat_summary(n, ins, del).as_bytes());
+    out.push(b'\n');
+}
+
+/// The cut-down name for a column of `width`.
+fn truncate(name: &[u8], width: usize) -> Vec<u8> {
+    let len = display_width(name);
+    if len <= width {
+        return name.to_vec();
+    }
+    let chars: Vec<char> = String::from_utf8_lossy(name).chars().collect();
+    let keep = width.saturating_sub(3);
+    let mut tail: &[char] = &chars[chars.len() - keep..];
+    if let Some(p) = tail.iter().position(|&c| c == '/') {
+        tail = &tail[p..];
+    }
+    let mut s = String::from("...");
+    s.extend(tail.iter());
+    s.into_bytes()
+}
+
+pub fn write_stat(out: &mut Vec<u8>, files: &[FileStat], layout: &StatLayout) {
+    if files.is_empty() {
+        return;
+    }
+    let shown = &files[..layout.count.unwrap_or(files.len()).min(files.len())];
+    let mut max_len = 0;
+    let mut max_change = 0;
+    let mut number_width = 0;
+    for f in shown {
+        max_len = max_len.max(display_width(&f.name));
+        match f.kind {
+            StatKind::Text { added, deleted } => max_change = max_change.max(added + deleted),
+            StatKind::Binary { .. } => number_width = 3,
+            StatKind::Unmerged => {}
+        }
+    }
+    number_width = number_width.max(max_change.to_string().len());
+    let width = layout.width;
+    let mut name_width = layout.name_width.map_or(max_len, |w| w.min(max_len));
+    let mut graph_width = layout.graph_width.map_or(max_change, |w| w.min(max_change));
+    let fixed = number_width + 6;
+    if name_width + graph_width + fixed > width {
+        let min_graph = (width * 3 / 8).saturating_sub(fixed);
+        if graph_width > min_graph {
+            graph_width = min_graph.max(width.saturating_sub(fixed + name_width));
+        }
+        name_width = name_width.min(width.saturating_sub(fixed + graph_width));
+    }
+    for f in shown {
+        let name = truncate(&f.name, name_width);
+        out.push(b' ');
+        out.extend_from_slice(&name);
+        for _ in display_width(&name)..name_width {
+            out.push(b' ');
+        }
+        out.extend_from_slice(b" | ");
+        match f.kind {
+            StatKind::Unmerged => out.extend_from_slice(msg::UNMERGED_STAT.as_bytes()),
+            StatKind::Binary { old_size, new_size } => {
+                write!(out, "{:>number_width$}", "Bin").unwrap();
+                write!(out, "{}", &msg::binary_stat(old_size, new_size)[3..]).unwrap();
+            }
+            StatKind::Text { added, deleted } => {
+                write!(out, "{:>number_width$}", added + deleted).unwrap();
+                let (mut plus, mut minus) = (added, deleted);
+                if graph_width < max_change {
+                    let mut total = scale(added + deleted, graph_width, max_change);
+                    if total < 2 && added > 0 && deleted > 0 {
+                        total = 2;
+                    }
+                    if added < deleted {
+                        plus = scale(added, graph_width, max_change);
+                        minus = total - plus;
+                    } else {
+                        minus = scale(deleted, graph_width, max_change);
+                        plus = total - minus;
+                    }
+                }
+                if plus + minus > 0 {
+                    out.push(b' ');
+                }
+                out.extend(std::iter::repeat_n(b'+', plus));
+                out.extend(std::iter::repeat_n(b'-', minus));
+            }
+        }
+        out.push(b'\n');
+    }
+    if shown.len() < files.len() {
+        out.extend_from_slice(b" ...\n");
+    }
+    write_summary_line(out, files);
+}
+
+pub fn write_numstat(out: &mut Vec<u8>, files: &[FileStat], names: &[Vec<u8>], nul: bool) {
+    for (f, name) in files.iter().zip(names) {
+        match f.kind {
+            StatKind::Unmerged => out.extend_from_slice(b"0\t0\t"),
+            StatKind::Binary { .. } => out.extend_from_slice(b"-\t-\t"),
+            StatKind::Text { added, deleted } => write!(out, "{added}\t{deleted}\t").unwrap(),
+        }
+        out.extend_from_slice(name);
+        out.push(if nul { 0 } else { b'\n' });
+    }
+}

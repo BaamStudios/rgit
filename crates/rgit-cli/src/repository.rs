@@ -77,6 +77,17 @@ impl Repo {
         })
     }
 
+    /// Like [`Repo::open`], `None` outside a repository (`RUN_SETUP_GENTLY`).
+    pub fn open_gently(ctx: &Context) -> Result<Option<Repo>, Die> {
+        let Some(setup) = repo::setup_gently(ctx)? else {
+            return Ok(None);
+        };
+        Ok(Some(Repo {
+            inner: repo_objects::Repo::open(ctx, setup)?,
+            auto_abbrev: OnceCell::new(),
+        }))
+    }
+
     /// The object database (loose objects, packs, alternates).
     pub fn odb(&self) -> &ObjectDatabase {
         &self.inner.odb

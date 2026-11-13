@@ -8,6 +8,7 @@ mod abbrev;
 mod checkout;
 mod commands;
 mod context;
+mod diff;
 mod external;
 mod format;
 mod global;
