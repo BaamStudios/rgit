@@ -94,6 +94,22 @@ pub fn stripspace(text: &[u8], comment: Option<&[u8]>) -> Vec<u8> {
     out
 }
 
+/// `git stripspace -c`: prefix every line with `comment` and a space (just
+/// `comment` for an empty line, no space before a tab); every line ends
+/// with a newline.
+pub fn comment_lines(text: &[u8], comment: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + text.len() / 8 + 8);
+    for line in lines(text) {
+        out.extend_from_slice(comment);
+        if !line.is_empty() && line[0] != b'\t' {
+            out.push(b' ');
+        }
+        out.extend_from_slice(line);
+        out.push(b'\n');
+    }
+    out
+}
+
 /// The scissors line for the comment string `comment`.
 pub fn scissors_line(comment: &str) -> String {
     format!("{comment}{SCISSORS}")
@@ -199,6 +215,17 @@ mod tests {
         assert_eq!(stripspace(b"a\n#c\n\nb", Some(b"#")), b"a\n\nb\n");
         assert_eq!(stripspace(b"#c\na\n#d\n", Some(b"#")), b"a\n");
         assert_eq!(stripspace(b"a\n#c\nb", None), b"a\n#c\nb\n");
+    }
+
+    #[test]
+    fn commented() {
+        assert_eq!(comment_lines(b"", b"#"), b"");
+        assert_eq!(comment_lines(b"foo", b"#"), b"# foo\n");
+        assert_eq!(comment_lines(b"foo\n\n", b";"), b"; foo\n;\n");
+        assert_eq!(
+            comment_lines(b"\tone\n\n two\n", b"#"),
+            b"#\tone\n#\n#  two\n"
+        );
     }
 
     #[test]
