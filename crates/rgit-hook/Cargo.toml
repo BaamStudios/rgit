@@ -20,4 +20,5 @@ rgit-messages = { path = "../rgit-messages" }
 libc = "0.2"
 
 [dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
 tempfile = "3"
