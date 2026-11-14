@@ -165,7 +165,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 }
 
 /// `merge.conflictStyle`; an invalid value ends the command.
-fn config_style(config: &rgit_config::ConfigSet) -> Result<ConflictStyle, Die> {
+pub(crate) fn config_style(config: &rgit_config::ConfigSet) -> Result<ConflictStyle, Die> {
     let mut style = ConflictStyle::Merge;
     for e in config.get_all("merge.conflictstyle") {
         let value = match e.string() {

@@ -1,0 +1,19 @@
+[package]
+name = "rgit-merge"
+description = "Three-way tree merge for rgit, with the results of git's ort strategy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rgit-diff = { path = "../rgit-diff" }
+rgit-hash = { path = "../rgit-hash" }
+rgit-index = { path = "../rgit-index" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+thiserror = "2.0.18"

@@ -28,6 +28,7 @@ pub mod ls_remote;
 pub mod ls_tree;
 pub mod merge_base;
 pub mod merge_file;
+pub mod merge_tree;
 pub mod mktag;
 pub mod mktree;
 pub mod mv;
