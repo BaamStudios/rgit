@@ -641,3 +641,84 @@ fn quote_value(s: &str, q: Quote) -> String {
         }
     }
 }
+
+/// `--format` strings for the other reference listing commands
+/// (`tag`), with the atoms implemented here.
+pub(crate) struct RefFormat {
+    pieces: Vec<Piece>,
+}
+
+impl RefFormat {
+    /// Parses a format string.
+    pub(crate) fn parse(fmt: &str) -> Result<RefFormat, Die> {
+        match parse_format(fmt) {
+            Ok(pieces) => Ok(RefFormat { pieces }),
+            Err(FormatError::Malformed(rest)) => Err(Die::Fatal(msg::malformed_format(&rest))),
+            Err(FormatError::Fatal(m)) => Err(Die::Fatal(m)),
+        }
+    }
+}
+
+/// A sort key atom (`--sort=<key>` without `-` and `version:`).
+#[derive(Clone, Copy)]
+pub(crate) struct SortAtom(Atom);
+
+impl SortAtom {
+    pub(crate) fn parse(name: &str) -> Result<SortAtom, Die> {
+        parse_atom(name).map(SortAtom).map_err(|e| match e {
+            FormatError::Fatal(m) | FormatError::Malformed(m) => Die::Fatal(m),
+        })
+    }
+}
+
+/// A sort value: numbers compare as numbers, everything else as bytes.
+pub(crate) struct SortValue(Value);
+
+impl SortValue {
+    pub(crate) fn text(&self) -> String {
+        self.0.text()
+    }
+
+    pub(crate) fn compare(&self, other: &SortValue, icase: bool) -> Ordering {
+        compare(&self.0, &other.0, icase)
+    }
+}
+
+/// Expands atoms for the references of one repository.
+pub(crate) struct RefValues<'a>(Values<'a>);
+
+impl<'a> RefValues<'a> {
+    pub(crate) fn new(objects: &'a Objects, store: &'a FilesStore) -> Self {
+        RefValues(Values {
+            objects,
+            store,
+            head: store.read_raw("HEAD").ok().flatten(),
+        })
+    }
+
+    fn item(name: &str, oid: ObjectId) -> Item {
+        Item {
+            name: name.to_owned(),
+            oid,
+            symref: None,
+        }
+    }
+
+    /// The value of `atom` for reference `name` at `oid`.
+    pub(crate) fn value(&self, atom: SortAtom, name: &str, oid: ObjectId) -> Result<SortValue, Die> {
+        self.0.value(&atom.0, &Self::item(name, oid)).map(SortValue)
+    }
+
+    /// `format` expanded for reference `name` at `oid`.
+    pub(crate) fn render(&self, format: &RefFormat, name: &str, oid: ObjectId) -> Result<Vec<u8>, Die> {
+        let it = Self::item(name, oid);
+        let mut line = Vec::new();
+        for p in &format.pieces {
+            match p {
+                Piece::Lit(b) => line.extend_from_slice(b),
+                Piece::Atom(a) => line.extend_from_slice(self.0.value(a, &it)?.text().as_bytes()),
+            }
+        }
+        Ok(line)
+    }
+}
