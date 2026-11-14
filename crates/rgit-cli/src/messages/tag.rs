@@ -140,10 +140,6 @@ pub fn rejected_atom(atom: &str) -> String {
     format!("this command reject atom %({atom})")
 }
 
-pub fn missing_value(key: &str) -> String {
-    format!("missing value for '{key}'")
-}
-
 /// Reflog message of a tag creation or update.
 pub fn reflog_tagging(abbrev: &str, what: &str) -> String {
     format!("tag: tagging {abbrev} ({what})")

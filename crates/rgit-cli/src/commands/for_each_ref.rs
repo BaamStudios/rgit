@@ -1,87 +1,73 @@
 // SPDX-License-Identifier: MIT
-//! `git for-each-ref` (Documentation/git-for-each-ref.adoc), basic part:
-//! patterns, `--exclude`, `--format` with the atoms `refname`,
-//! `objectname`, `objecttype`, `objectsize`, `HEAD`, `symref` (and `*`
-//! dereferenced object atoms), `--sort`, `--count`, quoting styles,
-//! `--points-at`, `--include-root-refs`, `--start-after`.
-//!
-//! Not yet: commit/tag field atoms (`subject`, `author`, ...),
-//! `upstream`/`push`, `--merged`/`--contains`, `--color`, `--stdin`.
+//! `git for-each-ref` (Documentation/git-for-each-ref.adoc,
+//! for-each-ref-options.adoc, ref-reachability-filters.adoc): patterns,
+//! `--exclude`, `--stdin`, `--include-root-refs`, `--start-after`, the
+//! reachability filters `--points-at`, `--[no-]merged`,
+//! `--[no-]contains`, `--sort` (several keys, `version:`), `--count`,
+//! `--color`, quoting styles and the format language of
+//! [`crate::ref_filter`].
 
-use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
+use rgit_config::color::ColorBool;
 use rgit_hash::ObjectId;
+use rgit_object::ObjectKind;
 use rgit_pathspec::wildmatch::{WildmatchFlags, wildmatch};
-use rgit_refs::files::FilesStore;
 use rgit_refs::{IterItem, IterOptions, RefStore, Target};
 
 use crate::messages::for_each_ref as msg;
+use crate::messages::ref_filter as rmsg;
 use crate::prelude::*;
-use crate::refs_support::{self, Objects};
+use crate::ref_filter::{
+    self, Env, FormatError, ItemCache, Quote, RefFormat, RefItem, RepoParts, SortKey,
+};
+use crate::refs_support::{self, Objects, Revs};
 use crate::repo::{self, Mode};
 
+/// Which reachability filter an option sets.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Quote {
-    None,
-    Shell,
-    Perl,
-    Python,
-    Tcl,
+enum Which {
+    Merged,
+    NoMerged,
+    Contains,
+    NoContains,
 }
 
-/// How a name atom is shortened.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NameMod {
-    Full,
-    Short,
-    Lstrip(i64),
-    Rstrip(i64),
+/// The reachability filters, resolved to commits.
+#[derive(Default)]
+struct Filters {
+    points_at: Vec<ObjectId>,
+    merged: Vec<ObjectId>,
+    no_merged: Vec<ObjectId>,
+    contains: Vec<ObjectId>,
+    no_contains: Vec<ObjectId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AtomKind {
-    Refname(NameMod),
-    Symref(NameMod),
-    Objectname(Option<usize>),
-    Objecttype,
-    Objectsize,
-    Head,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Atom {
-    kind: AtomKind,
-    /// `%(*...)`: of the object an annotated tag points to.
-    deref: bool,
-}
-
-enum Piece {
-    Lit(Vec<u8>),
-    Atom(Atom),
-}
-
-/// One listed reference.
-struct Item {
-    name: String,
-    oid: ObjectId,
-    symref: Option<String>,
+impl Filters {
+    fn by_commit(&self) -> bool {
+        !(self.merged.is_empty()
+            && self.no_merged.is_empty()
+            && self.contains.is_empty()
+            && self.no_contains.is_empty())
+    }
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let quote = Cell::new(Quote::None);
     let quote_count = Cell::new(0);
     let omit_empty = Cell::new(false);
-    let count: RefCell<Option<String>> = RefCell::new(None);
+    let count = Cell::new(0);
     let format: RefCell<Option<String>> = RefCell::new(None);
     let start_after: RefCell<Option<String>> = RefCell::new(None);
     let excludes: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let sorts: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let points_at: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let reach: RefCell<Vec<(Which, String)>> = RefCell::new(Vec::new());
+    let color: Cell<Option<ColorBool>> = Cell::new(None);
     let ignore_case = Cell::new(false);
     let stdin = Cell::new(false);
     let root_refs = Cell::new(false);
-    let unsupported: RefCell<Option<&'static str>> = RefCell::new(None);
     let quote_opt = |short: Option<char>, long: &'static str, q: Quote, help: &'static str| {
         let quote = &quote;
         let quote_count = &quote_count;
@@ -96,12 +82,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         })
         .noarg()
     };
-    let unsup = |long: &'static str, help: &'static str| {
-        let unsupported = &unsupported;
-        Opt::callback(None, long, Some("commit"), help, move |_, _| {
-            *unsupported.borrow_mut() = Some(long);
+    let reach_opt = |long: &'static str, which: Which, help: &'static str| {
+        let reach = &reach;
+        Opt::callback(None, long, Some("commit"), help, move |v, _| {
+            reach
+                .borrow_mut()
+                .push((which, v.unwrap_or("HEAD").to_owned()));
             Ok(())
         })
+        .lastarg_default("HEAD")
         .noneg()
     };
     let mut parser = Parser::new(
@@ -113,7 +102,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             quote_opt(None, "tcl", Quote::Tcl, msg::HELP_TCL),
             Opt::flag(None, "omit-empty", &omit_empty, msg::HELP_OMIT_EMPTY),
             Opt::group(""),
-            Opt::string(None, "count", &count, "n", msg::HELP_COUNT),
+            Opt::integer(None, "count", &count, msg::HELP_COUNT),
             Opt::string(None, "format", &format, "format", msg::HELP_FORMAT),
             Opt::string(
                 None,
@@ -122,21 +111,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "marker",
                 msg::HELP_START_AFTER,
             ),
-            {
-                let unsupported = &unsupported;
-                Opt::callback(None, "color", Some("when"), msg::HELP_COLOR, move |_, _| {
-                    *unsupported.borrow_mut() = Some("color");
-                    Ok(())
-                })
-                .optional(None)
-            },
+            Opt::callback(None, "color", Some("when"), msg::HELP_COLOR, |v, unset| {
+                color.set(Some(crate::color::parse_when(v, unset)?));
+                Ok(())
+            })
+            .optional(None),
             Opt::string_list(None, "exclude", &excludes, "pattern", msg::HELP_EXCLUDE),
             Opt::string_list(None, "sort", &sorts, "key", msg::HELP_SORT),
             Opt::string_list(None, "points-at", &points_at, "object", msg::HELP_POINTS_AT),
-            unsup("merged", msg::HELP_MERGED),
-            unsup("no-merged", msg::HELP_NO_MERGED),
-            unsup("contains", msg::HELP_CONTAINS),
-            unsup("no-contains", msg::HELP_NO_CONTAINS),
+            reach_opt("merged", Which::Merged, msg::HELP_MERGED),
+            reach_opt("no-merged", Which::NoMerged, msg::HELP_NO_MERGED),
+            reach_opt("contains", Which::Contains, msg::HELP_CONTAINS),
+            reach_opt("no-contains", Which::NoContains, msg::HELP_NO_CONTAINS),
             Opt::flag(None, "ignore-case", &ignore_case, msg::HELP_IGNORE_CASE),
             Opt::flag(None, "stdin", &stdin, msg::HELP_STDIN),
             Opt::flag(
@@ -148,15 +134,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ],
     );
     let args = parser.parse(argv)?.args;
-    if let Some(opt) = *unsupported.borrow() {
-        return Err(Die::Fatal(msg::not_supported(&format!("--{opt}"))));
-    }
-    let max = match count.borrow().as_deref() {
-        None => None,
-        Some(c) => match c.parse::<i64>() {
-            Ok(n) if n >= 0 => Some(n as usize),
-            _ => return Err(parser.error_with_usage(&msg::invalid_count(c)).into()),
-        },
+    let max = match count.get() {
+        n if n < 0 => {
+            return Err(parser
+                .error_with_usage(&msg::invalid_count(&n.to_string()))
+                .into());
+        }
+        0 => None,
+        n => Some(n as usize),
     };
     if quote_count.get() > 1 {
         return Err(parser.error_with_usage(msg::MORE_THAN_ONE_QUOTING).into());
@@ -165,26 +150,29 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .borrow()
         .clone()
         .unwrap_or_else(|| msg::DEFAULT_FORMAT.to_owned());
-    let pieces = match parse_format(&fmt) {
-        Ok(p) => p,
+    let fmt = match RefFormat::try_parse(&fmt) {
+        Ok(f) => f,
         Err(FormatError::Malformed(rest)) => {
             return Err(parser
-                .error_with_usage(&msg::malformed_format(&rest))
+                .error_with_usage(&rmsg::malformed_format(&rest))
                 .into());
         }
         Err(FormatError::Fatal(m)) => return Err(Die::Fatal(m)),
     };
-    let mut sort_keys = Vec::new();
-    for key in sorts.borrow().iter().rev() {
-        let (reverse, k) = match key.strip_prefix('-') {
-            Some(k) => (true, k),
-            None => (false, key.as_str()),
-        };
-        let atom = parse_atom(k).map_err(|e| match e {
-            FormatError::Fatal(m) | FormatError::Malformed(m) => Die::Fatal(m),
-        })?;
-        sort_keys.push((atom, reverse));
+    drop(parser);
+    let quote = quote.get();
+    if fmt.has_raw() && matches!(quote, Quote::Shell | Quote::Python | Quote::Tcl) {
+        return Err(Die::Fatal(rmsg::RAW_QUOTED.to_owned()));
     }
+    if fmt.has_rest() {
+        return Err(Die::Fatal(rmsg::rejected_atom("rest")));
+    }
+    let custom_sort = !sorts.borrow().is_empty();
+    let keys = if custom_sort {
+        ref_filter::parse_sort_keys(&sorts.borrow())?
+    } else {
+        vec![SortKey::parse("refname")?]
+    };
 
     let mut patterns = args.clone();
     if stdin.get() {
@@ -198,19 +186,37 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             line.clear();
         }
     }
+    let start_after = start_after.borrow().clone();
+    if start_after.is_some() {
+        if !patterns.is_empty() {
+            return Err(Die::Fatal(msg::START_AFTER_PATTERNS.to_owned()));
+        }
+        if custom_sort {
+            return Err(Die::Fatal(msg::START_AFTER_SORT.to_owned()));
+        }
+    }
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = refs_support::load_config(ctx, &setup)?;
     let store = refs_support::ref_store(&setup, &config);
     let objects = Objects::open(&setup);
-    let revs = refs_support::Revs::new(ctx, &setup)?;
+    let revs = Revs::new(ctx, &setup)?;
 
-    let mut points = Vec::new();
-    for p in points_at.borrow().iter() {
-        let id = revs.resolve(p)
-            .ok_or_else(|| Die::Error(msg::malformed_object_name(p), 129))?;
-        points.push(id);
-    }
+    let filters = resolve_filters(&points_at.borrow(), &reach.borrow(), &objects, &revs)?;
+
+    let mut env = Env::new(&objects, &store);
+    env.repo = Some(RepoParts {
+        setup: &setup,
+        config: &config,
+        revs: &revs,
+    });
+    env.quote = quote;
+    env.color = match color.get() {
+        Some(ColorBool::Always) => true,
+        Some(ColorBool::Never) => false,
+        Some(ColorBool::Auto) | None => crate::color::auto(&config),
+    };
+    env.prepare(fmt.atoms().chain(keys.iter().map(|k| &k.atom)))?;
 
     let iter_opts = IterOptions {
         prefix: String::new(),
@@ -220,356 +226,286 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .iter(&iter_opts)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     let icase = ignore_case.get();
+    let excludes = excludes.borrow();
+    let mut reach = Reach::new(&objects, &filters);
     let mut items = Vec::new();
     for entry in listed {
         let r = match entry {
             IterItem::Ref(r) => r,
             IterItem::Broken(n) | IterItem::BadName(n) => {
-                if matches_any(&patterns, &n, icase) || patterns.is_empty() {
+                if patterns.is_empty() || matches_any(&patterns, &n, icase) {
                     eprintln!("warning: {}", msg::ignoring_broken_ref(&n));
                 }
                 continue;
             }
         };
         let Some(oid) = r.oid else { continue };
+        // Special refs are not root refs (gitglossary(7), "special ref").
+        if matches!(r.name.as_str(), "FETCH_HEAD" | "MERGE_HEAD") {
+            continue;
+        }
+        if oid.is_null() {
+            if patterns.is_empty() || matches_any(&patterns, &r.name, icase) {
+                eprintln!("warning: {}", msg::ignoring_broken_ref(&r.name));
+            }
+            continue;
+        }
         if !patterns.is_empty() && !matches_any(&patterns, &r.name, icase) {
             continue;
         }
-        if matches_any(&excludes.borrow(), &r.name, icase) {
+        if matches_any(&excludes, &r.name, icase) {
             continue;
         }
-        if let Some(marker) = start_after.borrow().as_deref() {
+        if let Some(marker) = start_after.as_deref() {
             if r.name.as_bytes() <= marker.as_bytes() {
                 continue;
             }
         }
-        if !points.is_empty() {
-            let peeled = objects.peel(&oid);
-            if !points.contains(&oid) && !peeled.is_some_and(|p| points.contains(&p)) {
-                continue;
-            }
+        if !filters.points_at.is_empty() && !points_at_any(&objects, &oid, &filters.points_at) {
+            continue;
+        }
+        if filters.by_commit() && !reach.passes(&oid)? {
+            continue;
         }
         let symref = match &r.target {
             Target::Symbolic(t) => Some(t.clone()),
             Target::Object(_) => None,
         };
-        items.push(Item {
+        items.push(RefItem {
             name: r.name,
             oid,
             symref,
         });
     }
 
-    let ctx_vals = Values {
-        objects: &objects,
-        store: &store,
-        head: store.read_raw("HEAD").ok().flatten(),
-    };
-    if !sort_keys.is_empty() {
-        let mut keyed: Vec<(Vec<Value>, Item)> = Vec::new();
-        for it in items {
-            let mut vals = Vec::new();
-            for (atom, _) in &sort_keys {
-                vals.push(ctx_vals.value(atom, &it)?);
-            }
-            keyed.push((vals, it));
+    let mut keyed = Vec::with_capacity(items.len());
+    for it in items {
+        let cache = ItemCache::default();
+        let mut vals = Vec::with_capacity(keys.len());
+        for k in &keys {
+            vals.push(env.value(&k.atom, &it, &cache)?);
         }
-        keyed.sort_by(|(a, ia), (b, ib)| {
-            for (k, (_, reverse)) in sort_keys.iter().enumerate() {
-                let o = compare(&a[k], &b[k], icase);
-                let o = if *reverse { o.reverse() } else { o };
-                if o != Ordering::Equal {
-                    return o;
-                }
-            }
-            ia.name.as_bytes().cmp(ib.name.as_bytes())
-        });
-        items = keyed.into_iter().map(|(_, it)| it).collect();
+        keyed.push((vals, (it, cache)));
     }
+    let suffixes = if keys.iter().any(|k| k.version) {
+        ref_filter::version_suffixes(&config)
+    } else {
+        Vec::new()
+    };
+    let items = ref_filter::sort_items(keyed, &keys, icase, &suffixes, |(it, _)| it.name.as_str());
 
     let mut out = std::io::stdout().lock();
-    for (n, it) in items.iter().enumerate() {
-        if max.is_some_and(|m| m > 0 && n >= m) {
+    for (n, (it, cache)) in items.iter().enumerate() {
+        if max.is_some_and(|m| n >= m) {
             break;
         }
-        let mut line = Vec::new();
-        for p in &pieces {
-            match p {
-                Piece::Lit(b) => line.extend_from_slice(b),
-                Piece::Atom(a) => {
-                    let v = ctx_vals.value(a, it)?;
-                    let s = v.text();
-                    line.extend_from_slice(quote_value(&s, quote.get()).as_bytes());
-                }
-            }
-        }
+        let mut line = env.render(&fmt.pieces, it, cache, fmt.reset_at_eol)?;
         if omit_empty.get() && line.is_empty() {
             continue;
         }
         line.push(b'\n');
         let _ = out.write_all(&line);
     }
+    let _ = out.flush();
     Ok(0)
 }
 
-enum FormatError {
-    /// `malformed format string <rest>` (usage error).
-    Malformed(String),
-    /// Other errors (`fatal:`).
-    Fatal(String),
+/// Resolves `--points-at` (any object) and the reachability filters (a
+/// commit; tags are peeled).
+fn resolve_filters(
+    points_at: &[String],
+    reach: &[(Which, String)],
+    objects: &Objects,
+    revs: &Revs,
+) -> Result<Filters, Die> {
+    let mut f = Filters::default();
+    for p in points_at {
+        let id = revs
+            .resolve(p)
+            .ok_or_else(|| Die::Error(rmsg::malformed_object_name_quoted(p), 129))?;
+        f.points_at.push(id);
+    }
+    for (which, name) in reach {
+        let Some(id) = revs.resolve(name) else {
+            return Err(match which {
+                Which::Merged | Which::NoMerged => Die::Fatal(rmsg::malformed_object_name(name)),
+                _ => Die::Error(rmsg::malformed_object_name(name), 129),
+            });
+        };
+        let peeled = objects.peel(&id).unwrap_or(id);
+        let kind = objects.kind(&peeled);
+        if kind != Some(ObjectKind::Commit) {
+            if let Some(k) = kind {
+                eprintln!("error: {}", rmsg::not_a_commit(&id.to_hex(), k.name()));
+            }
+            return Err(Die::Error(
+                match which {
+                    Which::Merged => rmsg::must_point_to_commit("merged"),
+                    Which::NoMerged => rmsg::must_point_to_commit("no-merged"),
+                    _ => rmsg::no_such_commit(name),
+                },
+                129,
+            ));
+        }
+        match which {
+            Which::Merged => f.merged.push(peeled),
+            Which::NoMerged => f.no_merged.push(peeled),
+            Which::Contains => f.contains.push(peeled),
+            Which::NoContains => f.no_contains.push(peeled),
+        }
+    }
+    Ok(f)
 }
 
-fn parse_format(fmt: &str) -> Result<Vec<Piece>, FormatError> {
-    let b = fmt.as_bytes();
-    let mut pieces = Vec::new();
-    let mut lit = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] != b'%' {
-            lit.push(b[i]);
-            i += 1;
-            continue;
+/// The reference or one of the tags it points to (in a chain of tags)
+/// names one of `points`, or the object at the end of the chain does.
+fn points_at_any(objects: &Objects, oid: &ObjectId, points: &[ObjectId]) -> bool {
+    let mut cur = *oid;
+    for _ in 0..64 {
+        if points.contains(&cur) {
+            return true;
         }
-        match b.get(i + 1) {
-            Some(b'%') => {
-                lit.push(b'%');
-                i += 2;
-            }
-            Some(b'(') => {
-                let Some(end) = fmt[i..].find(')') else {
-                    return Err(FormatError::Malformed(fmt[i..].to_owned()));
-                };
-                let atom = parse_atom(&fmt[i + 2..i + end])?;
-                if !lit.is_empty() {
-                    pieces.push(Piece::Lit(std::mem::take(&mut lit)));
+        match objects.read(&cur) {
+            Some((ObjectKind::Tag, data)) => {
+                match rgit_object::Tag::parse(objects.hash(), &data)
+                    .ok()
+                    .and_then(|t| t.object().ok())
+                {
+                    Some(next) => cur = next,
+                    None => return false,
                 }
-                pieces.push(Piece::Atom(atom));
-                i += end + 1;
             }
-            _ => {
-                let hex = b.get(i + 1..i + 3).and_then(|h| {
-                    std::str::from_utf8(h)
-                        .ok()
-                        .and_then(|h| u8::from_str_radix(h, 16).ok())
-                });
-                match hex {
-                    Some(v) => {
-                        lit.push(v);
-                        i += 3;
-                    }
-                    None => {
-                        lit.push(b'%');
-                        i += 1;
-                    }
-                }
-            }
+            _ => return false,
         }
     }
-    if !lit.is_empty() {
-        pieces.push(Piece::Lit(lit));
-    }
-    Ok(pieces)
+    false
 }
 
-fn parse_atom(spec: &str) -> Result<Atom, FormatError> {
-    let (deref, spec) = match spec.strip_prefix('*') {
-        Some(s) => (true, s),
-        None => (false, spec),
-    };
-    let (name, arg) = match spec.split_once(':') {
-        Some((n, a)) => (n, Some(a)),
-        None => (spec, None),
-    };
-    let bad = |a: &str| FormatError::Fatal(msg::unrecognized_arg(name, a));
-    let kind = match name {
-        "refname" | "symref" => {
-            let m = match arg {
-                None => NameMod::Full,
-                Some("short") => NameMod::Short,
-                Some(a) => {
-                    if let Some(n) = a
-                        .strip_prefix("lstrip=")
-                        .or_else(|| a.strip_prefix("strip="))
-                    {
-                        NameMod::Lstrip(n.parse().map_err(|_| bad(a))?)
-                    } else if let Some(n) = a.strip_prefix("rstrip=") {
-                        NameMod::Rstrip(n.parse().map_err(|_| bad(a))?)
-                    } else {
-                        return Err(bad(a));
-                    }
-                }
-            };
-            if name == "refname" {
-                AtomKind::Refname(m)
-            } else {
-                AtomKind::Symref(m)
-            }
-        }
-        "objectname" => match arg {
-            None => AtomKind::Objectname(None),
-            Some("short") => AtomKind::Objectname(Some(7)),
-            Some(a) => match a.strip_prefix("short=") {
-                Some(n) => AtomKind::Objectname(Some(
-                    n.parse::<i64>().map_err(|_| bad(a))?.max(0) as usize,
-                )),
-                None => return Err(bad(a)),
-            },
-        },
-        "objecttype" | "objectsize" | "HEAD" => {
-            if arg.is_some() {
-                return Err(FormatError::Fatal(msg::no_arguments(name)));
-            }
-            match name {
-                "objecttype" => AtomKind::Objecttype,
-                "objectsize" => AtomKind::Objectsize,
-                _ => AtomKind::Head,
-            }
-        }
-        _ => return Err(FormatError::Fatal(msg::unknown_field(spec))),
-    };
-    Ok(Atom { kind, deref })
-}
-
-enum Value {
-    Text(String),
-    Number(u64),
-}
-
-impl Value {
-    fn text(&self) -> String {
-        match self {
-            Value::Text(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-        }
-    }
-}
-
-fn compare(a: &Value, b: &Value, icase: bool) -> Ordering {
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => x.cmp(y),
-        _ if icase => a
-            .text()
-            .to_ascii_lowercase()
-            .cmp(&b.text().to_ascii_lowercase()),
-        _ => a.text().as_bytes().cmp(b.text().as_bytes()),
-    }
-}
-
-struct Values<'a> {
+/// Reachability for `--[no-]contains` and `--[no-]merged`, with the
+/// answers for every commit seen kept across references.
+struct Reach<'a> {
     objects: &'a Objects,
-    store: &'a FilesStore,
-    head: Option<Target>,
+    contains: Memo,
+    no_contains: Memo,
+    /// Commits reachable from the `--merged` commits.
+    merged: Option<HashSet<ObjectId>>,
+    no_merged: Option<HashSet<ObjectId>>,
 }
 
-impl Values<'_> {
-    fn value(&self, atom: &Atom, it: &Item) -> Result<Value, Die> {
-        let missing = || Die::Fatal(msg::missing_object(&it.oid.to_hex(), &it.name));
-        // The object the atom describes.
-        let oid = if atom.deref {
-            match atom.kind {
-                AtomKind::Objectname(_) | AtomKind::Objecttype | AtomKind::Objectsize => {
-                    let (kind, _) = self.objects.read(&it.oid).ok_or_else(missing)?;
-                    if kind != rgit_object::ObjectKind::Tag {
-                        return Ok(Value::Text(String::new()));
-                    }
-                    let p = self.objects.peel(&it.oid).ok_or_else(missing)?;
-                    Some(p)
+/// Whether commits reach one of `targets`.
+struct Memo {
+    targets: Vec<ObjectId>,
+    known: HashMap<ObjectId, bool>,
+}
+
+fn parents(objects: &Objects, id: &ObjectId) -> Option<Vec<ObjectId>> {
+    match objects.read(id)? {
+        (ObjectKind::Commit, data) => rgit_object::Commit::parse(objects.hash(), &data)
+            .ok()?
+            .parents()
+            .ok(),
+        _ => None,
+    }
+}
+
+impl Memo {
+    fn new(targets: &[ObjectId]) -> Memo {
+        Memo {
+            targets: targets.to_vec(),
+            known: HashMap::new(),
+        }
+    }
+
+    /// Whether `tip` reaches a target; `Err` names a commit that cannot be
+    /// read.
+    fn reaches(&mut self, objects: &Objects, tip: ObjectId) -> Result<bool, ObjectId> {
+        let mut stack: Vec<(ObjectId, Option<Vec<ObjectId>>)> = vec![(tip, None)];
+        while let Some((id, ps)) = stack.pop() {
+            if self.known.contains_key(&id) {
+                continue;
+            }
+            if self.targets.contains(&id) {
+                self.known.insert(id, true);
+                continue;
+            }
+            match ps {
+                None => {
+                    let ps = parents(objects, &id).ok_or(id)?;
+                    let pending: Vec<ObjectId> = ps
+                        .iter()
+                        .filter(|p| !self.known.contains_key(p))
+                        .copied()
+                        .collect();
+                    stack.push((id, Some(ps)));
+                    stack.extend(pending.into_iter().map(|p| (p, None)));
                 }
-                _ => return Ok(Value::Text(String::new())),
+                Some(ps) => {
+                    let v = ps.iter().any(|p| self.known.get(p) == Some(&true));
+                    self.known.insert(id, v);
+                }
             }
-        } else {
-            Some(it.oid)
-        };
-        let oid = oid.unwrap_or(it.oid);
-        Ok(match atom.kind {
-            AtomKind::Refname(m) => Value::Text(self.shorten(&it.name, m)),
-            AtomKind::Symref(m) => match &it.symref {
-                Some(t) => Value::Text(self.shorten(t, m)),
-                None => Value::Text(String::new()),
-            },
-            AtomKind::Objectname(None) => Value::Text(oid.to_hex()),
-            AtomKind::Objectname(Some(n)) => Value::Text(self.objects.abbrev(&oid, n)),
-            AtomKind::Objecttype => {
-                let kind = self.objects.kind(&oid).ok_or_else(missing)?;
-                Value::Text(kind.name().to_owned())
-            }
-            AtomKind::Objectsize => {
-                let (_, data) = self.objects.read(&oid).ok_or_else(missing)?;
-                Value::Number(data.len() as u64)
-            }
-            AtomKind::Head => {
-                let is_head = matches!(&self.head, Some(Target::Symbolic(t)) if *t == it.name);
-                Value::Text(if is_head { "*" } else { " " }.to_owned())
-            }
-        })
-    }
-
-    fn shorten(&self, name: &str, m: NameMod) -> String {
-        match m {
-            NameMod::Full => name.to_owned(),
-            NameMod::Short => shorten_unambiguous(self.store, name),
-            NameMod::Lstrip(n) => lstrip(name, n),
-            NameMod::Rstrip(n) => rstrip(name, n),
         }
+        Ok(self.known.get(&tip) == Some(&true))
     }
 }
 
-/// `:lstrip=<n>`: drop `n` leading components (negative: keep `-n`
-/// trailing ones).
-fn lstrip(name: &str, n: i64) -> String {
-    let parts: Vec<&str> = name.split('/').collect();
-    let drop = if n >= 0 {
-        n as usize
-    } else {
-        parts.len().saturating_sub((-n) as usize)
-    };
-    if drop >= parts.len() {
-        return String::new();
-    }
-    parts[drop..].join("/")
-}
-
-/// `:rstrip=<n>`: drop `n` trailing components (negative: keep `-n`
-/// leading ones).
-fn rstrip(name: &str, n: i64) -> String {
-    let parts: Vec<&str> = name.split('/').collect();
-    let keep = if n >= 0 {
-        parts.len().saturating_sub(n as usize)
-    } else {
-        ((-n) as usize).min(parts.len())
-    };
-    parts[..keep].join("/")
-}
-
-/// The shortest name that still resolves to `name` with git's lookup
-/// rules (`refname:short`).
-fn shorten_unambiguous(store: &FilesStore, name: &str) -> String {
-    const RULES: [(&str, &str); 6] = [
-        ("", ""),
-        ("refs/", ""),
-        ("refs/tags/", ""),
-        ("refs/heads/", ""),
-        ("refs/remotes/", ""),
-        ("refs/remotes/", "/HEAD"),
-    ];
-    for i in (1..RULES.len()).rev() {
-        let (pre, suf) = RULES[i];
-        let Some(short) = name
-            .strip_prefix(pre)
-            .and_then(|s| s.strip_suffix(suf))
-            .filter(|s| !s.is_empty())
-        else {
+/// Every commit reachable from `tips` (unreadable commits end the walk).
+fn ancestors(objects: &Objects, tips: &[ObjectId]) -> HashSet<ObjectId> {
+    let mut seen = HashSet::new();
+    let mut todo = tips.to_vec();
+    while let Some(id) = todo.pop() {
+        if !seen.insert(id) {
             continue;
-        };
-        let ambiguous = RULES[..i].iter().any(|(p, s)| {
-            let candidate = format!("{p}{short}{s}");
-            candidate != name && matches!(store.read_raw(&candidate), Ok(Some(_)))
-        });
-        if !ambiguous {
-            return short.to_owned();
+        }
+        todo.extend(parents(objects, &id).unwrap_or_default());
+    }
+    seen
+}
+
+impl<'a> Reach<'a> {
+    fn new(objects: &'a Objects, f: &Filters) -> Reach<'a> {
+        Reach {
+            objects,
+            contains: Memo::new(&f.contains),
+            no_contains: Memo::new(&f.no_contains),
+            merged: (!f.merged.is_empty()).then(|| ancestors(objects, &f.merged)),
+            no_merged: (!f.no_merged.is_empty()).then(|| ancestors(objects, &f.no_merged)),
         }
     }
-    name.to_owned()
+
+    /// Whether the ref at `oid` passes; only refs to commits (after
+    /// peeling tags) do.
+    fn passes(&mut self, oid: &ObjectId) -> Result<bool, Die> {
+        let Some(commit) = self.objects.peel(oid) else {
+            return Ok(false);
+        };
+        if self.objects.kind(&commit) != Some(ObjectKind::Commit) {
+            return Ok(false);
+        }
+        let objects = self.objects;
+        let failed = |id: ObjectId| {
+            eprintln!("error: {}", rmsg::could_not_read(&id.to_hex()));
+            eprintln!("error: {}", rmsg::could_not_parse_commit(&id.to_hex()));
+            Die::Fatal(rmsg::REACHABILITY_FAILED.to_owned())
+        };
+        if !self.contains.targets.is_empty()
+            && !self.contains.reaches(objects, commit).map_err(failed)?
+        {
+            return Ok(false);
+        }
+        if !self.no_contains.targets.is_empty()
+            && self.no_contains.reaches(objects, commit).map_err(failed)?
+        {
+            return Ok(false);
+        }
+        if self.merged.as_ref().is_some_and(|m| !m.contains(&commit)) {
+            return Ok(false);
+        }
+        if self.no_merged.as_ref().is_some_and(|m| m.contains(&commit)) {
+            return Ok(false);
+        }
+        Ok(true)
+    }
 }
 
 /// Literal prefix match up to a `/`, or a glob with `*` not crossing `/`.
@@ -588,137 +524,4 @@ fn matches_any(patterns: &[String], name: &str, icase: bool) -> bool {
         p.contains(['*', '?', '[', '\\'])
             && wildmatch(p.as_bytes(), n.as_bytes(), WildmatchFlags::PATHNAME)
     })
-}
-
-fn quote_value(s: &str, q: Quote) -> String {
-    match q {
-        Quote::None => s.to_owned(),
-        Quote::Shell => crate::context::sq_quote(s),
-        Quote::Perl => {
-            let mut o = String::from("'");
-            for c in s.chars() {
-                if c == '\'' || c == '\\' {
-                    o.push('\\');
-                }
-                o.push(c);
-            }
-            o.push('\'');
-            o
-        }
-        Quote::Python => {
-            let mut o = String::from("'");
-            for c in s.chars() {
-                match c {
-                    '\'' | '\\' => {
-                        o.push('\\');
-                        o.push(c);
-                    }
-                    '\n' => o.push_str("\\n"),
-                    _ => o.push(c),
-                }
-            }
-            o.push('\'');
-            o
-        }
-        Quote::Tcl => {
-            let mut o = String::from("\"");
-            for c in s.chars() {
-                match c {
-                    '[' | ']' | '{' | '}' | '$' | '\\' | '"' => {
-                        o.push('\\');
-                        o.push(c);
-                    }
-                    '\x0c' => o.push_str("\\f"),
-                    '\r' => o.push_str("\\r"),
-                    '\n' => o.push_str("\\n"),
-                    '\t' => o.push_str("\\t"),
-                    '\x0b' => o.push_str("\\v"),
-                    _ => o.push(c),
-                }
-            }
-            o.push('"');
-            o
-        }
-    }
-}
-
-/// `--format` strings for the other reference listing commands
-/// (`tag`), with the atoms implemented here.
-pub(crate) struct RefFormat {
-    pieces: Vec<Piece>,
-}
-
-impl RefFormat {
-    /// Parses a format string.
-    pub(crate) fn parse(fmt: &str) -> Result<RefFormat, Die> {
-        match parse_format(fmt) {
-            Ok(pieces) => Ok(RefFormat { pieces }),
-            Err(FormatError::Malformed(rest)) => Err(Die::Fatal(msg::malformed_format(&rest))),
-            Err(FormatError::Fatal(m)) => Err(Die::Fatal(m)),
-        }
-    }
-}
-
-/// A sort key atom (`--sort=<key>` without `-` and `version:`).
-#[derive(Clone, Copy)]
-pub(crate) struct SortAtom(Atom);
-
-impl SortAtom {
-    pub(crate) fn parse(name: &str) -> Result<SortAtom, Die> {
-        parse_atom(name).map(SortAtom).map_err(|e| match e {
-            FormatError::Fatal(m) | FormatError::Malformed(m) => Die::Fatal(m),
-        })
-    }
-}
-
-/// A sort value: numbers compare as numbers, everything else as bytes.
-pub(crate) struct SortValue(Value);
-
-impl SortValue {
-    pub(crate) fn text(&self) -> String {
-        self.0.text()
-    }
-
-    pub(crate) fn compare(&self, other: &SortValue, icase: bool) -> Ordering {
-        compare(&self.0, &other.0, icase)
-    }
-}
-
-/// Expands atoms for the references of one repository.
-pub(crate) struct RefValues<'a>(Values<'a>);
-
-impl<'a> RefValues<'a> {
-    pub(crate) fn new(objects: &'a Objects, store: &'a FilesStore) -> Self {
-        RefValues(Values {
-            objects,
-            store,
-            head: store.read_raw("HEAD").ok().flatten(),
-        })
-    }
-
-    fn item(name: &str, oid: ObjectId) -> Item {
-        Item {
-            name: name.to_owned(),
-            oid,
-            symref: None,
-        }
-    }
-
-    /// The value of `atom` for reference `name` at `oid`.
-    pub(crate) fn value(&self, atom: SortAtom, name: &str, oid: ObjectId) -> Result<SortValue, Die> {
-        self.0.value(&atom.0, &Self::item(name, oid)).map(SortValue)
-    }
-
-    /// `format` expanded for reference `name` at `oid`.
-    pub(crate) fn render(&self, format: &RefFormat, name: &str, oid: ObjectId) -> Result<Vec<u8>, Die> {
-        let it = Self::item(name, oid);
-        let mut line = Vec::new();
-        for p in &format.pieces {
-            match p {
-                Piece::Lit(b) => line.extend_from_slice(b),
-                Piece::Atom(a) => line.extend_from_slice(self.0.value(a, &it)?.text().as_bytes()),
-            }
-        }
-        Ok(line)
-    }
 }

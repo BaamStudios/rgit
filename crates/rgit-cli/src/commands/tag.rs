@@ -11,22 +11,21 @@
 //! - `-d` ("Deleted tag ...");
 //! - listing: patterns, `-i`, `-n[<num>]`, `--contains`, `--no-contains`,
 //!   `--merged`, `--no-merged`, `--points-at`, `--sort` and `tag.sort`
-//!   (the atoms of `for-each-ref`, `tag`, and `version:` with
-//!   `versionsort.suffix`), `--format` with the atoms of `for-each-ref`,
-//!   `--omit-empty`;
+//!   (the atoms of `for-each-ref` and `version:` with
+//!   `versionsort.suffix`), `--format` with the format language of
+//!   [`crate::ref_filter`], `--color` (and `color.ui`), `--omit-empty`;
 //! - `-v` for tags without a signature (prints the tag and fails).
 //!
 //! Not yet: signing and verifying signatures (`-s`, `-u`, `tag.gpgSign`,
 //! `tag.forceSignAnnotated`; rgit #51), `--column` and `column.tag`,
-//! `trailer.*` configuration, `--color` (accepted, formats have no color
-//! atoms yet).
+//! `trailer.*` configuration for `--trailer`.
 
-use std::cmp::Ordering;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use rgit_commit::message::{self as cmsg, Cleanup};
 use rgit_config::SystemEnv;
+use rgit_config::color::ColorBool;
 use rgit_date::DateContext;
 use rgit_hash::ObjectId;
 use rgit_ident::ident::{IdentConfig, Resolver, Role, Strictness};
@@ -37,7 +36,7 @@ use rgit_refs::files::FilesStore;
 use rgit_refs::name::{RefNameFlags, check_refname_format};
 use rgit_refs::{IterItem, IterOptions, RefStore, RefUpdate, Target, Transaction};
 
-use super::for_each_ref::{RefFormat, RefValues, SortAtom};
+use crate::ref_filter::{self, RefFormat, RefValues, RepoParts, SortKey};
 use crate::messages::tag as msg;
 use crate::prelude::*;
 use crate::refs_support::{self, Objects, Revs, UpdateHooks};
@@ -50,21 +49,6 @@ const TAG_PREFIX: &str = "refs/tags/";
 enum Piece {
     Message(String),
     File(String),
-}
-
-/// What a sort key looks at.
-#[derive(Clone, Copy)]
-enum KeyAtom {
-    Ref(SortAtom),
-    /// `%(tag)`: the name in an annotated tag.
-    TagName,
-}
-
-#[derive(Clone, Copy)]
-struct SortKey {
-    atom: KeyAtom,
-    reverse: bool,
-    version: bool,
 }
 
 /// The reference filters of the listing mode.
@@ -112,6 +96,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let no_sort = Cell::new(false);
     let format: RefCell<Option<String>> = RefCell::new(None);
     let ignore_case = Cell::new(false);
+    let color: Cell<Option<ColorBool>> = Cell::new(None);
 
     // The filter options in command-line order; resolved once the
     // repository is set up (`None`: `--no-points-at`).
@@ -193,8 +178,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             })
             .lastarg_default("HEAD"),
             Opt::string(None, "format", &format, "format", msg::HELP_FORMAT),
-            Opt::callback(None, "color", Some("when"), msg::HELP_COLOR, |_, _| Ok(()))
-                .optional(None),
+            Opt::callback(None, "color", Some("when"), msg::HELP_COLOR, |v, unset| {
+                color.set(Some(crate::color::parse_when(v, unset)?));
+                Ok(())
+            })
+            .optional(None),
             Opt::flag('i', "ignore-case", &ignore_case, msg::HELP_IGNORE_CASE),
         ],
     );
@@ -261,7 +249,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .filter_map(|e| e.value.as_ref().map(|v| lossy(v)))
             .collect();
     }
-    let keys = parse_sort_keys(&sort_specs)?;
+    let keys = ref_filter::parse_sort_keys(&sort_specs)?;
 
     let store = refs_support::ref_store(&setup, &config);
     match mode {
@@ -278,6 +266,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 store: &store,
                 revs: &revs,
                 config: &config,
+                setup: &setup,
+                color: crate::color::want(&config, None, color.get())?,
                 patterns: &args,
                 icase: ignore_case.get(),
                 filters: &filters,
@@ -375,35 +365,6 @@ fn resolve_filters(
     Ok(f)
 }
 
-/// `--sort` keys, primary key first.
-fn parse_sort_keys(specs: &[String]) -> Result<Vec<SortKey>, Die> {
-    let mut keys = Vec::new();
-    for spec in specs.iter().rev() {
-        let (reverse, rest) = match spec.strip_prefix('-') {
-            Some(r) => (true, r),
-            None => (false, spec.as_str()),
-        };
-        let (version, name) = match rest
-            .strip_prefix("version:")
-            .or_else(|| rest.strip_prefix("v:"))
-        {
-            Some(n) => (true, n),
-            None => (false, rest),
-        };
-        let atom = if name == "tag" {
-            KeyAtom::TagName
-        } else {
-            KeyAtom::Ref(SortAtom::parse(name)?)
-        };
-        keys.push(SortKey {
-            atom,
-            reverse,
-            version,
-        });
-    }
-    Ok(keys)
-}
-
 /// A listed tag.
 struct Item {
     name: String,
@@ -416,6 +377,8 @@ struct List<'a> {
     store: &'a FilesStore,
     revs: &'a Revs,
     config: &'a rgit_config::ConfigSet,
+    setup: &'a rgit_repo::Setup,
+    color: bool,
     patterns: &'a [String],
     icase: bool,
     filters: &'a Filters,
@@ -428,10 +391,19 @@ struct List<'a> {
 impl List<'_> {
     fn run(&self) -> CmdResult {
         let format = match &self.format {
-            Some(f) if f.contains("%(rest)") => return Err(fatal(msg::rejected_atom("rest"))),
             Some(f) => Some(RefFormat::parse(f)?),
             None => None,
         };
+        if format.as_ref().is_some_and(RefFormat::has_rest) {
+            return Err(fatal(msg::rejected_atom("rest")));
+        }
+        let mut values = self.values();
+        values.prepare(
+            format
+                .iter()
+                .flat_map(|f| f.atoms())
+                .chain(self.keys.iter().map(|k| &k.atom)),
+        )?;
         let iter = IterOptions {
             prefix: TAG_PREFIX.to_owned(),
             include_root_refs: false,
@@ -456,9 +428,8 @@ impl List<'_> {
             }
             items.push(Item { name: r.name, oid });
         }
-        self.sort(&mut items)?;
+        let items = self.sort(&values, items)?;
 
-        let values = RefValues::new(self.objects, self.store);
         let mut out = std::io::stdout().lock();
         for it in &items {
             let short = &it.name[TAG_PREFIX.len()..];
@@ -534,74 +505,38 @@ impl List<'_> {
         true
     }
 
-    fn sort(&self, items: &mut Vec<Item>) -> Result<(), Die> {
+    /// The atom values of this repository.
+    fn values(&self) -> RefValues<'_> {
+        RefValues::new(self.objects, self.store)
+            .with_repo(RepoParts {
+                setup: self.setup,
+                config: self.config,
+                revs: self.revs,
+            })
+            .with_color(self.color)
+    }
+
+    fn sort(&self, values: &RefValues<'_>, items: Vec<Item>) -> Result<Vec<Item>, Die> {
         let suffixes = if self.keys.iter().any(|k| k.version) {
-            version_suffixes(self.config)
+            ref_filter::version_suffixes(self.config)
         } else {
             Vec::new()
         };
-        let values = RefValues::new(self.objects, self.store);
         let mut keyed = Vec::with_capacity(items.len());
-        for it in items.drain(..) {
+        for it in items {
             let mut vals = Vec::with_capacity(self.keys.len());
             for k in self.keys {
-                vals.push(match k.atom {
-                    KeyAtom::Ref(a) => Some(values.value(a, &it.name, it.oid)?),
-                    KeyAtom::TagName => None,
-                });
+                vals.push(values.atom_value(&k.atom, &it.name, it.oid)?);
             }
-            let tag_name = self
-                .keys
-                .iter()
-                .any(|k| matches!(k.atom, KeyAtom::TagName))
-                .then(|| self.tag_name(&it.oid));
-            keyed.push((vals, tag_name, it));
+            keyed.push((vals, it));
         }
-        let icase = self.icase;
-        keyed.sort_by(|(va, ta, ia), (vb, tb, ib)| {
-            for (n, k) in self.keys.iter().enumerate() {
-                let o = match (&va[n], &vb[n]) {
-                    (Some(a), Some(b)) if k.version => {
-                        versioncmp(a.text().as_bytes(), b.text().as_bytes(), &suffixes)
-                    }
-                    (Some(a), Some(b)) => a.compare(b, icase),
-                    _ => {
-                        let a = ta.as_deref().unwrap_or_default();
-                        let b = tb.as_deref().unwrap_or_default();
-                        if k.version {
-                            versioncmp(a.as_bytes(), b.as_bytes(), &suffixes)
-                        } else {
-                            a.as_bytes().cmp(b.as_bytes())
-                        }
-                    }
-                };
-                let o = if k.reverse { o.reverse() } else { o };
-                if o != Ordering::Equal {
-                    return o;
-                }
-            }
-            if icase {
-                ia.name
-                    .to_ascii_lowercase()
-                    .cmp(&ib.name.to_ascii_lowercase())
-                    .then_with(|| ia.name.cmp(&ib.name))
-            } else {
-                ia.name.as_bytes().cmp(ib.name.as_bytes())
-            }
-        });
-        items.extend(keyed.into_iter().map(|(_, _, it)| it));
-        Ok(())
-    }
-
-    /// `%(tag)`: the name recorded in an annotated tag, else empty.
-    fn tag_name(&self, oid: &ObjectId) -> String {
-        match self.objects.read(oid) {
-            Some((ObjectKind::Tag, data)) => Tag::parse(self.objects.hash(), &data)
-                .ok()
-                .and_then(|t| t.name().map(lossy))
-                .unwrap_or_default(),
-            _ => String::new(),
-        }
+        Ok(ref_filter::sort_items(
+            keyed,
+            self.keys,
+            self.icase,
+            &suffixes,
+            |it: &Item| it.name.as_str(),
+        ))
     }
 
     /// `-n<num>`: the name padded to 15 columns and the first lines of
@@ -632,105 +567,6 @@ impl List<'_> {
         }
         out
     }
-}
-
-/// `versionsort.suffix`, else `versionsort.prereleaseSuffix`, in
-/// configuration order. Entries without a value are reported.
-fn version_suffixes(config: &rgit_config::ConfigSet) -> Vec<Vec<u8>> {
-    let get = |key: &str| {
-        let mut out = Vec::new();
-        for e in config.entries().iter().filter(|e| e.name == key) {
-            match &e.value {
-                Some(v) => out.push(v.to_vec()),
-                None => eprintln!("error: {}", msg::missing_value(key)),
-            }
-        }
-        out
-    };
-    let suffix = get("versionsort.suffix");
-    let pre = get("versionsort.prereleasesuffix");
-    if suffix.is_empty() { pre } else { suffix }
-}
-
-/// The configured suffix that covers position `off` of `s`: the one
-/// starting earliest, the longest of those. Returns its index.
-fn suffix_at(s: &[u8], off: usize, suffixes: &[Vec<u8>]) -> Option<usize> {
-    let mut best: Option<(usize, usize, usize)> = None;
-    for (i, suf) in suffixes.iter().enumerate() {
-        let lo = off.saturating_sub(suf.len());
-        let start = (lo..=off.min(s.len())).find(|&p| s[p..].starts_with(suf));
-        if let Some(p) = start {
-            let better = match best {
-                None => true,
-                Some((bp, bl, _)) => p < bp || (p == bp && suf.len() > bl),
-            };
-            if better {
-                best = Some((p, suf.len(), i));
-            }
-        }
-    }
-    best.map(|(_, _, i)| i)
-}
-
-/// Version order (`version:refname`): digit runs compare as numbers,
-/// configured suffixes order the releases with the same base.
-fn versioncmp(a: &[u8], b: &[u8], suffixes: &[Vec<u8>]) -> Ordering {
-    let off = a.iter().zip(b).take_while(|(x, y)| x == y).count();
-    if off == a.len() && off == b.len() {
-        return Ordering::Equal;
-    }
-    if !suffixes.is_empty() {
-        match (suffix_at(a, off, suffixes), suffix_at(b, off, suffixes)) {
-            (Some(x), Some(y)) if x != y => return x.cmp(&y),
-            (Some(_), None) => return Ordering::Less,
-            (None, Some(_)) => return Ordering::Greater,
-            _ => {}
-        }
-    }
-    natural_cmp(a, b, off)
-}
-
-/// Digit runs compare by value; a run with leading zeros counts as a
-/// fraction (`000 < 00 < 01 < 010 < 09 < 0 < 1 < 9 < 10`). `off` is the
-/// first differing position.
-fn natural_cmp(a: &[u8], b: &[u8], off: usize) -> Ordering {
-    let digit = |s: &[u8], i: usize| s.get(i).is_some_and(u8::is_ascii_digit);
-    let mut start = off;
-    while start > 0 && a[start - 1].is_ascii_digit() {
-        start -= 1;
-    }
-    let (da, db) = (digit(a, off), digit(b, off));
-    let in_run = start < off;
-    if !in_run && !(da && db) {
-        return a.get(off).cmp(&b.get(off));
-    }
-    if in_run && !da && !db {
-        return a.get(off).cmp(&b.get(off));
-    }
-    let run = |s: &[u8]| {
-        let mut e = start;
-        while digit(s, e) {
-            e += 1;
-        }
-        e
-    };
-    let (ea, eb) = (run(a), run(b));
-    let (ra, rb) = (&a[start..ea], &b[start..eb]);
-    // A run of several digits starting with 0 is a fraction; fractions
-    // sort before whole numbers.
-    let fraction = |r: &[u8]| r.len() > 1 && r[0] == b'0';
-    let order = match (fraction(ra), fraction(rb)) {
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        (true, true) => {
-            let zeros = |r: &[u8]| r.iter().take_while(|&&c| c == b'0').count();
-            let (za, zb) = (zeros(ra), zeros(rb));
-            // More leading zeros: smaller.
-            zb.cmp(&za).then_with(|| ra[za..].cmp(&rb[zb..]))
-        }
-        (false, false) => ra.len().cmp(&rb.len()).then_with(|| ra.cmp(rb)),
-    };
-    order.then_with(|| a[ea..].cmp(&b[eb..]))
 }
 
 /// `-d`: delete the named tags.
@@ -1151,7 +987,7 @@ mod tests {
     fn sorted(names: &[&str], suffixes: &[&str]) -> Vec<String> {
         let suffixes: Vec<Vec<u8>> = suffixes.iter().map(|s| s.as_bytes().to_vec()).collect();
         let mut v: Vec<String> = names.iter().map(|s| s.to_string()).collect();
-        v.sort_by(|a, b| versioncmp(a.as_bytes(), b.as_bytes(), &suffixes));
+        v.sort_by(|a, b| ref_filter::versioncmp(a.as_bytes(), b.as_bytes(), &suffixes));
         v
     }
 

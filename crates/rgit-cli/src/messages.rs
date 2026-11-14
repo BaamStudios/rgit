@@ -38,6 +38,7 @@ pub mod pack_refs;
 pub mod pager;
 pub mod push;
 pub mod read_tree;
+pub mod ref_filter;
 pub mod reflog;
 pub mod remote;
 pub mod reset;
