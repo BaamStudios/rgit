@@ -6,12 +6,17 @@
 //! The walk itself (orderings, limiting, boundary, sides, objects) lives in
 //! `rgit_revwalk::walk`; this module wires it to the repository and prints.
 
+mod decorate;
+mod layout;
 pub mod mailmap;
 mod options;
 pub mod pretty;
+mod recode;
 mod tips;
+mod userformat;
 
-use std::io::{Read, Write};
+use std::collections::HashMap;
+use std::io::{IsTerminal, Read, Write};
 
 use rgit_config::ConfigSet;
 use rgit_date::DateContext;
@@ -27,9 +32,11 @@ use crate::messages::rev_list as msg;
 use crate::repo::{self, Mode};
 use crate::revisions::{self, Config, IndexFile, Objects, Refs, WorkTree};
 use crate::{Context, Die};
+use decorate::{Colors, Decorations, Parts};
 pub use options::Options;
-use options::{Abbrev, ObjectsMode};
+use options::{Abbrev, Decorate, ObjectsMode};
 use pretty::{Entry, Pretty, Style};
+use userformat::{BadColor, Item, Lookup, Settings};
 
 /// The default `color.diff.commit`.
 const YELLOW: &str = "\x1b[33m";
@@ -220,6 +227,7 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
+    opts.apply_config(cmd, &config)?;
     let rev_opts = revisions::options(ctx, &config, kind)?;
     let shallow = std::env::var_os("GIT_SHALLOW_FILE")
         .map(std::path::PathBuf::from)
@@ -277,8 +285,87 @@ struct Printer<'r, 'a> {
     opts: &'r Options,
     abbrev_len: usize,
     style: Style,
+    /// The settings of user formats.
+    user: Option<Settings>,
+    decorations: Option<Decorations>,
+    /// `--decorate` for the built-in formats.
+    decorate: bool,
+    /// Colours of decorations in built-in formats.
+    deco_colors: Option<Colors>,
+    notes: Option<ObjectId>,
+    /// `%S`: the revision each commit was reached from (log only).
+    sources: Option<HashMap<ObjectId, String>>,
+    /// `i18n.logOutputEncoding` (else `i18n.commitEncoding`, UTF-8).
+    encoding: Vec<u8>,
     out: Vec<u8>,
     first: bool,
+}
+
+/// The `reference` format.
+const REFERENCE: &[u8] = b"%C(auto)%h (%s, %ad)";
+
+/// Lookups of the user format placeholders.
+struct FormatLookup<'p, 'r, 'a> {
+    p: &'p Printer<'r, 'a>,
+}
+
+impl Lookup for FormatLookup<'_, '_, '_> {
+    fn abbrev(&self, id: &ObjectId) -> String {
+        self.p.repo.abbrev(id, self.p.abbrev_len)
+    }
+
+    fn decoration(&self, id: &ObjectId, parts: &Parts, colors: Option<&Colors>) -> Vec<u8> {
+        match &self.p.decorations {
+            Some(d) => d.format(id, parts, colors),
+            None => Vec::new(),
+        }
+    }
+
+    fn notes(&self, id: &ObjectId) -> Option<Vec<u8>> {
+        let tree = self.p.notes?;
+        note(self.p.repo, &tree, &id.to_hex())
+    }
+}
+
+/// The note of `hex` in the notes tree `tree` (with fan-out directories).
+fn note(repo: &Repo<'_>, tree: &ObjectId, hex: &str) -> Option<Vec<u8>> {
+    let (kind, data) = repo.objects.read(tree).ok()??;
+    if kind != ObjectKind::Tree {
+        return None;
+    }
+    for entry in TreeIter::new(repo.objects.hash_kind(), &data) {
+        let entry = entry.ok()?;
+        let name = std::str::from_utf8(entry.name).ok()?;
+        if name == hex {
+            return match repo.objects.read(&entry.oid).ok()?? {
+                (ObjectKind::Blob, blob) => Some(blob),
+                _ => None,
+            };
+        }
+        if entry.mode_bits & 0o170000 == 0o040000
+            && name.len() == 2
+            && let Some(rest) = hex.strip_prefix(name)
+            && let Some(found) = note(repo, &entry.oid, rest)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The tree of the notes ref (`GIT_NOTES_REF`, `core.notesRef`, else
+/// `refs/notes/commits`).
+fn notes_tree(repo: &Repo<'_>) -> Option<ObjectId> {
+    let name = std::env::var("GIT_NOTES_REF").ok().or_else(|| {
+        repo.config
+            .string("core.notesRef")
+            .ok()
+            .flatten()
+            .map(|v| v.to_string())
+    });
+    let name = name.unwrap_or_else(|| "refs/notes/commits".to_string());
+    let id = repo.refs.resolve(&name).ok()??.oid?;
+    repo.tree_of(&id)
 }
 
 impl Printer<'_, '_> {
@@ -338,8 +425,12 @@ impl Printer<'_, '_> {
                     write_header(&mut self.out, &raw);
                 }
             }
+            Some(Pretty::User { .. } | Pretty::Reference) => {
+                let (commit, _) = self.read_shown(&id).ok_or_else(|| walk_error(id))?;
+                self.user_entry(walk, s, &commit, &related, line)?;
+            }
             Some(_) => {
-                let (commit, raw) = self.repo.read_commit(&id).ok_or_else(|| walk_error(id))?;
+                let (commit, raw) = self.read_shown(&id).ok_or_else(|| walk_error(id))?;
                 let parents = self.repo.parents(&id, &commit);
                 let shown: Vec<String> = related
                     .iter()
@@ -358,12 +449,17 @@ impl Printer<'_, '_> {
                 };
                 let ts = String::from_utf8(line).unwrap_or_default();
                 let commit_name = format!("{ts}{commit_name}");
+                let decoration = match (&self.decorations, self.decorate) {
+                    (Some(d), true) => d.format(&id, &Parts::default(), self.deco_colors.as_ref()),
+                    _ => Vec::new(),
+                };
                 let entry = Entry {
                     name: &commit_name,
                     shown_parents: &shown,
                     merge_parents: &merge,
                     commit: &commit,
                     raw: &raw,
+                    decoration: &decoration,
                 };
                 if self.cmd == Command::RevList {
                     // rev-list ends every multi-line entry with an empty line
@@ -379,6 +475,111 @@ impl Printer<'_, '_> {
             }
         }
         self.flush_if_full();
+        Ok(())
+    }
+
+    /// Read commit `id` for showing, converted to the output encoding.
+    fn read_shown(&self, id: &ObjectId) -> Option<(Commit, Vec<u8>)> {
+        let (commit, raw) = self.repo.read_commit(id)?;
+        match recode::reencode(&raw, commit.encoding(), &self.encoding) {
+            Some(data) => {
+                let converted = Commit::parse(self.repo.objects.hash_kind(), &data).ok()?;
+                Some((converted, raw))
+            }
+            None => Some((commit, raw)),
+        }
+    }
+
+    /// One commit in a user format.
+    fn user_entry<S: CommitSource<Error = ObjectId>>(
+        &mut self,
+        walk: &Walk<S>,
+        s: &Shown,
+        commit: &Commit,
+        related: &[ObjectId],
+        prefix: Vec<u8>,
+    ) -> Result<(), Die> {
+        let (fmt, terminator): (&[u8], bool) = match &self.style.pretty {
+            Pretty::User { format, terminator } => (format, *terminator),
+            _ => (REFERENCE, true),
+        };
+        let fmt = fmt.to_vec();
+        let parents = match walk.parents(&s.id) {
+            Some(p) => p.to_vec(),
+            None => self.repo.parents(&s.id, commit),
+        };
+        let mark = if s.boundary {
+            b'-'
+        } else if s.side == Some(Side::Left) {
+            b'<'
+        } else {
+            b'>'
+        };
+        let source = match &mut self.sources {
+            Some(map) => {
+                let source = map.get(&s.id).cloned();
+                if let Some(src) = &source {
+                    for p in &parents {
+                        map.entry(*p).or_insert_with(|| src.clone());
+                    }
+                }
+                source
+            }
+            None => None,
+        };
+        let item = Item {
+            id: &s.id,
+            commit,
+            parents: &parents,
+            mark,
+            source: source.as_deref(),
+        };
+        let settings = self.user.as_ref().expect("user format settings");
+        let expanded = userformat::expand(&fmt, settings, &item, &FormatLookup { p: self })
+            .map_err(|BadColor(v)| {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "error: {}",
+                    crate::messages::config::invalid_color(&v)
+                );
+                Die::Fatal(msg::UNABLE_TO_PARSE_PRETTY.to_string())
+            })?;
+        match self.cmd {
+            Command::RevList => {
+                if self.opts.commit_header {
+                    self.out.extend_from_slice(&prefix);
+                    self.out.extend_from_slice(b"commit ");
+                    self.out.extend_from_slice(self.mark(s).as_bytes());
+                    let name = self.name(&s.id, self.opts.abbrev_commit);
+                    self.out.extend_from_slice(name.as_bytes());
+                    for p in related {
+                        self.out.push(b' ');
+                        // Parents are never abbreviated here.
+                        self.out.extend_from_slice(p.to_hex().as_bytes());
+                    }
+                    self.out.push(b'\n');
+                }
+                if !expanded.is_empty() {
+                    self.out.extend_from_slice(&expanded);
+                    self.out.push(b'\n');
+                }
+            }
+            Command::Log => {
+                if fmt.is_empty() && terminator {
+                    return Ok(());
+                }
+                let end = if self.opts.zero { 0 } else { b'\n' };
+                if !terminator && !self.first {
+                    self.out.push(end);
+                }
+                self.out.extend_from_slice(&prefix);
+                self.out.extend_from_slice(&expanded);
+                if terminator {
+                    self.out.push(end);
+                }
+            }
+        }
+        self.first = false;
         Ok(())
     }
 
@@ -427,6 +628,62 @@ fn write_header(out: &mut Vec<u8>, raw: &[u8]) {
         }
     }
     out.push(0);
+}
+
+/// Whether the built-in formats of `log` show decorations
+/// (`--decorate`, `log.decorate`; `auto` decorates on a terminal).
+fn want_decorate(config: &ConfigSet, opt: Option<Decorate>) -> bool {
+    match opt {
+        Some(Decorate::No) => false,
+        Some(Decorate::Short | Decorate::Full) => true,
+        Some(Decorate::Auto) | None => match config.string("log.decorate") {
+            Ok(Some(v)) if v == "short" || v == "full" => true,
+            Ok(Some(v)) if v != "auto" => {
+                rgit_config::value::parse_bool(Some(v.as_ref())).unwrap_or(false)
+            }
+            _ => std::io::stdout().is_terminal(),
+        },
+    }
+}
+
+/// The settings of a user format.
+fn user_settings(
+    repo: &Repo<'_>,
+    opts: &Options,
+    pretty: &Pretty,
+    cmd: Command,
+) -> Result<Settings, Die> {
+    let color = crate::color::want(repo.config, Some("color.diff"), opts.color)?;
+    let colors = if color {
+        let commit = crate::color::slot(repo.config, "color.diff.commit", YELLOW)?;
+        Some(Colors::load(repo.config, commit)?)
+    } else {
+        None
+    };
+    let date_mode = if *pretty == Pretty::Reference && !opts.date_given {
+        rgit_date::DateMode::new(rgit_date::DateStyle::Short)
+    } else {
+        opts.date_mode.clone()
+    };
+    let trailers = rgit_trailer::Config::from_config(repo.config)
+        .map(|(c, _)| c)
+        .unwrap_or_default();
+    let columns = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse::<usize>().ok())
+        .filter(|&c| c > 0)
+        .unwrap_or(80);
+    Ok(Settings {
+        mailmap: mailmap::Mailmap::load(repo),
+        date_mode,
+        date_ctx: DateContext::from_env(),
+        color,
+        colors,
+        trailers,
+        columns,
+        notes: opts.notes && cmd == Command::Log,
+        source: cmd == Command::Log,
+    })
 }
 
 /// Run the walk and print the result.
@@ -485,12 +742,33 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
                 .flatten()
                 .unwrap_or(true)
     });
+    let pretty = opts.pretty.clone().unwrap_or(Pretty::Medium);
+    let is_user = matches!(pretty, Pretty::User { .. } | Pretty::Reference);
+    let decorate = cmd == Command::Log && !is_user && want_decorate(repo.config, opts.decorate);
+    let mut filter = opts.decorate_filter.clone();
+    filter.full = match opts.decorate {
+        Some(Decorate::Full) => Some(true),
+        Some(Decorate::Short) => Some(false),
+        _ => None,
+    };
+    let decorations = (decorate || is_user).then(|| Decorations::load(repo, &filter));
+    let deco_colors = match &commit_color {
+        Some(c) if decorate => Some(Colors::load(repo.config, c.clone())?),
+        _ => None,
+    };
+    let user = if is_user {
+        Some(user_settings(repo, opts, &pretty, cmd)?)
+    } else {
+        None
+    };
+    let notes = if is_user { notes_tree(repo) } else { None };
     let style = Style {
         mailmap: use_mailmap.then(|| mailmap::Mailmap::load(repo)),
-        pretty: opts.pretty.unwrap_or(Pretty::Medium),
+        pretty,
         date_mode: opts.date_mode.clone(),
         date_ctx: DateContext::from_env(),
         commit_color,
+        zero: opts.zero,
     };
     let mut p = Printer {
         repo,
@@ -498,9 +776,23 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         opts,
         abbrev_len,
         style,
+        user,
+        decorations,
+        decorate,
+        deco_colors,
+        notes,
+        sources: None,
+        encoding: recode::output_encoding(repo.config),
         out: Vec::with_capacity(1 << 16),
         first: true,
     };
+    if is_user && cmd == Command::Log {
+        let mut map = HashMap::new();
+        for ((id, _, _), name) in resolved.commits.iter().zip(&resolved.sources) {
+            map.entry(*id).or_insert_with(|| name.clone());
+        }
+        p.sources = Some(map);
+    }
     if let Some(mode) = opts.objects {
         return run_objects(&mut p, &mut walk, &resolved, mode);
     }

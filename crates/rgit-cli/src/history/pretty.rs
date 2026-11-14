@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! The built-in pretty formats of `git log` and `git rev-list`
 //! (Documentation/pretty-formats.adoc): `oneline`, `short`, `medium`,
-//! `full`, `fuller` and `raw`.
+//! `full`, `fuller`, `raw`, plus the names of `reference` and the user
+//! formats (`format:`, `tformat:`; expanded by `userformat`) and
+//! `pretty.<name>` aliases.
 //!
 //! Details not in the documentation were taken from the output of the
 //! reference `git`: messages lose leading and trailing empty lines and the
@@ -15,8 +17,8 @@ use rgit_object::{Commit, SignatureRef};
 
 use super::mailmap::Mailmap;
 
-/// A built-in format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A format.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pretty {
     Oneline,
     Short,
@@ -24,20 +26,101 @@ pub enum Pretty {
     Full,
     Fuller,
     Raw,
+    /// `reference`: `%C(auto)%h (%s, %ad)` with short dates by default.
+    Reference,
+    /// `format:<s>` (`terminator` false) or `tformat:<s>`.
+    User {
+        format: Vec<u8>,
+        terminator: bool,
+    },
+}
+
+/// The built-in names in the order abbreviations are tried.
+const BUILTIN: [&str; 9] = [
+    "oneline",
+    "short",
+    "medium",
+    "full",
+    "fuller",
+    "email",
+    "raw",
+    "mboxrd",
+    "reference",
+];
+
+/// Why a `--pretty` value is not accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrettyError {
+    /// Neither a format nor an alias.
+    Invalid,
+    /// An alias that leads back to itself.
+    Loop,
+    /// A known format rgit does not have yet.
+    Unsupported(&'static str),
 }
 
 impl Pretty {
-    /// The format named `name` (`--pretty=<name>`), as git accepts it.
-    pub fn from_name(name: &str) -> Option<Pretty> {
-        Some(match name {
+    /// The built-in format `name` names: the whole name or an abbreviation,
+    /// in any case.
+    fn builtin(name: &str) -> Option<Result<Pretty, PrettyError>> {
+        if name.is_empty() {
+            return None;
+        }
+        let lower = name.to_ascii_lowercase();
+        let full = BUILTIN.iter().find(|b| b.starts_with(&lower))?;
+        Some(Ok(match *full {
             "oneline" => Pretty::Oneline,
             "short" => Pretty::Short,
             "medium" => Pretty::Medium,
             "full" => Pretty::Full,
             "fuller" => Pretty::Fuller,
             "raw" => Pretty::Raw,
-            _ => return None,
-        })
+            "reference" => Pretty::Reference,
+            other => return Some(Err(PrettyError::Unsupported(other))),
+        }))
+    }
+
+    /// The format `--pretty=<value>` selects; `alias` looks up
+    /// `pretty.<name>`.
+    pub fn parse(
+        value: &str,
+        alias: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Pretty, PrettyError> {
+        let mut seen: Vec<String> = Vec::new();
+        let mut current = value.to_string();
+        loop {
+            if let Some(f) = current.strip_prefix("format:") {
+                return Ok(Pretty::User {
+                    format: f.as_bytes().to_vec(),
+                    terminator: false,
+                });
+            }
+            if let Some(f) = current.strip_prefix("tformat:") {
+                return Ok(Pretty::User {
+                    format: f.as_bytes().to_vec(),
+                    terminator: true,
+                });
+            }
+            if let Some(b) = Pretty::builtin(&current) {
+                return b;
+            }
+            let key = current.to_ascii_lowercase();
+            if let Some(next) = alias(&key) {
+                if seen.contains(&key) {
+                    return Err(PrettyError::Loop);
+                }
+                seen.push(key);
+                current = next;
+                continue;
+            }
+            if current.contains('%') || current.is_empty() {
+                return Ok(Pretty::User {
+                    format: current.into_bytes(),
+                    terminator: true,
+                });
+            }
+            return Err(PrettyError::Invalid);
+        }
     }
 }
 
@@ -134,6 +217,8 @@ pub struct Entry<'a> {
     pub commit: &'a Commit,
     /// The raw object bytes (for `raw`).
     pub raw: &'a [u8],
+    /// `--decorate`: the decoration after the name (may be empty).
+    pub decoration: &'a [u8],
 }
 
 /// Settings shared by all entries.
@@ -145,6 +230,8 @@ pub struct Style {
     pub date_ctx: DateContext,
     /// Colour of the commit name (`color.diff.commit`) when colouring.
     pub commit_color: Option<String>,
+    /// `-z`: entries end (oneline) or are separated by NUL.
+    pub zero: bool,
 }
 
 /// Append one entry. `first` is false for every entry after the first,
@@ -162,13 +249,14 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
         if color.is_some() {
             out.extend_from_slice(crate::color::RESET.as_bytes());
         }
+        out.extend_from_slice(e.decoration);
         out.push(b' ');
         out.extend_from_slice(&subject(&lines));
-        out.push(b'\n');
+        out.push(if style.zero { 0 } else { b'\n' });
         return;
     }
     if !first {
-        out.push(b'\n');
+        out.push(if style.zero { 0 } else { b'\n' });
     }
     out.extend_from_slice(color.unwrap_or("").as_bytes());
     out.extend_from_slice(b"commit ");
@@ -180,6 +268,7 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
     if color.is_some() {
         out.extend_from_slice(crate::color::RESET.as_bytes());
     }
+    out.extend_from_slice(e.decoration);
     out.push(b'\n');
     let author = e.commit.author();
     let committer = e.commit.committer();
