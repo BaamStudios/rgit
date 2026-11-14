@@ -15,6 +15,7 @@ mod external;
 mod format;
 mod global;
 mod history;
+mod hooks;
 mod messages;
 mod objects;
 mod pager;

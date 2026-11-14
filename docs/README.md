@@ -9,3 +9,7 @@ Architecture decision records live in `docs/adr/` (`NNNN-title.md`):
 Milestones:
 
 - [M2: known deviations from git and the acceptance test](m2-deviations.md)
+
+Topics:
+
+- [Hooks: runner, call sites and owners](hooks.md)

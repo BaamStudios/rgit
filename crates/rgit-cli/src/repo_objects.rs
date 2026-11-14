@@ -152,6 +152,8 @@ pub struct Repo {
     pub refs: Refs,
     replace_enabled: bool,
     replace: Option<HashMap<ObjectId, ObjectId>>,
+    /// What hooks inherit from the command line (#76).
+    pub hook_context: crate::hooks::HookContext,
 }
 
 /// Load the configuration (system, global, local, worktree, command line).
@@ -278,6 +280,7 @@ impl Repo {
             refs,
             replace_enabled,
             replace: None,
+            hook_context: crate::hooks::HookContext::new(ctx),
         })
     }
 

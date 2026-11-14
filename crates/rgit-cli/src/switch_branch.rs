@@ -488,7 +488,8 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
         }
     }
     warn_cancelled(cancelled, req.quiet);
-    Ok(0)
+    let code = crate::hooks::post_checkout(repo, old_oid, Some(new_oid), true)?;
+    Ok(i32::from(code != 0))
 }
 
 /// "warning: cancelling a ... in progress" after [`remove_branch_state`]
@@ -708,8 +709,9 @@ pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool, reflog: bool) -
         Ok(Some(RefTarget::Object(id))) => Some(id),
         _ => None,
     };
+    let old_head = store.resolve_oid("HEAD").ok().flatten();
     if clear {
-        let old = store.resolve_oid("HEAD").ok().flatten();
+        let old = old_head;
         let empty = ObjectId::empty_tree(repo.hash);
         let old_tree = old.and_then(|o| commit_tree(repo, &o)).unwrap_or(empty);
         move_index(repo, old_tree, empty, false)?;
@@ -739,7 +741,16 @@ pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool, reflog: bool) -
         eprintln!("{}", msg::switched_new(name));
     }
     warn_cancelled(cancelled, quiet);
-    Ok(0)
+    // `switch --orphan` empties the work tree; `checkout --orphan` keeps
+    // it at the old commit. Nothing to report from one unborn branch to
+    // another.
+    let old = old_head;
+    let new = if clear { None } else { old_head };
+    if old.is_none() && new.is_none() {
+        return Ok(0);
+    }
+    let code = crate::hooks::post_checkout(repo, old, new, true)?;
+    Ok(i32::from(code != 0))
 }
 
 /// Peels `id` to a commit.

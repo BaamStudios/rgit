@@ -1,0 +1,23 @@
+[package]
+name = "rgit-hook"
+description = "Finding and running git hooks (hook directory and configured hooks) for rgit (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-config = { path = "../rgit-config" }
+rgit-ident = { path = "../rgit-ident" }
+rgit-messages = { path = "../rgit-messages" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

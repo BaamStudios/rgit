@@ -17,8 +17,9 @@
 //!   (`MERGE_HEAD`, `MERGE_MSG`; reflog `commit (merge): ...`);
 //! - linked worktrees (HEAD and its reflog in the worktree's git dir).
 //!
-//! Hooks are not run (M2); an enabled hook prints a warning instead
-//! (decision on #45). Not yet: templates, `-s`, `--trailer`, `-C`/`-c`,
+//! Hooks (#76): `pre-commit` and `commit-msg` (skipped with
+//! `--no-verify`), `prepare-commit-msg` and `post-commit`; `post-rewrite`
+//! (#154) is not run yet and an enabled one gives a warning. Not yet: templates, `-s`, `--trailer`, `-C`/`-c`,
 //! `--fixup`/`--squash`, `-v`, `--dry-run` and the status formats, `-S`,
 //! `-p`/`--interactive`, cherry-pick/revert (#58), similarity renames in
 //! the summary (#145), the implicit-committer notice.
@@ -43,6 +44,7 @@ use super::status::Untracked;
 use crate::messages::commit as msg;
 use crate::prelude::*;
 use crate::refs_support::{self, Objects, UpdateHooks};
+use rgit_hook::RunOptions;
 use crate::repo::Mode;
 use crate::repository::{self, Repo};
 use crate::tree_changes::{self, Flat, Pair};
@@ -407,51 +409,61 @@ fn update_all(
     Ok(!paths.is_empty())
 }
 
-fn hook_warnings(repo: &Repo, args: &Args) {
-    let dir = match config_str(repo, "core.hookspath") {
-        Some(p) => {
-            let p = PathBuf::from(p);
-            if p.is_absolute() {
-                p
-            } else {
-                repo.setup
-                    .work_tree
-                    .clone()
-                    .unwrap_or_else(|| repo.setup.git_dir.clone())
-                    .join(p)
-            }
-        }
-        None => repo.setup.common_dir.join("hooks"),
-    };
-    let mut names = Vec::new();
-    if !args.no_verify {
-        names.push("pre-commit");
+/// `post-rewrite` belongs to #154; until then an amend says that it did
+/// not run (decision on #45: never skip a hook silently).
+fn hook_warnings(args: &Args, hooks: &rgit_hook::Hooks) {
+    if args.amend && !args.no_post_rewrite && hooks.exists("post-rewrite") {
+        eprintln!("{}", msg::hook_not_run("post-rewrite"));
     }
-    names.push("prepare-commit-msg");
-    if !args.no_verify {
-        names.push("commit-msg");
-    }
-    names.push("post-commit");
-    if args.amend && !args.no_post_rewrite {
-        names.push("post-rewrite");
-    }
-    for n in names {
-        let p = repo.setup.cwd.join(dir.join(n));
-        let Ok(meta) = std::fs::metadata(&p) else {
-            continue;
+}
+
+/// The index files the commit hooks see while the command holds
+/// `index.lock`: the updated index in the lock file, and for a partial
+/// commit the index to be committed in a temporary file. Both go away on
+/// drop.
+#[derive(Default)]
+struct HookIndex {
+    lock: Option<rgit_fs::LockFile>,
+    temp: Option<PathBuf>,
+}
+
+impl HookIndex {
+    /// Writes the files and returns the one the hooks get as
+    /// `GIT_INDEX_FILE` (absolute).
+    fn prepare(&mut self, repo: &Repo, index: &Index, commit: Option<&Index>) -> Result<PathBuf, Die> {
+        let opts = WriteOptions {
+            skip_hash: config_bool(repo, "index.skiphash").unwrap_or(false),
         };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
-                continue;
-            }
+        let path = repo.setup.cwd.join(repo.index_path());
+        let mut lock = rgit_fs::LockFile::acquire(&path, &repo.index_lock_options())
+            .map_err(|e| fatal(e.to_string()))?;
+        lock.file_mut()
+            .write_all(&index.to_bytes(&opts))
+            .map_err(|e| fatal(e.to_string()))?;
+        let lock_path = lock.lock_path().to_path_buf();
+        self.lock = Some(lock);
+        let Some(commit) = commit else {
+            return Ok(lock_path);
+        };
+        let temp = repo
+            .setup
+            .cwd
+            .join(&repo.setup.git_dir)
+            .join(format!("next-index-{}.lock", std::process::id()));
+        std::fs::write(&temp, commit.to_bytes(&opts)).map_err(|e| fatal(e.to_string()))?;
+        self.temp = Some(temp.clone());
+        Ok(temp)
+    }
+}
+
+impl Drop for HookIndex {
+    fn drop(&mut self) {
+        if let Some(t) = self.temp.take() {
+            let _ = std::fs::remove_file(t);
         }
-        #[cfg(not(unix))]
-        if !meta.is_file() {
-            continue;
+        if let Some(l) = self.lock.take() {
+            l.rollback();
         }
-        eprintln!("{}", msg::hook_not_run(n));
     }
 }
 
@@ -689,6 +701,37 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         author_parts.0 = n;
         author_parts.1 = e;
     }
+    // A bad --date fails only after the trees are written (as in git).
+    let forced_date = args.date.as_deref().map(parse_force_date);
+    if let Some(Ok((t, tz))) = &forced_date {
+        author_parts.2 = *t;
+        author_parts.3 = *tz;
+    }
+    let have_message = !args.pieces.is_empty();
+    let use_editor = args.edit.unwrap_or(!have_message && !args.amend)
+        || (args.edit.is_none() && args.amend && !have_message);
+    // The hooks see the author and, without an editor, `GIT_EDITOR=:`.
+    let git_hooks = crate::hooks::for_repo(ctx, &repo.setup, &repo.config)?;
+    let mut hook_env: Vec<(String, String)> = vec![
+        ("GIT_AUTHOR_NAME".into(), lossy(&author_parts.0)),
+        ("GIT_AUTHOR_EMAIL".into(), lossy(&author_parts.1)),
+        (
+            "GIT_AUTHOR_DATE".into(),
+            format!("@{}", rgit_date::format_raw(author_parts.2, author_parts.3)),
+        ),
+    ];
+    if !use_editor {
+        hook_env.push(("GIT_EDITOR".into(), ":".into()));
+    }
+    let hook_opts = |index_file: &Path, hook_args: &[&str]| {
+        let mut o = RunOptions::with_args(hook_args.iter().copied());
+        o.env = hook_env
+            .iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        o.env.push(("GIT_INDEX_FILE".into(), index_file.into()));
+        o
+    };
     // The index to commit.
     let root = repo.work_tree()?;
     let (mut index, index_mtime) = repo.read_index()?;
@@ -750,11 +793,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .and_then(|(_, c)| c);
         index.set_cache_tree(cached);
     }
-    let commit_index = commit_index.as_ref().unwrap_or(&index);
-    if commit_index.has_conflicts() {
+    if commit_index.as_ref().unwrap_or(&index).has_conflicts() {
         let mut listed = Vec::new();
         let mut last: Option<&[u8]> = None;
-        for e in commit_index.entries() {
+        for e in commit_index.as_ref().unwrap_or(&index).entries() {
             if e.stage().get() != 0 && last != Some(e.path()) {
                 listed.extend_from_slice(b"U\t");
                 listed.extend_from_slice(&crate::quote::relative_to(e.path(), &repo.prefix()));
@@ -776,13 +818,47 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if !deferred && !args.all && !args.only {
         write_index(&repo, &mut index.clone(), index_mtime)?;
     }
-    let tree = super::write_tree::write_tree(&repo, commit_index, false, None)?;
 
-    if let Some(d) = &args.date {
-        let (t, tz) = parse_force_date(d)?;
-        author_parts.2 = t;
-        author_parts.3 = tz;
+    // The hooks read (and may change) the index being committed: the
+    // index file itself, or, while the command holds `index.lock`, a copy
+    // of the updated index in the lock file (`-a`, `-i`) or a temporary
+    // index of the partial commit (`-o`).
+    let verify = !args.no_verify;
+    let wants = |e: &str| git_hooks.exists(e);
+    let need_index = (verify && (wants("pre-commit") || wants("commit-msg")))
+        || wants("prepare-commit-msg");
+    let mut hook_index = HookIndex::default();
+    let hook_index_file = if need_index && (deferred || commit_index.is_some()) {
+        hook_index.prepare(&repo, &index, commit_index.as_ref())?
+    } else {
+        repo.index_path()
+    };
+    if verify {
+        let outcome = crate::hooks::run(&git_hooks, "pre-commit", &hook_opts(&hook_index_file, &[]))?;
+        if outcome.ran > 0 {
+            if !outcome.ok() {
+                return Ok(1);
+            }
+            // Take over what the hook changed.
+            let reread = |p: &Path| {
+                Index::read_file(p, repo.hash, &Default::default())
+                    .map_err(|e| fatal(e.to_string()))
+            };
+            if let Some(temp) = &hook_index.temp {
+                commit_index = Some(reread(temp)?);
+            } else if hook_index.lock.is_some() {
+                index = reread(&hook_index_file)?;
+            } else {
+                index = repo.read_index()?.0;
+            }
+        }
     }
+    let commit_index = commit_index.as_ref().unwrap_or(&index);
+    let tree = super::write_tree::write_tree(&repo, commit_index, false, None)?;
+    if let Some(Err(e)) = forced_date {
+        return Err(e);
+    }
+
     let author = signature_from(&ident_line(
         &author_parts.0,
         &author_parts.1,
@@ -865,7 +941,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
         }
     }
-    let have_message = !args.pieces.is_empty();
     if !have_message {
         if let Some(c) = &old_commit {
             message = c.message().to_vec();
@@ -873,8 +948,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             message = std::fs::read(git_dir.join("MERGE_MSG")).unwrap_or_default();
         }
     }
-    let use_editor = args.edit.unwrap_or(!have_message && !args.amend)
-        || (args.edit.is_none() && args.amend && !have_message);
     let mode = cleanup.resolve(use_editor);
     if use_editor && cleanup != Cleanup::Verbatim {
         message = cmsg::stripspace(&message, None);
@@ -951,6 +1024,34 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             ));
         }
         std::fs::write(&editmsg, &file).map_err(|e| fatal(e.to_string()))?;
+    } else {
+        let mut cleaned = message.clone();
+        cleaned = cmsg::cleanup(&cleaned, mode, &comment);
+        std::fs::write(&editmsg, &cleaned).map_err(|e| fatal(e.to_string()))?;
+    }
+    let editmsg_shown = repo.setup.git_dir.join("COMMIT_EDITMSG");
+    let editmsg_arg = editmsg_shown.to_string_lossy().into_owned();
+    let mut hook_ran = false;
+    {
+        let mut pcm_args = vec![editmsg_arg.as_str()];
+        if have_message {
+            pcm_args.push("message");
+        } else if args.amend {
+            pcm_args.extend(["commit", "HEAD"]);
+        } else if merging {
+            pcm_args.push("merge");
+        }
+        let outcome = crate::hooks::run(
+            &git_hooks,
+            "prepare-commit-msg",
+            &hook_opts(&hook_index_file, &pcm_args),
+        )?;
+        hook_ran |= outcome.ran > 0;
+        if !outcome.ok() {
+            return Ok(1);
+        }
+    }
+    if use_editor {
         let editor = rgit_ident::editor::editor(&repo.config, &env).map_err(|p| {
             p.print();
             Die::Exit(rgit_options::EXIT_FATAL)
@@ -967,24 +1068,35 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             eprintln!("{}", msg::SUPPLY_MESSAGE);
             return Ok(1);
         }
+    }
+    if verify {
+        let outcome = crate::hooks::run(
+            &git_hooks,
+            "commit-msg",
+            &hook_opts(&hook_index_file, &[editmsg_arg.as_str()]),
+        )?;
+        hook_ran |= outcome.ran > 0;
+        if !outcome.ok() {
+            return Ok(1);
+        }
+    }
+    if use_editor || hook_ran {
         message = std::fs::read(&editmsg).map_err(|e| fatal(e.to_string()))?;
     }
+    drop(hook_index);
 
     let mut cleaned = message.clone();
     if use_editor && cleanup == Cleanup::Scissors {
         cmsg::cut_at_scissors(&mut cleaned, &comment);
     }
     let cleaned = cmsg::cleanup(&cleaned, mode, &comment);
-    if !use_editor {
-        std::fs::write(&editmsg, &cleaned).map_err(|e| fatal(e.to_string()))?;
-    }
     let strip_comments = (mode == Cleanup::Strip).then_some(comment.as_bytes());
     if !args.allow_empty_message && cmsg::is_empty(&cleaned, strip_comments) {
         eprintln!("{}", msg::EMPTY_MESSAGE);
         return Ok(1);
     }
 
-    hook_warnings(&repo, &args);
+    hook_warnings(&args, &git_hooks);
 
     // The objects and the ref update.
     let encoding = repo
@@ -1083,6 +1195,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if deferred {
         write_index(&repo, &mut index.clone(), index_mtime)?;
     }
+    crate::hooks::run(&git_hooks, "post-commit", &hook_opts(&repo.index_path(), &[]))?;
     if args.quiet {
         return Ok(0);
     }

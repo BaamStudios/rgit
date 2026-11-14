@@ -17,6 +17,7 @@ pub mod diff_tree;
 pub mod fetch;
 pub mod for_each_ref;
 pub mod hash_object;
+pub mod hook;
 pub mod init;
 pub mod interpret_trailers;
 pub mod ls_files;

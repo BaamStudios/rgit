@@ -26,6 +26,7 @@ rgit-diff = { path = "../rgit-diff" }
 rgit-fetch = { path = "../rgit-fetch" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
+rgit-hook = { path = "../rgit-hook" }
 rgit-index = { path = "../rgit-index" }
 rgit-messages = { path = "../rgit-messages" }
 rgit-object = { path = "../rgit-object" }
