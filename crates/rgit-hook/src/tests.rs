@@ -136,7 +136,11 @@ fn hookdir_needs_executable_bit() {
     let hooks_dir = dir.path().join("hooks");
     std::fs::create_dir(&hooks_dir).unwrap();
     let file = hooks_dir.join("e");
-    std::fs::write(&file, "#!/bin/sh\necho \"$1\" >arg\n").unwrap();
+    // Written by a child process so this multi-threaded test process never
+    // holds a write descriptor to a file it executes (ETXTBSY, see
+    // rgit_difftest::write_executable); then made non-executable.
+    rgit_difftest::write_executable(&file, "#!/bin/sh\necho \"$1\" >arg\n");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
     let h = hooks("", Some(&hooks_dir), dir.path());
     assert!(!h.exists("e"));
     assert!(names(&h, "e").is_empty());
