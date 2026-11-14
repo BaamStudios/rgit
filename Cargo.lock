@@ -526,6 +526,7 @@ dependencies = [
  "rgit-fetch",
  "rgit-fs",
  "rgit-hash",
+ "rgit-hook",
  "rgit-http",
  "rgit-ident",
  "rgit-index",
@@ -631,6 +632,18 @@ dependencies = [
  "sha1-checked",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "rgit-hook"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "libc",
+ "rgit-config",
+ "rgit-ident",
+ "rgit-messages",
+ "tempfile",
 ]
 
 [[package]]

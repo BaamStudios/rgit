@@ -13,8 +13,8 @@
 //!
 //! Not yet: `--mirror`, `--prune`, `--force-with-lease`,
 //! `--force-if-includes`, `--follow-tags`, `--signed`,
-//! `--recurse-submodules`, thin packs, remote groups, local progress
-//! output, and hooks (an enabled `pre-push` hook gives a warning).
+//! `--recurse-submodules`, thin packs, remote groups and local progress
+//! output. The `pre-push` hook runs unless `--no-verify` is given (#76).
 
 use std::io::IsTerminal;
 
@@ -51,6 +51,7 @@ struct Flags {
     push_options: Vec<String>,
     receive_pack: Option<String>,
     ip: IpVersion,
+    verify: bool,
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
@@ -280,10 +281,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         RefspecSet::parse([spec], Direction::Push).map_err(fatal)?
     };
 
-    if !no_verify.get() {
-        warn_pre_push_hook(&setup, &config);
-    }
-
     let flags = Flags {
         verbose: verbose.get() > 0,
         quiet: quiet.get() > 0,
@@ -308,6 +305,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         } else {
             IpVersion::Any
         },
+        verify: !no_verify.get(),
     };
     let push = Push {
         ctx,
@@ -378,25 +376,6 @@ fn default_refspec(
         return Err(Die::Fatal(msg::upstream_mismatch(remote, short)));
     }
     Ok(format!("refs/heads/{name}:{merge}"))
-}
-
-/// rgit does not run hooks yet: say so when a `pre-push` hook would run.
-fn warn_pre_push_hook(setup: &rgit_repo::Setup, config: &ConfigSet) {
-    let dir = match config.string("core.hookspath").ok().flatten() {
-        Some(p) => std::path::PathBuf::from(p.to_string()),
-        None => setup.common_dir.join("hooks"),
-    };
-    let hook = dir.join("pre-push");
-    #[cfg(unix)]
-    let enabled = {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(&hook).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    };
-    #[cfg(not(unix))]
-    let enabled = hook.is_file();
-    if enabled {
-        eprintln!("warning: {}", msg::PRE_PUSH_SKIPPED);
-    }
 }
 
 /// `scheme://user:pass@host/...` → `scheme://host/...` for messages.
@@ -513,8 +492,14 @@ impl Push<'_> {
             }
         }
 
-        // Send.
         let null = ObjectId::null(hash);
+        if f.verify && !self.pre_push(url, &list, null)? {
+            eprintln!("error: {}", msg::failed_to_push(&display));
+            send::finish_empty(session);
+            return Ok(1);
+        }
+
+        // Send.
         let commands: Vec<Command> = list
             .iter()
             .filter(|r| r.status == Status::None)
@@ -611,6 +596,36 @@ impl Push<'_> {
             return Ok(1);
         }
         Ok(0)
+    }
+
+    /// The `pre-push` hook (githooks(5)): the remote's name (the URL for
+    /// a remote given as a URL) and URL as arguments, one line per ref to
+    /// be updated on its input. False when it refuses the push.
+    fn pre_push(&self, url: &str, list: &[PushRef], null: ObjectId) -> Result<bool, Die> {
+        let hooks = crate::hooks::for_repo(self.ctx, self.setup, self.config)?;
+        let mut input = String::new();
+        for r in list.iter().filter(|r| r.status == Status::None) {
+            let src = match (&r.new, &r.src) {
+                (None, _) => "(delete)",
+                (Some(_), Some(s)) => s.as_str(),
+                (Some(_), None) => r.dst.as_str(),
+            };
+            input.push_str(&format!(
+                "{src} {} {} {}\n",
+                r.new.unwrap_or(null).to_hex(),
+                r.dst,
+                r.old.unwrap_or(null).to_hex()
+            ));
+        }
+        let name = if self.remote.is_configured() {
+            self.remote.name.to_string()
+        } else {
+            url.to_owned()
+        };
+        let mut opts = rgit_hook::RunOptions::with_args([name, url.to_owned()])
+            .stdin(rgit_hook::Input::Data(input.as_bytes()));
+        opts.separate_stdout = true;
+        Ok(crate::hooks::run(&hooks, "pre-push", &opts)?.ok())
     }
 
     fn rejection_hints(&self, list: &[PushRef]) -> Result<(), Die> {

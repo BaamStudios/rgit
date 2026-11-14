@@ -40,11 +40,6 @@ pub fn transport_not_supported(url: &str) -> String {
     format!("rgit push: pushing to '{url}' is not supported yet")
 }
 
-/// rgit: hooks are not run yet (decision on #65: warn, never skip
-/// silently).
-pub const PRE_PUSH_SKIPPED: &str =
-    "rgit does not run hooks yet; the pre-push hook was not run (use --no-verify to silence this)";
-
 pub const DELETE_WITHOUT_REFS: &str = "--delete doesn't make sense without any refs";
 pub const ALL_WITH_REFSPECS: &str = "--all can't be combined with refspecs";
 pub const TAGS_WITH_ALL: &str = "options '--tags' and '--all/--branches' cannot be used together";

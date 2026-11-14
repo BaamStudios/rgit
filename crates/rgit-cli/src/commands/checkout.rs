@@ -90,7 +90,7 @@ impl Modes {
         if self.merge {
             return Err(Die::Fatal(msg::not_supported("git checkout --merge")));
         }
-        rs::checkout_paths(
+        let rc = rs::checkout_paths(
             self.globals,
             repo,
             objects,
@@ -106,7 +106,14 @@ impl Modes {
                 report: report && !self.quiet,
                 quiet: self.quiet,
             },
-        )
+        )?;
+        // `post-checkout` with `HEAD` twice and flag 0 (not `restore`).
+        let head = refs_support::ref_store(&repo.setup, &repo.config)
+            .resolve_oid("HEAD")
+            .ok()
+            .flatten();
+        let code = crate::hooks::post_checkout(repo, head, head, false)?;
+        Ok(if rc != 0 { rc } else { code })
     }
 }
 
@@ -548,7 +555,8 @@ fn stay(repo: &Repo, force: bool, quiet: bool) -> CmdResult {
         }
     }
     sb::warn_cancelled(cancelled, quiet);
-    Ok(0)
+    let code = crate::hooks::post_checkout(repo, Some(head), Some(head), true)?;
+    Ok(i32::from(code != 0))
 }
 
 /// `checkout --orphan <name> <start>`: index and work tree move to

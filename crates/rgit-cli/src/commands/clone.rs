@@ -812,18 +812,28 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         };
         drop(hooks);
         drop(repo);
-        if let Err(e) = initial_checkout(ctx, setup, oid) {
-            let _ = e.emit();
-            eprintln!("fatal: {}", msg::UNABLE_TO_CHECKOUT);
-            eprint!("warning: {}", msg::CHECKOUT_FAILED);
-            return Err(Die::Exit(128));
-        }
+        let checked_out = match initial_checkout(ctx, setup, oid) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = e.emit();
+                eprintln!("fatal: {}", msg::UNABLE_TO_CHECKOUT);
+                eprint!("warning: {}", msg::CHECKOUT_FAILED);
+                return Err(Die::Exit(128));
+            }
+        };
         if let Some(name) = detached_name {
             // Shown with --quiet as well (observed from git 2.56).
             if advice {
                 eprint!("{}", msg::detached_head_advice(&name));
             }
         }
+        // `post-checkout` from the null id; clone exports the new git
+        // directory, and its exit code becomes clone's.
+        let hooks = crate::hooks::of(&checked_out)?;
+        let null = ObjectId::null(checked_out.hash);
+        let opts = rgit_hook::RunOptions::with_args([null.to_hex(), oid.to_hex(), "1".into()])
+            .env("GIT_DIR", checked_out.setup.absolute_git_dir());
+        return Ok(crate::hooks::run(&hooks, "post-checkout", &opts)?.code);
     }
     Ok(0)
 }
@@ -831,7 +841,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
 /// The initial checkout: a one-way merge of `commit`'s tree into the
 /// empty index with the work tree updated (rgit-unpack), then the index
 /// is written.
-fn initial_checkout(ctx: &Context, setup: Setup, commit: ObjectId) -> Result<(), Die> {
+fn initial_checkout(
+    ctx: &Context,
+    setup: Setup,
+    commit: ObjectId,
+) -> Result<crate::repository::Repo, Die> {
     use crate::commands::read_tree::{path_options, unpack_failed};
     use rgit_unpack::{Identity, Merge, Options as UnpackOptions, Worktree};
 
@@ -879,7 +893,7 @@ fn initial_checkout(ctx: &Context, setup: Setup, commit: ObjectId) -> Result<(),
         .map_err(|_| unable())?;
     lock.commit().map_err(|_| unable())?;
     if applied.errors.is_empty() {
-        Ok(())
+        Ok(repo)
     } else {
         Err(Die::Exit(128))
     }

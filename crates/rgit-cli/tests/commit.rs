@@ -448,28 +448,6 @@ fn editor() {
 }
 
 #[test]
-fn hooks_warn() {
-    // rgit does not run hooks yet and says so (decision on #45); git runs
-    // them. Only the commit itself is compared.
-    let mut fx = history()
-        .write("c", "c\n")
-        .git(["add", "c"])
-        .write_executable(".git/hooks/post-commit", "#!/bin/sh\nexit 0\n");
-    if fx.is_skipped() {
-        return;
-    }
-    fx.compare(["commit", "-m", "x"])
-        .checks([
-            Check::ExitCode,
-            Check::Stdout,
-            Check::Refs,
-            Check::Reflogs,
-            Check::Objects,
-        ])
-        .run();
-}
-
-#[test]
 fn conclude_merge() {
     let merge = || {
         history()

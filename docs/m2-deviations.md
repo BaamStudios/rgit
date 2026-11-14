@@ -11,7 +11,7 @@ them it fails or warns instead of doing something else silently.
 | Wire protocol | Protocol v2 only, for local paths, `git://`, SSH and smart HTTP(S). A server that answers with v0/v1 is refused with a `protocol error`. | Dumb HTTP is not supported. GitHub, GitLab, Gitea and git ≥ 2.18 servers speak v2. |
 | Object format | SHA-1 only. | Repositories with `extensions.objectFormat = sha256` are refused. |
 | Diff | No rename or copy detection (`-M`, `-C`, `diff.renames`): a rename shows as a deletion plus an addition. | Applies to `diff`, `status` and `log`. |
-| Hooks | Hooks are not run. When a hook would have run (`pre-commit`, `commit-msg`, `pre-push`, ...) rgit prints a warning naming it. | `--no-verify` silences the `pre-push` warning. Server-side hooks are unaffected. |
+| Hooks | Hooks were not run in M2; when a hook would have run rgit printed a warning naming it. | Since #76 the commit hooks, `post-checkout` and `pre-push` run; see [hooks.md](hooks.md) for the rest. |
 | Content filters | No CRLF conversion (`core.autocrlf`, `text`/`eol` attributes), no `filter.<driver>` clean/smudge, no `ident`, no working-tree encoding. | Files are stored and checked out byte for byte. |
 | Output | No pager and no colour. | Output goes straight to stdout; `color.*` and `--color` have no effect. |
 | Progress | No progress meters for clone, fetch or push. | Server `remote:` messages are still shown. |
