@@ -77,6 +77,10 @@ pub fn collect(
             continue;
         }
         c.index = Some((e.mode.0, e.id, e.flags.intent_to_add));
+        // Entries outside a sparse checkout are missing on purpose.
+        if e.flags.skip_worktree {
+            continue;
+        }
         check_worktree(repo, &checker, &work_tree, e, c);
         let kind = match c.wt {
             b'M' => WtChange::Modified,
@@ -132,6 +136,97 @@ pub struct Header {
     pub merging: bool,
     /// `commit --amend`: the changes are against `HEAD^1`.
     pub amend: bool,
+    /// A cherry-pick or revert in progress.
+    pub sequencing: Option<Sequencing>,
+}
+
+/// A cherry-pick or revert in progress, for the status banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sequencing {
+    pub revert: bool,
+    /// The abbreviated commit of `CHERRY_PICK_HEAD` or `REVERT_HEAD`;
+    /// `None` when only the sequence (`.git/sequencer`) is left.
+    pub commit: Option<String>,
+}
+
+/// The cherry-pick or revert in progress in `repo`, if any.
+pub fn sequencing(repo: &Repo) -> Option<Sequencing> {
+    let dir = repo.setup.cwd.join(&repo.setup.git_dir);
+    let pseudo = |name: &str| {
+        std::fs::read_to_string(dir.join(name))
+            .ok()
+            .and_then(|s| ObjectId::from_hex(repo.hash, s.trim_end().as_bytes()).ok())
+    };
+    let abbrev = |id: ObjectId| repo.abbrev(&id, repo.default_abbrev());
+    if let Some(id) = pseudo("CHERRY_PICK_HEAD") {
+        return Some(Sequencing {
+            revert: false,
+            commit: Some(abbrev(id)),
+        });
+    }
+    if let Some(id) = pseudo("REVERT_HEAD") {
+        return Some(Sequencing {
+            revert: true,
+            commit: Some(abbrev(id)),
+        });
+    }
+    let todo = std::fs::read_to_string(dir.join("sequencer/todo")).ok()?;
+    let first = todo
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))?;
+    let word = first.split([' ', '\t']).next().unwrap_or_default();
+    let revert = match word {
+        "pick" | "p" => false,
+        "revert" => true,
+        _ => return None,
+    };
+    Some(Sequencing {
+        revert,
+        commit: None,
+    })
+}
+
+/// The banner lines of a cherry-pick or revert in progress (the hints
+/// with their indentation), followed by nothing; the caller adds the
+/// empty line.
+pub fn sequencing_lines(s: &Sequencing, unmerged: bool, hints: bool) -> Vec<String> {
+    let action = if s.revert { "revert" } else { "cherry-pick" };
+    let mut out = Vec::new();
+    match &s.commit {
+        Some(c) => {
+            out.push(if s.revert {
+                msg::currently_reverting(c)
+            } else {
+                msg::currently_cherry_picking(c)
+            });
+            if hints {
+                out.push(if unmerged {
+                    msg::hint_fix_and_continue(action)
+                } else {
+                    msg::hint_all_fixed_continue(action)
+                });
+            }
+        }
+        None => {
+            out.push(
+                if s.revert {
+                    msg::REVERT_IN_PROGRESS
+                } else {
+                    msg::CHERRY_PICK_IN_PROGRESS
+                }
+                .to_owned(),
+            );
+            if hints {
+                out.push(msg::hint_run_continue(action));
+            }
+        }
+    }
+    if hints {
+        out.push(msg::hint_skip(action));
+        out.push(msg::hint_abort_operation(action));
+    }
+    out
 }
 
 fn parents(repo: &Repo, id: &ObjectId) -> Vec<ObjectId> {
@@ -174,6 +269,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
             initial,
             merging: false,
             amend: false,
+            sequencing: sequencing(repo),
         };
     };
     let branch = target
@@ -187,6 +283,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
         initial,
         merging: false,
         amend: false,
+        sequencing: sequencing(repo),
     }
 }
 
@@ -378,6 +475,12 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
                     line(&l);
                 }
             }
+        }
+        line("");
+    }
+    if let Some(seq) = &header.sequencing {
+        for l in sequencing_lines(seq, false, r.hints) {
+            line(&l);
         }
         line("");
     }

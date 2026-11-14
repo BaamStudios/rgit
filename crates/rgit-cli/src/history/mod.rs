@@ -278,6 +278,118 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
     run(ctx, &repo, cmd, &opts)
 }
 
+/// The commits `cherry-pick` and `revert` work on, in the order they are
+/// applied (git-cherry-pick(1)): the arguments are revision arguments of
+/// `rev-list`; without a range or an excluded commit nothing is walked and
+/// the commits keep their command-line order (`--no-walk=unsorted`),
+/// otherwise the walk's output is applied oldest first (`oldest_first`,
+/// cherry-pick) or newest first (revert).
+///
+/// Trees and blobs among the arguments come back in
+/// [`SequencerCommits::other`] (name and kind).
+pub fn sequencer_commits(
+    ctx: &Context,
+    argv: &[String],
+    oldest_first: bool,
+) -> Result<SequencerCommits, Die> {
+    // A commit limit (`-<n>`, `-n <n>`, `--max-count`) asks for a walk.
+    let mut args = Vec::new();
+    let max_count = |a: &String| {
+        a == "-n"
+            || a.starts_with("--max-count")
+            || (a.len() > 1 && a.starts_with('-') && a[1..].bytes().all(|b| b.is_ascii_digit()))
+            || (a.starts_with("-n") && a[2..].bytes().all(|b| b.is_ascii_digit()) && a.len() > 2)
+    };
+    if !argv.iter().any(max_count) {
+        args.push("--no-walk=unsorted".to_owned());
+    }
+    args.extend(argv.iter().cloned());
+    let mut opts = Options::parse(Command::Log, &args)?;
+    let setup = repo::setup(ctx, Mode::Required)?;
+    let kind = setup.format.object_format;
+    let config = revisions::load_config(ctx, &setup)?;
+    let rev_opts = revisions::options(ctx, &config, kind)?;
+    let shallow = setup.common_dir.join("shallow");
+    let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    let refs = Refs::new(&setup, kind);
+    let cfg = Config(&config);
+    let index = IndexFile::new(&setup, kind);
+    let work_tree = setup.work_tree.clone().map(WorkTree);
+    let rev_repo = revision::Repo {
+        objects: &objects,
+        refs: &refs,
+        config: &cfg,
+        index: Some(&index),
+        work_tree: work_tree
+            .as_ref()
+            .map(|w| w as &dyn revision::WorkTreeLookup),
+        work_tree_info: revisions::work_tree_info(&setup),
+    };
+    let resolver = Resolver::new(rev_repo, rev_opts);
+    let repo = Repo {
+        setup: &setup,
+        config: &config,
+        objects: &objects,
+        refs: &refs,
+        resolver: &resolver,
+    };
+    // An argument that names nothing is a "bad revision" here.
+    if opts.stdin {
+        let mut input = Vec::new();
+        let _ = std::io::stdin().lock().read_to_end(&mut input);
+        opts.read_stdin(&input)?;
+    }
+    let resolved = tips::resolve(&repo, &opts).map_err(|e| match e {
+        Die::Fatal(m) => {
+            let bad = opts.tips.iter().find_map(|t| match t {
+                options::Tip::Rev { arg, .. }
+                    if m == msg::ambiguous_argument(arg)
+                        || m == msg::not_supported("path limiting") =>
+                {
+                    Some(arg.clone())
+                }
+                _ => None,
+            });
+            match bad {
+                Some(arg) => Die::Fatal(msg::bad_revision(&arg)),
+                None => Die::Fatal(m),
+            }
+        }
+        e => e,
+    })?;
+    let other = resolved
+        .pending
+        .iter()
+        .map(|p| (p.name.clone(), p.kind))
+        .collect();
+    let grep = if opts.grep.is_empty() {
+        None
+    } else {
+        Some(CommitGrep::new(&opts.grep).map_err(Die::Fatal)?)
+    };
+    let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+    let limited = resolved.commits.iter().any(|c| c.1);
+    let unsorted = opts.walk.no_walk == Some(rgit_revwalk::walk::NoWalk::Unsorted);
+    let mut walk = Walk::new(Commits { repo: &repo, grep }, opts.walk.clone());
+    for (id, negative, side) in &resolved.commits {
+        walk.push_side(id, *negative, *side).map_err(walk_error)?;
+    }
+    let mut commits = Vec::new();
+    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+        commits.push(s.id);
+    }
+    if oldest_first && (limited || !unsorted) {
+        commits.reverse();
+    }
+    Ok(SequencerCommits { commits, other })
+}
+
+/// See [`sequencer_commits`].
+pub struct SequencerCommits {
+    pub commits: Vec<ObjectId>,
+    pub other: Vec<(Vec<u8>, ObjectKind)>,
+}
+
 /// How commits are printed.
 struct Printer<'r, 'a> {
     repo: &'r Repo<'a>,

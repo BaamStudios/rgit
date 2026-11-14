@@ -15,6 +15,10 @@
 //!   "nothing to commit" status and the reflog entries;
 //! - concluding a merge prepared by `git merge --no-commit` or a conflict
 //!   (`MERGE_HEAD`, `MERGE_MSG`; reflog `commit (merge): ...`);
+//! - concluding a cherry-pick or revert that stopped (#58):
+//!   `CHERRY_PICK_HEAD` gives the author, `MERGE_MSG` the message, the
+//!   reflog says `commit (cherry-pick): ...` (`GIT_REFLOG_ACTION`
+//!   replaces the prefix), and the sequence ends after its last commit;
 //! - linked worktrees (HEAD and its reflog in the worktree's git dir).
 //!
 //! - #128: `-t`/`commit.template`, `-s`, `--trailer`, `-C`/`-c`,
@@ -25,7 +29,7 @@
 //! Hooks (#76): `pre-commit` and `commit-msg` (skipped with
 //! `--no-verify`), `prepare-commit-msg`, `post-commit` and `post-rewrite`
 //! after `--amend`. Not yet: `-S`/`commit.gpgSign` (#51),
-//! `-p`/`--interactive`, cherry-pick/revert (#58), similarity renames in
+//! `-p`/`--interactive`, similarity renames in
 //! the summary (#145), the implicit-committer notice.
 
 use std::collections::BTreeSet;
@@ -366,7 +370,7 @@ fn untracked_mode(value: &str) -> Option<Untracked> {
 }
 
 /// The parsed identity line `Name <email> <time> <tz>`.
-fn signature_from(raw: &[u8]) -> Result<Signature, Die> {
+pub(crate) fn signature_from(raw: &[u8]) -> Result<Signature, Die> {
     SignatureRef::parse(raw)
         .and_then(|s| s.to_owned())
         .ok_or_else(|| fatal(lossy(raw)))
@@ -391,12 +395,12 @@ fn sig_time(s: &Signature) -> (u64, i32) {
     (s.time.seconds.max(0) as u64, tz)
 }
 
-fn show_date(s: &Signature) -> String {
+pub(crate) fn show_date(s: &Signature) -> String {
     let (t, tz) = sig_time(s);
     rgit_date::show_date(t, tz, &DateMode::default(), &DateContext::from_env()).unwrap_or_default()
 }
 
-fn name_email(s: &Signature) -> String {
+pub(crate) fn name_email(s: &Signature) -> String {
     format!("{} <{}>", lossy(&s.name), lossy(&s.email))
 }
 
@@ -686,7 +690,7 @@ fn blob_text(repo: &Repo, side: Option<tree_changes::Side>) -> Option<Vec<u8>> {
 }
 
 /// The change counts and create/delete/rename/mode lines of the summary.
-fn diff_summary(repo: &Repo, pairs: &[Pair], quote_high: bool) -> Vec<u8> {
+pub(crate) fn diff_summary(repo: &Repo, pairs: &[Pair], quote_high: bool) -> Vec<u8> {
     let mut out = Vec::new();
     if pairs.is_empty() {
         return out;
@@ -898,7 +902,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if args.reset_author && args.author.is_some() {
         return Err(fatal(msg::RESET_AUTHOR_AND_AUTHOR));
     }
-    if args.reset_author && !(args.amend || args.reuse.is_some() || args.reedit.is_some()) {
+    let picking = std::fs::read_to_string(repo.setup.cwd.join(&repo.setup.git_dir).join("CHERRY_PICK_HEAD"))
+        .ok()
+        .and_then(|s| ObjectId::from_hex(repo.hash, s.trim_end().as_bytes()).ok())
+        .is_some();
+    if args.reset_author
+        && !(args.amend || args.reuse.is_some() || args.reedit.is_some() || picking)
+    {
         return Err(fatal(msg::RESET_AUTHOR_ONLY_WITH));
     }
     if args.include && args.only {
@@ -972,11 +982,28 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             })
     });
     let git_dir = repo.setup.cwd.join(&repo.setup.git_dir);
-    for f in ["CHERRY_PICK_HEAD", "REVERT_HEAD"] {
-        if git_dir.join(f).exists() {
-            return Err(fatal(msg::SEQUENCER_NOT_SUPPORTED));
-        }
+    // Concluding a cherry-pick: CHERRY_PICK_HEAD names the picked commit,
+    // whose author the commit keeps.
+    let pseudo_head = |name: &str| -> Option<ObjectId> {
+        std::fs::read_to_string(git_dir.join(name))
+            .ok()
+            .and_then(|s| ObjectId::from_hex(repo.hash, s.trim_end().as_bytes()).ok())
+    };
+    let cherry_pick_head = pseudo_head("CHERRY_PICK_HEAD");
+    let reverting = pseudo_head("REVERT_HEAD").is_some();
+    if cherry_pick_head.is_some() && args.amend {
+        return Err(fatal(msg::AMEND_DURING_CHERRY_PICK));
     }
+    if cherry_pick_head.is_some() && !args.paths.is_empty() && !args.include {
+        return Err(fatal(msg::PARTIAL_DURING_CHERRY_PICK));
+    }
+    let picked_commit = match cherry_pick_head {
+        Some(id) => match repo.read_object(&id) {
+            Some(Object::Commit(c)) => Some(c),
+            _ => None,
+        },
+        None => None,
+    };
     // Concluding a merge: MERGE_HEAD names the other parents.
     let merge_heads: Vec<ObjectId> = std::fs::read(git_dir.join("MERGE_HEAD"))
         .map(|d| {
@@ -1047,7 +1074,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let committer_ident = ident(Role::Committer)?;
     let committer = signature_from(&committer_ident.to_bstring())?;
-    let author_commit = reused.as_ref().map(|(_, c)| c).or(old_commit.as_ref());
+    let author_commit = reused
+        .as_ref()
+        .map(|(_, c)| c)
+        .or(old_commit.as_ref())
+        .or(picked_commit.as_ref());
     let author_from_commit = author_commit.is_some() && !args.reset_author;
     let mut author_parts: (Vec<u8>, Vec<u8>, u64, i32) = match author_commit {
         Some(c) if !args.reset_author => {
@@ -1406,6 +1437,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         message.extend(squash);
         message.extend(std::fs::read(git_dir.join("MERGE_MSG")).unwrap_or_default());
         source.push("squash".into());
+    } else if let Ok(data) = std::fs::read(git_dir.join("MERGE_MSG")) {
+        // A cherry-pick or revert left its message.
+        message.extend(data);
+        source.push("merge".into());
     } else if use_editor {
         if let Some(path) = &template_file {
             let data = std::fs::read(path).map_err(|e| {
@@ -1448,30 +1483,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // parent's.
     let committable = !staged.is_empty() || parents.len() > 1;
 
-    if !committable && !args.allow_empty {
-        let collected = wt_status::collect(&repo, &base, commit_index, index_mtime, untracked, renames)?;
-        if args.amend {
-            eprintln!("{}", msg::AMEND_EMPTY);
-        }
-        let last = wt_status::nothing_line(&collected, &header, untracked, args.amend, hints);
-        let text = wt_status::render(
-            &collected,
-            &header,
-            &Render {
-                hints,
-                branch_hints: hints,
-                comment: None,
-                prefix: &prefix,
-                quote_high,
-                last: Some(last),
-                untracked_not_listed: false,
-            },
-        );
-        let mut o = std::io::stdout().lock();
-        let _ = o.write_all(&text);
-        let _ = o.flush();
-        return Ok(1);
-    }
 
     let mode = cleanup.resolve(use_editor);
     if use_editor && cleanup != Cleanup::Verbatim && template.is_none() {
@@ -1510,8 +1521,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .unwrap_or(true);
     if use_editor {
         let mut file = message.clone();
-        if include_status && merging {
-            for l in msg::MERGE_NOTICE.lines() {
+        let notice = if merging {
+            Some(msg::MERGE_NOTICE)
+        } else if cherry_pick_head.is_some() {
+            Some(msg::CHERRY_PICK_NOTICE)
+        } else {
+            None
+        };
+        if let (true, Some(notice)) = (include_status, notice) {
+            for l in notice.lines() {
                 file.extend_from_slice(comment.as_bytes());
                 if !l.is_empty() && !l.starts_with('\t') {
                     file.push(b' ');
@@ -1590,8 +1608,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         std::fs::write(&editmsg, &file).map_err(|e| fatal(e.to_string()))?;
     } else {
-        let cleaned = cmsg::cleanup(&message, mode, &comment);
-        std::fs::write(&editmsg, &cleaned).map_err(|e| fatal(e.to_string()))?;
+        // Comment lines go only once the message is read back (git
+        // writes them, e.g. the "Conflicts:" block of a cherry-pick).
+        let written = match mode {
+            Cleanup::Strip | Cleanup::Scissors => cmsg::stripspace(&message, None),
+            m => cmsg::cleanup(&message, m, &comment),
+        };
+        std::fs::write(&editmsg, &written).map_err(|e| fatal(e.to_string()))?;
     }
     if !args.trailers.is_empty() {
         let data = std::fs::read(&editmsg).map_err(|e| fatal(e.to_string()))?;
@@ -1608,6 +1631,34 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mut on_error = |m: &str| eprintln!("error: {m}");
         let out = rgit_trailer::process(&data, &trailer_conf, &opts, &new, &mut on_error);
         std::fs::write(&editmsg, &out).map_err(|e| fatal(e.to_string()))?;
+    }
+    // Nothing to commit: git has written COMMIT_EDITMSG by now.
+    if !committable && !args.allow_empty {
+        let collected = wt_status::collect(&repo, &base, commit_index, index_mtime, untracked, renames)?;
+        if args.amend {
+            eprintln!("{}", msg::AMEND_EMPTY);
+        }
+        if cherry_pick_head.is_some() {
+            eprintln!("{}\n{}", msg::EMPTY_CHERRY_PICK, msg::EMPTY_CHERRY_PICK_SKIP);
+        }
+        let last = wt_status::nothing_line(&collected, &header, untracked, args.amend, hints);
+        let text = wt_status::render(
+            &collected,
+            &header,
+            &Render {
+                hints,
+                branch_hints: hints,
+                comment: None,
+                prefix: &prefix,
+                quote_high,
+                last: Some(last),
+                untracked_not_listed: false,
+            },
+        );
+        let mut o = std::io::stdout().lock();
+        let _ = o.write_all(&text);
+        let _ = o.flush();
+        return Ok(1);
     }
     let editmsg_shown = repo.setup.git_dir.join("COMMIT_EDITMSG");
     let editmsg_arg = editmsg_shown.to_string_lossy().into_owned();
@@ -1671,7 +1722,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
         }
     }
-    if !args.allow_empty_message && cmsg::is_empty(&cleaned, strip_comments) {
+    // A verbatim message counts as empty only when it has no bytes at all.
+    let empty = if mode == Cleanup::Verbatim {
+        cleaned.is_empty()
+    } else {
+        cmsg::is_empty(&cleaned, strip_comments)
+    };
+    if !args.allow_empty_message && empty {
         eprintln!("{}", msg::EMPTY_MESSAGE);
         return Ok(1);
     }
@@ -1706,11 +1763,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         msg::REFLOG_AMEND
     } else if merging {
         msg::REFLOG_MERGE
+    } else if cherry_pick_head.is_some() {
+        msg::REFLOG_CHERRY_PICK
     } else if parents.is_empty() {
         msg::REFLOG_INITIAL
     } else {
         msg::REFLOG_COMMIT
     };
+    // GIT_REFLOG_ACTION replaces the "commit (...)" prefix (the sequencer
+    // sets it when it lets `git commit` edit a picked commit).
+    let action_env = std::env::var("GIT_REFLOG_ACTION")
+        .ok()
+        .filter(|a| !a.is_empty());
+    let kind = action_env.as_deref().unwrap_or(kind);
     let reflog = msg::reflog_message(kind, &lossy(cmsg::first_line(&cleaned)));
     let setup = &repo.setup;
     let config = refs_support::load_config(ctx, setup)?;
@@ -1777,6 +1842,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
             let _ = std::fs::remove_file(git_dir.join(f));
         }
+    }
+    if cherry_pick_head.is_some() || reverting || git_dir.join("MERGE_MSG").exists() {
+        for f in ["MERGE_MSG", "AUTO_MERGE"] {
+            let _ = std::fs::remove_file(git_dir.join(f));
+        }
+        crate::sequencer::post_commit_cleanup(&git_dir);
     }
     if git_dir.join("SQUASH_MSG").exists() {
         for f in ["SQUASH_MSG", "MERGE_MSG", "AUTO_MERGE"] {
