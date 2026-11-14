@@ -285,18 +285,37 @@ fn help_pages() {
     let with = |extra: &[&str]| -> Vec<String> {
         web.iter().chain(extra).map(|s| s.to_string()).collect()
     };
-    for args in [
+    // Cases that open a page in the configured browser. git starts the
+    // browser through its `git-web--browse` script, which a reference git
+    // run from its build tree (not installed) cannot always execute; then
+    // these cases say nothing about rgit and are left out.
+    let browser_cases = [
         with(&["help", "status"]),
         with(&["help", "revisions"]),
         with(&["help", "git"]),
         with(&["help", "no-such-page"]),
-        with(&["help", "st"]),
-        with(&["help", "sh"]),
         with(&["st", "--help"]),
         with(&["status", "--help"]),
+        with(&["-c", "help.htmlpath=html", "help", "status"]),
+    ];
+    let probe = fx.git_output(with(&["help", "status"]));
+    let browser_works = probe.status.success() && fx.work_dir().join("browser.log").exists();
+    if browser_works {
+        fx = fx.remove("browser.log");
+        for args in &browser_cases {
+            fx.compare(args).run();
+        }
+    } else {
+        eprintln!(
+            "help_pages: the reference git cannot start a browser ({}), browser cases skipped",
+            String::from_utf8_lossy(&probe.stderr).trim()
+        );
+    }
+    for args in [
+        with(&["help", "st"]),
+        with(&["help", "sh"]),
         with(&["revisions", "--help"]),
         with(&["help", "--exclude-guides", "revisions"]),
-        with(&["-c", "help.htmlpath=html", "help", "status"]),
         with(&["-c", "help.htmlpath=html", "help", "log"]),
         vec!["help".into(), "-w".into(), "-c".into()],
         vec![
