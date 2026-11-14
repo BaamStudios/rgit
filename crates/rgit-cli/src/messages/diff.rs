@@ -120,3 +120,17 @@ pub fn no_merge_base(a: &str, b: &str) -> String {
 pub fn multiple_merge_bases(a: &str, b: &str, base: &str) -> String {
     format!("warning: {a}...{b}: multiple merge bases, using {base}")
 }
+
+/// `--diff-algorithm=<unknown>` (followed by exit code 129).
+pub const BAD_DIFF_ALGORITHM: &str =
+    "error: option diff-algorithm accepts \"myers\", \"minimal\", \"patience\" and \"histogram\"\n";
+
+/// An option that needs a value was the last argument.
+pub fn requires_value(option: &str) -> String {
+    format!("error: option `{option}' requires a value\n")
+}
+
+/// `diff.algorithm` has a value git does not know.
+pub fn unknown_config_value(key: &str, value: &str) -> String {
+    format!("unknown value for config '{key}': {value}")
+}

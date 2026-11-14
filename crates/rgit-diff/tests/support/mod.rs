@@ -341,8 +341,8 @@ pub fn run_cases(
                 std::fs::create_dir_all(k).unwrap();
                 std::fs::write(k.join(format!("{s}.a")), &a).unwrap();
                 std::fs::write(k.join(format!("{s}.b")), &b).unwrap();
-                std::fs::write(k.join(format!("{s}.git")), &want).unwrap();
-                std::fs::write(k.join(format!("{s}.rgit")), &got).unwrap();
+                std::fs::write(k.join(format!("{s}.ref")), &want).unwrap();
+                std::fs::write(k.join(format!("{s}.mine")), &got).unwrap();
             }
             report.mismatches.push((s, want, got));
         }

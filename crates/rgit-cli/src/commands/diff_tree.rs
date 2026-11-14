@@ -58,7 +58,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     w.walk(Some(&trees[0]), Some(&trees[1]), b"")?;
     let pairs = std::mem::take(&mut w.pairs);
-    let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false);
+    let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     let (bytes, changed) = out.render(pairs)?;
     Ok(finish(&bytes, changed, &opts))

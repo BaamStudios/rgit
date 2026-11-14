@@ -32,7 +32,13 @@ pub struct DiffOpts {
     pub context: Option<usize>,
     pub interhunk: Option<usize>,
     pub indent_heuristic: Option<bool>,
-    pub minimal: bool,
+    /// `--minimal` (it also selects Myers); the other algorithm options
+    /// reset it.
+    pub minimal: Option<bool>,
+    /// `--patience`, `--histogram`, `--anchored`, `--diff-algorithm`.
+    pub algorithm: Option<rgit_diff::Algorithm>,
+    /// `--anchored=<text>`, in order.
+    pub anchors: Vec<Vec<u8>>,
     pub src_prefix: Option<Vec<u8>>,
     pub dst_prefix: Option<Vec<u8>>,
     pub no_prefix: bool,
@@ -137,19 +143,15 @@ impl DiffOpts {
             "--full-index" => self.full_index = true,
             "--abbrev" => self.abbrev = Some(None),
             "--no-abbrev" => self.abbrev = Some(Some(0)),
-            "--minimal" => self.minimal = true,
-            "--no-minimal" => self.minimal = false,
+            "--minimal" => self.set_algorithm(rgit_diff::Algorithm::Myers, true),
+            "--no-minimal" => self.minimal = Some(false),
+            "--patience" => self.set_algorithm(rgit_diff::Algorithm::Patience, false),
+            "--histogram" => self.set_algorithm(rgit_diff::Algorithm::Histogram, false),
             "--indent-heuristic" => self.indent_heuristic = Some(true),
             "--no-indent-heuristic" => self.indent_heuristic = Some(false),
             "--no-prefix" => self.no_prefix = true,
             "--default-prefix" => self.default_prefix = true,
-            "--no-renames"
-            | "--no-ext-diff"
-            | "--no-textconv"
-            | "--myers"
-            | "--default"
-            | "--diff-algorithm=myers"
-            | "--diff-algorithm=default" => {}
+            "--no-renames" | "--no-ext-diff" | "--no-textconv" | "--myers" | "--default" => {}
             _ => {
                 if let Some(c) = crate::color::parse_arg(arg) {
                     self.color = Some(c?);
@@ -161,8 +163,26 @@ impl DiffOpts {
         Ok(true)
     }
 
+    /// An algorithm option; it also ends earlier `--anchored` options.
+    fn set_algorithm(&mut self, algorithm: rgit_diff::Algorithm, minimal: bool) {
+        self.algorithm = Some(algorithm);
+        self.minimal = Some(minimal);
+        self.anchors.clear();
+    }
+
     fn parse_valued(&mut self, arg: &str) -> Result<bool, Die> {
-        if let Some(v) = arg.strip_prefix("--abbrev=") {
+        if let Some(v) = arg.strip_prefix("--diff-algorithm=") {
+            let (algorithm, minimal) = rgit_diff::Algorithm::parse(v)
+                .ok_or_else(|| usage_exit(msg::BAD_DIFF_ALGORITHM.to_string()))?;
+            // Unlike `--patience`, this keeps earlier anchors (they apply
+            // when the algorithm is patience).
+            self.algorithm = Some(algorithm);
+            self.minimal = Some(minimal);
+        } else if let Some(v) = arg.strip_prefix("--anchored=") {
+            self.algorithm = Some(rgit_diff::Algorithm::Patience);
+            self.minimal = Some(false);
+            self.anchors.push(v.as_bytes().to_vec());
+        } else if let Some(v) = arg.strip_prefix("--abbrev=") {
             let n = v
                 .parse::<i64>()
                 .map_err(|_| usage_exit(msg::expects_numerical("--abbrev")))?;
