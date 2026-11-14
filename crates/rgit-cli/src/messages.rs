@@ -19,6 +19,7 @@ pub mod diff_tree;
 pub mod fetch;
 pub mod for_each_ref;
 pub mod hash_object;
+pub mod help;
 pub mod hook;
 pub mod init;
 pub mod interpret_trailers;
@@ -63,21 +64,6 @@ usage: git [-v | --version] [-h | --help] [-C <path>] [-c <name>=<value>]
            [--work-tree=<path>] [--namespace=<name>] [--config-env=<name>=<envvar>]
            <command> [<args>]
 ";
-
-/// Our own text after the usage when no command (or `--help`) is given and
-/// no `help` command is available.
-pub fn help_fallback(commands: &[&str]) -> String {
-    let mut s =
-        String::from("\nrgit is an independent reimplementation of git, not the official git.\n");
-    s.push_str("Commands implemented so far:\n\n");
-    for c in commands {
-        s.push_str("   ");
-        s.push_str(c);
-        s.push('\n');
-    }
-    s.push_str("\nGit's documentation applies: https://git-scm.com/docs\n");
-    s
-}
 
 pub fn unknown_option(opt: &str) -> String {
     format!("unknown option: {opt}")

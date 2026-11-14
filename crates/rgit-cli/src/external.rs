@@ -9,7 +9,7 @@ use std::process::Command;
 use crate::{CmdResult, Context, Die};
 
 /// Is `p` a regular file we may execute?
-fn is_executable(p: &Path) -> bool {
+pub fn is_executable(p: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(p) else {
         return false;
     };
@@ -25,6 +25,18 @@ fn is_executable(p: &Path) -> bool {
     {
         true
     }
+}
+
+/// Is `p` this program itself (a `git-<name>` link to rgit)? Invoked by
+/// such a name rgit only runs built-ins, so the link is no command of its
+/// own (the conformance install directory has them, #359).
+pub fn is_self(p: &Path) -> bool {
+    let Ok(target) = std::fs::canonicalize(p) else {
+        return false;
+    };
+    std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .is_ok_and(|me| me == target)
 }
 
 /// Find `git-<name>`: the exec path first, then each `$PATH` entry.
@@ -45,12 +57,19 @@ pub fn find(ctx: &Context, name: &str) -> Option<PathBuf> {
     }
     dirs.into_iter()
         .map(|d| d.join(&file))
-        .find(|p| is_executable(p))
+        .find(|p| is_executable(p) && !is_self(p))
 }
 
 /// Run the external command `argv[0]`; `None` if there is no such program.
 pub fn run(ctx: &Context, argv: &[String]) -> Option<CmdResult> {
+    let mut dashed: Vec<String> = argv.to_vec();
+    dashed[0] = format!("git-{}", argv[0]);
+    rgit_trace::trace_exec(&dashed);
+    rgit_trace::trace_run_command(&[], &dashed);
     let prog = find(ctx, &argv[0])?;
+    let mut shown: Vec<std::ffi::OsString> = vec![prog.clone().into_os_string()];
+    shown.extend(argv[1..].iter().map(Into::into));
+    rgit_trace::trace_start_command(&shown);
     let mut cmd = Command::new(&prog);
     cmd.args(&argv[1..]);
     // The child sees `argv[0]` as `git-<name>`, like an execvp of it.
