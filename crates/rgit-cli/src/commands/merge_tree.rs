@@ -175,10 +175,26 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     Ok(if result.clean { 0 } else { 1 })
 }
 
+/// Why a `-X` option was not applied.
+pub(crate) enum StrategyOptionError {
+    /// git does not know it.
+    Unknown,
+    /// rgit does not implement it yet.
+    Unsupported,
+}
+
 /// Applies one `-X` option.
 fn strategy_option(opts: &mut Options, x: &str) -> Result<(), Die> {
-    let unknown = || Die::Fatal(msg::unknown_strategy_option(x));
-    let unsupported = || Die::Fatal(msg::strategy_option_not_supported(x));
+    apply_strategy_option(opts, x).map_err(|e| match e {
+        StrategyOptionError::Unknown => Die::Fatal(msg::unknown_strategy_option(x)),
+        StrategyOptionError::Unsupported => Die::Fatal(msg::strategy_option_not_supported(x)),
+    })
+}
+
+/// Applies one `-X` option to the merge options (shared with `merge`).
+pub(crate) fn apply_strategy_option(opts: &mut Options, x: &str) -> Result<(), StrategyOptionError> {
+    let unknown = || StrategyOptionError::Unknown;
+    let unsupported = || StrategyOptionError::Unsupported;
     let (name, value) = match x.split_once('=') {
         Some((n, v)) => (n, Some(v)),
         None => (x, None),
@@ -251,7 +267,7 @@ fn tree_arg(repo: &mut Repo, name: &str) -> Result<ObjectId, Die> {
 }
 
 /// `advice.submoduleMergeConflict` for submodules left in conflict.
-fn advise_submodules(ctx: &Context, repo: &Repo, result: &MergeResult) -> Result<(), Die> {
+pub(crate) fn advise_submodules(ctx: &Context, repo: &Repo, result: &MergeResult) -> Result<(), Die> {
     let paths: Vec<String> = result
         .messages
         .iter()

@@ -19,8 +19,10 @@
 //!   a one-way merge that requires changed entries to be up to date, and a
 //!   two-way merge from `HEAD` whose index then becomes the target.
 //!
-//! Not yet: `--merge` with unmerged entries (needs three-way merges,
-//! #158), `--patch` (#109), `--recurse-submodules` (#121).
+//! Unmerged entries are reset to the target with `--merge` (and the
+//! work tree file overwritten), as the first DISCUSSION table shows.
+//!
+//! Not yet: `--patch` (#109), `--recurse-submodules` (#121).
 
 use std::path::{Path, PathBuf};
 
@@ -504,6 +506,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if mode == SOFT && repo.setup.git_dir.join("MERGE_HEAD").exists() {
         return Err(Die::Fatal(msg::SOFT_IN_MERGE.to_owned()));
     }
+    if mode == KEEP && repo.setup.git_dir.join("MERGE_HEAD").exists() {
+        return Err(Die::Fatal(msg::KEEP_IN_MERGE.to_owned()));
+    }
     if matches!(mode, HARD | MERGE | KEEP) {
         let empty = ObjectId::empty_tree(repo.hash);
         let head_tree = head.and_then(|h| tree_of(&objects, &h)).unwrap_or(empty);
@@ -607,9 +612,6 @@ fn reset_worktree(
     let (index, mtime) = repo.read_index()?;
     let checker = repo.checker(mtime)?;
     // No refresh: like git, a touched file counts as not up to date.
-    if mode == MERGE && index.has_conflicts() {
-        return Err(Die::Fatal(msg::not_supported("--merge with unmerged entries")));
-    }
     let mut excludes = crate::commands::add::build_excludes(repo, &work_tree);
     let wt = Worktree {
         root: &work_tree,
@@ -624,6 +626,8 @@ fn reset_worktree(
     };
     let mut opts = Options {
         reset: mode == HARD,
+        // git-reset(1): unmerged entries take the target's version.
+        discard_unmerged: mode == MERGE,
         update: true,
         paths: path_options(repo),
         excludes: Some(&mut excludes),

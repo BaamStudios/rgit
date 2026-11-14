@@ -456,7 +456,7 @@ fn find_author(repo: &Repo, pattern: &str) -> Option<(Vec<u8>, Vec<u8>)> {
 
 /// The comment string (`core.commentString`, `core.commentChar`); `auto`
 /// picks a character the message does not use.
-fn comment_string(repo: &Repo, text: &[u8]) -> Result<String, Die> {
+pub(crate) fn comment_string(repo: &Repo, text: &[u8]) -> Result<String, Die> {
     // The last of core.commentChar and core.commentString wins.
     let v = repo
         .config
@@ -529,8 +529,16 @@ fn update_path(
             return Ok(());
         }
     }
+    let unmerged = index
+        .entries_for_path(path)
+        .iter()
+        .any(|e| e.stage().is_conflict());
     match entry_for(repo, checker, root, path, old.as_ref(), false, false).map_err(Die::from)? {
         Some(e) => {
+            if unmerged {
+                // The resolution replaces the conflict stages.
+                index.remove_path(path);
+            }
             index
                 .add(
                     e,
@@ -563,6 +571,10 @@ fn update_all(
     let mut gitlinks = Vec::new();
     for e in index.entries() {
         if e.stage() != Stage::MERGED {
+            // A conflicted path takes the work tree file (or goes away).
+            if paths.last().map(Vec::as_slice) != Some(e.path()) {
+                paths.push(e.path().to_vec());
+            }
             continue;
         }
         if e.mode.is_gitlink() {
@@ -1380,6 +1392,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else if merging {
         message.extend(std::fs::read(git_dir.join("MERGE_MSG")).unwrap_or_default());
         source.push("merge".into());
+    } else if let Ok(squash) = std::fs::read(git_dir.join("SQUASH_MSG")) {
+        // `merge --squash` left the message (and, after conflicts, the
+        // "Conflicts:" block in MERGE_MSG).
+        message.extend(squash);
+        message.extend(std::fs::read(git_dir.join("MERGE_MSG")).unwrap_or_default());
+        source.push("squash".into());
     } else if use_editor {
         if let Some(path) = &template_file {
             let data = std::fs::read(path).map_err(|e| {
@@ -1749,6 +1767,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     if merging {
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
+            let _ = std::fs::remove_file(git_dir.join(f));
+        }
+    }
+    if git_dir.join("SQUASH_MSG").exists() {
+        for f in ["SQUASH_MSG", "MERGE_MSG", "AUTO_MERGE"] {
             let _ = std::fs::remove_file(git_dir.join(f));
         }
     }
