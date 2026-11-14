@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
 rgit-attr = { path = "../rgit-attr" }
+rgit-apply = { path = "../rgit-apply" }
 rgit-commit = { path = "../rgit-commit" }
 rgit-config = { path = "../rgit-config" }
 rgit-ident = { path = "../rgit-ident" }

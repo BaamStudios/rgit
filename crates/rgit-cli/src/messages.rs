@@ -3,6 +3,7 @@
 //! (see CLEANROOM.md, "User-visible messages").
 
 pub mod add;
+pub mod apply;
 pub mod branch;
 pub mod cat_file;
 pub mod check_attr;
@@ -247,4 +248,9 @@ pub fn bad_format_field(cmd: &str, field: &str) -> String {
 
 pub fn abbrev_not_numeric(opt: &str) -> String {
     format!("option `{opt}' expects a numerical value")
+}
+
+/// A gentle setup ignores a repository it cannot use.
+pub fn ignoring_git_dir(dir: &str, reason: &str) -> String {
+    format!("ignoring git dir '{dir}': {reason}")
 }
