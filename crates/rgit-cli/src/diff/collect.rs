@@ -50,6 +50,11 @@ pub struct Pair {
     pub new: Option<Side>,
     /// An unmerged path (status `U`).
     pub unmerged: bool,
+    /// `R` or `C` after rename detection.
+    pub renamed: Option<u8>,
+    /// Similarity of a rename or copy, dissimilarity of a complete
+    /// rewrite (`rgit_diff::diffcore::MAX_SCORE` units); 0 for none.
+    pub score: u32,
 }
 
 impl Pair {
@@ -60,7 +65,24 @@ impl Pair {
             old,
             new,
             unmerged: false,
+            renamed: None,
+            score: 0,
         }
+    }
+
+    /// A rename or copy.
+    pub fn is_rename(&self) -> bool {
+        self.renamed.is_some()
+    }
+
+    /// A complete rewrite (modification with a dissimilarity).
+    pub fn is_rewrite(&self) -> bool {
+        self.renamed.is_none() && self.score > 0
+    }
+
+    /// The score in percent, rounded down.
+    pub fn percent(&self) -> u32 {
+        self.score * 100 / rgit_diff::diffcore::MAX_SCORE
     }
 
     fn unmerged(path: Vec<u8>, old: Option<Side>, new: Option<Side>) -> Pair {
@@ -72,7 +94,7 @@ impl Pair {
 
     /// The path shown in raw and name output.
     pub fn shown_path(&self) -> &[u8] {
-        if self.old.is_some() {
+        if self.old.is_some() && !self.is_rename() {
             &self.old_path
         } else {
             &self.path
@@ -83,6 +105,9 @@ impl Pair {
     pub fn status(&self) -> u8 {
         if self.unmerged {
             return b'U';
+        }
+        if let Some(c) = self.renamed {
+            return c;
         }
         match (&self.old, &self.new) {
             (None, _) => b'A',
@@ -279,6 +304,37 @@ pub fn tree_files(
     // sort between `name` and `name/`; sort to be safe.
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
+}
+
+/// `--find-copies-harder`: add the files of the old side that did not
+/// change as unmodified pairs (copy sources), in path order.
+pub fn with_unmodified(
+    pairs: Vec<Pair>,
+    files: impl IntoIterator<Item = (Vec<u8>, u32, ObjectId)>,
+) -> Vec<Pair> {
+    let present: std::collections::HashSet<Vec<u8>> = pairs
+        .iter()
+        .flat_map(|p| [p.old_path.clone(), p.path.clone()])
+        .collect();
+    let mut all = pairs;
+    for (path, mode, oid) in files {
+        if !present.contains(&path) {
+            let side = Side::object(mode, oid);
+            all.push(Pair::new(path, Some(side.clone()), Some(side)));
+        }
+    }
+    all.sort_by(|a, b| a.path.cmp(&b.path));
+    all
+}
+
+/// The stage-0 entries of the index as `(path, mode, id)`.
+pub fn index_files(index: &Index, ps: &Pathspec) -> Vec<(Vec<u8>, u32, ObjectId)> {
+    index
+        .entries()
+        .iter()
+        .filter(|e| e.stage().get() == 0 && (ps.is_empty() || ps.match_path(e.path()).is_some()))
+        .map(|e| (e.path().to_vec(), e.mode.0, e.id))
+        .collect()
 }
 
 /// How the work tree is compared.

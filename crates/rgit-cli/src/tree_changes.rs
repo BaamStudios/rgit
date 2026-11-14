@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Changes between two flat path lists (a tree, the index): the pairs
 //! `commit` reports in its summary and in the "Changes to be committed"
-//! section, with exact rename detection (identical blobs; `diff.renames`,
-//! default on). Similarity-based renames are not detected yet (#145).
+//! section, with rename detection (`diff.renames`, default on).
 
 use std::collections::BTreeMap;
 
@@ -29,6 +28,8 @@ pub struct Pair {
     pub old_path: Option<Vec<u8>>,
     pub old: Option<Side>,
     pub new: Option<Side>,
+    /// Similarity of a rename (`rgit_diff::diffcore::MAX_SCORE` units).
+    pub score: u32,
 }
 
 impl Pair {
@@ -71,101 +72,117 @@ pub fn flatten_tree(repo: &Repo, tree: &ObjectId, out: &mut Flat) -> Result<(), 
     walk(repo, tree, b"", out)
 }
 
-fn basename(p: &[u8]) -> &[u8] {
-    match p.iter().rposition(|&b| b == b'/') {
-        Some(i) => &p[i + 1..],
-        None => p,
-    }
-}
-
 /// The changes from `old` to `new`, sorted by (new) path. With `renames`,
-/// a deleted path whose blob reappears unchanged (same mode) under an
-/// added path becomes a rename at the added path.
-pub fn diff(old: &Flat, new: &Flat, renames: bool) -> Vec<Pair> {
-    let mut pairs: Vec<Pair> = Vec::new();
+/// deleted and added paths are paired up by rename detection
+/// (`rgit_diff::diffcore`, default similarity); a rename is reported at
+/// the added path.
+pub fn diff(repo: &Repo, old: &Flat, new: &Flat, renames: bool) -> Vec<Pair> {
+    use rgit_diff::diffcore::{self, Detect, FilePair, Side as CoreSide};
+    let side = |path: &[u8], s: &Side| CoreSide {
+        path: path.to_vec(),
+        mode: s.mode,
+        oid: s.oid,
+        extra: (),
+    };
+    let mut input: Vec<FilePair<()>> = Vec::new();
     let mut oi = old.iter().peekable();
     let mut ni = new.iter().peekable();
     loop {
-        match (oi.peek(), ni.peek()) {
+        let (one, two) = match (oi.peek(), ni.peek()) {
             (None, None) => break,
             (Some((op, os)), Some((np, ns))) if op == np => {
-                if os != ns {
-                    pairs.push(Pair {
-                        path: op.to_vec(),
-                        old_path: None,
-                        old: Some(**os),
-                        new: Some(**ns),
-                    });
-                }
+                let same = os == ns;
+                let r = (Some(side(op, os)), Some(side(np, ns)));
                 oi.next();
                 ni.next();
+                if same {
+                    continue;
+                }
+                r
             }
             (Some((op, os)), n) if n.is_none_or(|(np, _)| op < np) => {
-                pairs.push(Pair {
-                    path: op.to_vec(),
-                    old_path: None,
-                    old: Some(**os),
-                    new: None,
-                });
+                let r = (Some(side(op, os)), None);
                 oi.next();
+                r
             }
             (_, Some((np, ns))) => {
-                pairs.push(Pair {
-                    path: np.to_vec(),
-                    old_path: None,
-                    old: None,
-                    new: Some(**ns),
-                });
+                let r = (None, Some(side(np, ns)));
                 ni.next();
+                r
             }
             (Some(_), None) => unreachable!(),
-        }
+        };
+        input.push(FilePair::new(one, two));
     }
-    if !renames {
-        return pairs;
-    }
-    let is_blob = |s: &Side| s.mode & 0o170000 != 0o160000;
-    let deleted: Vec<usize> = (0..pairs.len())
-        .filter(|&i| pairs[i].new.is_none() && pairs[i].old.is_some_and(|s| is_blob(&s)))
-        .collect();
-    let mut used = vec![false; pairs.len()];
-    let mut renames_found: Vec<(usize, usize)> = Vec::new();
-    for i in 0..pairs.len() {
-        let Some(ns) = pairs[i].new else { continue };
-        if pairs[i].old.is_some() || !is_blob(&ns) {
-            continue;
-        }
-        let candidates: Vec<usize> = deleted
-            .iter()
-            .copied()
-            .filter(|&d| !used[d] && pairs[d].old == Some(ns))
-            .collect();
-        let pick = candidates
-            .iter()
-            .copied()
-            .find(|&d| basename(&pairs[d].path) == basename(&pairs[i].path))
-            .or_else(|| candidates.first().copied());
-        if let Some(d) = pick {
-            used[d] = true;
-            renames_found.push((d, i));
-        }
-    }
-    for (d, i) in renames_found {
-        pairs[i].old_path = Some(pairs[d].path.clone());
-        pairs[i].old = pairs[d].old;
-    }
-    pairs
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| !used[*i])
-        .map(|(_, p)| p)
+    let opts = diffcore::Options {
+        detect: if renames {
+            Detect::Renames
+        } else {
+            Detect::Off
+        },
+        ..Default::default()
+    };
+    let contents = |s: &CoreSide<()>| match repo.read_object(&s.oid) {
+        Some(Object::Blob(b)) => b.data,
+        _ => Vec::new(),
+    };
+    let (out, _) = diffcore::run(input, &opts, &contents);
+    out.into_iter()
+        .map(|p| {
+            let renamed = p.status == diffcore::Status::Renamed;
+            let flat = |s: &Option<CoreSide<()>>| {
+                s.as_ref().map(|s| Side {
+                    mode: s.mode,
+                    oid: s.oid,
+                })
+            };
+            Pair {
+                path: p
+                    .two
+                    .as_ref()
+                    .or(p.one.as_ref())
+                    .map(|s| s.path.clone())
+                    .unwrap_or_default(),
+                old_path: if renamed {
+                    p.one.as_ref().map(|s| s.path.clone())
+                } else {
+                    None
+                },
+                old: flat(&p.one),
+                new: flat(&p.two),
+                score: if renamed { p.score } else { 0 },
+            }
+        })
         .collect()
 }
 
 /// `a => b` with the common leading directories and trailing path
 /// components put outside braces: `dir/{a => b}`.
 pub fn rename_text(a: &[u8], b: &[u8]) -> Vec<u8> {
-    // Common prefix up to and including the last shared '/'.
+    let (pfx, sfx) = rename_split(a, b);
+    let mut out = Vec::new();
+    if pfx == 0 && sfx == 0 {
+        out.extend_from_slice(a);
+        out.extend_from_slice(b" => ");
+        out.extend_from_slice(b);
+        return out;
+    }
+    let mid = |p: &[u8]| p[pfx.min(p.len() - sfx)..p.len() - sfx].to_vec();
+    out.extend_from_slice(&a[..pfx]);
+    out.push(b'{');
+    out.extend_from_slice(&mid(a));
+    out.extend_from_slice(b" => ");
+    out.extend_from_slice(&mid(b));
+    out.push(b'}');
+    out.extend_from_slice(&a[a.len() - sfx..]);
+    out
+}
+
+/// The common leading directories (`pfx` bytes, ending in `/`) and the
+/// common trailing components (`sfx` bytes, starting with `/`) of a
+/// rename. The suffix may share its `/` with the end of the prefix:
+/// `d/e` and `d/f/e` give `d/{ => f}/e`.
+pub fn rename_split(a: &[u8], b: &[u8]) -> (usize, usize) {
     let mut pfx = 0;
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
         if x != y {
@@ -175,9 +192,9 @@ pub fn rename_text(a: &[u8], b: &[u8]) -> Vec<u8> {
             pfx = i + 1;
         }
     }
-    // Common suffix starting at a '/', not overlapping the prefix.
+    let overlap = usize::from(pfx > 0);
+    let max = (a.len() + overlap - pfx).min(b.len() + overlap - pfx);
     let mut sfx = 0;
-    let max = a.len().min(b.len()) - pfx;
     for i in 1..=max {
         let (x, y) = (a[a.len() - i], b[b.len() - i]);
         if x != y {
@@ -187,21 +204,7 @@ pub fn rename_text(a: &[u8], b: &[u8]) -> Vec<u8> {
             sfx = i;
         }
     }
-    let mut out = Vec::new();
-    if pfx == 0 && sfx == 0 {
-        out.extend_from_slice(a);
-        out.extend_from_slice(b" => ");
-        out.extend_from_slice(b);
-        return out;
-    }
-    out.extend_from_slice(&a[..pfx]);
-    out.push(b'{');
-    out.extend_from_slice(&a[pfx..a.len() - sfx]);
-    out.extend_from_slice(b" => ");
-    out.extend_from_slice(&b[pfx..b.len() - sfx]);
-    out.push(b'}');
-    out.extend_from_slice(&a[a.len() - sfx..]);
-    out
+    (pfx, sfx)
 }
 
 #[cfg(test)]
@@ -215,5 +218,8 @@ mod tests {
         assert_eq!(rename_text(b"a/x/f", b"b/x/f"), b"{a => b}/x/f");
         assert_eq!(rename_text(b"d/a/f", b"d/b/f"), b"d/{a => b}/f");
         assert_eq!(rename_text(b"d/f", b"f"), b"d/f => f");
+        assert_eq!(rename_text(b"d/e", b"d/f/e"), b"d/{ => f}/e");
+        assert_eq!(rename_text(b"d/f/e", b"d/f/f/e"), b"d/f/{ => f}/e");
+        assert_eq!(rename_text(b"c/d/e", b"d/e"), b"{c/d => d}/e");
     }
 }

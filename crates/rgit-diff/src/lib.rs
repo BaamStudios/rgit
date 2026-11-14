@@ -10,6 +10,7 @@
 //! Myers paper and from differential tests against the `git` binary.
 
 mod compact;
+pub mod diffcore;
 mod histogram;
 mod indent;
 mod lines;
@@ -22,7 +23,8 @@ mod unified;
 
 pub use lines::{BINARY_CHECK_BYTES, is_binary, split_lines};
 pub use patch::{
-    MODE_SYMLINK, PatchFile, PatchOptions, quote_path, write_file_patch, write_file_patch_with,
+    MODE_SYMLINK, PatchExtra, PatchFile, PatchOptions, quote_path, write_file_patch,
+    write_file_patch_extra, write_file_patch_with,
 };
 pub use unified::default_funcname;
 

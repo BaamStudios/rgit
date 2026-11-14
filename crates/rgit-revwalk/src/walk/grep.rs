@@ -150,7 +150,7 @@ fn compile(pattern: &str, syntax: Syntax, icase: bool) -> Result<Regex, &'static
 }
 
 /// The POSIX reason for an error of the `regex` crate.
-fn reason(error: &str) -> &'static str {
+pub fn reason(error: &str) -> &'static str {
     if error.contains("unclosed group") || error.contains("unopened group") {
         msg::REGEX_UNMATCHED_PAREN
     } else if error.contains("invalid repetition count range") {

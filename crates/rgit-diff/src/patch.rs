@@ -129,6 +129,68 @@ pub fn write_file_patch_with(
     opts: &PatchOptions,
     abbrev: &dyn Fn(&ObjectId) -> String,
 ) -> Stats {
+    write_file_patch_extra(out, old, new, opts, abbrev, &PatchExtra::default())
+}
+
+/// What diffcore found out about a file pair, for the extended headers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PatchExtra {
+    /// A rename (`false`) or copy (`true`) with its similarity in percent.
+    pub rename: Option<(bool, u32)>,
+    /// A complete rewrite with its dissimilarity in percent: the whole old
+    /// contents are shown as removed and the whole new contents as added.
+    pub rewrite: Option<u32>,
+    /// `-D`: leave out the old contents of deletions (and of rewrites).
+    pub irreversible_delete: bool,
+}
+
+/// Lines of a complete rewrite: `-` lines of the old, then `+` lines of
+/// the new contents under one hunk header.
+fn write_rewrite(out: &mut Vec<u8>, old: &[u8], new: &[u8], irreversible: bool) -> Stats {
+    let la = crate::split_lines(old);
+    let lb = crate::split_lines(new);
+    let range = |n: usize| match n {
+        0 => "0,0".to_string(),
+        1 => "1".to_string(),
+        n => format!("1,{n}"),
+    };
+    let old_range = if irreversible {
+        "?,?".to_string()
+    } else {
+        range(la.len())
+    };
+    writeln!(out, "@@ -{old_range} +{} @@", range(lb.len())).unwrap();
+    let mut lines = |sign: u8, lines: &[&[u8]]| {
+        for l in lines {
+            out.push(sign);
+            out.extend_from_slice(l);
+            if !l.ends_with(b"\n") {
+                out.push(b'\n');
+                out.extend_from_slice(messages::NO_NEWLINE_AT_EOF.as_bytes());
+                out.push(b'\n');
+            }
+        }
+    };
+    if !irreversible {
+        lines(b'-', &la);
+    }
+    lines(b'+', &lb);
+    Stats {
+        insertions: lb.len(),
+        deletions: la.len(),
+    }
+}
+
+/// Like [`write_file_patch_with`], with rename, copy and rewrite headers
+/// and bodies.
+pub fn write_file_patch_extra(
+    out: &mut Vec<u8>,
+    old: Option<&PatchFile<'_>>,
+    new: Option<&PatchFile<'_>>,
+    opts: &PatchOptions,
+    abbrev: &dyn Fn(&ObjectId) -> String,
+    extra: &PatchExtra,
+) -> Stats {
     let q = opts.quote_path;
     let (old_path, new_path) = match (old, new) {
         (Some(o), Some(n)) => (o.path, n.path),
@@ -164,6 +226,20 @@ pub fn write_file_patch_with(
         }
         _ => {}
     }
+    if let Some((copy, pct)) = extra.rename {
+        let word: &[u8] = if copy { b"copy" } else { b"rename" };
+        writeln!(out, "similarity index {pct}%").unwrap();
+        for (dir, path) in [(&b"from"[..], old_path), (&b"to"[..], new_path)] {
+            out.extend_from_slice(word);
+            out.push(b' ');
+            out.extend_from_slice(dir);
+            out.push(b' ');
+            quote_path(out, path, q);
+            out.push(b'\n');
+        }
+    } else if let Some(pct) = extra.rewrite {
+        writeln!(out, "dissimilarity index {pct}%").unwrap();
+    }
     if !content_changed {
         return Stats::default();
     }
@@ -189,9 +265,17 @@ pub fn write_file_patch_with(
     } else {
         b"/dev/null".to_vec()
     };
+    if new.is_none() && extra.irreversible_delete {
+        return Stats::default();
+    }
     if is_binary(old_data) || is_binary(new_data) {
         messages::binary_files_differ(out, &a_shown, &b_shown);
         return Stats::default();
+    }
+    if extra.rewrite.is_some() {
+        file_line(out, b"--- ", &a_shown);
+        file_line(out, b"+++ ", &b_shown);
+        return write_rewrite(out, old_data, new_data, extra.irreversible_delete);
     }
     let d = diff_text(old_data, new_data, &opts.diff);
     if d.hunks.is_empty() {

@@ -2,7 +2,7 @@
 //! `git diff` (Documentation/git-diff.adoc): work tree against index,
 //! `--cached`/`--staged [<commit>]`, `<commit>` against the work tree,
 //! `<commit> <commit>`, `A..B`, `A...B` and `--no-index <path> <path>`.
-//! No rename detection, no blob or combined diffs.
+//! No blob or combined diffs.
 
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ use rgit_object::ObjectKind;
 
 use crate::diff::collect::{self, Pair, Side, TreeDiff, WorkTree};
 use crate::diff::options::{DiffOpts, usage_exit};
-use crate::diff::output::{Output, finish};
+use crate::diff::output::Output;
 use crate::diff::{self};
 use crate::messages::{self as messages, diff as msg};
 use crate::prelude::*;
@@ -44,7 +44,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         },
         |a| usage_exit(format!("{}{}", msg::invalid_option(a), usage())),
     )?;
-    let opts = parsed.opts;
+    let mut opts = parsed.opts;
     let formats = opts.formats(true)?;
 
     let repo = Repo::open_gently(ctx)?;
@@ -114,6 +114,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else {
         ObjectId::null(repo.hash)
     };
+    opts.resolve_objects(&mut repo)?;
     let repo = repo;
     let (pairs, mnemonic) = match (trees.len(), cached) {
         (0, false) => {
@@ -135,8 +136,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             };
             let (index, mtime) = repo.read_index()?;
             if cached {
+                let pairs = collect::index(&repo, &tree, &index, &pathspec, None, true)?;
+                let pairs = if opts.copies_harder {
+                    collect::with_unmodified(pairs, collect::tree_files(&repo, &tree, &pathspec)?)
+                } else {
+                    pairs
+                };
                 (
-                    collect::index(&repo, &tree, &index, &pathspec, None, true)?,
+                    pairs,
                     Some(("c", "i")),
                 )
             } else {
@@ -163,7 +170,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 pairs: Vec::new(),
             };
             w.walk(Some(&trees[0]), Some(&trees[1]), b"")?;
-            (w.pairs, None)
+            let pairs = if opts.copies_harder {
+                collect::with_unmodified(w.pairs, collect::tree_files(&repo, &trees[0], &pathspec)?)
+            } else {
+                w.pairs
+            };
+            (pairs, None)
         }
         _ => return Err(Die::Fatal(msg::not_supported("this form of diff"))),
     };
@@ -175,7 +187,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         out.mnemonic(&opts, s, d);
     }
     let (bytes, changed) = out.render(pairs)?;
-    Ok(finish(&bytes, changed, &opts))
+    Ok(out.finish(&bytes, changed, &opts))
 }
 
 /// Start the pager (`pager.diff`, on by default) unless the exit code is
@@ -259,7 +271,7 @@ fn run_no_index(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts, args: &[Str
         out.mnemonic(opts, "1", "2");
     }
     let (bytes, changed) = out.render(pairs)?;
-    finish(&bytes, changed, opts);
+    out.finish(&bytes, changed, opts);
     Ok(i32::from(changed))
 }
 

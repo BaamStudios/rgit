@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 //! `git diff-tree` (Documentation/git-diff-tree.adoc) for two tree-ishes
 //! with optional pathspecs, in all formats of [`crate::diff::output`].
-//! No rename detection, no single-commit form, no `--stdin`.
+//! No single-commit form, no `--stdin`.
 
 use rgit_object::ObjectKind;
 
 use crate::diff::collect::TreeDiff;
-use crate::diff::output::{Output, finish};
+use crate::diff::output::Output;
 use crate::diff::{self, options::usage_exit};
 use crate::messages::diff as dmsg;
 use crate::messages::diff_tree as msg;
@@ -30,7 +30,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         },
         |_| usage(),
     )?;
-    let opts = parsed.opts;
+    let mut opts = parsed.opts;
     let mut args = parsed.args;
     let revs = parsed.dashdash_at.unwrap_or(args.len()).min(2);
     if revs != 2 {
@@ -46,6 +46,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .ok_or_else(|| Die::Fatal(msg::bad_object(&spec)))?;
         trees.push(id);
     }
+    opts.resolve_objects(&mut repo)?;
     let repo = repo;
     let pathspec = diff::pathspec(ctx, &repo, &args)?;
     let mut w = TreeDiff {
@@ -57,9 +58,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         pairs: Vec::new(),
     };
     w.walk(Some(&trees[0]), Some(&trees[1]), b"")?;
-    let pairs = std::mem::take(&mut w.pairs);
+    let mut pairs = std::mem::take(&mut w.pairs);
+    if opts.copies_harder {
+        let files = crate::diff::collect::tree_files(&repo, &trees[0], &pathspec)?;
+        pairs = crate::diff::collect::with_unmodified(pairs, files);
+    }
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     let (bytes, changed) = out.render(pairs)?;
-    Ok(finish(&bytes, changed, &opts))
+    Ok(out.finish(&bytes, changed, &opts))
 }

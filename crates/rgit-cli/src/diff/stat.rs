@@ -21,8 +21,16 @@ pub struct FileStat {
 
 pub enum StatKind {
     Unmerged,
-    Binary { old_size: usize, new_size: usize },
-    Text { added: usize, deleted: usize },
+    Binary {
+        old_size: usize,
+        new_size: usize,
+    },
+    /// A binary file renamed or copied without changes: just `Bin`.
+    BinarySame,
+    Text {
+        added: usize,
+        deleted: usize,
+    },
 }
 
 /// Width settings.
@@ -53,7 +61,7 @@ pub fn totals(files: &[FileStat]) -> (usize, usize, usize) {
     for f in files {
         match f.kind {
             StatKind::Unmerged => {}
-            StatKind::Binary { .. } => t.0 += 1,
+            StatKind::Binary { .. } | StatKind::BinarySame => t.0 += 1,
             StatKind::Text { added, deleted } => {
                 t.0 += 1;
                 t.1 += added;
@@ -120,7 +128,7 @@ pub fn write_stat(
         max_len = max_len.max(display_width(&f.name));
         match f.kind {
             StatKind::Text { added, deleted } => max_change = max_change.max(added + deleted),
-            StatKind::Binary { .. } => number_width = 3,
+            StatKind::Binary { .. } | StatKind::BinarySame => number_width = 3,
             StatKind::Unmerged => {}
         }
     }
@@ -146,6 +154,7 @@ pub fn write_stat(
         out.extend_from_slice(b" | ");
         match f.kind {
             StatKind::Unmerged => out.extend_from_slice(msg::UNMERGED_STAT.as_bytes()),
+            StatKind::BinarySame => write!(out, "{:>number_width$}", "Bin").unwrap(),
             StatKind::Binary { old_size, new_size } => {
                 write!(out, "{:>number_width$}", "Bin").unwrap();
                 if colors.is_some() {
@@ -191,7 +200,7 @@ pub fn write_numstat(out: &mut Vec<u8>, files: &[FileStat], names: &[Vec<u8>], n
     for (f, name) in files.iter().zip(names) {
         match f.kind {
             StatKind::Unmerged => out.extend_from_slice(b"0\t0\t"),
-            StatKind::Binary { .. } => out.extend_from_slice(b"-\t-\t"),
+            StatKind::Binary { .. } | StatKind::BinarySame => out.extend_from_slice(b"-\t-\t"),
             StatKind::Text { added, deleted } => write!(out, "{added}\t{deleted}\t").unwrap(),
         }
         out.extend_from_slice(name);

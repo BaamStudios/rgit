@@ -3,6 +3,8 @@
 //! parsed one argument at a time so that each command can mix in its own
 //! options and arguments.
 
+use rgit_diff::diffcore::{self, Detect, filter::DiffFilter, parse_score};
+
 use crate::Die;
 use crate::messages::diff as msg;
 
@@ -49,6 +51,70 @@ pub struct DiffOpts {
     pub stat_count: Option<usize>,
     /// `--color[=<when>]` / `--no-color`.
     pub color: Option<rgit_config::color::ColorBool>,
+    /// `-M`, `-C` or `--no-renames`, when given.
+    pub detect: Option<Detect>,
+    /// The score of `-M<n>` / `-C<n>`.
+    pub rename_score: Option<u32>,
+    /// `--find-copies-harder` (or `-C` twice).
+    pub copies_harder: bool,
+    /// `-B[<n>][/<m>]`: break and merge score.
+    pub break_rewrites: Option<(u32, u32)>,
+    /// `-l<n>`.
+    pub rename_limit: Option<usize>,
+    /// `--[no-]rename-empty`.
+    pub rename_empty: Option<bool>,
+    /// `-S<string>` (`false`) or `-G<regex>` (`true`).
+    pub pickaxe: Option<(bool, String)>,
+    pub pickaxe_all: bool,
+    pub pickaxe_regex: bool,
+    /// `--find-object=<object>`, unresolved.
+    pub find_object: Vec<String>,
+    /// The objects of `find_object` (see [`DiffOpts::resolve_objects`]).
+    pub found_objects: Vec<rgit_hash::ObjectId>,
+    /// `-D` / `--irreversible-delete`.
+    pub irreversible_delete: bool,
+    /// `--diff-filter=...`.
+    pub diff_filter: DiffFilter,
+}
+
+/// A score option's value (`-M<n>`, `--find-copies=<n>`): the whole value
+/// must be a score.
+fn score_value(value: &str, option: &str) -> Result<u32, Die> {
+    match parse_score(value) {
+        (Some(s), "") => Ok(s),
+        _ => Err(usage_exit(msg::invalid_score(option))),
+    }
+}
+
+/// `-B` values: `[<n>][/<m>]`; 0 or nothing means the default.
+fn break_value(value: &str) -> Result<(u32, u32), Die> {
+    let bad = || usage_exit(msg::BREAK_FORM.to_string());
+    let (n, rest) = parse_score(value);
+    let (m, rest) = match rest.strip_prefix('/') {
+        Some(r) => parse_score(r),
+        None if rest.is_empty() => (None, ""),
+        None => return Err(bad()),
+    };
+    if !rest.is_empty() {
+        return Err(bad());
+    }
+    let or = |v: Option<u32>, d: u32| v.filter(|&v| v != 0).unwrap_or(d);
+    Ok((
+        or(n, diffcore::DEFAULT_BREAK_SCORE),
+        or(m, diffcore::DEFAULT_MERGE_SCORE),
+    ))
+}
+
+/// An integer with an optional `k`/`m`/`g` suffix (`-l`).
+fn magnitude(value: &str) -> Option<usize> {
+    let (num, factor) = match value.as_bytes().last() {
+        Some(b'k' | b'K') => (&value[..value.len() - 1], 1024),
+        Some(b'm' | b'M') => (&value[..value.len() - 1], 1024 * 1024),
+        Some(b'g' | b'G') => (&value[..value.len() - 1], 1024 * 1024 * 1024),
+        _ => (value, 1),
+    };
+    let n: i64 = num.parse().ok()?;
+    usize::try_from(n.max(0)).ok()?.checked_mul(factor)
 }
 
 /// The output formats after resolving overrides and the default.
@@ -151,7 +217,25 @@ impl DiffOpts {
             "--no-indent-heuristic" => self.indent_heuristic = Some(false),
             "--no-prefix" => self.no_prefix = true,
             "--default-prefix" => self.default_prefix = true,
-            "--no-renames" | "--no-ext-diff" | "--no-textconv" | "--myers" | "--default" => {}
+            "--no-ext-diff" | "--no-textconv" | "--myers" | "--default" => {}
+            "--no-renames" => self.detect = Some(Detect::Off),
+            "-M" | "--find-renames" => self.detect = Some(Detect::Renames),
+            "-C" | "--find-copies" => {
+                if self.detect == Some(Detect::Copies) {
+                    self.copies_harder = true;
+                }
+                self.detect = Some(Detect::Copies);
+            }
+            "--find-copies-harder" => self.copies_harder = true,
+            "-B" | "--break-rewrites" => {
+                self.break_rewrites =
+                    Some((diffcore::DEFAULT_BREAK_SCORE, diffcore::DEFAULT_MERGE_SCORE));
+            }
+            "--rename-empty" => self.rename_empty = Some(true),
+            "--no-rename-empty" => self.rename_empty = Some(false),
+            "--pickaxe-all" => self.pickaxe_all = true,
+            "--pickaxe-regex" => self.pickaxe_regex = true,
+            "-D" | "--irreversible-delete" => self.irreversible_delete = true,
             _ => {
                 if let Some(c) = crate::color::parse_arg(arg) {
                     self.color = Some(c?);
@@ -230,6 +314,39 @@ impl DiffOpts {
         } else if let Some(v) = arg.strip_prefix("--stat-count=") {
             self.stat_count = Some(number(v, "--stat-count")?);
             self.format().stat = true;
+        } else if let Some(v) = arg
+            .strip_prefix("--find-renames=")
+            .or_else(|| arg.strip_prefix("-M"))
+        {
+            self.rename_score = Some(score_value(v, "find-renames")?);
+            self.detect = Some(Detect::Renames);
+        } else if let Some(v) = arg
+            .strip_prefix("--find-copies=")
+            .or_else(|| arg.strip_prefix("-C"))
+        {
+            self.rename_score = Some(score_value(v, "find-copies")?);
+            if self.detect == Some(Detect::Copies) {
+                self.copies_harder = true;
+            }
+            self.detect = Some(Detect::Copies);
+        } else if let Some(v) = arg
+            .strip_prefix("--break-rewrites=")
+            .or_else(|| arg.strip_prefix("-B"))
+        {
+            self.break_rewrites = Some(break_value(v)?);
+        } else if let Some(v) = arg.strip_prefix("-l") {
+            self.rename_limit =
+                Some(magnitude(v).ok_or_else(|| usage_exit(msg::switch_expects_integer('l')))?);
+        } else if let Some(v) = arg.strip_prefix("-S") {
+            self.pickaxe = Some((false, v.to_string()));
+        } else if let Some(v) = arg.strip_prefix("-G") {
+            self.pickaxe = Some((true, v.to_string()));
+        } else if let Some(v) = arg.strip_prefix("--find-object=") {
+            self.find_object.push(v.to_string());
+        } else if let Some(v) = arg.strip_prefix("--diff-filter=") {
+            self.diff_filter
+                .parse_into(v)
+                .map_err(|c| usage_exit(msg::unknown_change_class(c, v)))?;
         } else {
             return Ok(false);
         }
@@ -278,6 +395,18 @@ impl DiffOpts {
             }
         }
         Ok(f)
+    }
+
+    /// Resolve the `--find-object` names.
+    pub fn resolve_objects(&mut self, repo: &mut crate::repository::Repo) -> Result<(), Die> {
+        self.found_objects.clear();
+        for name in &self.find_object {
+            let id = repo
+                .resolve(name)
+                .ok_or_else(|| usage_exit(msg::unable_to_resolve(name)))?;
+            self.found_objects.push(id);
+        }
+        Ok(())
     }
 
     /// Whether `--exit-code` semantics apply (also implied by `--quiet`).
