@@ -35,40 +35,13 @@ pub const DEFAULT_FORMAT: &str = "%(objectname) %(objecttype)\t%(refname)";
 
 pub const MORE_THAN_ONE_QUOTING: &str = "more than one quoting style?";
 pub const STDIN_AND_PATTERNS: &str = "unknown arguments supplied with --stdin";
-
-pub fn unknown_field(name: &str) -> String {
-    format!("unknown field name: {name}")
-}
-
-pub fn malformed_format(fmt: &str) -> String {
-    format!("malformed format string {fmt}")
-}
-
-pub fn unrecognized_arg(atom: &str, arg: &str) -> String {
-    format!("unrecognized %({atom}) argument: {arg}")
-}
-
-pub fn no_arguments(atom: &str) -> String {
-    format!("%({atom}) does not take arguments")
-}
+pub const START_AFTER_PATTERNS: &str = "cannot use --start-after with patterns";
+pub const START_AFTER_SORT: &str = "cannot use --start-after with custom sort options";
 
 pub fn invalid_count(arg: &str) -> String {
     format!("invalid --count argument: `{arg}'")
 }
 
-pub fn missing_object(oid: &str, name: &str) -> String {
-    format!("missing object {oid} for {name}")
-}
-
-pub fn malformed_object_name(name: &str) -> String {
-    format!("malformed object name {name}")
-}
-
 pub fn ignoring_broken_ref(name: &str) -> String {
     format!("ignoring broken ref {name}")
-}
-
-/// rgit wording: an option that is not implemented yet.
-pub fn not_supported(opt: &str) -> String {
-    format!("rgit for-each-ref: {opt} is not supported yet")
 }

@@ -141,6 +141,49 @@ impl Objects {
         None
     }
 
+    /// The pack holding `id` and the offset of its entry.
+    fn locate_packed(&self, id: &ObjectId) -> Option<(std::sync::Arc<rgit_pack::Pack>, u64)> {
+        self.packs.packs().into_iter().find_map(|p| {
+            let pos = p.index().lookup(id)?;
+            let off = p.index().offset_at(pos).ok()?;
+            Some((p, off))
+        })
+    }
+
+    /// Bytes the stored copy of `id` takes on disk (loose before packed).
+    pub fn disk_size(&self, id: &ObjectId) -> u64 {
+        if self.loose.contains(id) {
+            return std::fs::metadata(self.loose.path_of(id)).map_or(0, |m| m.len());
+        }
+        match self.locate_packed(id) {
+            Some((p, off)) => p.entry_end(off).map_or(0, |e| e - off),
+            None => 0,
+        }
+    }
+
+    /// The delta base of the stored copy of `id` (the null id when it is
+    /// not stored as a delta).
+    pub fn delta_base(&self, id: &ObjectId) -> ObjectId {
+        if self.loose.contains(id) {
+            return self.hash.null();
+        }
+        self.locate_packed(id)
+            .and_then(|(p, off)| p.delta_base(off).ok().flatten())
+            .unwrap_or_else(|| self.hash.null())
+    }
+
+    /// Number of objects (for the default abbreviation length).
+    pub fn approximate_count(&self) -> usize {
+        let mut n: usize = self
+            .packs
+            .packs()
+            .iter()
+            .map(|p| p.index().len() as usize)
+            .sum();
+        let _ = self.loose.for_each_object(&mut |_| n += 1);
+        n
+    }
+
     /// Ids starting with `prefix`, at most `limit`.
     fn prefix_matches(&self, prefix: &Prefix, limit: usize) -> Vec<ObjectId> {
         let mut found = self.packs.lookup_prefix(prefix, limit);
