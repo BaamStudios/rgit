@@ -15,11 +15,20 @@ pub struct RevItem {
     /// The name as the user could have written it (`HEAD^1` for the first
     /// parent in `HEAD^!`); `None` for computed objects such as merge bases.
     pub name: Option<String>,
+    /// The left side `A` of a symmetric difference `A...B` (for
+    /// `--left-right`).
+    pub left: bool,
 }
 
 impl RevItem {
-    fn new(oid: ObjectId, negated: bool, name: Option<String>) -> RevItem {
-        RevItem { oid, negated, name }
+    /// An item that is not the left side of a symmetric difference.
+    pub fn new(oid: ObjectId, negated: bool, name: Option<String>) -> RevItem {
+        RevItem {
+            oid,
+            negated,
+            name,
+            left: false,
+        }
     }
 }
 
@@ -65,7 +74,10 @@ impl Resolver<'_> {
         };
         let mut items = vec![
             RevItem::new(b_oid, false, Some(b.to_string())),
-            RevItem::new(a_oid, false, Some(a.to_string())),
+            RevItem {
+                left: true,
+                ..RevItem::new(a_oid, false, Some(a.to_string()))
+            },
         ];
         for base in self.merge_bases(&ca, &cb)? {
             items.push(RevItem::new(base, true, None));

@@ -2,34 +2,38 @@
 //! Shared by `rev-list` and `log`: the revision and walk options
 //! (Documentation/rev-list-options.adoc), the starting points, the walk
 //! over the repository's object database and the output.
+//!
+//! The walk itself (orderings, limiting, boundary, sides, objects) lives in
+//! `rgit_revwalk::walk`; this module wires it to the repository and prints.
 
 pub mod mailmap;
+mod options;
 pub mod pretty;
+mod tips;
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use rgit_config::ConfigSet;
-use rgit_config::color::ColorBool;
-use rgit_date::{DateContext, DateMode};
+use rgit_date::DateContext;
 use rgit_hash::ObjectId;
-use rgit_object::{Commit, ObjectKind};
+use rgit_object::{Commit, ObjectKind, TreeIter};
 use rgit_repo::Setup;
-use rgit_revwalk::revision::{
-    self, Error as RevError, Flags, Hint, ObjectLookup, RefLookup, Resolver, RevItem,
-};
-use rgit_revwalk::walk::{CommitInfo, CommitSource, Order, Walk, WalkOptions};
+use rgit_revwalk::revision::{self, ObjectLookup, RefLookup, Resolver};
+use rgit_revwalk::walk::grep::CommitGrep;
+use rgit_revwalk::walk::objects::{ItemKind, ObjectLister, TreeItem, TreeSource};
+use rgit_revwalk::walk::{CommitInfo, CommitSource, Shown, Side, Walk};
 
 use crate::messages::rev_list as msg;
 use crate::repo::{self, Mode};
 use crate::revisions::{self, Config, IndexFile, Objects, Refs, WorkTree};
 use crate::{Context, Die};
+pub use options::Options;
+use options::{Abbrev, ObjectsMode};
 use pretty::{Entry, Pretty, Style};
 
 /// The default `color.diff.commit`.
 const YELLOW: &str = "\x1b[33m";
-
-/// The shortest `--abbrev` (smaller values are raised to it).
-const MIN_ABBREV: usize = 4;
+use tips::Resolved;
 
 /// Which command parses the arguments (they differ in error handling and
 /// defaults).
@@ -37,217 +41,6 @@ const MIN_ABBREV: usize = 4;
 pub enum Command {
     RevList,
     Log,
-}
-
-/// `--abbrev` settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Abbrev {
-    /// `core.abbrev` or the automatic length.
-    Default,
-    /// `--abbrev=<n>`.
-    Digits(usize),
-    /// `--no-abbrev`.
-    Full,
-}
-
-/// A starting point as given on the command line.
-#[derive(Debug, Clone)]
-enum Tip {
-    /// A revision argument (`A`, `^A`, `A..B`, `A...B`, `A^!`, ...);
-    /// `negate` is set after an odd number of `--not`.
-    Rev { arg: String, negate: bool },
-    /// `--all`, `--branches`, `--tags`, `--remotes`.
-    Refs {
-        prefix: &'static str,
-        negative: bool,
-    },
-}
-
-/// Parsed options.
-#[derive(Debug)]
-pub struct Options {
-    pub walk: WalkOptions,
-    tips: Vec<Tip>,
-    pub count: bool,
-    /// `--left-right` (only with `--count` and one `A...B` so far).
-    left_right: bool,
-    pub parents: bool,
-    abbrev_commit: bool,
-    abbrev: Abbrev,
-    pub pretty: Option<Pretty>,
-    date_mode: DateMode,
-    /// `--[no-]mailmap`; `None` = the command's default.
-    mailmap: Option<bool>,
-    /// `--color[=<when>]` / `--no-color` (only `log` colours).
-    color: Option<ColorBool>,
-}
-
-fn parse_count(s: &str) -> Result<usize, Die> {
-    match s.parse::<i64>() {
-        Ok(n) => Ok(usize::try_from(n).unwrap_or(usize::MAX)),
-        Err(_) => Err(Die::Fatal(msg::not_an_integer(s))),
-    }
-}
-
-fn usage(cmd: Command, arg: &str) -> Die {
-    match cmd {
-        Command::RevList => {
-            let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
-            Die::Exit(rgit_options::EXIT_USAGE)
-        }
-        Command::Log => Die::Fatal(msg::unrecognized_argument(arg)),
-    }
-}
-
-impl Options {
-    /// Parse `argv` (without the command name).
-    pub fn parse(cmd: Command, argv: &[String]) -> Result<Options, Die> {
-        let mut o = Options {
-            walk: WalkOptions::default(),
-            tips: Vec::new(),
-            count: false,
-            left_right: false,
-            parents: false,
-            abbrev_commit: false,
-            abbrev: Abbrev::Default,
-            pretty: (cmd == Command::Log).then_some(Pretty::Medium),
-            date_mode: DateMode::default(),
-            mailmap: None,
-            color: None,
-        };
-        let mut negate = false;
-        let mut i = 0;
-        let value = |i: &mut usize, name: &str| -> Result<String, Die> {
-            *i += 1;
-            argv.get(*i)
-                .cloned()
-                .ok_or_else(|| Die::Fatal(format!("{name} requires an argument")))
-        };
-        while i < argv.len() {
-            let a = argv[i].as_str();
-            if a == "--" {
-                if i + 1 < argv.len() {
-                    return Err(Die::Fatal(msg::not_supported("path limiting")));
-                }
-                break;
-            }
-            if !a.starts_with('-') || a == "-" {
-                o.push_revision(a, negate);
-                i += 1;
-                continue;
-            }
-            match a {
-                "--all" => o.tips.push(Tip::Refs {
-                    prefix: "",
-                    negative: negate,
-                }),
-                "--branches" => o.tips.push(Tip::Refs {
-                    prefix: "refs/heads/",
-                    negative: negate,
-                }),
-                "--tags" => o.tips.push(Tip::Refs {
-                    prefix: "refs/tags/",
-                    negative: negate,
-                }),
-                "--remotes" => o.tips.push(Tip::Refs {
-                    prefix: "refs/remotes/",
-                    negative: negate,
-                }),
-                "--not" => negate = !negate,
-                "--topo-order" => o.walk.order = Order::Topo,
-                "--date-order" => o.walk.order = Order::Date,
-                "--reverse" => o.walk.reverse = true,
-                "--first-parent" => o.walk.first_parent = true,
-                "--parents" => o.parents = true,
-                "--count" if cmd == Command::RevList => o.count = true,
-                "--left-right" => o.left_right = true,
-                "--abbrev-commit" => o.abbrev_commit = true,
-                "--no-abbrev-commit" => o.abbrev_commit = false,
-                "--abbrev" => o.abbrev = Abbrev::Default,
-                "--no-abbrev" => o.abbrev = Abbrev::Full,
-                "--oneline" => {
-                    o.pretty = Some(Pretty::Oneline);
-                    o.abbrev_commit = true;
-                }
-                "--pretty" => o.pretty = Some(Pretty::Medium),
-                "--no-decorate" | "--no-show-signature" => {}
-                "--mailmap" | "--use-mailmap" => o.mailmap = Some(true),
-                "--no-mailmap" | "--no-use-mailmap" => o.mailmap = Some(false),
-                "-n" | "--max-count" => {
-                    o.walk.max_count = Some(parse_count(&value(&mut i, a)?)?);
-                }
-                "--skip" => o.walk.skip = parse_count(&value(&mut i, a)?)?,
-                _ if crate::color::parse_arg(a).is_some() => {
-                    if let Some(c) = crate::color::parse_arg(a) {
-                        o.color = Some(c?);
-                    }
-                }
-                _ => {
-                    if let Some(v) = a.strip_prefix("--max-count=") {
-                        o.walk.max_count = Some(parse_count(v)?);
-                    } else if let Some(v) = a.strip_prefix("--skip=") {
-                        o.walk.skip = parse_count(v)?;
-                    } else if let Some(v) = a.strip_prefix("-n") {
-                        o.walk.max_count = Some(parse_count(v)?);
-                    } else if a.len() > 1 && a[1..].bytes().all(|b| b.is_ascii_digit()) {
-                        o.walk.max_count = Some(parse_count(&a[1..])?);
-                    } else if let Some(v) = a.strip_prefix("--abbrev=") {
-                        let n = parse_count(v)?;
-                        o.abbrev = if n == 0 {
-                            Abbrev::Full
-                        } else {
-                            Abbrev::Digits(n.max(MIN_ABBREV))
-                        };
-                    } else if let Some(v) = a
-                        .strip_prefix("--pretty=")
-                        .or_else(|| a.strip_prefix("--format="))
-                    {
-                        o.pretty = Some(parse_pretty(v)?);
-                    } else if let Some(v) = a.strip_prefix("--date=") {
-                        o.date_mode = rgit_date::parse_date_mode(v, false)
-                            .map_err(|e| Die::Fatal(e.to_string()))?;
-                    } else if a == "--decorate=no" {
-                    } else if a.starts_with("--branches=")
-                        || a.starts_with("--tags=")
-                        || a.starts_with("--remotes=")
-                    {
-                        return Err(Die::Fatal(msg::not_supported("a ref pattern")));
-                    } else {
-                        return Err(usage(cmd, a));
-                    }
-                }
-            }
-            i += 1;
-        }
-        Ok(o)
-    }
-
-    fn push_revision(&mut self, arg: &str, negate: bool) {
-        self.tips.push(Tip::Rev {
-            arg: arg.to_string(),
-            negate,
-        });
-    }
-
-    /// No revision arguments and no ref options.
-    pub fn has_no_tips(&self) -> bool {
-        self.tips.is_empty()
-    }
-
-    /// Start at `HEAD` (log without revisions).
-    pub fn push_head(&mut self) {
-        self.tips.push(Tip::Rev {
-            arg: "HEAD".into(),
-            negate: false,
-        });
-    }
-}
-
-fn parse_pretty(v: &str) -> Result<Pretty, Die> {
-    if v.contains('%') || v.starts_with("format:") || v.starts_with("tformat:") {
-        return Err(Die::Fatal(msg::not_supported("--format with placeholders")));
-    }
-    Pretty::from_name(v).ok_or_else(|| Die::Fatal(msg::invalid_pretty(v)))
 }
 
 /// The repository as `rev-list` and `log` use it.
@@ -276,22 +69,6 @@ impl Repo<'_> {
             return Vec::new();
         }
         commit.parents().unwrap_or_default()
-    }
-
-    /// Peel `id` through tags; `None` unless it ends at a commit.
-    fn peel_to_commit(&self, mut id: ObjectId) -> Option<ObjectId> {
-        for _ in 0..64 {
-            let (kind, data) = self.objects.read(&id).ok()??;
-            match kind {
-                ObjectKind::Commit => return Some(id),
-                ObjectKind::Tag => {
-                    let tag = rgit_object::Tag::parse(self.objects.hash_kind(), &data).ok()?;
-                    id = tag.object().ok()?;
-                }
-                _ => return None,
-            }
-        }
-        None
     }
 
     /// `id` abbreviated to at least `len` digits, unique in the repository.
@@ -358,159 +135,73 @@ impl Repo<'_> {
             .symlink_metadata()
             .is_ok()
     }
+
+    /// The root tree of commit `id`.
+    fn tree_of(&self, id: &ObjectId) -> Option<ObjectId> {
+        self.read_commit(id)?.0.tree().ok()
+    }
 }
 
-/// The walk's view of the repository.
-struct Commits<'r, 'a>(&'r Repo<'a>);
+/// The walk's view of the repository, with the text filters.
+struct Commits<'r, 'a> {
+    repo: &'r Repo<'a>,
+    grep: Option<CommitGrep>,
+}
 
 impl CommitSource for Commits<'_, '_> {
     type Error = ObjectId;
     fn load(&mut self, id: &ObjectId) -> Result<CommitInfo, ObjectId> {
-        let (commit, _) = self.0.read_commit(id).ok_or(*id)?;
+        let (commit, _) = self.repo.read_commit(id).ok_or(*id)?;
         let time = commit
             .committer()
             .and_then(|c| c.time())
             .map_or(0, |t| t.seconds);
         Ok(CommitInfo {
-            parents: self.0.parents(id, &commit),
+            parents: self.repo.parents(id, &commit),
             time,
         })
     }
-}
 
-fn print_diagnostics(resolver: &Resolver<'_>) {
-    let mut err = std::io::stderr();
-    for d in resolver.take_diagnostics() {
-        let _ = writeln!(err, "{}", d.render());
+    fn author_time(&mut self, id: &ObjectId) -> Result<Option<i64>, ObjectId> {
+        let (commit, _) = self.repo.read_commit(id).ok_or(*id)?;
+        Ok(commit.author().and_then(|a| a.time()).map(|t| t.seconds))
+    }
+
+    fn include(&mut self, id: &ObjectId) -> Result<bool, ObjectId> {
+        let Some(grep) = &self.grep else {
+            return Ok(true);
+        };
+        let (_, raw) = self.repo.read_commit(id).ok_or(*id)?;
+        Ok(grep.matches(&raw))
     }
 }
 
-fn rev_error(resolver: &Resolver<'_>, e: RevError) -> Die {
-    print_diagnostics(resolver);
-    match e {
-        RevError::Fatal(m) => Die::Fatal(m),
-        RevError::Lookup(e) => {
-            for line in &e.errors {
-                let _ = writeln!(std::io::stderr(), "error: {line}");
-            }
-            match e.fatal {
-                Some(m) => Die::Fatal(m),
-                None => Die::Exit(rgit_options::EXIT_FATAL),
-            }
+/// Trees for `--objects`.
+struct Trees<'r, 'a>(&'r Repo<'a>);
+
+impl TreeSource for Trees<'_, '_> {
+    type Error = ObjectId;
+    fn tree(&mut self, id: &ObjectId) -> Result<Vec<TreeItem>, ObjectId> {
+        let (kind, data) = self.0.objects.read(id).ok().flatten().ok_or(*id)?;
+        if kind != ObjectKind::Tree {
+            return Err(*id);
         }
-        RevError::NotFound => Die::Exit(rgit_options::EXIT_FATAL),
-    }
-}
-
-/// The objects one revision argument stands for.
-fn rev_items(repo: &Repo<'_>, arg: &str) -> Result<Vec<RevItem>, Die> {
-    let resolver = repo.resolver;
-    let flags = Flags::default().with_hint(Hint::Committish);
-    let found = match resolver.try_range(arg, flags) {
-        Ok(Some(items)) => Some(items),
-        Ok(None) => resolver
-            .try_parent_shorthand(arg, flags)
-            .map_err(|e| rev_error(resolver, e))?,
-        Err(e) => return Err(rev_error(resolver, e)),
-    };
-    if let Some(items) = found {
-        print_diagnostics(resolver);
-        return Ok(items);
-    }
-    let (name, negated) = match arg.strip_prefix('^') {
-        Some(n) => (n, true),
-        None => (arg, false),
-    };
-    match resolver.resolve_with(name, flags) {
-        Ok(oid) => {
-            print_diagnostics(resolver);
-            Ok(vec![RevItem {
-                oid,
-                negated,
-                name: Some(name.to_string()),
-            }])
+        let mut out = Vec::new();
+        for entry in TreeIter::new(self.0.objects.hash_kind(), &data) {
+            let entry = entry.map_err(|_| *id)?;
+            let kind = match entry.mode_bits & 0o170000 {
+                0o040000 => ItemKind::Tree,
+                0o160000 => ItemKind::Gitlink,
+                _ => ItemKind::Blob,
+            };
+            out.push(TreeItem {
+                kind,
+                name: entry.name.to_vec(),
+                id: entry.oid,
+            });
         }
-        Err(RevError::NotFound) => {
-            print_diagnostics(resolver);
-            if negated {
-                Err(Die::Fatal(msg::bad_revision(arg)))
-            } else if repo.is_path(arg) {
-                Err(Die::Fatal(msg::not_supported("path limiting")))
-            } else {
-                Err(Die::Fatal(msg::ambiguous_argument(arg)))
-            }
-        }
-        Err(e) => Err(rev_error(resolver, e)),
+        Ok(out)
     }
-}
-
-/// Resolve the starting points: `(commit, negative)` in command-line order.
-fn resolve_tips(repo: &Repo<'_>, opts: &Options) -> Result<Vec<(ObjectId, bool)>, Die> {
-    let mut out = Vec::new();
-    for tip in &opts.tips {
-        match tip {
-            Tip::Rev { arg, negate } => {
-                for item in rev_items(repo, arg)? {
-                    if let Some(c) = repo.peel_to_commit(item.oid) {
-                        out.push((c, item.negated != *negate));
-                    }
-                }
-            }
-            Tip::Refs { prefix, negative } => {
-                let iter_prefix = if prefix.is_empty() { "refs/" } else { prefix };
-                let mut ids = Vec::new();
-                repo.refs
-                    .for_each_ref(iter_prefix, &mut |_, id| ids.push(*id))
-                    .map_err(|e| Die::Fatal(e.message()))?;
-                if prefix.is_empty() {
-                    if let Ok(Some(head)) = repo.refs.resolve("HEAD")
-                        && let Some(id) = head.oid
-                    {
-                        ids.push(id);
-                    }
-                    ids.extend(repo.other_worktree_heads());
-                }
-                for id in ids {
-                    if let Some(c) = repo.peel_to_commit(id) {
-                        out.push((c, *negative));
-                    }
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// `rev-list --left-right --count A...B`: the ahead/behind counts of the
-/// two sides, separated by a tab. Other uses of `--left-right` are not
-/// implemented yet.
-fn left_right_count(repo: &Repo<'_>, opts: &Options) -> Result<i32, Die> {
-    let unsupported = || Die::Fatal(msg::not_supported("--left-right without --count A...B"));
-    let w = &opts.walk;
-    if !opts.count || w.first_parent || w.max_count.is_some() || w.skip > 0 {
-        return Err(unsupported());
-    }
-    let [Tip::Rev { arg, negate: false }] = opts.tips.as_slice() else {
-        return Err(unsupported());
-    };
-    let Some(pos) = arg.find("...") else {
-        return Err(unsupported());
-    };
-    let side = |s: &str| -> Result<ObjectId, Die> {
-        let s = if s.is_empty() { "HEAD" } else { s };
-        let id = repo.resolver.resolve(s).map_err(|_| unsupported())?;
-        repo.resolver.peel_to_commit(&id).map_err(|_| unsupported())
-    };
-    let a = side(&arg[..pos])?;
-    let b = side(&arg[pos + 3..])?;
-    let (ahead, behind) = repo
-        .resolver
-        .ahead_behind(&a, &b)
-        .map_err(|e| Die::Fatal(e.to_string()))?;
-    let mut o = std::io::stdout().lock();
-    let _ = writeln!(o, "{ahead}\t{behind}");
-    let _ = o.flush();
-    Ok(0)
 }
 
 /// Set up the repository, parse `argv` and run `cmd`.
@@ -556,7 +247,12 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
         refs: &refs,
         resolver: &resolver,
     };
-    if opts.has_no_tips() {
+    if opts.stdin {
+        let mut input = Vec::new();
+        let _ = std::io::stdin().lock().read_to_end(&mut input);
+        opts.read_stdin(&input)?;
+    }
+    if opts.has_no_tips() && !opts.stdin {
         match cmd {
             Command::RevList => {
                 let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
@@ -574,9 +270,168 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
     run(ctx, &repo, cmd, &opts)
 }
 
+/// How commits are printed.
+struct Printer<'r, 'a> {
+    repo: &'r Repo<'a>,
+    cmd: Command,
+    opts: &'r Options,
+    abbrev_len: usize,
+    style: Style,
+    out: Vec<u8>,
+    first: bool,
+}
+
+impl Printer<'_, '_> {
+    fn name(&self, id: &ObjectId, abbreviate: bool) -> String {
+        if abbreviate {
+            self.repo.abbrev(id, self.abbrev_len)
+        } else {
+            id.to_hex()
+        }
+    }
+
+    /// The mark before a commit name: `-` for boundary commits, `<`/`>`
+    /// with `--left-right`.
+    fn mark(&self, s: &Shown) -> &'static str {
+        if s.boundary {
+            "-"
+        } else if self.opts.left_right {
+            if s.side == Some(Side::Left) { "<" } else { ">" }
+        } else {
+            ""
+        }
+    }
+
+    fn commit<S: CommitSource<Error = ObjectId>>(
+        &mut self,
+        walk: &Walk<S>,
+        s: &Shown,
+    ) -> Result<(), Die> {
+        let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+        let id = s.id;
+        let opts = self.opts;
+        let mark = self.mark(s);
+        let mut line = Vec::new();
+        if opts.timestamp {
+            line.extend_from_slice(format!("{} ", walk.time(&id).unwrap_or(0)).as_bytes());
+        }
+        let related: Vec<ObjectId> = if opts.parents {
+            walk.parents(&id).unwrap_or_default().to_vec()
+        } else if opts.children {
+            walk.children(&id).to_vec()
+        } else {
+            Vec::new()
+        };
+        match opts.pretty {
+            None => {
+                line.extend_from_slice(mark.as_bytes());
+                line.extend_from_slice(self.name(&id, opts.abbrev_commit).as_bytes());
+                for p in &related {
+                    line.push(b' ');
+                    // rev-list abbreviates only the commit itself.
+                    line.extend_from_slice(p.to_hex().as_bytes());
+                }
+                line.push(b'\n');
+                self.out.extend_from_slice(&line);
+                if opts.header {
+                    let (_, raw) = self.repo.read_commit(&id).ok_or_else(|| walk_error(id))?;
+                    write_header(&mut self.out, &raw);
+                }
+            }
+            Some(_) => {
+                let (commit, raw) = self.repo.read_commit(&id).ok_or_else(|| walk_error(id))?;
+                let parents = self.repo.parents(&id, &commit);
+                let shown: Vec<String> = related
+                    .iter()
+                    .map(|p| self.name(p, opts.abbrev_commit))
+                    .collect();
+                let merge: Vec<String> = if parents.len() > 1 {
+                    parents.iter().map(|p| self.name(p, true)).collect()
+                } else {
+                    Vec::new()
+                };
+                let base = self.name(&id, opts.abbrev_commit);
+                let commit_name = match (self.cmd, mark) {
+                    (_, "") => base,
+                    (Command::Log, m) => format!("{m} {base}"),
+                    (Command::RevList, m) => format!("{m}{base}"),
+                };
+                let ts = String::from_utf8(line).unwrap_or_default();
+                let commit_name = format!("{ts}{commit_name}");
+                let entry = Entry {
+                    name: &commit_name,
+                    shown_parents: &shown,
+                    merge_parents: &merge,
+                    commit: &commit,
+                    raw: &raw,
+                };
+                if self.cmd == Command::RevList {
+                    // rev-list ends every multi-line entry with an empty line
+                    // instead of separating them.
+                    pretty::write_entry(&mut self.out, &self.style, &entry, true);
+                    if self.style.pretty != Pretty::Oneline {
+                        self.out.push(b'\n');
+                    }
+                } else {
+                    pretty::write_entry(&mut self.out, &self.style, &entry, self.first);
+                }
+                self.first = false;
+            }
+        }
+        self.flush_if_full();
+        Ok(())
+    }
+
+    fn object(&mut self, id: &ObjectId, name: &[u8]) {
+        self.out.extend_from_slice(id.to_hex().as_bytes());
+        if self.opts.object_names {
+            self.out.push(b' ');
+            // Names are cut at a newline.
+            let end = name.iter().position(|&b| b == b'\n').unwrap_or(name.len());
+            self.out.extend_from_slice(&name[..end]);
+        }
+        self.out.push(b'\n');
+        self.flush_if_full();
+    }
+
+    fn flush_if_full(&mut self) {
+        if self.out.len() > 1 << 15 {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.opts.quiet {
+            let mut lock = std::io::stdout().lock();
+            let _ = lock.write_all(&self.out);
+            let _ = lock.flush();
+        }
+        self.out.clear();
+    }
+}
+
+/// `--header`: the raw commit with the message indented, ended by NUL.
+fn write_header(out: &mut Vec<u8>, raw: &[u8]) {
+    let (head, message) = match raw.windows(2).position(|w| w == b"\n\n") {
+        Some(i) => (&raw[..=i], &raw[i + 2..]),
+        None => (raw, &raw[raw.len()..]),
+    };
+    out.extend_from_slice(head);
+    out.push(b'\n');
+    let message = message.strip_suffix(b"\n").unwrap_or(message);
+    if !message.is_empty() {
+        for line in message.split(|&b| b == b'\n') {
+            out.extend_from_slice(b"    ");
+            out.extend_from_slice(line);
+            out.push(b'\n');
+        }
+    }
+    out.push(0);
+}
+
 /// Run the walk and print the result.
 fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
-    let tips = resolve_tips(repo, opts)?;
+    let resolved = tips::resolve(repo, opts)?;
     let commit_color = match cmd {
         Command::Log => {
             crate::pager::setup_for(ctx, repo.config, "log", true)?;
@@ -593,26 +448,33 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         }
         Command::RevList => None,
     };
-    if opts.left_right {
-        return left_right_count(repo, opts);
+    if opts.walk.ancestry_path && opts.ancestry.is_empty() && !resolved.commits.iter().any(|c| c.1)
+    {
+        return Err(Die::Fatal(msg::NO_BOTTOM_COMMITS.to_string()));
     }
+    let grep = if opts.grep.is_empty() {
+        None
+    } else {
+        Some(CommitGrep::new(&opts.grep).map_err(Die::Fatal)?)
+    };
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
-    let mut walk = Walk::new(Commits(repo), opts.walk.clone());
-    for (id, negative) in &tips {
-        walk.push(id, *negative).map_err(walk_error)?;
+    let mut walk = Walk::new(Commits { repo, grep }, opts.walk.clone());
+    for (id, negative, side) in &resolved.commits {
+        walk.push_side(id, *negative, *side).map_err(walk_error)?;
+    }
+    for arg in &opts.ancestry {
+        let id = repo
+            .resolver
+            .resolve(arg)
+            .and_then(|id| repo.resolver.peel_to_commit(&id))
+            .map_err(|_| Die::Fatal(msg::bad_revision(arg)))?;
+        walk.ancestry_target(&id).map_err(walk_error)?;
     }
     let hexlen = repo.objects.hash_kind().hex_len();
     let abbrev_len = match opts.abbrev {
         Abbrev::Default => repo.resolver.default_abbrev(),
         Abbrev::Digits(n) => n.min(hexlen),
         Abbrev::Full => hexlen,
-    };
-    let name = |id: &ObjectId, abbreviate: bool| {
-        if abbreviate {
-            repo.abbrev(id, abbrev_len)
-        } else {
-            id.to_hex()
-        }
     };
     let use_mailmap = opts.mailmap.unwrap_or_else(|| {
         cmd == Command::Log
@@ -630,65 +492,161 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         date_ctx: DateContext::from_env(),
         commit_color,
     };
-    let stdout = std::io::stdout();
-    let mut out = Vec::with_capacity(1 << 16);
-    let mut first = true;
-    let mut count = 0usize;
-    while let Some(id) = walk.next_commit().map_err(walk_error)? {
+    let mut p = Printer {
+        repo,
+        cmd,
+        opts,
+        abbrev_len,
+        style,
+        out: Vec::with_capacity(1 << 16),
+        first: true,
+    };
+    if let Some(mode) = opts.objects {
+        return run_objects(&mut p, &mut walk, &resolved, mode);
+    }
+    let (mut left, mut right) = (0usize, 0usize);
+    while let Some(s) = walk.next_shown().map_err(walk_error)? {
         if opts.count {
-            count += 1;
+            if s.side == Some(Side::Left) {
+                left += 1;
+            } else {
+                right += 1;
+            }
             continue;
         }
-        match opts.pretty {
-            None => {
-                out.extend_from_slice(name(&id, opts.abbrev_commit).as_bytes());
-                if opts.parents {
-                    for p in walk.parents(&id).unwrap_or_default() {
-                        out.push(b' ');
-                        // rev-list abbreviates only the commit itself.
-                        out.extend_from_slice(p.to_hex().as_bytes());
-                    }
-                }
-                out.push(b'\n');
-            }
-            Some(_) => {
-                let (commit, raw) = repo.read_commit(&id).ok_or_else(|| walk_error(id))?;
-                let parents = repo.parents(&id, &commit);
-                let shown: Vec<String> = if opts.parents {
-                    parents
-                        .iter()
-                        .map(|p| name(p, opts.abbrev_commit))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let merge: Vec<String> = if parents.len() > 1 {
-                    parents.iter().map(|p| name(p, true)).collect()
-                } else {
-                    Vec::new()
-                };
-                let commit_name = name(&id, opts.abbrev_commit);
-                let entry = Entry {
-                    name: &commit_name,
-                    shown_parents: &shown,
-                    merge_parents: &merge,
-                    commit: &commit,
-                    raw: &raw,
-                };
-                pretty::write_entry(&mut out, &style, &entry, first);
-                first = false;
-            }
-        }
-        if out.len() > 1 << 15 {
-            let _ = stdout.lock().write_all(&out);
-            out.clear();
-        }
+        p.commit(&walk, &s)?;
     }
     if opts.count {
-        out.extend_from_slice(format!("{count}\n").as_bytes());
+        let text = if opts.left_right {
+            format!("{left}\t{right}\n")
+        } else {
+            format!("{}\n", left + right)
+        };
+        p.out.extend_from_slice(text.as_bytes());
     }
-    let mut lock = stdout.lock();
-    let _ = lock.write_all(&out);
-    let _ = lock.flush();
+    p.flush();
     Ok(0)
+}
+
+/// `--objects`: the commits, then the tags, trees and blobs they need.
+fn run_objects(
+    p: &mut Printer<'_, '_>,
+    walk: &mut Walk<Commits<'_, '_>>,
+    resolved: &Resolved,
+    mode: ObjectsMode,
+) -> Result<i32, Die> {
+    let repo = p.repo;
+    let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+    let mut shown = Vec::new();
+    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+        shown.push(s);
+    }
+    let mut lister = ObjectLister::new(Trees(repo));
+    let edges = walk.edges();
+    for e in &edges {
+        if let Some(tree) = repo.tree_of(e) {
+            lister.exclude_tree(&tree).map_err(walk_error)?;
+        }
+    }
+    for (id, kind) in &resolved.excluded {
+        match kind {
+            ObjectKind::Tree => lister.exclude_tree(id).map_err(walk_error)?,
+            _ => lister.exclude(id),
+        }
+    }
+    let mut count = 0usize;
+    let counting = p.opts.count;
+    if mode.edge && !counting {
+        for e in &edges {
+            p.out.push(b'-');
+            p.out.extend_from_slice(e.to_hex().as_bytes());
+            p.out.push(b'\n');
+        }
+    }
+    let mut pending_done = false;
+    let list_pending = |p: &mut Printer<'_, '_>,
+                        lister: &mut ObjectLister<Trees<'_, '_>>,
+                        count: &mut usize|
+     -> Result<(), Die> {
+        for obj in &resolved.pending {
+            match obj.kind {
+                ObjectKind::Tree => {
+                    lister
+                        .list_tree(&obj.id, &obj.name, &mut |id, name| {
+                            *count += 1;
+                            if !counting {
+                                p.object(id, name);
+                            }
+                        })
+                        .map_err(walk_error)?;
+                }
+                _ => {
+                    if lister.take(&obj.id) {
+                        *count += 1;
+                        if !counting {
+                            p.object(&obj.id, &obj.name);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    };
+    let mut trees = Vec::new();
+    for s in &shown {
+        count += 1;
+        if !counting {
+            p.commit(walk, s)?;
+        }
+        if s.boundary {
+            continue;
+        }
+        let tree = repo.tree_of(&s.id).ok_or_else(|| walk_error(s.id))?;
+        if mode.in_commit_order {
+            if !pending_done {
+                list_pending(p, &mut lister, &mut count)?;
+                pending_done = true;
+            }
+            lister
+                .list_tree(&tree, b"", &mut |id, name| {
+                    count += 1;
+                    if !counting {
+                        p.object(id, name);
+                    }
+                })
+                .map_err(walk_error)?;
+        } else {
+            trees.push(tree);
+        }
+    }
+    if !pending_done {
+        list_pending(p, &mut lister, &mut count)?;
+    }
+    for tree in trees {
+        lister
+            .list_tree(&tree, b"", &mut |id, name| {
+                count += 1;
+                if !counting {
+                    p.object(id, name);
+                }
+            })
+            .map_err(walk_error)?;
+    }
+    if counting {
+        p.out.extend_from_slice(format!("{count}\n").as_bytes());
+    }
+    p.flush();
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_header;
+
+    #[test]
+    fn header_indents_every_message_line() {
+        let mut out = Vec::new();
+        write_header(&mut out, b"tree t\n\nsubj\n\n\tbody\n");
+        assert_eq!(out, b"tree t\n\n    subj\n    \n    \tbody\n\0");
+    }
 }

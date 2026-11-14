@@ -256,3 +256,236 @@ fn linked_worktree() {
     }
     same(&mut fx, &["rev-list", "--all"]);
 }
+
+/// History with files, an annotated tag on a commit and one on a tree, for
+/// `--objects`.
+fn history_with_files() -> Fixture {
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .write("a", "a\n")
+        .write("d/b", "b\n")
+        .write("d/e/c", "c\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "one"])
+        .tick()
+        .git(["branch", "side"])
+        .write("a", "a2\n")
+        .write("d/x", "x\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "two"])
+        .tick()
+        .git(["rm", "-q", "d/b"])
+        .git(["commit", "-q", "-m", "three"])
+        .tick()
+        .write("d/b", "b\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "four"])
+        .tick()
+        .git(["tag", "-a", "-m", "t1", "t1", "HEAD~2"])
+        .git(["tag", "-a", "-m", "tree", "treetag", "HEAD^{tree}"])
+        .git(["checkout", "-q", "side"])
+        .write("s", "s\n")
+        .git(["add", "s"])
+        .git(["commit", "-q", "-m", "side"])
+        .tick()
+        .git(["checkout", "-q", "main"])
+        .git(["merge", "-q", "--no-ff", "-m", "merge", "side"])
+        .tick();
+    commit(fx, "after", true)
+}
+
+#[test]
+fn rev_list_orderings_and_limiting() {
+    let mut fx = history();
+    for args in [
+        &["rev-list", "--author-date-order", "--all"][..],
+        &["rev-list", "--reverse", "--date-order", "--all"],
+        &["rev-list", "--merges", "HEAD"],
+        &["rev-list", "--no-merges", "--count", "HEAD"],
+        &["rev-list", "--max-parents=0", "--all"],
+        &["rev-list", "--min-parents=2", "--no-min-parents", "HEAD"],
+        &["rev-list", "--since=1112912173", "--all"],
+        &["rev-list", "--until=1112912173", "--all"],
+        &[
+            "rev-list",
+            "--max-age=1112912113",
+            "--min-age=1112912233",
+            "--all",
+        ],
+        &["rev-list", "--grep=side", "--all"],
+        &["rev-list", "--grep=SIDE", "-i", "--all"],
+        &[
+            "rev-list",
+            "--grep=one",
+            "--grep=main",
+            "--all-match",
+            "--all",
+        ],
+        &["rev-list", "--grep=one", "--invert-grep", "--all"],
+        &["rev-list", "-E", "--grep=^(side|other) ", "--all"],
+        &["rev-list", "-F", "--grep=a tab", "--all"],
+        &["rev-list", "--author=Thor", "--committer=nobody", "--all"],
+        &["rev-list", "--ancestry-path", "side~1..HEAD"],
+        &["rev-list", "--ancestry-path=side", "HEAD~3..HEAD"],
+        &["rev-list", "--ancestry-path", "HEAD"],
+        &["rev-list", "--no-walk", "side", "other", "main"],
+        &["rev-list", "--no-walk=unsorted", "side", "other", "main"],
+        &["rev-list", "--no-walk", "--do-walk", "side"],
+        &["rev-list", "--no-walk=bogus", "side"],
+        &["rev-list", "--timestamp", "-3", "HEAD"],
+        &["rev-list", "--children", "HEAD"],
+        &["rev-list", "--parents", "--children", "HEAD"],
+        &["rev-list", "--header", "-2", "HEAD"],
+        &["rev-list", "--quiet", "HEAD"],
+        &["rev-list", "--pretty=short", "-2", "HEAD"],
+        &["log", "--merges", "--oneline"],
+        &["log", "--author=Thor", "--since=1112912173", "--oneline"],
+    ] {
+        same(&mut fx, args);
+    }
+}
+
+#[test]
+fn rev_list_boundary_and_sides() {
+    let mut fx = history();
+    for args in [
+        &["rev-list", "--boundary", "side..main"][..],
+        &["rev-list", "--boundary", "-n", "3", "HEAD"],
+        &["rev-list", "--boundary", "--topo-order", "other..HEAD"],
+        &["rev-list", "--boundary", "--reverse", "side..main"],
+        &["rev-list", "--first-parent", "--boundary", "HEAD~3..HEAD"],
+        &[
+            "rev-list",
+            "--boundary",
+            "--parents",
+            "--abbrev-commit",
+            "side..main",
+        ],
+        &["rev-list", "--left-right", "side...other"],
+        &["rev-list", "--left-right", "--boundary", "main...other"],
+        &["rev-list", "--left-right", "--count", "side...other"],
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            "--boundary",
+            "side...other",
+        ],
+        &["rev-list", "--left-right", "main", "other"],
+        &["rev-list", "--left-only", "side...other"],
+        &["rev-list", "--right-only", "side...other"],
+        &[
+            "rev-list",
+            "--left-right",
+            "--oneline",
+            "--boundary",
+            "side...other",
+        ],
+        &["rev-list", "--left-right", "--pretty=raw", "side...other"],
+        &[
+            "rev-list",
+            "--timestamp",
+            "--left-right",
+            "--boundary",
+            "side...other",
+        ],
+        &[
+            "rev-list",
+            "--children",
+            "--left-right",
+            "--boundary",
+            "side...other",
+        ],
+        &[
+            "log",
+            "--left-right",
+            "--boundary",
+            "--oneline",
+            "side...other",
+        ],
+        &["log", "--left-right", "-2", "side...other"],
+    ] {
+        same(&mut fx, args);
+    }
+}
+
+#[test]
+fn rev_list_ref_sets_and_stdin() {
+    let mut fx = history()
+        .git(["branch", "foo/bar", "side"])
+        .git(["branch", "foobar", "other"])
+        .git(["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
+    for args in [
+        &["rev-list", "--no-walk", "--branches=foo"][..],
+        &["rev-list", "--no-walk", "--branches=foo*"],
+        &["rev-list", "--no-walk", "--glob=heads/foo"],
+        &["rev-list", "--no-walk", "--glob=refs/heads/*"],
+        &["rev-list", "--no-walk", "--remotes=origin"],
+        &["rev-list", "--no-walk", "--tags=v*"],
+        &["rev-list", "--no-walk", "--exclude=foo*", "--branches"],
+        &["rev-list", "--no-walk", "--exclude=refs/heads/*", "--all"],
+        &["rev-list", "--exclude=HEAD", "--exclude=refs/*", "--all"],
+        &["rev-list", "--branches", "--not", "--remotes"],
+        &["rev-list", "--glob"],
+    ] {
+        same(&mut fx, args);
+    }
+    for (input, args) in [
+        ("side\n^other\n", &["rev-list", "--stdin"][..]),
+        ("--all\n--not\nside\n", &["rev-list", "--stdin"]),
+        ("--glob\nrefs/heads\n", &["rev-list", "--stdin"]),
+        ("--no-walk=garbage\n", &["rev-list", "--stdin"]),
+        ("-dashed\n", &["rev-list", "--stdin"]),
+        ("--end-of-options\nside\n", &["rev-list", "--stdin"]),
+        ("side\n", &["rev-list", "main", "--not", "--stdin"]),
+        ("--not\n", &["rev-list", "main", "--stdin", "side"]),
+        ("side\n\n^other\n", &["rev-list", "--stdin"]),
+        (
+            "other\n",
+            &["rev-list", "--no-walk=unsorted", "main", "--stdin", "side"],
+        ),
+    ] {
+        fx.compare(args).stdin(input).checks(Check::OUTPUT).run();
+    }
+}
+
+#[test]
+fn rev_list_objects() {
+    let mut fx = history_with_files();
+    for args in [
+        &["rev-list", "--objects", "--all"][..],
+        &["rev-list", "--objects", "HEAD"],
+        &["rev-list", "--objects", "HEAD~1..HEAD"],
+        &["rev-list", "--objects", "side..main"],
+        &["rev-list", "--objects-edge", "side..main"],
+        &[
+            "rev-list",
+            "--objects-edge",
+            "--skip=1",
+            "-n",
+            "1",
+            "side..main",
+        ],
+        &["rev-list", "--objects", "--in-commit-order", "--all"],
+        &["rev-list", "--objects", "--no-object-names", "--all"],
+        &["rev-list", "--objects", "t1", "treetag"],
+        &["rev-list", "--objects", "HEAD:d", "HEAD:a", "HEAD^{tree}"],
+        &["rev-list", "--objects", "HEAD", "^side^{tree}"],
+        &["rev-list", "--objects", "HEAD", "^t1"],
+        &["rev-list", "--objects", "--boundary", "side..main"],
+        &["rev-list", "--objects", "--reverse", "side..main"],
+        &["rev-list", "--objects", "--left-right", "side...main"],
+        &["rev-list", "--count", "--objects", "side..main"],
+        &[
+            "rev-list",
+            "--count",
+            "--left-right",
+            "--objects",
+            "side...main",
+        ],
+        &["rev-list", "--objects", "--timestamp", "-1", "HEAD"],
+    ] {
+        same(&mut fx, args);
+    }
+}

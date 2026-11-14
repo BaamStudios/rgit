@@ -122,3 +122,25 @@ pub fn invalid_pretty(name: &str) -> String {
 pub fn not_supported(what: &str) -> String {
     format!("rgit: {what} is not supported yet")
 }
+
+pub fn not_epoch_seconds(arg: &str) -> String {
+    format!("'{arg}': not a number of seconds since epoch")
+}
+
+pub fn requires_value(option: &str) -> String {
+    format!("Option '{option}' requires a value")
+}
+
+pub const INVALID_NO_WALK: &str = "invalid argument to --no-walk";
+
+pub fn invalid_stdin_option(arg: &str) -> String {
+    format!("invalid option '{arg}' in --stdin mode")
+}
+
+pub fn cannot_be_used_together(a: &str, b: &str) -> String {
+    format!("options '{a}' and '{b}' cannot be used together")
+}
+
+pub const MARKED_COUNT_OBJECTS: &str = "marked counting and '--objects' cannot be used together";
+
+pub const NO_BOTTOM_COMMITS: &str = "--ancestry-path given but there are no bottom commits";
