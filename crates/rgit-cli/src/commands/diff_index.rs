@@ -5,7 +5,7 @@
 use rgit_object::ObjectKind;
 
 use crate::diff::collect::{self, WorkTree};
-use crate::diff::output::{Output, finish};
+use crate::diff::output::Output;
 use crate::diff::{self, options::usage_exit};
 use crate::messages::diff as msg;
 use crate::prelude::*;
@@ -33,7 +33,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         },
         |_| usage(),
     )?;
-    let opts = parsed.opts;
+    let mut opts = parsed.opts;
     let mut args = parsed.args;
     if args.is_empty() || parsed.dashdash_at == Some(0) {
         return Err(usage());
@@ -47,6 +47,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let tree = repo
         .peel_to(id, ObjectKind::Tree)
         .ok_or_else(|| Die::Fatal(msg::bad_tree_object(&spec)))?;
+    opts.resolve_objects(&mut repo)?;
     let repo = repo;
     let pathspec = diff::pathspec(ctx, &repo, &args)?;
     let (index, mtime) = repo.read_index()?;
@@ -63,8 +64,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         };
         collect::index(&repo, &tree, &index, &pathspec, Some(&wt), false)?
     };
+    let pairs = if opts.copies_harder {
+        collect::with_unmodified(pairs, collect::tree_files(&repo, &tree, &pathspec)?)
+    } else {
+        pairs
+    };
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     let (bytes, changed) = out.render(pairs)?;
-    Ok(finish(&bytes, changed, &opts))
+    Ok(out.finish(&bytes, changed, &opts))
 }

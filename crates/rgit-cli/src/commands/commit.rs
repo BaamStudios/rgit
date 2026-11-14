@@ -726,7 +726,10 @@ fn diff_summary(repo: &Repo, pairs: &[Pair], quote_high: bool) -> Vec<u8> {
                 if let Some(old) = &p.old_path {
                     out.extend_from_slice(b" rename ");
                     out.extend_from_slice(&tree_changes::rename_text(&q(old), &q(&p.path)));
-                    out.extend_from_slice(b" (100%)\n");
+                    out.extend_from_slice(
+                        format!(" ({}%)\n", p.score * 100 / rgit_diff::diffcore::MAX_SCORE)
+                            .as_bytes(),
+                    );
                 } else if o.mode != n.mode && !p.type_changed() {
                     out.extend_from_slice(
                         format!(" mode change {:06o} => {:06o} ", o.mode, n.mode).as_bytes(),
@@ -1215,7 +1218,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         write_index(&repo, &mut index.clone(), index_mtime)?;
     }
 
-    let renames = !matches!(config_bool(&repo, "diff.renames"), Some(false));
+    let renames_key = if repo.config.get("status.renames").is_some() {
+        "status.renames"
+    } else {
+        "diff.renames"
+    };
+    let renames = !matches!(config_bool(&repo, renames_key), Some(false));
     let hints = advisor.enabled(Advice::StatusHints).map_err(Die::Fatal)?;
     let mut header = wt_status::header(&repo, head);
     header.merging = merging;
@@ -1225,7 +1233,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     if args.dry_run {
         let commit_index = commit_index.as_ref().unwrap_or(&index);
-        let staged = tree_changes::diff(&base, &wt_status::index_flat(commit_index), renames);
+        let staged = tree_changes::diff(&repo, &base, &wt_status::index_flat(commit_index), renames);
         let committable = !staged.is_empty() || parents.len() > 1;
         let collected =
             wt_status::collect(&repo, &base, commit_index, index_mtime, untracked, renames)?;
@@ -1435,7 +1443,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // a differing one (observed with the git binary).
     let show_author_date = author_from_commit || args.date.is_some();
 
-    let staged = tree_changes::diff(&base, &wt_status::index_flat(commit_index), renames);
+    let staged = tree_changes::diff(&repo, &base, &wt_status::index_flat(commit_index), renames);
     // A merge (new or amended) is made even when its tree equals the first
     // parent's.
     let committable = !staged.is_empty() || parents.len() > 1;
@@ -1817,7 +1825,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let new_flat = wt_status::index_flat(commit_index);
     // The summary detects renames even with diff.renames=false.
-    let pairs = tree_changes::diff(&base, &new_flat, true);
+    let pairs = tree_changes::diff(&repo, &base, &new_flat, true);
     if parents.len() < 2 {
         out.extend_from_slice(&diff_summary(&repo, &pairs, quote_high));
     }

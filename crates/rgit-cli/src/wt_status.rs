@@ -65,7 +65,7 @@ pub fn collect(
     untracked: Untracked,
     renames: bool,
 ) -> Result<Collected, Die> {
-    let staged = tree_changes::diff(base, &index_flat(index), renames);
+    let staged = tree_changes::diff(repo, base, &index_flat(index), renames);
     let work_tree = repo.work_tree()?;
     let checker = repo.checker(index_mtime)?;
     let mut unstaged = Vec::new();

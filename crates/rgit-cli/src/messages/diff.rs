@@ -134,3 +134,41 @@ pub fn requires_value(option: &str) -> String {
 pub fn unknown_config_value(key: &str, value: &str) -> String {
     format!("unknown value for config '{key}': {value}")
 }
+
+/// A bad score after `-M` (`find-renames`) or `-C` (`find-copies`).
+pub fn invalid_score(option: &str) -> String {
+    format!("error: invalid argument to {option}\n")
+}
+
+pub const BREAK_FORM: &str = "error: break-rewrites expects <n>/<m> form\n";
+
+pub fn unknown_change_class(c: char, value: &str) -> String {
+    format!("error: unknown change class '{c}' in --diff-filter={value}\n")
+}
+
+pub fn switch_expects_integer(switch: char) -> String {
+    format!("error: switch `{switch}' expects an integer value with an optional k/m/g suffix\n")
+}
+
+pub fn unable_to_resolve(name: &str) -> String {
+    format!("error: unable to resolve '{name}'\n")
+}
+
+pub fn invalid_regex(_pattern: &str, reason: &str) -> String {
+    format!("invalid regex: {reason}")
+}
+
+pub const G_WITH_PICKAXE_REGEX: &str =
+    "options '-G' and '--pickaxe-regex' cannot be used together, use '--pickaxe-regex' with '-S'";
+
+pub const RENAME_LIMIT_SKIPPED: &str =
+    "warning: exhaustive rename detection was skipped due to too many files.\n";
+
+pub const RENAME_LIMIT_DEGRADED: &str =
+    "warning: only found copies from modified paths due to too many files.\n";
+
+pub fn rename_limit_hint(n: usize) -> String {
+    format!(
+        "warning: you may want to set your diff.renameLimit variable to at least {n} and retry the command.\n"
+    )
+}

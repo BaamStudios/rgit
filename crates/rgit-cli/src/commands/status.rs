@@ -4,8 +4,9 @@
 //! summary), `-s`/`--short`, `--porcelain[=v1]` and `--porcelain=v2`, with
 //! `-z`, `-b`, `--[no-]ahead-behind`, `--untracked-files=no|normal|all` and
 //! `--ignored[=traditional|matching|no]` (the walk is in
-//! [`crate::untracked`]). Rename detection, submodule details, colour and
-//! the state banners other than merging are not implemented yet.
+//! [`crate::untracked`]) and staged renames (`status.renames`,
+//! `--no-renames`, `-M`). Submodule details, colour and the state banners
+//! other than merging are not implemented yet.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -45,6 +46,11 @@ pub(crate) struct Change {
     /// Work tree mode; `None` when deleted.
     pub(crate) wt_mode: Option<u32>,
     pub(crate) wt: u8,
+    /// A staged rename or copy to this path: source path, `R`/`C`, score
+    /// (percent) and the source's HEAD mode and id.
+    pub(crate) rename: Option<(Vec<u8>, u8, u32, u32, ObjectId)>,
+    /// The source of a staged rename (shown at the new path only).
+    pub(crate) renamed_away: bool,
 }
 
 pub(crate) fn collect_tree(
@@ -77,6 +83,12 @@ fn type_bits(mode: u32) -> u32 {
 }
 
 fn index_letter(c: &Change) -> u8 {
+    if let Some(r) = &c.rename {
+        return r.1;
+    }
+    if c.renamed_away {
+        return b' ';
+    }
     match (c.head, c.index) {
         (None, Some((_, _, false))) => b'A',
         (Some(_), None) => b'D',
@@ -294,6 +306,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let untracked: RefCell<Option<String>> = RefCell::new(None);
     let ignored: RefCell<Option<String>> = RefCell::new(None);
     let ahead_behind = Cell::new(-1);
+    let no_renames = Cell::new(-1);
+    let find_renames: RefCell<Option<Option<String>>> = RefCell::new(None);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -322,10 +336,27 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .optional(Some("all")),
             Opt::string(None, "ignored", &ignored, "mode", msg::HELP_IGNORED)
                 .optional(Some("traditional")),
+            Opt::bool(None, "no-renames", &no_renames, msg::HELP_NO_RENAMES),
+            Opt::callback(
+                'M',
+                "find-renames",
+                Some("n"),
+                msg::HELP_FIND_RENAMES,
+                |v, unset| {
+                    if unset {
+                        no_renames.set(1);
+                    } else {
+                        find_renames.replace(Some(v.map(str::to_string)));
+                    }
+                    Ok(())
+                },
+            )
+            .optional(None),
         ],
     );
     let args = parser.parse(argv)?.args;
     drop(parser);
+    let find_renames = find_renames.into_inner();
 
     let porcelain_version = match porcelain.borrow().as_deref() {
         None | Some("v1") => 1,
@@ -419,6 +450,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         check_worktree(&repo, &checker, &work_tree, e, c);
     }
 
+    let core = rename_options(&repo, no_renames.get(), find_renames.as_ref())?;
+    staged_renames(&repo, &mut changes, &core);
+
     let root = work_tree.as_os_str().as_encoded_bytes().to_vec();
     let opts = ParseOptions {
         prefix: repo.prefix(),
@@ -495,6 +529,116 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     Ok(0)
 }
 
+/// Rename detection for the staged changes: `--no-renames`,
+/// `-M[<n>]`, `status.renames` (else `diff.renames`, default on) and
+/// `status.renameLimit` (else `diff.renameLimit`).
+pub(crate) fn rename_options(
+    repo: &Repo,
+    no_renames: i32,
+    find: Option<&Option<String>>,
+) -> Result<rgit_diff::diffcore::Options, Die> {
+    use rgit_diff::diffcore::{Detect, Options, parse_score};
+    let mut core = Options::default();
+    let entry = repo
+        .config
+        .get("status.renames")
+        .or_else(|| repo.config.get("diff.renames"));
+    core.detect = match entry {
+        None => Detect::Renames,
+        Some(e) => {
+            let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+            match v.to_ascii_lowercase().as_str() {
+                "copies" | "copy" => Detect::Copies,
+                _ if e.bool().map_err(|e| Die::Fatal(e.to_string()))? => Detect::Renames,
+                _ => Detect::Off,
+            }
+        }
+    };
+    let limit = repo
+        .config
+        .get("status.renamelimit")
+        .or_else(|| repo.config.get("diff.renamelimit"));
+    if let Some(e) = limit {
+        let n = e
+            .int(rgit_config::IntWidth::I32)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
+        core.rename_limit = usize::try_from(n.max(0)).unwrap_or(0);
+    }
+    match no_renames {
+        1 => core.detect = Detect::Off,
+        0 if core.detect == Detect::Off => core.detect = Detect::Renames,
+        _ => {}
+    }
+    if let Some(score) = find {
+        // `-M` keeps copy detection from `status.renames=copies`.
+        if core.detect == Detect::Off {
+            core.detect = Detect::Renames;
+        }
+        // Unlike the diff commands, status takes `-M=<n>` and ignores
+        // what does not parse (observed).
+        if let Some(v) = score {
+            if let (Some(s), _) = parse_score(v.trim_start_matches('=')) {
+                core.rename_score = s;
+            }
+        }
+    }
+    Ok(core)
+}
+
+/// Find staged renames and copies (HEAD against the index).
+pub(crate) fn staged_renames(
+    repo: &Repo,
+    changes: &mut BTreeMap<Vec<u8>, Change>,
+    core: &rgit_diff::diffcore::Options,
+) {
+    use rgit_diff::diffcore::{self, FilePair, Side};
+    if core.detect == diffcore::Detect::Off {
+        return;
+    }
+    let side = |path: &[u8], mode: u32, oid: ObjectId| Side {
+        path: path.to_vec(),
+        mode,
+        oid,
+        extra: (),
+    };
+    let mut input: Vec<FilePair<()>> = Vec::new();
+    for (path, c) in changes.iter() {
+        if conflict_code(c).is_some() || index_letter(c) == b' ' {
+            continue;
+        }
+        let one = c.head.map(|(m, id)| side(path, m, id));
+        let two = match c.index {
+            Some((m, id, false)) => Some(side(path, m, id)),
+            _ => None,
+        };
+        input.push(FilePair::new(one, two));
+    }
+    let contents = |s: &Side<()>| match repo.read_object(&s.oid) {
+        Some(Object::Blob(b)) => b.data,
+        _ => Vec::new(),
+    };
+    // status does not warn about the rename limit.
+    let (out, _) = diffcore::run(input, core, &contents);
+    for p in out {
+        let letter = match p.status {
+            diffcore::Status::Renamed => b'R',
+            diffcore::Status::Copied => b'C',
+            _ => continue,
+        };
+        let (Some(one), Some(two)) = (&p.one, &p.two) else {
+            continue;
+        };
+        if letter == b'R' {
+            if let Some(src) = changes.get_mut(&one.path) {
+                src.renamed_away = true;
+            }
+        }
+        if let Some(dst) = changes.get_mut(&two.path) {
+            dst.rename = Some((one.path.clone(), letter, p.percent(), one.mode, one.oid));
+        }
+    }
+}
+
 /// Short format and porcelain v1: `XY <path>`.
 fn short(
     p: &mut Printer,
@@ -518,7 +662,19 @@ fn short(
         p.out.push(x);
         p.out.push(y);
         p.out.push(b' ');
-        p.path(path);
+        match &c.rename {
+            Some((old, ..)) if p.nul => {
+                p.path(path);
+                p.end();
+                p.path(old);
+            }
+            Some((old, ..)) => {
+                p.path(old);
+                p.text(" -> ");
+                p.path(path);
+            }
+            None => p.path(path),
+        }
         p.end();
     }
     for u in untracked {
@@ -576,6 +732,25 @@ fn porcelain_v2(
             Some((m, id, false)) => (m, id),
             _ => (0, zero),
         };
+        if let Some((old, letter, score, hm, hid)) = &c.rename {
+            p.text(&format!(
+                "2 {} N... {hm:06o} {im:06o} {:06o} {} {} {}{score} ",
+                String::from_utf8_lossy(&xy),
+                c.wt_mode.unwrap_or(0),
+                hid.to_hex(),
+                iid.to_hex(),
+                char::from(*letter),
+            ));
+            p.path(path);
+            if p.nul {
+                p.end();
+            } else {
+                p.text("\t");
+            }
+            p.path(old);
+            p.end();
+            continue;
+        }
         p.text(&format!(
             "1 {} N... {hm:06o} {im:06o} {:06o} {} {} ",
             String::from_utf8_lossy(&xy),
@@ -613,6 +788,8 @@ fn label_of(letter: u8) -> &'static str {
         b'A' => msg::LABEL_NEW,
         b'D' => msg::LABEL_DELETED,
         b'T' => msg::LABEL_TYPECHANGE,
+        b'R' => msg::LABEL_RENAMED,
+        b'C' => msg::LABEL_COPIED,
         _ => msg::LABEL_MODIFIED,
     }
 }
@@ -657,11 +834,12 @@ fn long(
         tracking(p, up, *state, ctx.hints);
         p.text("\n");
     }
-    let staged: Vec<(&Vec<u8>, u8)> = entries
+    type Staged<'a> = (&'a Vec<u8>, u8, Option<&'a Vec<u8>>);
+    let staged: Vec<Staged<'_>> = entries
         .iter()
         .filter(|(_, c)| conflict_code(c).is_none())
-        .map(|(path, c)| (*path, index_letter(c)))
-        .filter(|(_, x)| *x != b' ')
+        .map(|(path, c)| (*path, index_letter(c), c.rename.as_ref().map(|r| &r.0)))
+        .filter(|(_, x, _)| *x != b' ')
         .collect();
     let unmerged: Vec<(&Vec<u8>, &str)> = entries
         .iter()
@@ -700,8 +878,12 @@ fn long(
         } else {
             hint(p, msg::HINT_UNSTAGE);
         }
-        for (path, x) in &staged {
+        for (path, x, old) in &staged {
             p.text(&format!("\t{:<12}", label_of(*x)));
+            if let Some(old) = old {
+                p.path(old);
+                p.text(" -> ");
+            }
             p.path(path);
             p.text("\n");
         }

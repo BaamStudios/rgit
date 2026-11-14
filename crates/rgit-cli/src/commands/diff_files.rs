@@ -3,7 +3,7 @@
 //! the work tree. No combined diffs (`-c`, `--cc`, `-0`..`-3`).
 
 use crate::diff::collect::{self, WorkTree};
-use crate::diff::output::{Output, finish};
+use crate::diff::output::Output;
 use crate::diff::{self, options::usage_exit};
 use crate::messages::diff as msg;
 use crate::prelude::*;
@@ -30,9 +30,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         },
         |_| usage(),
     )?;
-    let opts = parsed.opts;
+    let mut opts = parsed.opts;
     let formats = opts.formats(false)?;
-    let repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    opts.resolve_objects(&mut repo)?;
+    let repo = repo;
     let pathspec = diff::pathspec(ctx, &repo, &parsed.args)?;
     let root = repo.work_tree()?;
     let (index, mtime) = repo.read_index()?;
@@ -43,10 +45,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         porcelain: false,
         hash: repo.hash,
     };
-    let pairs = collect::files(&index, &pathspec, &wt, false)?;
+    let mut pairs = collect::files(&index, &pathspec, &wt, false)?;
+    if opts.copies_harder {
+        pairs = collect::with_unmodified(pairs, collect::index_files(&index, &pathspec));
+    }
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     out.combined_unmerged = true;
     let (bytes, changed) = out.render(pairs)?;
-    Ok(finish(&bytes, changed, &opts))
+    Ok(out.finish(&bytes, changed, &opts))
 }

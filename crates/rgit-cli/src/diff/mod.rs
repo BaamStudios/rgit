@@ -2,7 +2,8 @@
 //! Shared machinery of `diff`, `diff-files`, `diff-index` and
 //! `diff-tree`: option parsing ([`options`]), finding changed paths
 //! ([`collect`]) and output ([`output`], with [`stat`]).
-//! No rename detection, no combined diffs.
+//! Break, rename and copy detection, pickaxe and `--diff-filter` run in
+//! [`output::Output::diffcore`] (`rgit_diff::diffcore`). No combined diffs.
 
 pub mod collect;
 pub mod color;
@@ -70,6 +71,25 @@ pub fn parse_args(
             dashdash_at = Some(args.len());
             args.extend(it.by_ref().cloned());
             break;
+        }
+        if matches!(a.as_str(), "-S" | "-G" | "-l") {
+            // The value may also be the next argument.
+            let Some(v) = it.next() else {
+                return Err(options::usage_exit(crate::messages::diff::requires_value(
+                    &a[1..],
+                )));
+            };
+            opts.parse_arg(&format!("{a}{v}"))?;
+            continue;
+        }
+        if matches!(a.as_str(), "--find-object" | "--diff-filter") {
+            let Some(v) = it.next() else {
+                return Err(options::usage_exit(crate::messages::diff::requires_value(
+                    &a[2..],
+                )));
+            };
+            opts.parse_arg(&format!("{a}={v}"))?;
+            continue;
         }
         if a == "--diff-algorithm" || a == "--anchored" {
             // The value may also be the next argument.
