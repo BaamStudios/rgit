@@ -47,6 +47,7 @@ pub mod show_ref;
 pub mod status;
 pub mod stripspace;
 pub mod switch;
+pub mod tag;
 pub mod tracking;
 pub mod update_index;
 pub mod update_ref;
