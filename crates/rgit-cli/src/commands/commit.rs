@@ -17,10 +17,14 @@
 //!   (`MERGE_HEAD`, `MERGE_MSG`; reflog `commit (merge): ...`);
 //! - linked worktrees (HEAD and its reflog in the worktree's git dir).
 //!
+//! - #128: `-t`/`commit.template`, `-s`, `--trailer`, `-C`/`-c`,
+//!   `--fixup[=amend:|reword:]`, `--squash`, `-v`/`commit.verbose`,
+//!   `--dry-run` with `--short`/`--porcelain`/`--long`/`-z`/`--branch`,
+//!   `--pathspec-from-file`.
+//!
 //! Hooks (#76): `pre-commit` and `commit-msg` (skipped with
-//! `--no-verify`), `prepare-commit-msg` and `post-commit`; `post-rewrite`
-//! (#154) is not run yet and an enabled one gives a warning. Not yet: templates, `-s`, `--trailer`, `-C`/`-c`,
-//! `--fixup`/`--squash`, `-v`, `--dry-run` and the status formats, `-S`,
+//! `--no-verify`), `prepare-commit-msg`, `post-commit` and `post-rewrite`
+//! after `--amend`. Not yet: `-S`/`commit.gpgSign` (#51),
 //! `-p`/`--interactive`, cherry-pick/revert (#58), similarity renames in
 //! the summary (#145), the implicit-committer notice.
 
@@ -42,6 +46,7 @@ use rgit_worktree::stat::smudge_racy_entries;
 use super::add::entry_for;
 use super::status::Untracked;
 use crate::messages::commit as msg;
+use crate::messages::reset as rmsg;
 use crate::prelude::*;
 use crate::refs_support::{self, Objects, UpdateHooks};
 use rgit_hook::RunOptions;
@@ -50,11 +55,29 @@ use crate::repository::{self, Repo};
 use crate::tree_changes::{self, Flat, Pair};
 use crate::wt_status::{self, Render};
 
+#[path = "commit/dry_run.rs"]
+mod dry_run;
+#[path = "commit/verbose.rs"]
+mod verbose;
+
 /// A piece of the message in command-line order.
 enum Piece {
     Message(String),
     File(String),
 }
+
+/// `--fixup=[(amend|reword):]<commit>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixupKind {
+    Fixup,
+    Amend,
+    Reword,
+}
+
+/// The status format of `--dry-run` (`--short`, `--porcelain`, `--long`).
+const FORMAT_SHORT: i32 = 1;
+const FORMAT_PORCELAIN: i32 = 2;
+const FORMAT_LONG: i32 = 3;
 
 /// The parsed command line.
 struct Args {
@@ -75,7 +98,44 @@ struct Args {
     cleanup: Option<String>,
     status: Option<bool>,
     untracked: Option<String>,
+    /// `-v` count; `None` when neither `-v` nor `--no-verbose` was given.
+    verbose: Option<i32>,
+    /// `-C`/`--reuse-message`.
+    reuse: Option<String>,
+    /// `-c`/`--reedit-message`.
+    reedit: Option<String>,
+    fixup: Option<(FixupKind, String)>,
+    squash: Option<String>,
+    trailers: Vec<String>,
+    signoff: bool,
+    /// `--no-gpg-sign` was given.
+    no_gpg_sign: bool,
+    template: Option<String>,
+    dry_run: bool,
+    /// `FORMAT_*`, 0 when not given.
+    format: i32,
+    branch: Option<bool>,
+    ahead_behind: Option<bool>,
+    nul: bool,
+    /// `--pathspec-from-file` and `--pathspec-file-nul`.
+    pathspec_file: Option<(String, bool)>,
     paths: Vec<String>,
+}
+
+/// Split `--fixup=<value>` into its kind and commit; an unknown
+/// `<word>:` prefix is an error.
+fn parse_fixup(value: &str) -> Result<(FixupKind, String), Die> {
+    if let Some((word, rest)) = value.split_once(':') {
+        match word {
+            "amend" => return Ok((FixupKind::Amend, rest.to_owned())),
+            "reword" => return Ok((FixupKind::Reword, rest.to_owned())),
+            w if !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphabetic()) => {
+                return Err(fatal(msg::unknown_fixup(value)));
+            }
+            _ => {}
+        }
+    }
+    Ok((FixupKind::Fixup, value.to_owned()))
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, Die> {
@@ -83,6 +143,8 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     let edit = Cell::new(-1);
     let status = Cell::new(-1);
     let verify = Cell::new(-1);
+    let post_rewrite = Cell::new(-1);
+    let verbose = Cell::new(-1);
     let quiet = Cell::new(false);
     let all = Cell::new(false);
     let include = Cell::new(false);
@@ -93,14 +155,34 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     let reset_author = Cell::new(false);
     let no_verify = Cell::new(false);
     let no_post_rewrite = Cell::new(false);
+    let signoff = Cell::new(false);
+    let dry_run = Cell::new(false);
+    let nul = Cell::new(false);
+    let interactive = Cell::new(false);
+    let patch = Cell::new(false);
+    let format = Cell::new(0);
+    let branch = Cell::new(-1);
+    let ahead_behind = Cell::new(-1);
+    let context = Cell::new(-1);
+    let interhunk = Cell::new(-1);
     let author = RefCell::new(None);
     let date = RefCell::new(None);
     let cleanup = RefCell::new(None);
     let untracked = RefCell::new(None);
+    let reuse = RefCell::new(None);
+    let reedit = RefCell::new(None);
+    let fixup: RefCell<Option<String>> = RefCell::new(None);
+    let squash = RefCell::new(None);
+    let template = RefCell::new(None);
+    let gpg_sign = Cell::new(-1);
+    let trailers = RefCell::new(Vec::new());
+    let from_file = RefCell::new(None);
+    let file_nul = Cell::new(false);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
             Opt::flag('q', "quiet", &quiet, msg::HELP_QUIET),
+            Opt::countup('v', "verbose", &verbose, msg::HELP_VERBOSE),
             Opt::group(msg::GROUP_MESSAGE),
             Opt::callback('F', "file", Some("file"), msg::HELP_FILE, |v, _| {
                 pieces
@@ -116,32 +198,99 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
                     .push(Piece::Message(v.unwrap_or_default().to_string()));
                 Ok(())
             }),
+            Opt::string('c', "reedit-message", &reedit, "commit", msg::HELP_REEDIT),
+            Opt::string('C', "reuse-message", &reuse, "commit", msg::HELP_REUSE),
+            Opt::string(None, "fixup", &fixup, msg::ARGH_FIXUP, msg::HELP_FIXUP).literal_argh(),
+            Opt::string(None, "squash", &squash, "commit", msg::HELP_SQUASH),
             Opt::flag(None, "reset-author", &reset_author, msg::HELP_RESET_AUTHOR),
+            Opt::string_list(None, "trailer", &trailers, "trailer", msg::HELP_TRAILER),
+            Opt::flag('s', "signoff", &signoff, msg::HELP_SIGNOFF),
+            Opt::string('t', "template", &template, "file", msg::HELP_TEMPLATE),
             Opt::bool('e', "edit", &edit, msg::HELP_EDIT),
             Opt::string(None, "cleanup", &cleanup, "mode", msg::HELP_CLEANUP),
             Opt::bool(None, "status", &status, msg::HELP_STATUS),
+            Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |_, unset| {
+                gpg_sign.set(i32::from(!unset));
+                Ok(())
+            })
+            .optional(None),
             Opt::group(msg::GROUP_CONTENTS),
             Opt::flag('a', "all", &all, msg::HELP_ALL),
             Opt::flag('i', "include", &include, msg::HELP_INCLUDE),
+            Opt::flag(None, "interactive", &interactive, msg::HELP_INTERACTIVE),
+            Opt::flag('p', "patch", &patch, msg::HELP_PATCH),
+            Opt::integer('U', "unified", &context, msg::HELP_UNIFIED).noneg(),
+            Opt::integer(None, "inter-hunk-context", &interhunk, msg::HELP_INTER_HUNK)
+                .noneg(),
             Opt::flag('o', "only", &only, msg::HELP_ONLY),
             Opt::flag('n', "no-verify", &no_verify, msg::HELP_NO_VERIFY).noneg(),
             Opt::bool(None, "verify", &verify, msg::HELP_VERIFY).noneg(),
+            Opt::flag(None, "dry-run", &dry_run, msg::HELP_DRY_RUN),
+            Opt::set_int(None, "short", &format, msg::HELP_SHORT, FORMAT_SHORT),
+            Opt::bool(None, "branch", &branch, msg::HELP_BRANCH),
+            Opt::bool(None, "ahead-behind", &ahead_behind, msg::HELP_AHEAD_BEHIND),
+            Opt::set_int(None, "porcelain", &format, msg::HELP_PORCELAIN, FORMAT_PORCELAIN),
+            Opt::set_int(None, "long", &format, msg::HELP_LONG, FORMAT_LONG),
+            Opt::flag('z', "null", &nul, msg::HELP_NULL),
             Opt::flag(None, "amend", &amend, msg::HELP_AMEND),
             Opt::flag(None, "no-post-rewrite", &no_post_rewrite, msg::HELP_NO_POST_REWRITE)
                 .noneg(),
+            Opt::bool(None, "post-rewrite", &post_rewrite, msg::HELP_POST_REWRITE).noneg(),
             Opt::string('u', "untracked-files", &untracked, "mode", msg::HELP_UNTRACKED)
                 .optional(Some("all")),
-            Opt::flag(None, "allow-empty", &allow_empty, msg::HELP_ALLOW_EMPTY),
+            Opt::flag(None, "allow-empty", &allow_empty, msg::HELP_ALLOW_EMPTY).hidden(),
             Opt::flag(
                 None,
                 "allow-empty-message",
                 &allow_empty_message,
                 msg::HELP_ALLOW_EMPTY_MESSAGE,
+            )
+            .hidden(),
+            Opt::string(
+                None,
+                "pathspec-from-file",
+                &from_file,
+                "file",
+                rmsg::HELP_PATHSPEC_FROM_FILE,
             ),
+            Opt::flag(None, "pathspec-file-nul", &file_nul, rmsg::HELP_PATHSPEC_FILE_NUL),
         ],
     );
     let paths = parser.parse(argv)?.args;
     drop(parser);
+    let from_file = from_file.into_inner();
+    if from_file.is_some() {
+        if interactive.get() || patch.get() {
+            return Err(fatal(msg::incompatible(
+                "--pathspec-from-file",
+                "--interactive/--patch",
+            )));
+        }
+        if all.get() {
+            return Err(fatal(msg::incompatible("--pathspec-from-file", "-a")));
+        }
+        if !paths.is_empty() {
+            return Err(fatal(rmsg::FROM_FILE_WITH_ARGS));
+        }
+    } else if file_nul.get() {
+        return Err(fatal(rmsg::FILE_NUL_WITHOUT_FROM_FILE));
+    }
+    if context.get() >= 0 && !(interactive.get() || patch.get()) {
+        return Err(fatal(msg::requires_interactive("--unified")));
+    }
+    if interhunk.get() >= 0 && !(interactive.get() || patch.get()) {
+        return Err(fatal(msg::requires_interactive("--inter-hunk-context")));
+    }
+    if gpg_sign.get() == 1 {
+        return Err(fatal(msg::not_supported("-S/--gpg-sign")));
+    }
+    if interactive.get() || patch.get() {
+        return Err(fatal(msg::not_supported("--interactive/--patch")));
+    }
+    let fixup = match fixup.into_inner() {
+        Some(v) => Some(parse_fixup(&v)?),
+        None => None,
+    };
     Ok(Args {
         pieces: pieces.into_inner(),
         edit: (edit.get() >= 0).then(|| edit.get() == 1),
@@ -154,12 +303,31 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
         allow_empty_message: allow_empty_message.get(),
         reset_author: reset_author.get(),
         no_verify: if verify.get() >= 0 { verify.get() == 0 } else { no_verify.get() },
-        no_post_rewrite: no_post_rewrite.get(),
+        no_post_rewrite: if post_rewrite.get() >= 0 {
+            post_rewrite.get() == 0
+        } else {
+            no_post_rewrite.get()
+        },
         author: author.into_inner(),
         date: date.into_inner(),
         cleanup: cleanup.into_inner(),
         status: (status.get() >= 0).then(|| status.get() == 1),
         untracked: untracked.into_inner(),
+        verbose: (verbose.get() >= 0).then(|| verbose.get()),
+        reuse: reuse.into_inner(),
+        reedit: reedit.into_inner(),
+        fixup,
+        squash: squash.into_inner(),
+        trailers: trailers.into_inner(),
+        signoff: signoff.get(),
+        no_gpg_sign: gpg_sign.get() == 0,
+        template: template.into_inner(),
+        dry_run: dry_run.get(),
+        format: format.get(),
+        branch: (branch.get() >= 0).then(|| branch.get() == 1),
+        ahead_behind: (ahead_behind.get() >= 0).then(|| ahead_behind.get() == 1),
+        nul: nul.get(),
+        pathspec_file: from_file.map(|f| (f, file_nul.get())),
         paths,
     })
 }
@@ -392,8 +560,24 @@ fn update_all(
 ) -> Result<bool, Die> {
     use rgit_worktree::stat::Status;
     let mut paths = Vec::new();
+    let mut gitlinks = Vec::new();
     for e in index.entries() {
-        if e.stage() != Stage::MERGED || e.mode.is_gitlink() {
+        if e.stage() != Stage::MERGED {
+            continue;
+        }
+        if e.mode.is_gitlink() {
+            // A submodule: record the commit checked out there.
+            let full = os_path(root, e.path());
+            if let Some(head) = repository::submodule_head(&full, repo.hash) {
+                if head != e.id {
+                    let mut n = Entry::new(e.path().to_vec(), Stage::MERGED, IndexMode::GITLINK, head);
+                    if let Ok(m) = std::fs::symlink_metadata(&full) {
+                        n.stat = rgit_worktree::stat::stat_from_metadata(&m);
+                    }
+                    n.flags = e.flags;
+                    gitlinks.push(n);
+                }
+            }
             continue;
         }
         let st = checker
@@ -406,15 +590,21 @@ fn update_all(
     for p in &paths {
         update_path(repo, checker, root, index, p)?;
     }
-    Ok(!paths.is_empty())
-}
-
-/// `post-rewrite` belongs to #154; until then an amend says that it did
-/// not run (decision on #45: never skip a hook silently).
-fn hook_warnings(args: &Args, hooks: &rgit_hook::Hooks) {
-    if args.amend && !args.no_post_rewrite && hooks.exists("post-rewrite") {
-        eprintln!("{}", msg::hook_not_run("post-rewrite"));
+    let changed = !paths.is_empty() || !gitlinks.is_empty();
+    for n in gitlinks {
+        let path = n.path().to_vec();
+        index
+            .add(
+                n,
+                AddOptions {
+                    ok_to_replace: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(|err| fatal(err.to_string()))?;
+        index.invalidate_path(&path);
     }
+    Ok(changed)
 }
 
 /// The index files the commit hooks see while the command holds
@@ -538,14 +728,110 @@ fn diff_summary(repo: &Repo, pairs: &[Pair], quote_high: bool) -> Vec<u8> {
     out
 }
 
+/// A commit named on the command line (`-C`, `-c`, `--fixup`, `--squash`).
+fn lookup_commit(repo: &mut Repo, name: &str) -> Result<(ObjectId, rgit_object::Commit), Die> {
+    let id = repo
+        .resolve(name)
+        .and_then(|i| repo.peel_to(i, ObjectKind::Commit))
+        .ok_or_else(|| fatal(msg::could_not_lookup(name)))?;
+    match repo.read_object(&id) {
+        Some(Object::Commit(c)) => Ok((id, c)),
+        _ => Err(fatal(msg::could_not_lookup(name))),
+    }
+}
+
+/// The template file: `-t` or `commit.template` (`~` expanded); `None`
+/// for none or a missing `:(optional)` one.
+fn template_path(repo: &Repo, args: &Args, root: &Path, prefix: &[u8]) -> Result<Option<PathBuf>, Die> {
+    let env = SystemEnv::default();
+    let raw: Vec<u8> = match &args.template {
+        Some(t) => t.as_bytes().to_vec(),
+        None => match repo.config.get("commit.template") {
+            None => return Ok(None),
+            Some(e) => match &e.value {
+                Some(v) => v.to_vec(),
+                None => {
+                    return Err(crate::comment::bad_entry(
+                        e,
+                        &crate::messages::comment::missing_value("commit.template"),
+                    ));
+                }
+            },
+        },
+    };
+    if raw.is_empty() {
+        // `-t ''` means no template; an empty `commit.template` names the
+        // file ''.
+        return Ok(args.template.is_none().then(PathBuf::new));
+    }
+    let path = rgit_config::value::interpolate_path(&raw, &env)
+        .map_err(|_| fatal(msg::could_not_read_template(&lossy(&raw), "")))?;
+    Ok(path.map(|p| {
+        if p.is_absolute() || args.template.is_none() {
+            p
+        } else {
+            os_path(root, prefix).join(p)
+        }
+    }))
+}
+
+/// The message without its first line and the empty lines after it (the
+/// body of an `amend!` message).
+fn without_first_line(text: &[u8]) -> &[u8] {
+    let mut rest = match text.iter().position(|&b| b == b'\n') {
+        Some(p) => &text[p + 1..],
+        None => &[][..],
+    };
+    while let Some(r) = rest.strip_prefix(b"\n") {
+        rest = r;
+    }
+    rest
+}
+
+/// The `Signed-off-by` line of the committer.
+fn signoff_line(committer: &Signature) -> Vec<u8> {
+    let mut v = b"Signed-off-by: ".to_vec();
+    v.extend_from_slice(name_email(committer).as_bytes());
+    v
+}
+
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
-    let args = parse_args(argv)?;
+    let mut args = parse_args(argv)?;
     let mut repo = Repo::open(ctx, Mode::Required)?;
     let advisor = ctx.advisor(&repo.config)?;
     advisor.check_env().map_err(Die::Fatal)?;
+    if let Some((name, nul)) = &args.pathspec_file {
+        args.paths = super::restore::read_pathspec_file(&repo, name, *nul)?
+            .iter()
+            .map(|p| lossy(p))
+            .collect();
+    }
     let head = repo.resolve("HEAD").filter(|_| repo.refs.resolve("HEAD").is_some());
     let head = head.and_then(|h| repo.peel_to(h, ObjectKind::Commit));
-    let repo = repo;
+    // The configuration is read before the options are checked.
+    let template_file = {
+        let root = repo.work_tree()?;
+        template_path(&repo, &args, &root, &repo.prefix())?
+    };
+
+    // The status format of a dry run.
+    if args.format == FORMAT_LONG && args.nul {
+        return Err(fatal(msg::incompatible("--long", "-z")));
+    }
+    if args.nul && args.format == 0 {
+        args.format = FORMAT_PORCELAIN;
+    }
+    if args.format != 0 {
+        args.dry_run = true;
+    }
+    let show_branch = args.branch.unwrap_or(false);
+    let branch_info = if args.dry_run && show_branch && matches!(args.format, FORMAT_SHORT | FORMAT_PORCELAIN) {
+        let revs = crate::refs_support::Revs::new(ctx, &repo.setup)?;
+        let count = args.ahead_behind.unwrap_or(true);
+        Some(super::status::branch_info(&mut repo, &revs, count)?)
+    } else {
+        None
+    };
 
     // Option checks, in git's order.
     if args.amend && head.is_none() {
@@ -556,10 +842,47 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if has_m && has_f {
         return Err(fatal(msg::M_AND_F));
     }
+    if args.squash.is_some() && args.fixup.is_some() {
+        return Err(fatal(msg::incompatible("--squash", "--fixup")));
+    }
+    let sources: Vec<&str> = [
+        (args.reuse.is_some(), "-C"),
+        (args.reedit.is_some(), "-c"),
+        (has_f, "-F"),
+        (args.fixup.is_some(), "--fixup"),
+    ]
+    .into_iter()
+    .filter_map(|(set, name)| set.then_some(name))
+    .collect();
+    if sources.len() > 1 {
+        return Err(fatal(msg::incompatible(sources[0], sources[1])));
+    }
+    if has_m {
+        if args.reuse.is_some() {
+            return Err(fatal(msg::incompatible("-m", "-C")));
+        }
+        if args.reedit.is_some() {
+            return Err(fatal(msg::incompatible("-m", "-c")));
+        }
+    }
+    if matches!(args.fixup, Some((FixupKind::Reword, _))) {
+        if args.all || args.include || args.only {
+            return Err(fatal(msg::REWORD_WITH_CONTENTS));
+        }
+        if let Some(p) = args.paths.first() {
+            return Err(fatal(msg::reword_with_path(p)));
+        }
+        // A reword commit takes only a message.
+        args.only = true;
+    }
+    // amend! and reword commits may leave the tree alone.
+    if matches!(args.fixup, Some((FixupKind::Amend | FixupKind::Reword, _))) {
+        args.allow_empty = true;
+    }
     if args.reset_author && args.author.is_some() {
         return Err(fatal(msg::RESET_AUTHOR_AND_AUTHOR));
     }
-    if args.reset_author && !args.amend {
+    if args.reset_author && !(args.amend || args.reuse.is_some() || args.reedit.is_some()) {
         return Err(fatal(msg::RESET_AUTHOR_ONLY_WITH));
     }
     if args.include && args.only {
@@ -578,6 +901,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if args.all && !args.paths.is_empty() {
         return Err(fatal(msg::paths_with_all(&args.paths[0])));
+    }
+    if !args.no_gpg_sign && config_bool(&repo, "commit.gpgsign") == Some(true) {
+        return Err(fatal(msg::not_supported("commit.gpgSign")));
     }
     let cleanup_cfg = args
         .cleanup
@@ -600,6 +926,35 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     {
         eprintln!("warning: Support for 'core.commentChar=auto' is deprecated and will be removed in Git 3.0");
     }
+    // The commits named on the command line.
+    let reuse_name = args.reuse.clone().or_else(|| args.reedit.clone());
+    let reused = match &reuse_name {
+        Some(n) => Some(lookup_commit(&mut repo, n)?),
+        None => None,
+    };
+    // git looks these up only once the index is prepared.
+    let fixup_lookup = match &args.fixup {
+        Some((kind, n)) => lookup_commit(&mut repo, n).map(|c| Some((*kind, c.1))),
+        None => Ok(None),
+    };
+    let squash_lookup = match &args.squash {
+        Some(n) => lookup_commit(&mut repo, n).map(Some),
+        None => Ok(None),
+    };
+    let repo = repo;
+    let verbose = args.verbose.unwrap_or_else(|| {
+        repo.config
+            .get("commit.verbose")
+            .and_then(|e| e.value.as_ref())
+            .map_or(0, |v| {
+                // A boolean or an integer (git_config_bool_or_int).
+                rgit_config::value::parse_int(v, rgit_config::value::IntWidth::I32)
+                    .ok()
+                    .and_then(|n| i32::try_from(n).ok())
+                    .or_else(|| rgit_config::value::parse_bool(Some(v)).map(i32::from))
+                    .unwrap_or(0)
+            })
+    });
     let git_dir = repo.setup.cwd.join(&repo.setup.git_dir);
     for f in ["CHERRY_PICK_HEAD", "REVERT_HEAD"] {
         if git_dir.join(f).exists() {
@@ -634,12 +989,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(c) => c.parents().unwrap_or_default(),
         None => head.into_iter().chain(merge_heads.iter().copied()).collect(),
     };
+    let tree_id_of = |id: &ObjectId| -> Option<ObjectId> {
+        match repo.read_object(id) {
+            Some(Object::Commit(c)) => c.tree().ok(),
+            _ => None,
+        }
+    };
     let tree_of = |id: &ObjectId| -> Result<Flat, Die> {
         let mut flat = Flat::new();
-        if let Some(Object::Commit(c)) = repo.read_object(id) {
-            if let Ok(t) = c.tree() {
-                tree_changes::flatten_tree(&repo, &t, &mut flat)?;
-            }
+        if let Some(t) = tree_id_of(id) {
+            tree_changes::flatten_tree(&repo, &t, &mut flat)?;
         }
         Ok(flat)
     };
@@ -647,12 +1006,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(p) => tree_of(p)?,
         None => Flat::new(),
     };
+    let base_tree = parents
+        .first()
+        .and_then(tree_id_of)
+        .unwrap_or_else(|| ObjectId::empty_tree(repo.hash));
     let head_flat = match head {
         Some(h) => tree_of(&h)?,
         None => Flat::new(),
     };
 
-    // Identities.
+    // Identities. The author comes from the amended commit or the one of
+    // -C/-c, unless --reset-author.
     let env = SystemEnv::default();
     let icfg = IdentConfig::from_config(&repo.config).map_err(|p| {
         p.print();
@@ -667,7 +1031,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let committer_ident = ident(Role::Committer)?;
     let committer = signature_from(&committer_ident.to_bstring())?;
-    let mut author_parts: (Vec<u8>, Vec<u8>, u64, i32) = match &old_commit {
+    let author_commit = reused.as_ref().map(|(_, c)| c).or(old_commit.as_ref());
+    let author_from_commit = author_commit.is_some() && !args.reset_author;
+    let mut author_parts: (Vec<u8>, Vec<u8>, u64, i32) = match author_commit {
         Some(c) if !args.reset_author => {
             let a = c
                 .author()
@@ -707,9 +1073,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         author_parts.2 = *t;
         author_parts.3 = *tz;
     }
-    let have_message = !args.pieces.is_empty();
-    let use_editor = args.edit.unwrap_or(!have_message && !args.amend)
-        || (args.edit.is_none() && args.amend && !have_message);
+    let plain_fixup = matches!(args.fixup, Some((FixupKind::Fixup, _)));
+    let use_editor = args
+        .edit
+        .unwrap_or(!(has_m || has_f || args.reuse.is_some() || plain_fixup));
     // The hooks see the author and, without an editor, `GIT_EDITOR=:`.
     let git_hooks = crate::hooks::for_repo(ctx, &repo.setup, &repo.config)?;
     let mut hook_env: Vec<(String, String)> = vec![
@@ -813,10 +1180,84 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(fatal(msg::UNRESOLVED));
     }
 
+    // An amend! message comes from the target commit (checked once the
+    // index is prepared, as in git).
+    if has_m {
+        match &args.fixup {
+            Some((FixupKind::Amend, _)) => {
+                return Err(fatal(msg::incompatible("-m", "--fixup:amend")));
+            }
+            Some((FixupKind::Reword, _)) => {
+                return Err(fatal(msg::incompatible("-m", "--fixup:reword")));
+            }
+            _ => {}
+        }
+    }
+    let fixup_target = fixup_lookup?;
+    let squash_target = squash_lookup?;
+
     // git writes the index (refreshed) and the trees before it looks
     // for changes and asks for the message.
     if !deferred && !args.all && !args.only {
         write_index(&repo, &mut index.clone(), index_mtime)?;
+    }
+
+    let renames = !matches!(config_bool(&repo, "diff.renames"), Some(false));
+    let hints = advisor.enabled(Advice::StatusHints).map_err(Die::Fatal)?;
+    let mut header = wt_status::header(&repo, head);
+    header.merging = merging;
+    header.amend = args.amend;
+    let prefix = repo.prefix();
+    let quote_high = repo.quote_path();
+
+    if args.dry_run {
+        let commit_index = commit_index.as_ref().unwrap_or(&index);
+        let staged = tree_changes::diff(&base, &wt_status::index_flat(commit_index), renames);
+        let committable = !staged.is_empty() || parents.len() > 1;
+        let collected =
+            wt_status::collect(&repo, &base, commit_index, index_mtime, untracked, renames)?;
+        let mut out = Vec::new();
+        if args.format == FORMAT_SHORT || args.format == FORMAT_PORCELAIN {
+            let relative = args.format == FORMAT_SHORT
+                && !args.nul
+                && config_bool(&repo, "status.relativepaths").unwrap_or(true);
+            out = dry_run::short(
+                &collected,
+                branch_info.as_ref(),
+                args.nul,
+                quote_high,
+                if relative { prefix.clone() } else { Vec::new() },
+            );
+        } else {
+            let last = (!committable).then(|| {
+                wt_status::nothing_line(&collected, &header, untracked, args.amend, hints)
+            });
+            out.extend_from_slice(&wt_status::render(
+                &collected,
+                &header,
+                &Render {
+                    hints,
+                    branch_hints: hints,
+                    comment: None,
+                    prefix: &prefix,
+                    quote_high,
+                    last,
+                    untracked_not_listed: untracked == Untracked::No,
+                },
+            ));
+            if verbose > 0 {
+                out.extend_from_slice(&verbose::staged_diff(
+                    &repo,
+                    &base_tree,
+                    commit_index,
+                    false,
+                )?);
+            }
+        }
+        let mut o = std::io::stdout().lock();
+        let _ = o.write_all(&out);
+        let _ = o.flush();
+        return Ok(if committable { 0 } else { 1 });
     }
 
     // The hooks read (and may change) the index being committed: the
@@ -853,6 +1294,111 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
         }
     }
+
+    // The message, from the first source that has one.
+    let mut message: Vec<u8> = Vec::new();
+    // The second and third argument of prepare-commit-msg.
+    let mut source: Vec<String> = Vec::new();
+    let mut template: Option<Vec<u8>> = None;
+    if let Some((_, sq)) = &squash_target {
+        message.extend_from_slice(b"squash! ");
+        message.extend_from_slice(&cmsg::subject(sq.message()));
+        message.extend_from_slice(b"\n\n");
+        source.push("message".into());
+    }
+    match &fixup_target {
+        Some((FixupKind::Fixup, c)) => {
+            message.extend_from_slice(b"fixup! ");
+            message.extend_from_slice(&cmsg::subject(c.message()));
+            message.extend_from_slice(b"\n\n");
+            source.push("message".into());
+        }
+        Some((_, c)) => {
+            message.extend_from_slice(b"amend! ");
+            message.extend_from_slice(&cmsg::subject(c.message()));
+            message.extend_from_slice(b"\n\n");
+            let body = c.message();
+            if body.starts_with(b"amend! ") {
+                message.extend_from_slice(without_first_line(body));
+            } else {
+                message.extend_from_slice(body);
+            }
+            source.push("message".into());
+        }
+        None => {}
+    }
+    let mut given: Vec<u8> = Vec::new();
+    for piece in &args.pieces {
+        match piece {
+            Piece::Message(m) => {
+                if !given.is_empty() {
+                    given.push(b'\n');
+                }
+                given.extend_from_slice(m.as_bytes());
+                if !given.is_empty() && !given.ends_with(b"\n") {
+                    given.push(b'\n');
+                }
+            }
+            Piece::File(f) => {
+                if f == "-" {
+                    std::io::stdin()
+                        .read_to_end(&mut given)
+                        .map_err(|_| fatal(msg::COULD_NOT_READ_STDIN))?;
+                } else {
+                    let path = Path::new(f);
+                    let path = if path.is_absolute() {
+                        path.to_path_buf()
+                    } else {
+                        os_path(&root, &prefix).join(path)
+                    };
+                    let data = std::fs::read(path).map_err(|e| {
+                        fatal(msg::could_not_read_log(f, &crate::global::strerror(&e)))
+                    })?;
+                    given.extend_from_slice(&data);
+                }
+            }
+        }
+    }
+    if !args.pieces.is_empty() {
+        message.extend_from_slice(&given);
+        if source.is_empty() {
+            source.push("message".into());
+        }
+    } else if let Some((id, c)) = &reused {
+        // `--squash X -C X` does not repeat the message.
+        if squash_target.as_ref().is_none_or(|(sq, _)| sq != id) {
+            message.extend_from_slice(c.message());
+        }
+        if source.is_empty() {
+            source = vec!["commit".into(), reuse_name.clone().unwrap_or_default()];
+        }
+    } else if fixup_target.is_some() {
+    } else if let Some(c) = &old_commit {
+        message.extend_from_slice(c.message());
+        source = vec!["commit".into(), "HEAD".into()];
+    } else if merging {
+        message.extend(std::fs::read(git_dir.join("MERGE_MSG")).unwrap_or_default());
+        source.push("merge".into());
+    } else if use_editor {
+        if let Some(path) = &template_file {
+            let data = std::fs::read(path).map_err(|e| {
+                let shown = match &args.template {
+                    Some(t) => t.clone(),
+                    None => path.display().to_string(),
+                };
+                fatal(msg::could_not_read_template(
+                    &shown,
+                    &crate::global::strerror(&e),
+                ))
+            })?;
+            message.extend_from_slice(&data);
+            if source.is_empty() {
+                source.push("template".into());
+            }
+            template = Some(data);
+        }
+    }
+
     let commit_index = commit_index.as_ref().unwrap_or(&index);
     let tree = super::write_tree::write_tree(&repo, commit_index, false, None)?;
     if let Some(Err(e)) = forced_date {
@@ -866,22 +1412,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         author_parts.3,
     ))?;
 
-    // An amended commit keeps its author date; it is shown like a
-    // differing one (observed with the git binary).
-    let show_author_date = sig_time(&author) != sig_time(&committer)
-        || (args.amend && !args.reset_author)
-        || args.date.is_some();
+    // An amended or reused commit keeps its author date; it is shown like
+    // a differing one (observed with the git binary).
+    let show_author_date = author_from_commit || args.date.is_some();
 
-    let renames = !matches!(config_bool(&repo, "diff.renames"), Some(false));
-    let hints = advisor.enabled(Advice::StatusHints).map_err(Die::Fatal)?;
-    let mut header = wt_status::header(&repo, head);
-    header.merging = merging;
     let staged = tree_changes::diff(&base, &wt_status::index_flat(commit_index), renames);
     // A merge (new or amended) is made even when its tree equals the first
     // parent's.
     let committable = !staged.is_empty() || parents.len() > 1;
-    let prefix = repo.prefix();
-    let quote_high = repo.quote_path();
 
     if !committable && !args.allow_empty {
         let collected = wt_status::collect(&repo, &base, commit_index, index_mtime, untracked, renames)?;
@@ -908,48 +1446,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(1);
     }
 
-    // The message.
-    let mut message: Vec<u8> = Vec::new();
-    for piece in &args.pieces {
-        match piece {
-            Piece::Message(m) => {
-                if !message.is_empty() {
-                    message.push(b'\n');
-                }
-                message.extend_from_slice(m.as_bytes());
-                if !message.is_empty() && !message.ends_with(b"\n") {
-                    message.push(b'\n');
-                }
-            }
-            Piece::File(f) => {
-                if f == "-" {
-                    std::io::stdin()
-                        .read_to_end(&mut message)
-                        .map_err(|_| fatal(msg::COULD_NOT_READ_STDIN))?;
-                } else {
-                    let path = Path::new(f);
-                    let path = if path.is_absolute() {
-                        path.to_path_buf()
-                    } else {
-                        os_path(&root, &prefix).join(path)
-                    };
-                    let data = std::fs::read(&path).map_err(|e| {
-                        fatal(msg::could_not_read_log(f, &crate::global::strerror(&e)))
-                    })?;
-                    message.extend_from_slice(&data);
-                }
-            }
-        }
-    }
-    if !have_message {
-        if let Some(c) = &old_commit {
-            message = c.message().to_vec();
-        } else if merging {
-            message = std::fs::read(git_dir.join("MERGE_MSG")).unwrap_or_default();
-        }
-    }
     let mode = cleanup.resolve(use_editor);
-    if use_editor && cleanup != Cleanup::Verbatim {
+    if use_editor && cleanup != Cleanup::Verbatim && template.is_none() {
         message = cmsg::stripspace(&message, None);
     }
     let comment = if use_editor {
@@ -957,13 +1455,33 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else {
         comment_string(&repo, b"")?
     };
+    let trailer_conf = if args.signoff || !args.trailers.is_empty() {
+        let (conf, warnings) = rgit_trailer::Config::from_config(&repo.config).map_err(|entry| {
+            let name = String::from_utf8_lossy(&entry.name).into_owned();
+            crate::comment::bad_entry(&entry, &crate::messages::comment::missing_value(&name))
+        })?;
+        for w in warnings {
+            eprintln!("warning: {w}");
+        }
+        conf
+    } else {
+        rgit_trailer::Config::default()
+    };
+    if args.signoff {
+        message = rgit_trailer::append_signoff(
+            &message,
+            &signoff_line(&committer),
+            &trailer_conf,
+            comment.as_bytes(),
+        );
+    }
     let editmsg = git_dir.join("COMMIT_EDITMSG");
 
+    let include_status = args
+        .status
+        .or_else(|| config_bool(&repo, "commit.status"))
+        .unwrap_or(true);
     if use_editor {
-        let include_status = args
-            .status
-            .or_else(|| config_bool(&repo, "commit.status"))
-            .unwrap_or(true);
         let mut file = message.clone();
         if include_status && merging {
             for l in msg::MERGE_NOTICE.lines() {
@@ -983,9 +1501,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 lines.push(cmsg::SCISSORS.trim_start().to_owned());
                 lines.extend(msg::SCISSORS_HELP.lines().map(str::to_owned));
             } else if mode == Cleanup::Strip {
-                lines.extend(msg::instructions_strip(&comment).lines().map(str::to_owned));
+                lines.extend(msg::instructions_strip(&comment, args.allow_empty_message).lines().map(str::to_owned));
             } else {
-                lines.extend(msg::instructions_keep(&comment).lines().map(str::to_owned));
+                lines.extend(msg::instructions_keep(&comment, args.allow_empty_message).lines().map(str::to_owned));
             }
             let mut idents = Vec::new();
             if author.name != committer.name || author.email != committer.email {
@@ -1022,31 +1540,58 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     untracked_not_listed: untracked == Untracked::No,
                 },
             ));
+            if verbose > 0 {
+                // With --cleanup=scissors the line is already at the top.
+                if cleanup != Cleanup::Scissors {
+                    file.extend_from_slice(cmsg::scissors_line(&comment).as_bytes());
+                    file.push(b'\n');
+                    for l in msg::SCISSORS_HELP.lines() {
+                        file.extend_from_slice(comment.as_bytes());
+                        file.push(b' ');
+                        file.extend_from_slice(l.as_bytes());
+                        file.push(b'\n');
+                    }
+                }
+                file.extend_from_slice(&verbose::template_diff(
+                    &repo,
+                    &base_tree,
+                    commit_index,
+                    verbose,
+                    &comment,
+                )?);
+            }
         }
         std::fs::write(&editmsg, &file).map_err(|e| fatal(e.to_string()))?;
     } else {
-        let mut cleaned = message.clone();
-        cleaned = cmsg::cleanup(&cleaned, mode, &comment);
+        let cleaned = cmsg::cleanup(&message, mode, &comment);
         std::fs::write(&editmsg, &cleaned).map_err(|e| fatal(e.to_string()))?;
+    }
+    if !args.trailers.is_empty() {
+        let data = std::fs::read(&editmsg).map_err(|e| fatal(e.to_string()))?;
+        let new: Vec<rgit_trailer::NewTrailer> = args
+            .trailers
+            .iter()
+            .map(|t| rgit_trailer::NewTrailer::new(t.as_bytes()))
+            .collect();
+        let opts = rgit_trailer::Options {
+            no_divider: true,
+            comment: comment.as_bytes().into(),
+            ..Default::default()
+        };
+        let mut on_error = |m: &str| eprintln!("error: {m}");
+        let out = rgit_trailer::process(&data, &trailer_conf, &opts, &new, &mut on_error);
+        std::fs::write(&editmsg, &out).map_err(|e| fatal(e.to_string()))?;
     }
     let editmsg_shown = repo.setup.git_dir.join("COMMIT_EDITMSG");
     let editmsg_arg = editmsg_shown.to_string_lossy().into_owned();
-    let mut hook_ran = false;
     {
         let mut pcm_args = vec![editmsg_arg.as_str()];
-        if have_message {
-            pcm_args.push("message");
-        } else if args.amend {
-            pcm_args.extend(["commit", "HEAD"]);
-        } else if merging {
-            pcm_args.push("merge");
-        }
+        pcm_args.extend(source.iter().map(String::as_str));
         let outcome = crate::hooks::run(
             &git_hooks,
             "prepare-commit-msg",
             &hook_opts(&hook_index_file, &pcm_args),
         )?;
-        hook_ran |= outcome.ran > 0;
         if !outcome.ok() {
             return Ok(1);
         }
@@ -1075,28 +1620,42 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             "commit-msg",
             &hook_opts(&hook_index_file, &[editmsg_arg.as_str()]),
         )?;
-        hook_ran |= outcome.ran > 0;
         if !outcome.ok() {
             return Ok(1);
         }
     }
-    if use_editor || hook_ran {
-        message = std::fs::read(&editmsg).map_err(|e| fatal(e.to_string()))?;
-    }
+    let message = std::fs::read(&editmsg).map_err(|e| fatal(e.to_string()))?;
     drop(hook_index);
 
     let mut cleaned = message.clone();
-    if use_editor && cleanup == Cleanup::Scissors {
+    if use_editor && (cleanup == Cleanup::Scissors || (verbose > 0 && include_status)) {
         cmsg::cut_at_scissors(&mut cleaned, &comment);
     }
     let cleaned = cmsg::cleanup(&cleaned, mode, &comment);
     let strip_comments = (mode == Cleanup::Strip).then_some(comment.as_bytes());
+    if let Some(t) = &template {
+        if cleanup != Cleanup::Verbatim {
+            let t = cmsg::cleanup(t, mode, &comment);
+            if let Some(rest) = cleaned.strip_prefix(&t[..]) {
+                if cmsg::is_empty(rest, strip_comments) {
+                    eprintln!("{}", msg::TEMPLATE_UNTOUCHED);
+                    return Ok(1);
+                }
+            }
+        }
+    }
     if !args.allow_empty_message && cmsg::is_empty(&cleaned, strip_comments) {
         eprintln!("{}", msg::EMPTY_MESSAGE);
         return Ok(1);
     }
-
-    hook_warnings(&args, &git_hooks);
+    if matches!(fixup_target, Some((FixupKind::Amend | FixupKind::Reword, _)))
+        && !args.allow_empty_message
+        && cleaned.starts_with(b"amend! ")
+        && cmsg::is_empty(without_first_line(&cleaned), strip_comments)
+    {
+        eprintln!("{}", msg::EMPTY_BODY);
+        return Ok(1);
+    }
 
     // The objects and the ref update.
     let encoding = repo
@@ -1196,6 +1755,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         write_index(&repo, &mut index.clone(), index_mtime)?;
     }
     crate::hooks::run(&git_hooks, "post-commit", &hook_opts(&repo.index_path(), &[]))?;
+    if let (Some(old), false) = (head.filter(|_| args.amend), args.no_post_rewrite) {
+        // githooks(5): `<old> <new>` lines on standard input, argument
+        // `amend`.
+        let input = format!("{} {}\n", old.to_hex(), oid.to_hex());
+        crate::hooks::run(
+            &git_hooks,
+            "post-rewrite",
+            &RunOptions::with_args(["amend"]).stdin(rgit_hook::Input::Data(input.as_bytes())),
+        )?;
+    }
     if args.quiet {
         return Ok(0);
     }

@@ -130,6 +130,8 @@ pub struct Header {
     pub initial: bool,
     /// A merge is being concluded (`MERGE_HEAD`).
     pub merging: bool,
+    /// `commit --amend`: the changes are against `HEAD^1`.
+    pub amend: bool,
 }
 
 fn parents(repo: &Repo, id: &ObjectId) -> Vec<ObjectId> {
@@ -171,6 +173,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
             tracking: None,
             initial,
             merging: false,
+            amend: false,
         };
     };
     let branch = target
@@ -183,6 +186,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
         tracking,
         initial,
         merging: false,
+        amend: false,
     }
 }
 
@@ -402,6 +406,8 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
             lines.push(
                 if header.initial {
                     msg::HINT_UNSTAGE_INITIAL
+                } else if header.amend {
+                    msg::HINT_UNSTAGE_AMEND
                 } else {
                     msg::HINT_UNSTAGE
                 }
