@@ -363,6 +363,47 @@ fn merge_local_changes() {
     );
 }
 
+/// A signed tag goes into a `mergetag` header (t4202 `--show-signature`
+/// for merged tags); an unsigned one does not. The signature is not
+/// checked, so a made-up one does.
+#[test]
+fn merge_signed_tag() {
+    let signed = |fx: Fixture| {
+        let id = String::from_utf8(fx.git_stdout(["rev-parse", "side"])).unwrap();
+        let tag = format!(
+            "object {}\ntype commit\ntag sig\ntagger C O Mitter <committer@example.com> 1112912053 -0700\n\n\
+             signed tag\n\n-----BEGIN PGP SIGNATURE-----\n\nabc\n-----END PGP SIGNATURE-----\n",
+            id.trim()
+        );
+        let fx = fx.write(".git/tag.txt", tag);
+        let tag_id =
+            String::from_utf8(fx.git_stdout(["hash-object", "-t", "tag", "-w", ".git/tag.txt"]))
+                .unwrap();
+        let fx = fx.git(["update-ref", "refs/tags/sig", tag_id.trim()]);
+        let sig2 = String::from_utf8(fx.git_stdout(["rev-parse", "ahead"])).unwrap();
+        let tag2 = format!(
+            "object {}\ntype commit\ntag sig2\ntagger C O Mitter <committer@example.com> 1112912053 -0700\n\n\
+             second\n-----BEGIN SSH SIGNATURE-----\nxyz\n-----END SSH SIGNATURE-----\n",
+            sig2.trim()
+        );
+        let fx = fx.write(".git/tag2.txt", tag2);
+        let tag2_id =
+            String::from_utf8(fx.git_stdout(["hash-object", "-t", "tag", "-w", ".git/tag2.txt"]))
+                .unwrap();
+        fx.git(["update-ref", "refs/tags/sig2", tag2_id.trim()])
+    };
+    cases(
+        signed,
+        &[
+            &["merge", "--no-ff", "-m", "msg", "sig"],
+            &["merge", "-m", "msg", "sig", "vs"],
+            &["merge", "-m", "msg", "--no-ff", "sig2"],
+            &["merge", "-m", "msg", "--no-ff", "vs"],
+            &["merge", "-m", "msg", "--no-ff", "sig^0"],
+        ],
+    );
+}
+
 /// Merging into an unborn branch, from a detached HEAD, with an upstream.
 #[test]
 fn merge_special_heads() {
@@ -397,6 +438,30 @@ fn merge_special_heads() {
     cases(
         |fx| fx.git(["config", "branch.main.remote", "origin"]),
         &[&["merge"]],
+    );
+    // `@{upstream}` names the remote-tracking branch in the message
+    // (t1507: "Merge remote-tracking branch 'origin/side'").
+    cases(
+        |fx| {
+            fx.git(["config", "remote.origin.url", "../x"])
+                .git([
+                    "config",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/remotes/origin/*",
+                ])
+                .git(["config", "branch.main.remote", "origin"])
+                .git(["config", "branch.main.merge", "refs/heads/side"])
+                .git(["branch", "other", "ahead"])
+                .git(["config", "branch.other.remote", "origin"])
+                .git(["config", "branch.other.merge", "refs/heads/side"])
+        },
+        &[
+            &["merge", "@{u}"],
+            &["merge", "main@{upstream}"],
+            &["merge", "-s", "ours", "other@{u}"],
+            &["merge", "other@{U}~1"],
+            &["merge", "ahead@{u}"],
+        ],
     );
     cases(
         |fx| fx.git(["config", "branch.main.mergeOptions", "--no-ff -q"]),
@@ -444,6 +509,26 @@ fn merge_hooks() {
         failing,
         &[&["merge", "side"], &["merge", "--no-verify", "side"]],
     );
+    // `reference-transaction` runs for the branch update, its standard
+    // output goes to standard error (t1800). Only the branch is shown:
+    // git also reports `preparing` and the `AUTO_MERGE` updates.
+    let transaction = |fx: Fixture| {
+        fx.write_executable(
+            ".git/hooks/reference-transaction",
+            "#!/bin/sh\nwhile read o n r; do\n  case \"$1 $r\" in\n  \"prepared refs/heads/\"*|\"committed refs/heads/\"*) echo \"$1 $o $n $r\";;\n  esac\ndone\n",
+        )
+    };
+    cases(
+        transaction,
+        &[&["merge", "side"], &["merge", "ahead"], &["merge", "conf"]],
+    );
+    let refusing = |fx: Fixture| {
+        fx.write_executable(
+            ".git/hooks/reference-transaction",
+            "#!/bin/sh\ncat >/dev/null\ntest \"$1\" != prepared\n",
+        )
+    };
+    cases(refusing, &[&["merge", "side"]]);
     let editor = |fx: Fixture| {
         fx.write_executable(
             ".git/ed.sh",

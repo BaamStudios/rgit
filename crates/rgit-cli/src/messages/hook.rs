@@ -14,3 +14,8 @@ pub const H_Z: &str = "use NUL as line terminator";
 pub const H_SHOW_SCOPE: &str = "show the config scope that defined each hook";
 
 pub const NO_EVENT_TO_LIST: &str = "you must specify a hook event name to list";
+
+/// A `reference-transaction` hook refused the `prepared` phase.
+pub fn transaction_aborted_by_hook(state: &str) -> String {
+    format!("in '{state}' phase, update aborted by the reference-transaction hook")
+}

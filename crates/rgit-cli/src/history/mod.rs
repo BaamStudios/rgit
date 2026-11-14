@@ -636,6 +636,13 @@ fn want_decorate(config: &ConfigSet, opt: Option<Decorate>) -> bool {
     match opt {
         Some(Decorate::No) => false,
         Some(Decorate::Short | Decorate::Full) => true,
+        // `[log] decorate` without a value is "true".
+        None if config
+            .get("log.decorate")
+            .is_some_and(|e| e.value.is_none()) =>
+        {
+            true
+        }
         Some(Decorate::Auto) | None => match config.string("log.decorate") {
             Ok(Some(v)) if v == "short" || v == "full" => true,
             Ok(Some(v)) if v != "auto" => {
@@ -744,7 +751,13 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     });
     let pretty = opts.pretty.clone().unwrap_or(Pretty::Medium);
     let is_user = matches!(pretty, Pretty::User { .. } | Pretty::Reference);
-    let decorate = cmd == Command::Log && !is_user && want_decorate(repo.config, opts.decorate);
+    // `log.decorate` does not apply to the raw format, only `--decorate`.
+    let decorate = cmd == Command::Log
+        && !is_user
+        && match (&pretty, opts.decorate) {
+            (Pretty::Raw, None) => false,
+            (_, d) => want_decorate(repo.config, d),
+        };
     let mut filter = opts.decorate_filter.clone();
     filter.full = match opts.decorate {
         Some(Decorate::Full) => Some(true),

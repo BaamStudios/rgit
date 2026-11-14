@@ -114,14 +114,19 @@ impl Colors {
 }
 
 /// `pattern` matches `name`: a glob, or a ref name or prefix of whole
-/// path components.
+/// path components. A pattern other than `HEAD` that does not start with
+/// `refs/` is taken relative to `refs/` (`heads/main`, `tags/v*`), and a
+/// glob's `*` also matches `/` (both as the reference `git` does).
 fn matches(pattern: &str, name: &str) -> bool {
+    let normalized;
+    let pattern = if pattern == "HEAD" || pattern.starts_with("refs/") {
+        pattern
+    } else {
+        normalized = format!("refs/{pattern}");
+        normalized.as_str()
+    };
     if pattern.contains(['*', '?', '[']) {
-        return wildmatch(
-            pattern.as_bytes(),
-            name.as_bytes(),
-            WildmatchFlags::PATHNAME,
-        );
+        return wildmatch(pattern.as_bytes(), name.as_bytes(), WildmatchFlags::NONE);
     }
     let p = pattern.trim_end_matches('/');
     name == p || name.strip_prefix(p).is_some_and(|r| r.starts_with('/'))
@@ -146,10 +151,16 @@ impl Decorations {
     /// Read the refs of `repo` through `filter` and the configuration.
     pub fn load(repo: &Repo<'_>, filter: &Filter) -> Decorations {
         let config = repo.config;
-        let config_exclude: Vec<String> = config
-            .get_all("log.excludeDecoration")
-            .filter_map(|e| e.value.as_ref().map(|v| v.to_string()))
-            .collect();
+        let mut config_exclude: Vec<String> = Vec::new();
+        for e in config.get_all("log.excludeDecoration") {
+            match e.value.as_ref() {
+                Some(v) => config_exclude.push(v.to_string()),
+                None => eprintln!(
+                    "error: {}",
+                    crate::messages::comment::missing_value("log.excludeDecoration")
+                ),
+            }
+        }
         let all = filter.clear
             || config
                 .string("log.initialDecorationSet")
@@ -324,5 +335,10 @@ mod tests {
         assert!(matches("refs/stash", "refs/stash"));
         assert!(matches("refs/tags/v*", "refs/tags/v1"));
         assert!(matches("HEAD", "HEAD"));
+        assert!(matches("tags/x", "refs/tags/x/side-2"));
+        assert!(matches("heads/octopus*", "refs/heads/octopus-b"));
+        assert!(matches("*side-2", "refs/tags/x/side-2"));
+        assert!(!matches("tags/fo", "refs/tags/foo"));
+        assert!(!matches("*", "HEAD"));
     }
 }
