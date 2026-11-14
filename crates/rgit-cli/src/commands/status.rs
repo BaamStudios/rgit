@@ -506,6 +506,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     .enabled(Advice::StatusHints)
                     .map_err(Die::Fatal)?,
                 merging: repo.setup.git_dir.join("MERGE_HEAD").exists(),
+                sequencing: crate::wt_status::sequencing(&repo),
                 mode,
             };
             long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
@@ -780,6 +781,7 @@ struct LongContext<'a> {
     detached: Option<Option<(String, bool)>>,
     hints: bool,
     merging: bool,
+    sequencing: Option<crate::wt_status::Sequencing>,
     mode: Untracked,
 }
 
@@ -863,6 +865,15 @@ fn long(
         }
         p.text("\n");
     }
+    // A cherry-pick or revert that stopped has no unstage hints either.
+    let picking = ctx.sequencing.as_ref().is_some_and(|s| s.commit.is_some());
+    if let Some(seq) = &ctx.sequencing {
+        for l in crate::wt_status::sequencing_lines(seq, !unmerged.is_empty(), ctx.hints) {
+            p.text(&l);
+            p.text("\n");
+        }
+        p.text("\n");
+    }
     if unborn {
         p.text("\n");
         p.text(msg::NO_COMMITS_YET);
@@ -871,7 +882,7 @@ fn long(
     if !staged.is_empty() {
         p.text(msg::STAGED_HEADER);
         p.text("\n");
-        if ctx.merging {
+        if ctx.merging || picking {
             // No unstage hint while merging.
         } else if unborn {
             hint(p, msg::HINT_UNSTAGE_INITIAL);
@@ -892,7 +903,7 @@ fn long(
     if !unmerged.is_empty() {
         p.text(msg::UNMERGED_HEADER);
         p.text("\n");
-        if !ctx.merging {
+        if !ctx.merging && !picking {
             hint(p, msg::HINT_UNSTAGE);
         }
         if unmerged.iter().all(|(_, c)| *c == "UU" || *c == "AA") {

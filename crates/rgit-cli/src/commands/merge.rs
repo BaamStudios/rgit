@@ -1677,7 +1677,7 @@ fn check_strategies(names: &[String]) -> Result<(), Die> {
 }
 
 /// The scissors line and its explanation, as comments.
-fn scissors_block(comment: &str) -> Vec<u8> {
+pub(crate) fn scissors_block(comment: &str) -> Vec<u8> {
     let mut out = cmsg::scissors_line(comment).into_bytes();
     out.push(b'\n');
     for l in crate::messages::commit::SCISSORS_HELP.lines() {
@@ -1690,7 +1690,7 @@ fn scissors_block(comment: &str) -> Vec<u8> {
 }
 
 /// Replaces the result's conflicted paths in `index` by their stages.
-fn add_conflicts(index: &mut Index, result: &MergeResult) -> Result<(), Die> {
+pub(crate) fn add_conflicts(index: &mut Index, result: &MergeResult) -> Result<(), Die> {
     let add = AddOptions {
         ok_to_replace: false,
         skip_df_check: true,

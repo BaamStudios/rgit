@@ -689,7 +689,9 @@ pub(crate) fn remove_branch_state(
             let _ = std::fs::remove_file(git_dir.join(name));
         }
     }
-    if cancelled.is_some() {
+    // The sequence ends with its last commit (sequencer.adoc: a reset
+    // after the final pick forgets the cherry-pick).
+    if cancelled.is_some() && crate::sequencer::at_last_pick(git_dir) {
         let _ = std::fs::remove_dir_all(git_dir.join("sequencer"));
     }
     for name in ["MERGE_HEAD", "MERGE_RR", "MERGE_MSG", "MERGE_MODE", "SQUASH_MSG"] {

@@ -79,3 +79,27 @@ pub const NOTHING_CLEAN: &str = "nothing to commit, working tree clean";
 
 pub const STILL_MERGING: &str = "All conflicts fixed but you are still merging.";
 pub const HINT_CONCLUDE_MERGE: &str = "  (use \"git commit\" to conclude merge)";
+
+pub fn currently_cherry_picking(commit: &str) -> String {
+    format!("You are currently cherry-picking commit {commit}.")
+}
+pub fn currently_reverting(commit: &str) -> String {
+    format!("You are currently reverting commit {commit}.")
+}
+pub const CHERRY_PICK_IN_PROGRESS: &str = "Cherry-pick currently in progress.";
+pub const REVERT_IN_PROGRESS: &str = "Revert currently in progress.";
+pub fn hint_fix_and_continue(action: &str) -> String {
+    format!("  (fix conflicts and run \"git {action} --continue\")")
+}
+pub fn hint_all_fixed_continue(action: &str) -> String {
+    format!("  (all conflicts fixed: run \"git {action} --continue\")")
+}
+pub fn hint_run_continue(action: &str) -> String {
+    format!("  (run \"git {action} --continue\" to continue)")
+}
+pub fn hint_skip(action: &str) -> String {
+    format!("  (use \"git {action} --skip\" to skip this patch)")
+}
+pub fn hint_abort_operation(action: &str) -> String {
+    format!("  (use \"git {action} --abort\" to cancel the {action} operation)")
+}

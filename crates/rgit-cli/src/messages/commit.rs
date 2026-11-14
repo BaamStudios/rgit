@@ -219,11 +219,28 @@ If this is not correct, please run
 and try again.
 ";
 
+pub const AMEND_DURING_CHERRY_PICK: &str =
+    "You are in the middle of a cherry-pick -- cannot amend.";
+pub const PARTIAL_DURING_CHERRY_PICK: &str = "cannot do a partial commit during a cherry-pick.";
+pub const CHERRY_PICK_NOTICE: &str = "
+It looks like you may be committing a cherry-pick.
+If this is not correct, please run
+\tgit update-ref -d CHERRY_PICK_HEAD
+and try again.
+";
+pub const REFLOG_CHERRY_PICK: &str = "commit (cherry-pick)";
+
+/// `git commit` after a cherry-pick whose result is empty.
+pub const EMPTY_CHERRY_PICK: &str = "\
+The previous cherry-pick is now empty, possibly due to conflict resolution.
+If you wish to commit it anyway, use:
+
+    git commit --allow-empty
+";
+pub const EMPTY_CHERRY_PICK_SKIP: &str = "Otherwise, please use 'git cherry-pick --skip'";
+
 // Messages of rgit itself.
 
 pub fn not_supported(option: &str) -> String {
     format!("rgit: commit: {option} is not supported yet")
 }
-
-pub const SEQUENCER_NOT_SUPPORTED: &str =
-    "rgit: commit: concluding a cherry-pick or revert is not supported yet";

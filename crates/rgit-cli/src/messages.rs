@@ -48,6 +48,7 @@ pub mod reset;
 pub mod restore;
 pub mod rev_list;
 pub mod rm;
+pub mod sequencer;
 pub mod show_ref;
 pub mod stash;
 pub mod status;
