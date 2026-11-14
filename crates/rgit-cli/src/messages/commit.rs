@@ -7,6 +7,30 @@ pub const USAGE: &[&str] = &[
 ];
 
 pub const HELP_QUIET: &str = "suppress summary after successful commit";
+pub const HELP_VERBOSE: &str = "show diff in commit message template";
+pub const HELP_REEDIT: &str = "reuse and edit message from specified commit";
+pub const HELP_REUSE: &str = "reuse message from specified commit";
+pub const HELP_FIXUP: &str =
+    "use autosquash formatted message to fixup or amend/reword specified commit";
+pub const ARGH_FIXUP: &str = "[(amend|reword):]commit";
+pub const HELP_SQUASH: &str = "use autosquash formatted message to squash specified commit";
+pub const HELP_TRAILER: &str = "add custom trailer(s)";
+pub const HELP_SIGNOFF: &str = "add a Signed-off-by trailer";
+pub const HELP_TEMPLATE: &str = "use specified template file";
+pub const HELP_GPG_SIGN: &str = "GPG sign commit";
+pub const HELP_INTERACTIVE: &str = "interactively add files";
+pub const HELP_PATCH: &str = "interactively add changes";
+pub const HELP_UNIFIED: &str = "generate diffs with <n> lines context";
+pub const HELP_INTER_HUNK: &str =
+    "show context between diff hunks up to the specified number of lines";
+pub const HELP_DRY_RUN: &str = "show what would be committed";
+pub const HELP_SHORT: &str = "show status concisely";
+pub const HELP_BRANCH: &str = "show branch information";
+pub const HELP_AHEAD_BEHIND: &str = "compute full ahead/behind values";
+pub const HELP_PORCELAIN: &str = "machine-readable output";
+pub const HELP_LONG: &str = "show status in long format (default)";
+pub const HELP_NULL: &str = "terminate entries with NUL";
+pub const HELP_POST_REWRITE: &str = "opposite of --no-post-rewrite";
 pub const GROUP_MESSAGE: &str = "Commit message options";
 pub const HELP_FILE: &str = "read message from file";
 pub const HELP_AUTHOR: &str = "override author for commit";
@@ -38,6 +62,39 @@ pub const INCLUDE_AND_ONLY: &str = "options '-i/--include' and '-o/--only' canno
 pub const INCLUDE_AND_ALL: &str = "options '-i/--include' and '-a/--all' cannot be used together";
 pub const ONLY_AND_ALL: &str = "options '-o/--only' and '-a/--all' cannot be used together";
 pub const NO_PATHS: &str = "No paths with --include/--only does not make sense.";
+
+pub fn incompatible(a: &str, b: &str) -> String {
+    format!("options '{a}' and '{b}' cannot be used together")
+}
+
+pub const REWORD_WITH_CONTENTS: &str = "reword option of '--fixup' and '--patch/--interactive/--all/--include/--only' cannot be used together";
+
+pub fn reword_with_path(path: &str) -> String {
+    format!("reword option of '--fixup' and path '{path}' cannot be used together")
+}
+
+pub fn requires_interactive(option: &str) -> String {
+    format!("the option '{option}' requires '--interactive/--patch'")
+}
+
+pub fn unknown_fixup(value: &str) -> String {
+    format!("unknown option: --fixup={value}")
+}
+
+pub fn could_not_lookup(name: &str) -> String {
+    format!("could not lookup commit '{name}'")
+}
+
+pub fn could_not_read_template(path: &str, err: &str) -> String {
+    format!("could not read '{path}': {err}")
+}
+
+pub const TEMPLATE_UNTOUCHED: &str = "Aborting commit; you did not edit the message.";
+pub const EMPTY_BODY: &str = "Aborting commit due to empty commit message body.";
+
+pub const DIFF_STAGED: &str = "Changes to be committed:";
+pub const DIFF_UNSTAGED: &str = "Changes not staged for commit:";
+pub const DIFF_SEPARATOR: &str = "--------------------------------------------------";
 
 pub fn paths_with_all(first: &str) -> String {
     format!("paths '{first} ...' with -a does not make sense")
@@ -80,16 +137,29 @@ Fix them up in the work tree, and then use 'git add/rm <file>'
 as appropriate to mark resolution and make a commit.";
 pub const UNRESOLVED: &str = "Exiting because of an unresolved conflict.";
 
-pub fn instructions_strip(c: &str) -> String {
-    format!(
-        "Please enter the commit message for your changes. Lines starting\nwith '{c}' will be ignored, and an empty message aborts the commit.\n"
-    )
+/// The instructions of the template when comment lines are removed;
+/// `empty_ok` with `--allow-empty-message`.
+pub fn instructions_strip(c: &str, empty_ok: bool) -> String {
+    if empty_ok {
+        format!(
+            "Please enter the commit message for your changes. Lines starting\nwith '{c}' will be ignored.\n"
+        )
+    } else {
+        format!(
+            "Please enter the commit message for your changes. Lines starting\nwith '{c}' will be ignored, and an empty message aborts the commit.\n"
+        )
+    }
 }
 
-pub fn instructions_keep(c: &str) -> String {
-    format!(
-        "Please enter the commit message for your changes. Lines starting\nwith '{c}' will be kept; you may remove them yourself if you want to.\nAn empty message aborts the commit.\n"
-    )
+/// The instructions when comment lines are kept.
+pub fn instructions_keep(c: &str, empty_ok: bool) -> String {
+    let mut s = format!(
+        "Please enter the commit message for your changes. Lines starting\nwith '{c}' will be kept; you may remove them yourself if you want to.\n"
+    );
+    if !empty_ok {
+        s.push_str("An empty message aborts the commit.\n");
+    }
+    s
 }
 
 pub const SCISSORS_HELP: &str =
@@ -151,9 +221,8 @@ and try again.
 
 // Messages of rgit itself.
 
-/// Decision on #45: hooks are not run in M2; never skip them silently.
-pub fn hook_not_run(name: &str) -> String {
-    format!("warning: rgit does not run hooks yet; the '{name}' hook was not run")
+pub fn not_supported(option: &str) -> String {
+    format!("rgit: commit: {option} is not supported yet")
 }
 
 pub const SEQUENCER_NOT_SUPPORTED: &str =

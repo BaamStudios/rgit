@@ -138,19 +138,19 @@ pub(crate) fn untracked_and_ignored(
     Ok(untracked::status_lists(&roots, mode == Untracked::All, ignored))
 }
 
-struct Printer {
-    nul: bool,
-    quote_high: bool,
+pub(crate) struct Printer {
+    pub(crate) nul: bool,
+    pub(crate) quote_high: bool,
     /// The short format and porcelain v1 also quote paths containing a
     /// space.
-    space_quote: bool,
+    pub(crate) space_quote: bool,
     /// Show paths relative to this directory (empty or ending in `/`).
-    prefix: Vec<u8>,
-    out: Vec<u8>,
+    pub(crate) prefix: Vec<u8>,
+    pub(crate) out: Vec<u8>,
 }
 
 impl Printer {
-    fn path(&mut self, p: &[u8]) {
+    pub(crate) fn path(&mut self, p: &[u8]) {
         let rel;
         let p = if self.prefix.is_empty() {
             p
@@ -169,17 +169,17 @@ impl Printer {
             }
         }
     }
-    fn end(&mut self) {
+    pub(crate) fn end(&mut self) {
         self.out.push(if self.nul { 0 } else { b'\n' });
     }
-    fn text(&mut self, s: &str) {
+    pub(crate) fn text(&mut self, s: &str) {
         self.out.extend_from_slice(s.as_bytes());
     }
 }
 
 /// How the branch relates to its upstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tracking {
+pub(crate) enum Tracking {
     /// The upstream ref does not exist.
     Gone,
     /// Ahead and behind counts.
@@ -189,14 +189,14 @@ enum Tracking {
 }
 
 /// The branch header data.
-struct BranchInfo {
-    head: Option<ObjectId>,
-    branch: Option<String>,
+pub(crate) struct BranchInfo {
+    pub(crate) head: Option<ObjectId>,
+    pub(crate) branch: Option<String>,
     /// Upstream short name and how the branch relates to it.
-    upstream: Option<(String, Tracking)>,
+    pub(crate) upstream: Option<(String, Tracking)>,
 }
 
-fn branch_info(repo: &mut Repo, revs: &Revs, count: bool) -> Result<BranchInfo, Die> {
+pub(crate) fn branch_info(repo: &mut Repo, revs: &Revs, count: bool) -> Result<BranchInfo, Die> {
     let head = repo.resolve("HEAD");
     let target = repo.refs.head_target();
     let branch = target
@@ -880,7 +880,7 @@ fn wt_mode(meta: &std::fs::Metadata, index_mode: u32) -> u32 {
 
 
 /// The `-b` header of the short format and the porcelain formats.
-fn header(p: &mut Printer, version: u8, info: &BranchInfo) {
+pub(crate) fn header(p: &mut Printer, version: u8, info: &BranchInfo) {
     if version == 1 {
         p.text("## ");
         match (&info.branch, info.head) {
