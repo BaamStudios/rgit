@@ -464,6 +464,8 @@ impl Session<'_> {
                 heads.extend(self.fetch_heads()?);
                 continue;
             }
+            let given = name;
+            let name = self.expand_upstream(&given)?;
             let mut r = Resolver::new(&mut self.repo);
             let found = r.resolve(&name).ok().and_then(|res| {
                 r.peel_to(res.oid, ObjectKind::Commit, Some(&name))
@@ -474,9 +476,59 @@ impl Session<'_> {
                 self.suggest(&name);
                 return Err(Die::Exit(1));
             };
-            heads.push(message::name_head(&self.repo, &name, object, commit));
+            let mut head = message::name_head(&self.repo, &name, object, commit);
+            // The reflog and the conflict labels keep the name as given.
+            head.arg = given;
+            heads.push(head);
         }
         Ok(heads)
+    }
+
+    /// `[<branch>]@{upstream}` (`@{u}`) at the start of `name` replaced by
+    /// the short name of the upstream, as the reference `git` names the
+    /// merged commit (`new@{u}~1` is merged as `origin/side~1`). `name`
+    /// unchanged when it has no such part; a branch without a usable
+    /// upstream is fatal.
+    fn expand_upstream(&mut self, name: &str) -> Result<String, Die> {
+        let unchanged = || Ok(name.to_owned());
+        let Some(at) = name.find("@{") else {
+            return unchanged();
+        };
+        let Some(close) = name[at..].find('}') else {
+            return unchanged();
+        };
+        let mark = name[at + 2..at + close].to_ascii_lowercase();
+        if mark != "u" && mark != "upstream" {
+            return unchanged();
+        }
+        let branch = match &name[..at] {
+            "" => match self
+                .branch
+                .as_deref()
+                .and_then(|b| b.strip_prefix("refs/heads/"))
+            {
+                Some(b) => b.to_owned(),
+                None => return unchanged(),
+            },
+            b => b.to_owned(),
+        };
+        if self.repo.resolve(&format!("refs/heads/{branch}")).is_none() {
+            return Err(fatal(rgit_revwalk::revision::messages::no_such_branch(
+                &branch,
+            )));
+        }
+        let config = &self.repo.config;
+        let b = rgit_remote::BranchConfig::from_config(config, branch.as_bytes())
+            .map_err(|e| fatal(e.to_string()))?;
+        let remotes = rgit_remote::Remotes::from_config(config).map_err(|e| fatal(e.to_string()))?;
+        let full = rgit_remote::upstream_ref(&remotes, Some(&self.repo.setup.git_dir), Some(&b))
+            .map_err(|e| fatal(e.to_string()))?
+            .to_string();
+        let short = ["refs/heads/", "refs/tags/", "refs/remotes/"]
+            .iter()
+            .find_map(|p| full.strip_prefix(p))
+            .unwrap_or(&full);
+        Ok(format!("{short}{}", &name[at + close + 1..]))
     }
 
     /// Remote-tracking branches with the name the user may have meant.
@@ -547,6 +599,7 @@ impl Session<'_> {
                 kind: message::Kind::Fetch,
                 commit,
                 tag_message: None,
+                signed_tag: message::signed_tag(&self.repo, id, commit),
             });
         }
         Ok(heads)
@@ -785,7 +838,8 @@ impl Session<'_> {
         let config = refs_support::load_config(self.ctx, setup)?;
         let store = refs_support::ref_store(setup, &config);
         let objects = Objects::open(setup);
-        let mut hooks = UpdateHooks::new(setup, &config, &objects);
+        let mut hooks = UpdateHooks::new(setup, &config, &objects)
+            .with_transaction_hook(crate::hooks::for_repo(self.ctx, setup, &config)?);
         let update = match old {
             Some(o) => RefUpdate::update("HEAD", new, Some(o)),
             None => RefUpdate::create("HEAD", new),
@@ -807,7 +861,8 @@ impl Session<'_> {
         let config = refs_support::load_config(self.ctx, setup)?;
         let store = refs_support::ref_store(setup, &config);
         let objects = Objects::open(setup);
-        let mut hooks = UpdateHooks::new(setup, &config, &objects);
+        let mut hooks = UpdateHooks::new(setup, &config, &objects)
+            .with_transaction_hook(crate::hooks::for_repo(self.ctx, setup, &config)?);
         let mut tx = Transaction::new(&store);
         tx.push(
             RefUpdate::update("ORIG_HEAD", head, None)
@@ -1040,7 +1095,8 @@ impl Session<'_> {
             eprintln!("{}", msg::WENT_WELL);
             return Ok(0);
         }
-        self.commit(head, head_tree, &parents, result.tree, message, &comment)
+        let mergetags = message::mergetags(theirs, &parents);
+        self.commit(head, head_tree, &parents, result.tree, message, &comment, mergetags)
     }
 
     /// The commits of `tips` that are not ancestors of another one, in
@@ -1474,7 +1530,9 @@ impl Session<'_> {
         }
     }
 
-    /// Creates the merge commit of a clean merge.
+    /// Creates the merge commit of a clean merge, with the `mergetag`
+    /// headers of merged signed tags.
+    #[allow(clippy::too_many_arguments)]
     fn commit(
         &mut self,
         head: ObjectId,
@@ -1483,6 +1541,7 @@ impl Session<'_> {
         tree: ObjectId,
         message: Vec<u8>,
         comment: &str,
+        mergetags: Vec<rgit_object::Header>,
     ) -> CmdResult {
         let use_editor = self.use_editor();
         let hooks = crate::hooks::for_repo(self.ctx, &self.repo.setup, &self.repo.config)?;
@@ -1574,15 +1633,20 @@ impl Session<'_> {
             .and_then(|e| e.value.as_ref())
             .map(|v| v.to_vec())
             .filter(|e| !e.eq_ignore_ascii_case(b"utf-8") && !e.eq_ignore_ascii_case(b"utf8"));
-        let new = rgit_commit::NewCommit {
+        let new = rgit_object::Commit::new(
             tree,
             parents,
-            author: &author,
-            committer: &committer,
-            encoding: encoding.as_deref(),
-            message: &cleaned,
-        };
-        let oid = rgit_commit::create_commit(self.repo.odb(), &new).map_err(|e| fatal(e.to_string()))?;
+            &author,
+            &committer,
+            encoding.as_deref(),
+            mergetags,
+            cleaned,
+        );
+        let oid = self
+            .repo
+            .odb()
+            .write(ObjectKind::Commit, &new.serialize())
+            .map_err(|e| fatal(e.to_string()))?;
         self.update_head(oid, Some(head), &msg::made_by(&self.strategy))?;
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
             let _ = std::fs::remove_file(self.git_dir.join(f));

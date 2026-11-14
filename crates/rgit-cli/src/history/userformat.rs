@@ -618,6 +618,10 @@ impl<L: Lookup> Expander<'_, L> {
                 return 0;
             }
             for (slot, f) in values.iter_mut().zip(&fields) {
+                // An empty field keeps its default (`%w(,1,2)`).
+                if f.trim().is_empty() {
+                    continue;
+                }
                 match f.trim().parse::<usize>() {
                     Ok(v) if v <= MAX_NUMBER => *slot = v,
                     _ => return 0,

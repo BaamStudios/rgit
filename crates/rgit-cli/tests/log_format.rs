@@ -106,6 +106,8 @@ fn layout() {
         "%w(12,0,4)AA %s BB%w(0)CC",
         "%w(x)%s %w(1,2,3,4)%s %+w(2)",
         "%w(10,1,2)%<(15)%an|%>(15,trunc)%s|",
+        "%w(,1,2)This is%nthe %s%ncommit.",
+        "%w(20,,3)%B|%w(,)x",
     ] {
         same(&mut fx, &["log", &format!("--format={format}")]);
     }
@@ -197,6 +199,21 @@ fn separators_and_names() {
             "--decorate-refs-exclude=refs/heads",
         ],
         &["log", "--format=%d", "--clear-decorations"],
+        // Patterns are relative to `refs/`; a glob's `*` crosses `/`.
+        &["log", "--format=%s%d", "--decorate-refs=heads/s*"],
+        &["log", "--format=%s%d", "--decorate-refs=tags/v1"],
+        &["log", "--format=%s%d", "--decorate-refs=*ight"],
+        &["log", "--format=%s%d", "--decorate-refs=tags/v"],
+        &["log", "--format=%s%d", "--decorate-refs=*"],
+        &["log", "--format=%s%d", "--decorate-refs=HEAD"],
+        &[
+            "log",
+            "--format=%s%d",
+            "--decorate-refs-exclude=remotes/*",
+            "--decorate-refs=*/main",
+        ],
+        &["log", "--oneline", "--decorate-refs=tags/*"],
+        &["log", "--pretty=raw", "--decorate", "-1"],
         &["log", "--format=%D", "--decorate=full"],
     ] {
         same(&mut fx, args);
@@ -216,6 +233,25 @@ fn separators_and_names() {
         let mut fx = history().git(["config", key, value]);
         same(&mut fx, args);
     }
+    // Values without `=`: `[log] decorate` means true, a valueless
+    // `log.excludeDecoration` is an error that does not stop `log`.
+    for (key, args) in [
+        ("decorate", &["log", "--oneline"][..]),
+        ("decorate", &["log", "--pretty=raw", "-1"]),
+        ("excludeDecoration", &["log", "--decorate=short", "-2"]),
+    ] {
+        let mut fx = history();
+        if fx.is_skipped() {
+            return;
+        }
+        let config = fx.work_dir().join(".git/config");
+        let mut text = std::fs::read_to_string(&config).unwrap();
+        text.push_str(&format!("[log]\n\t{key}\n"));
+        std::fs::write(&config, text).unwrap();
+        same(&mut fx, args);
+    }
+    let mut fx = history().git(["config", "log.decorate", "full"]);
+    same(&mut fx, &["log", "--pretty=raw", "-1"]);
 }
 
 #[test]

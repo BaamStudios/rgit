@@ -645,10 +645,9 @@ impl State<'_, '_> {
     fn collect_reflogs(&mut self, updates: &[RefUpdate]) {
         let opts = self.store.options.log_all_ref_updates;
         let mut hook_updates = Vec::new();
-        for (k, u) in updates.iter().enumerate() {
-            if let Some(o) = &self.results[k] {
-                hook_updates.push((o.old, o.new, u.name.clone()));
-            }
+        // The hook sees the references actually written (`HEAD`'s branch).
+        for o in self.results.iter().take(updates.len()).flatten() {
+            hook_updates.push((o.old, o.new, o.final_name.clone()));
         }
         for item in &mut self.prepared.items {
             let Some(o) = &self.results[item.update] else {

@@ -42,6 +42,38 @@ pub(super) struct Head {
     pub commit: ObjectId,
     /// The message of an annotated tag that was named.
     pub tag_message: Option<Vec<u8>>,
+    /// The raw object of a signed annotated tag that was named (it goes
+    /// into the `mergetag` header of the merge commit).
+    pub signed_tag: Option<Vec<u8>>,
+}
+
+/// The raw tag `object` when it is a signed tag of `commit` (checked
+/// against the `git` binary: only signed tags give a `mergetag` header).
+pub(super) fn signed_tag(repo: &Repo, object: ObjectId, commit: ObjectId) -> Option<Vec<u8>> {
+    if object == commit {
+        return None;
+    }
+    let raw = repo.odb().read(&object).ok()??;
+    if raw.kind != ObjectKind::Tag {
+        return None;
+    }
+    rgit_object::split_signature(&raw.data).1?;
+    Some(raw.data)
+}
+
+/// The `mergetag` headers for the merged `parents` (all but the first),
+/// in parent order.
+pub(super) fn mergetags(heads: &[Head], parents: &[ObjectId]) -> Vec<rgit_object::Header> {
+    parents
+        .iter()
+        .skip(1)
+        .filter_map(|p| heads.iter().find(|h| h.commit == *p))
+        .filter_map(|h| h.signed_tag.as_ref())
+        .map(|raw| {
+            let value = raw.strip_suffix(b"\n").unwrap_or(raw);
+            rgit_object::Header::new("mergetag", value)
+        })
+        .collect()
 }
 
 /// The full ref name `name` stands for, if any.
@@ -90,6 +122,7 @@ pub(super) fn name_head(repo: &Repo, arg: &str, object: ObjectId, commit: Object
         kind: Kind::Commit,
         commit,
         tag_message,
+        signed_tag: signed_tag(repo, object, commit),
     };
     if let Some(full) = dwim(repo, arg) {
         head.kind = if full.starts_with("refs/heads/") {

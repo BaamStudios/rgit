@@ -301,6 +301,9 @@ pub struct UpdateHooks<'a> {
     /// References that become symbolic: their entry is written even when
     /// the resolved value stays the same.
     symbolic: std::collections::HashSet<String>,
+    /// Runs the `reference-transaction` hook when set
+    /// ([`UpdateHooks::with_transaction_hook`]).
+    transaction_hook: Option<rgit_hook::Hooks>,
 }
 
 impl<'a> UpdateHooks<'a> {
@@ -326,7 +329,16 @@ impl<'a> UpdateHooks<'a> {
             writer: committer.map(|c| ReflogWriter::new(logs, c)),
             store: ref_store(setup, config),
             symbolic: Default::default(),
+            transaction_hook: None,
         }
+    }
+
+    /// Also run the `reference-transaction` hook of `hooks` (githooks(5)):
+    /// once per phase with `<old> <new> <refname>` lines on its standard
+    /// input; a failure in the `prepared` phase aborts the transaction.
+    pub fn with_transaction_hook(mut self, hooks: rgit_hook::Hooks) -> Self {
+        self.transaction_hook = Some(hooks);
+        self
     }
 
     /// Hooks that write no reflog entries (the caller writes them with
@@ -391,5 +403,31 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
         if let Some(w) = &mut self.writer {
             w.reflog_delete(name);
         }
+    }
+
+    fn reference_transaction(
+        &mut self,
+        state: rgit_refs::HookState,
+        updates: &[(ObjectId, ObjectId, String)],
+    ) -> Result<(), String> {
+        let Some(hooks) = &self.transaction_hook else {
+            return Ok(());
+        };
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let mut input = Vec::new();
+        for (old, new, name) in updates {
+            input.extend_from_slice(format!("{old} {new} {name}\n").as_bytes());
+        }
+        let opts = rgit_hook::RunOptions::with_args([state.as_str()])
+            .stdin(rgit_hook::Input::Data(&input));
+        let outcome = hooks.run("reference-transaction", &opts)?;
+        if state == rgit_refs::HookState::Prepared && !outcome.ok() {
+            return Err(crate::messages::hook::transaction_aborted_by_hook(
+                state.as_str(),
+            ));
+        }
+        Ok(())
     }
 }
