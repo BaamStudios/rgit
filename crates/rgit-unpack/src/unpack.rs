@@ -53,6 +53,11 @@ pub struct Options<'a> {
     /// changes and untracked files are overwritten instead of refusing.
     /// (Two-way entries that match neither tree are still refused.)
     pub reset: bool,
+    /// Accept an index with conflicts without `reset`: every conflicted
+    /// path takes the new tree's version (or goes away), overwriting its
+    /// work tree file, while the other paths keep their checks
+    /// (`reset --merge`, `merge --abort`; git-reset(1), DISCUSSION).
+    pub discard_unmerged: bool,
     /// `-u`: plan work tree updates and refuse to overwrite untracked files.
     pub update: bool,
     /// `-i`: do not compare the index with the work tree at all.
@@ -263,7 +268,7 @@ pub fn plan(
     wt: Option<&Worktree<'_>>,
     opts: &mut Options<'_>,
 ) -> Result<Plan, Error> {
-    if !opts.reset && index.has_conflicts() {
+    if !opts.reset && !opts.discard_unmerged && index.has_conflicts() {
         return Err(Error::Unmerged);
     }
     let (old, new) = match *merge {
@@ -401,6 +406,9 @@ impl Unpacker<'_, '_, '_> {
         t: Option<&Entry>,
         unmerged: bool,
     ) -> Result<bool, Error> {
+        if unmerged {
+            return self.discard_conflict(path, t);
+        }
         match (i, t) {
             (None, None) => {
                 if unmerged && self.opts.update && self.wt.is_some() {
@@ -436,11 +444,9 @@ impl Unpacker<'_, '_, '_> {
         unmerged: bool,
     ) -> Result<bool, Error> {
         if unmerged {
-            // Only with `reset`: the conflict is discarded for the new tree.
-            return match m {
-                Some(m) => self.merged(m, None),
-                None => self.one_way(path, None, None, true),
-            };
+            // Only with `reset` or `discard_unmerged`: the conflict is
+            // discarded for the new tree.
+            return self.discard_conflict(path, m);
         }
         let Some(i) = i else {
             return match (h, m) {
@@ -471,6 +477,29 @@ impl Unpacker<'_, '_, '_> {
             };
         }
         Ok(self.problem(Problem::WouldOverwrite, path))
+    }
+
+    /// A conflicted path takes `t` (or goes away); its work tree file is
+    /// overwritten without checks.
+    fn discard_conflict(&mut self, path: &[u8], t: Option<&Entry>) -> Result<bool, Error> {
+        let update = self.opts.update && self.wt.is_some();
+        match t {
+            Some(t) => {
+                if !verify_checkout_path(t.path(), t.mode, self.opts.paths) {
+                    return Err(Error::InvalidPath(t.path().to_vec()));
+                }
+                self.result.push(t.clone());
+                if update {
+                    self.update.push(path.to_vec());
+                }
+            }
+            None => {
+                if update {
+                    self.remove.push((path.to_vec(), false));
+                }
+            }
+        }
+        Ok(true)
     }
 
     fn keep(&mut self, i: &Entry) {

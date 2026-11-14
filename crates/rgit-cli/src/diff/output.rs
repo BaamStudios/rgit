@@ -45,6 +45,34 @@ pub struct Output<'a> {
     pub combined_unmerged: bool,
     /// Colours, when colouring.
     pub colors: Option<DiffColors>,
+    /// `--compact-summary`: creations, deletions and mode changes go into
+    /// the stat names ("(new)", "(gone)", "(mode +x)") instead of summary
+    /// lines.
+    pub compact_summary: bool,
+}
+
+/// The `--compact-summary` note of a pair, if any.
+fn compact_note(old: Option<&Side>, new: Option<&Side>) -> Option<String> {
+    let flags = |mode: u32| match mode & 0o170000 {
+        0o120000 => " +l",
+        _ if mode & 0o111 != 0 => " +x",
+        _ => "",
+    };
+    match (old, new) {
+        (None, Some(n)) => Some(format!("new{}", flags(n.mode))),
+        (Some(o), None) => Some(format!("gone{}", flags(o.mode))),
+        (Some(o), Some(n)) if o.mode != n.mode && (o.mode & 0o170000) == (n.mode & 0o170000) => {
+            Some(
+                if n.mode & 0o111 != 0 {
+                    "mode +x"
+                } else {
+                    "mode -x"
+                }
+                .to_owned(),
+            )
+        }
+        _ => None,
+    }
 }
 
 /// A side with its contents loaded.
@@ -188,6 +216,7 @@ impl<'a> Output<'a> {
             },
             porcelain,
             combined_unmerged: false,
+            compact_summary: false,
             colors: None,
         })
     }
@@ -470,12 +499,17 @@ impl<'a> Output<'a> {
                         }
                     }
                 };
-                let name = self.display_name(p);
+                let mut name = self.display_name(p);
                 names.push(if self.nul {
                     p.path.clone()
                 } else {
                     name.clone()
                 });
+                if self.compact_summary {
+                    if let Some(note) = compact_note(p.old.as_ref(), p.new.as_ref()) {
+                        name.extend_from_slice(format!(" ({note})").as_bytes());
+                    }
+                }
                 stats.push(FileStat { name, kind });
             }
         }
@@ -491,7 +525,7 @@ impl<'a> Output<'a> {
         } else if f.shortstat && !stats.is_empty() {
             stat::write_summary_line(&mut out, &stats);
         }
-        if f.summary {
+        if f.summary && !self.compact_summary {
             for (p, o, n) in &items {
                 if p.unmerged || !differs(p, o, n) {
                     continue;

@@ -212,6 +212,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         };
         let mut opts = Options {
             reset: mode == MODE_RESET,
+            discard_unmerged: false,
             update,
             index_only,
             show_all_errors: false,

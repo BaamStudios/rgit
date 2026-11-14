@@ -27,6 +27,7 @@ pub mod interpret_trailers;
 pub mod ls_files;
 pub mod ls_remote;
 pub mod ls_tree;
+pub mod merge;
 pub mod merge_base;
 pub mod merge_file;
 pub mod merge_tree;

@@ -31,6 +31,7 @@ pub const UNSTAGED_HEADER: &str = "Unstaged changes after reset:";
 pub const MIXED_WITH_PATHS: &str =
     "--mixed with paths is deprecated; use 'git reset -- <paths>' instead.";
 pub const SOFT_IN_MERGE: &str = "Cannot do a soft reset in the middle of a merge.";
+pub const KEEP_IN_MERGE: &str = "Cannot do a keep reset in the middle of a merge.";
 pub const N_REQUIRES_MIXED: &str = "the option '-N' requires '--mixed'";
 pub const PATCH_WITH_MODE: &str =
     "options '--patch' and '--{hard,mixed,soft}' cannot be used together";

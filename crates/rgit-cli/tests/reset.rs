@@ -371,6 +371,13 @@ fn hard_with_conflicts() {
     };
     run(
         make,
-        &[&["reset", "--hard"], &["reset", "--hard", "HEAD~1"]],
+        &[
+            &["reset", "--hard"],
+            &["reset", "--hard", "HEAD~1"],
+            // git-reset(1): unmerged entries take the target's version.
+            &["reset", "--merge"],
+            &["reset", "--merge", "HEAD~1"],
+            &["reset", "--keep"],
+        ],
     );
 }
