@@ -49,6 +49,7 @@ pub mod restore;
 pub mod rev_list;
 pub mod rm;
 pub mod show_ref;
+pub mod stash;
 pub mod status;
 pub mod stripspace;
 pub mod switch;
