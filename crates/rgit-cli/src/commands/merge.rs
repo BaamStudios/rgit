@@ -276,7 +276,7 @@ struct Session<'a> {
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
-    if argv.len() == 2 && argv[1] == "-h" {
+    if argv.len() == 2 && (argv[1] == "-h" || argv[1] == "--help-all") {
         parse_args(argv)?;
     }
     let repo = Repo::open(ctx, Mode::Required)?;
