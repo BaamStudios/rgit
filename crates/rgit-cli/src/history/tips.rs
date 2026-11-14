@@ -32,6 +32,8 @@ pub struct Pending {
 pub struct Resolved {
     /// Commits in command-line order: `(commit, excluded, side)`.
     pub commits: Vec<(ObjectId, bool, Option<Side>)>,
+    /// The revision each of `commits` was given as (for `%S`).
+    pub sources: Vec<String>,
     /// Included tags, trees and blobs, in command-line order.
     pub pending: Vec<Pending>,
     /// Excluded tags, trees and blobs.
@@ -129,6 +131,7 @@ impl Resolved {
         negative: bool,
         side: Option<Side>,
         name: Vec<u8>,
+        source: &str,
     ) -> Result<(), Die> {
         let mut name = name;
         for _ in 0..64 {
@@ -138,6 +141,7 @@ impl Resolved {
             match kind {
                 ObjectKind::Commit => {
                     self.commits.push((id, negative, side));
+                    self.sources.push(source.to_string());
                     return Ok(());
                 }
                 ObjectKind::Tag => {
@@ -192,7 +196,11 @@ fn full_pattern(pattern: &str) -> String {
 }
 
 /// The refs of a ref set, in order.
-fn ref_set(repo: &Repo<'_>, set: &RefSet, exclude: &[String]) -> Result<Vec<ObjectId>, Die> {
+fn ref_set(
+    repo: &Repo<'_>,
+    set: &RefSet,
+    exclude: &[String],
+) -> Result<Vec<(String, ObjectId)>, Die> {
     let mut ids = Vec::new();
     let each = |prefix: &str, f: &mut dyn FnMut(&str, &ObjectId)| {
         repo.refs
@@ -203,16 +211,20 @@ fn ref_set(repo: &Repo<'_>, set: &RefSet, exclude: &[String]) -> Result<Vec<Obje
         RefSet::All => {
             each("refs/", &mut |name, id| {
                 if !excluded(exclude, name) {
-                    ids.push(*id);
+                    ids.push((name.to_string(), *id));
                 }
             })?;
             if !excluded(exclude, "HEAD")
                 && let Ok(Some(head)) = repo.refs.resolve("HEAD")
                 && let Some(id) = head.oid
             {
-                ids.push(id);
+                ids.push(("HEAD".to_string(), id));
             }
-            ids.extend(repo.other_worktree_heads());
+            ids.extend(
+                repo.other_worktree_heads()
+                    .into_iter()
+                    .map(|id| ("HEAD".to_string(), id)),
+            );
         }
         RefSet::Prefix { prefix, pattern } => {
             let pat = pattern
@@ -224,7 +236,7 @@ fn ref_set(repo: &Repo<'_>, set: &RefSet, exclude: &[String]) -> Result<Vec<Obje
                     .is_none_or(|p| wildmatch(p.as_bytes(), name.as_bytes(), WildmatchFlags::NONE));
                 let short = name.strip_prefix(*prefix).unwrap_or(name);
                 if wanted && !excluded(exclude, short) {
-                    ids.push(*id);
+                    ids.push((name.to_string(), *id));
                 }
             })?;
         }
@@ -234,7 +246,7 @@ fn ref_set(repo: &Repo<'_>, set: &RefSet, exclude: &[String]) -> Result<Vec<Obje
                 if wildmatch(pat.as_bytes(), name.as_bytes(), WildmatchFlags::NONE)
                     && !excluded(exclude, name)
                 {
-                    ids.push(*id);
+                    ids.push((name.to_string(), *id));
                 }
             })?;
         }
@@ -264,7 +276,8 @@ pub fn resolve(repo: &Repo<'_>, opts: &Options) -> Result<Resolved, Die> {
                         (true, false) => Some(Side::Right),
                     };
                     let name = path_name(item.name.as_deref());
-                    out.add(repo, item.oid, item.negated != *negate, side, name)?;
+                    let source = item.name.as_deref().unwrap_or(arg);
+                    out.add(repo, item.oid, item.negated != *negate, side, name, source)?;
                 }
             }
             Tip::Refs {
@@ -272,8 +285,8 @@ pub fn resolve(repo: &Repo<'_>, opts: &Options) -> Result<Resolved, Die> {
                 negative,
                 exclude,
             } => {
-                for id in ref_set(repo, set, exclude)? {
-                    out.add(repo, id, *negative, None, Vec::new())?;
+                for (refname, id) in ref_set(repo, set, exclude)? {
+                    out.add(repo, id, *negative, None, Vec::new(), &refname)?;
                 }
             }
         }

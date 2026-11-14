@@ -144,3 +144,13 @@ pub fn cannot_be_used_together(a: &str, b: &str) -> String {
 pub const MARKED_COUNT_OBJECTS: &str = "marked counting and '--objects' cannot be used together";
 
 pub const NO_BOTTOM_COMMITS: &str = "--ancestry-path given but there are no bottom commits";
+
+pub fn pretty_alias_loop(name: &str) -> String {
+    format!("invalid --pretty format: '{name}' references an alias which points to itself")
+}
+
+pub fn invalid_decorate(value: &str) -> String {
+    format!("invalid --decorate option: {value}")
+}
+
+pub const UNABLE_TO_PARSE_PRETTY: &str = "unable to parse --pretty format";

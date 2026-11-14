@@ -4,13 +4,15 @@
 
 use std::io::Write;
 
+use rgit_config::ConfigSet;
 use rgit_config::color::ColorBool;
 use rgit_date::{DateContext, DateMode};
 use rgit_revwalk::walk::grep::{GrepOptions, Syntax};
 use rgit_revwalk::walk::{NoWalk, Order, WalkOptions};
 
 use super::Command;
-use super::pretty::Pretty;
+use super::decorate::Filter;
+use super::pretty::{Pretty, PrettyError};
 use crate::Die;
 use crate::messages::rev_list as msg;
 
@@ -90,8 +92,23 @@ pub struct Options {
     pub ancestry: Vec<String>,
     pub abbrev_commit: bool,
     pub abbrev: Abbrev,
+    /// `--pretty`/`--format`/`--oneline` as given (resolved with the
+    /// configuration into `pretty`).
+    pub pretty_arg: Option<String>,
     pub pretty: Option<Pretty>,
     pub date_mode: DateMode,
+    /// `--date` was given.
+    pub date_given: bool,
+    /// `--decorate[=<how>]` / `--no-decorate`.
+    pub decorate: Option<Decorate>,
+    /// `--decorate-refs*` and `--clear-decorations`.
+    pub decorate_filter: Filter,
+    /// `--no-notes` turns `%N` off.
+    pub notes: bool,
+    /// `-z` (log).
+    pub zero: bool,
+    /// `--[no-]commit-header` (rev-list with a user format).
+    pub commit_header: bool,
     /// `--[no-]mailmap`; `None` = the command's default.
     pub mailmap: Option<bool>,
     /// `--color[=<when>]` / `--no-color` (only `log` colours).
@@ -133,11 +150,29 @@ fn usage(cmd: Command, arg: &str) -> Die {
     }
 }
 
-fn parse_pretty(v: &str) -> Result<Pretty, Die> {
-    if v.contains('%') || v.starts_with("format:") || v.starts_with("tformat:") {
-        return Err(Die::Fatal(msg::not_supported("--format with placeholders")));
-    }
-    Pretty::from_name(v).ok_or_else(|| Die::Fatal(msg::invalid_pretty(v)))
+/// `--decorate[=<how>]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decorate {
+    No,
+    Short,
+    Full,
+    /// Decorate when standard output is a terminal.
+    Auto,
+}
+
+/// The format `value` selects, with `pretty.<name>` aliases from `config`.
+fn parse_pretty(value: &str, config: &ConfigSet) -> Result<Pretty, Die> {
+    let alias = |name: &str| -> Option<String> {
+        let v = config.string(format!("pretty.{name}")).ok()??;
+        Some(v.to_string())
+    };
+    Pretty::parse(value, &alias).map_err(|e| match e {
+        PrettyError::Invalid => Die::Fatal(msg::invalid_pretty(value)),
+        PrettyError::Loop => Die::Fatal(msg::pretty_alias_loop(value)),
+        PrettyError::Unsupported(name) => {
+            Die::Fatal(msg::not_supported(&format!("--pretty={name}")))
+        }
+    })
 }
 
 fn date(v: &str) -> i64 {
@@ -156,7 +191,7 @@ enum Pseudo {
 }
 
 impl Options {
-    fn new(cmd: Command) -> Options {
+    fn new() -> Options {
         Options {
             walk: WalkOptions::default(),
             tips: Vec::new(),
@@ -175,8 +210,15 @@ impl Options {
             ancestry: Vec::new(),
             abbrev_commit: false,
             abbrev: Abbrev::Default,
-            pretty: (cmd == Command::Log).then_some(Pretty::Medium),
+            pretty_arg: None,
+            pretty: None,
             date_mode: DateMode::default(),
+            date_given: false,
+            decorate: None,
+            decorate_filter: Filter::default(),
+            zero: false,
+            notes: true,
+            commit_header: true,
             mailmap: None,
             color: None,
             in_commit_order: false,
@@ -262,7 +304,7 @@ impl Options {
 
     /// Parse `argv` (without the command name).
     pub fn parse(cmd: Command, argv: &[String]) -> Result<Options, Die> {
-        let mut o = Options::new(cmd);
+        let mut o = Options::new();
         let mut i = 0;
         let mut end_of_options = false;
         let value = |i: &mut usize, name: &str| -> Result<String, Die> {
@@ -356,11 +398,22 @@ impl Options {
                 "--abbrev" => o.abbrev = Abbrev::Default,
                 "--no-abbrev" => o.abbrev = Abbrev::Full,
                 "--oneline" => {
-                    o.pretty = Some(Pretty::Oneline);
+                    o.pretty_arg = Some("oneline".into());
                     o.abbrev_commit = true;
                 }
-                "--pretty" => o.pretty = Some(Pretty::Medium),
-                "--no-decorate" | "--no-show-signature" => {}
+                "--pretty" => o.pretty_arg = Some("medium".into()),
+                "--no-show-signature" => {}
+                "--no-notes" => o.notes = false,
+                "--no-decorate" => o.decorate = Some(Decorate::No),
+                "--decorate" => o.decorate = Some(Decorate::Short),
+                "--clear-decorations" => {
+                    o.decorate_filter.include.clear();
+                    o.decorate_filter.exclude.clear();
+                    o.decorate_filter.clear = true;
+                }
+                "-z" if cmd == Command::Log => o.zero = true,
+                "--no-commit-header" if cmd == Command::RevList => o.commit_header = false,
+                "--commit-header" if cmd == Command::RevList => o.commit_header = true,
                 "--mailmap" | "--use-mailmap" => o.mailmap = Some(true),
                 "--no-mailmap" | "--no-use-mailmap" => o.mailmap = Some(false),
                 "-n" | "--max-count" => {
@@ -412,20 +465,28 @@ impl Options {
                         o.walk.max_count = Some(parse_count(&a[1..])?);
                     } else if let Some(v) = a.strip_prefix("--abbrev=") {
                         let n = parse_count(v)?;
-                        o.abbrev = if n == 0 {
-                            Abbrev::Full
-                        } else {
-                            Abbrev::Digits(n.max(MIN_ABBREV))
-                        };
+                        o.abbrev = Abbrev::Digits(n.max(MIN_ABBREV));
                     } else if let Some(v) = a
                         .strip_prefix("--pretty=")
                         .or_else(|| a.strip_prefix("--format="))
                     {
-                        o.pretty = Some(parse_pretty(v)?);
+                        o.pretty_arg = Some(v.to_string());
                     } else if let Some(v) = a.strip_prefix("--date=") {
                         o.date_mode = rgit_date::parse_date_mode(v, false)
                             .map_err(|e| Die::Fatal(e.to_string()))?;
-                    } else if a == "--decorate=no" {
+                        o.date_given = true;
+                    } else if let Some(v) = a.strip_prefix("--decorate=") {
+                        o.decorate = Some(match v {
+                            "short" => Decorate::Short,
+                            "full" => Decorate::Full,
+                            "auto" => Decorate::Auto,
+                            "no" => Decorate::No,
+                            _ => return Err(Die::Fatal(msg::invalid_decorate(v))),
+                        });
+                    } else if let Some(v) = long(a, "--decorate-refs-exclude", &mut i)? {
+                        o.decorate_filter.exclude.push(v);
+                    } else if let Some(v) = long(a, "--decorate-refs", &mut i)? {
+                        o.decorate_filter.include.push(v);
                     } else {
                         return Err(usage(cmd, a));
                     }
@@ -513,6 +574,31 @@ impl Options {
     /// No revision arguments and no ref options.
     pub fn has_no_tips(&self) -> bool {
         self.tips.is_empty()
+    }
+
+    /// Settle the options that depend on the configuration: the format
+    /// (`--pretty`, aliases, `format.pretty` for `log`) and `log.date`.
+    pub fn apply_config(&mut self, cmd: Command, config: &ConfigSet) -> Result<(), Die> {
+        let arg = match (&self.pretty_arg, cmd) {
+            (Some(a), _) => Some(a.clone()),
+            (None, Command::Log) => Some(
+                config
+                    .string("format.pretty")
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| "medium".to_string(), |v| v.to_string()),
+            ),
+            (None, Command::RevList) => None,
+        };
+        self.pretty = arg.map(|a| parse_pretty(&a, config)).transpose()?;
+        if cmd == Command::Log
+            && !self.date_given
+            && let Ok(Some(v)) = config.string("log.date")
+        {
+            self.date_mode = rgit_date::parse_date_mode(&v.to_string(), false)
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Start at `HEAD` (log without revisions).

@@ -50,6 +50,7 @@ rgit-http = { path = "../rgit-http" }
 rgit-version = { path = "../rgit-version" }
 rgit-worktree = { path = "../rgit-worktree" }
 regex = { version = "1.13", default-features = false, features = ["std", "perf"] }
+unicode-width = { version = "0.2", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
