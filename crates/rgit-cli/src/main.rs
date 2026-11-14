@@ -31,6 +31,7 @@ mod revisions;
 mod switch_branch;
 mod tracking;
 mod tree_changes;
+mod untracked;
 mod wt_status;
 
 use std::io::Write;

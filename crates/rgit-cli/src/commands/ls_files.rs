@@ -22,6 +22,7 @@ use crate::prelude::*;
 use crate::quote::{relative_to, write_quoted};
 use crate::repo::Mode;
 use crate::repository::{self, Repo};
+use crate::untracked::{self, Walker};
 
 /// A field of `--format`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -759,39 +760,66 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         last_path: None,
     };
 
-    if lister.show.others || lister.show.killed {
+    if lister.show.others {
+        let root = work_tree.clone().expect("work tree");
+        let implicit_spec;
+        let spec = if lister.implicit {
+            implicit_spec =
+                Pathspec::parse(["."], &opts).map_err(|e| Die::Fatal(e.to_string()))?;
+            Some(&implicit_spec)
+        } else if lister.pathspec.is_empty() {
+            None
+        } else {
+            Some(&lister.pathspec)
+        };
+        if let Some(e) = ex.as_mut() {
+            let per_dir = excludes.iter().rev().find_map(|a| match a {
+                ExcludeArg::Standard => Some(Some(".gitignore")),
+                ExcludeArg::PerDirectory(n) => Some(n.as_deref()),
+                _ => None,
+            });
+            if let Some(Some(name)) = per_dir {
+                untracked::use_skip_worktree_ignores(&repo, &index, name.as_bytes(), e);
+            }
+        }
+        let roots = Walker {
+            root: &root,
+            index: &index,
+            excludes: ex.as_mut(),
+            pathspec: spec,
+            scan_excluded: lister.show.ignored,
+        }
+        .walk();
+        let found = untracked::ls_files_others(
+            &roots,
+            lister.show.ignored,
+            lister.show.directory,
+            lister.show.no_empty_directory,
+        );
+        for p in found {
+            lister.show_file("?", &p);
+        }
+    }
+    if lister.show.killed {
         let root = work_tree.clone().expect("work tree");
         let mut walk = Walk {
             root,
             index: &index,
-            excludes: if lister.show.others { ex.take() } else { None },
-            ignored: lister.show.ignored && lister.show.others,
+            excludes: None,
+            ignored: false,
             directory: lister.show.directory,
             no_empty_directory: lister.show.no_empty_directory,
             others: Vec::new(),
             killed: Vec::new(),
-            want_killed: lister.show.killed,
+            want_killed: true,
         };
         let start = walk_start(&lister);
         walk.walk(&start, &lister, false);
-        if let Some(e) = walk.excludes.take() {
-            ex = Some(e);
-        }
-        let others_found = std::mem::take(&mut walk.others);
-        let killed_found = std::mem::take(&mut walk.killed);
-        if lister.show.others {
-            for p in others_found {
-                let bare = p.strip_suffix(b"/").unwrap_or(&p).to_vec();
-                if lister.wanted(&bare) {
-                    lister.show_file("?", &p);
-                }
-            }
-        }
-        if lister.show.killed {
-            for p in killed_found {
-                if lister.wanted(&p) {
-                    lister.show_file("K", &p);
-                }
+        let mut killed_found = std::mem::take(&mut walk.killed);
+        killed_found.sort();
+        for p in killed_found {
+            if lister.wanted(&p) {
+                lister.show_file("K", &p);
             }
         }
     }

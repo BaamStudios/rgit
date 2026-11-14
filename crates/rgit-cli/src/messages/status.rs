@@ -13,6 +13,16 @@ pub const HELP_Z: &str = "terminate entries with NUL";
 pub const HELP_UNTRACKED: &str =
     "show untracked files, optional modes: all, normal, no. (Default: all)";
 
+pub const HELP_IGNORED: &str =
+    "show ignored files, optional modes: traditional, matching, no. (Default: traditional)";
+
+pub fn invalid_ignored(mode: &str) -> String {
+    format!("Invalid ignored mode '{mode}'")
+}
+
+pub const IGNORED_UNTRACKED_COMBINATION: &str =
+    "Unsupported combination of ignored and untracked-files arguments";
+
 pub fn invalid_untracked(mode: &str) -> String {
     format!("Invalid untracked files mode '{mode}'")
 }
@@ -69,6 +79,9 @@ pub const HINT_ADD: &str = "use \"git add <file>...\" to update what will be com
 pub const HINT_RESTORE: &str =
     "use \"git restore <file>...\" to discard changes in working directory";
 pub const UNTRACKED_HEADER: &str = "Untracked files:";
+pub const IGNORED_HEADER: &str = "Ignored files:";
+pub const HINT_INCLUDE_IGNORED: &str =
+    "use \"git add -f <file>...\" to include in what will be committed";
 pub const HINT_INCLUDE: &str = "use \"git add <file>...\" to include in what will be committed";
 
 // Closing line: the text and the hint appended to it when advice is enabled.

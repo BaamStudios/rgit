@@ -8,6 +8,7 @@ pub mod cat_file;
 pub mod check_attr;
 pub mod check_ignore;
 pub mod checkout_index;
+pub mod clean;
 pub mod clone;
 pub mod comment;
 pub mod commit;
