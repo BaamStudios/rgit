@@ -51,7 +51,3 @@ pub fn unknown_conflict_style(value: &str) -> String {
 pub fn unable_to_write_object() -> String {
     "Unable to add merge result to the object database".to_string()
 }
-
-pub fn algorithm_not_supported(name: &str) -> String {
-    format!("rgit merge-file: --diff-algorithm={name} is not supported yet")
-}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! Line diff with git's default algorithm (Myers), unified patch output and
-//! the three-way merge of one text ([`merge`]).
+//! Line diff (Myers, patience, histogram, anchored), unified patch output
+//! and the three-way merge of one text ([`merge`]).
 //!
 //! The output is meant to be byte-identical to `git diff` with default
 //! options. Where the documentation does not specify behaviour (which of
@@ -10,12 +10,14 @@
 //! Myers paper and from differential tests against the `git` binary.
 
 mod compact;
+mod histogram;
 mod indent;
 mod lines;
 pub mod merge;
 pub mod messages;
 mod myers;
 mod patch;
+mod patience;
 mod unified;
 
 pub use lines::{BINARY_CHECK_BYTES, is_binary, split_lines};
@@ -24,8 +26,36 @@ pub use patch::{
 };
 pub use unified::default_funcname;
 
+/// The line-diff algorithm (`--diff-algorithm`, `diff.algorithm`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Algorithm {
+    /// Myers' greedy algorithm (`myers`, `default`); with
+    /// [`DiffOptions::minimal`] it is `minimal`.
+    #[default]
+    Myers,
+    /// Patience diff: unique common lines first.
+    Patience,
+    /// Histogram diff: low-occurrence common lines first.
+    Histogram,
+}
+
+impl Algorithm {
+    /// Parses a `--diff-algorithm` / `diff.algorithm` value; returns the
+    /// algorithm and whether a minimal diff is requested. Names are not
+    /// case sensitive.
+    pub fn parse(name: &str) -> Option<(Algorithm, bool)> {
+        match name.to_ascii_lowercase().as_str() {
+            "myers" | "default" => Some((Algorithm::Myers, false)),
+            "minimal" => Some((Algorithm::Myers, true)),
+            "patience" => Some((Algorithm::Patience, false)),
+            "histogram" => Some((Algorithm::Histogram, false)),
+            _ => None,
+        }
+    }
+}
+
 /// Options for the line diff and its unified output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffOptions {
     /// Number of context lines (`-U<n>`, default 3).
     pub context: usize,
@@ -35,6 +65,11 @@ pub struct DiffOptions {
     pub indent_heuristic: bool,
     /// Always produce a minimal diff (`--minimal`), even when slow.
     pub minimal: bool,
+    /// The algorithm.
+    pub algorithm: Algorithm,
+    /// `--anchored=<text>`: line prefixes of anchor lines, used by the
+    /// patience algorithm (anchored diff).
+    pub anchors: Vec<Vec<u8>>,
 }
 
 impl Default for DiffOptions {
@@ -44,6 +79,8 @@ impl Default for DiffOptions {
             interhunk_context: 0,
             indent_heuristic: true,
             minimal: false,
+            algorithm: Algorithm::Myers,
+            anchors: Vec::new(),
         }
     }
 }
@@ -69,7 +106,14 @@ pub struct Stats {
 /// Computes the edit script between two lists of lines.
 pub fn diff_lines(a: &[&[u8]], b: &[&[u8]], opts: &DiffOptions) -> Vec<Change> {
     let (ia, ib, classes) = lines::intern(a, b);
-    let (mut ca, mut cb) = myers::diff(&ia, &ib, classes, opts.minimal);
+    let (mut ca, mut cb) = match opts.algorithm {
+        Algorithm::Myers => myers::diff(&ia, &ib, classes, opts.minimal),
+        Algorithm::Patience => {
+            let anchors = (!opts.anchors.is_empty()).then_some((a, &opts.anchors[..]));
+            patience::diff(&ia, &ib, classes, opts.minimal, anchors)
+        }
+        Algorithm::Histogram => histogram::diff(&ia, &ib, classes, opts.minimal),
+    };
     compact::compact(&ia, a, &mut ca, &ib, b, &mut cb, opts.indent_heuristic);
     changes_from_flags(&ca, &cb)
 }

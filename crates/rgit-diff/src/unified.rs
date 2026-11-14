@@ -17,7 +17,8 @@ pub fn default_funcname(line: &[u8]) -> bool {
 /// Text shown after the hunk header for a function-name line.
 fn funcname_text(line: &[u8]) -> &[u8] {
     let mut l = line;
-    if l.len() > FUNCNAME_MAX {
+    let cut = l.len() > FUNCNAME_MAX;
+    if cut {
         l = &l[..FUNCNAME_MAX];
     }
     while let Some((&c, rest)) = l.split_last() {
@@ -27,7 +28,30 @@ fn funcname_text(line: &[u8]) -> &[u8] {
             break;
         }
     }
+    if cut {
+        // A UTF-8 character cut in two by the limit is left out (observed
+        // with git; whitespace before it stays).
+        l = &l[..l.len() - incomplete_utf8_tail(l)];
+    }
     l
+}
+
+/// Length of an incomplete UTF-8 sequence at the end of `s` (0 if none).
+fn incomplete_utf8_tail(s: &[u8]) -> usize {
+    for back in 1..=s.len().min(3) {
+        let c = s[s.len() - back];
+        if c & 0xC0 == 0x80 {
+            continue;
+        }
+        let need = match c {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => return 0,
+        };
+        return if back < need { back } else { 0 };
+    }
+    0
 }
 
 fn push_range(out: &mut Vec<u8>, start: usize, len: usize) {
@@ -119,5 +143,28 @@ pub(crate) fn write_hunks(
             pa += 1;
         }
         i = j + 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn funcname_cut_inside_utf8() {
+        // 79 ASCII bytes, then a two-byte character cut by the limit.
+        let mut line = vec![b'f'; 78];
+        line.push(b' ');
+        line.extend_from_slice("\u{fc} tail\n".as_bytes());
+        let mut want = vec![b'f'; 78];
+        want.push(b' ');
+        assert_eq!(funcname_text(&line), &want[..]);
+        // Not cut: the text stays as it is.
+        assert_eq!(
+            funcname_text("fn \u{fc}\n".as_bytes()),
+            "fn \u{fc}".as_bytes()
+        );
+        assert_eq!(incomplete_utf8_tail(&[b'a', 0xE2, 0x82]), 2);
+        assert_eq!(incomplete_utf8_tail(&[b'a', 0xE2, 0x82, 0xAC]), 0);
     }
 }

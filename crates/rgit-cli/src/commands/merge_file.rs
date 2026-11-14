@@ -45,8 +45,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let favor = Cell::new(0);
     let quiet = Cell::new(false);
     let marker_size = Cell::new(0);
-    let minimal = Cell::new(false);
-    let unsupported_algorithm = RefCell::new(None::<String>);
+    let algorithm = Cell::new((rgit_diff::Algorithm::Myers, false));
     let labels = RefCell::new(Vec::<String>::new());
     let mut parser = Parser::new(
         msg::MERGE_FILE_USAGE,
@@ -64,20 +63,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 Some("algorithm"),
                 msg::HELP_DIFF_ALGORITHM,
                 |v, _| {
-                    let name = v.unwrap_or("").to_ascii_lowercase();
-                    match name.as_str() {
-                        "myers" | "default" => {
-                            minimal.set(false);
-                            *unsupported_algorithm.borrow_mut() = None;
-                        }
-                        "minimal" => {
-                            minimal.set(true);
-                            *unsupported_algorithm.borrow_mut() = None;
-                        }
-                        "patience" | "histogram" => {
-                            *unsupported_algorithm.borrow_mut() = Some(name);
-                        }
-                        _ => return Err(CallbackError::Error(msg::BAD_DIFF_ALGORITHM.into())),
+                    match rgit_diff::Algorithm::parse(v.unwrap_or("")) {
+                        Some(a) => algorithm.set(a),
+                        None => return Err(CallbackError::Error(msg::BAD_DIFF_ALGORITHM.into())),
                     }
                     Ok(())
                 },
@@ -100,9 +88,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(parser.usage_error().into());
     }
     drop(parser);
-    if let Some(name) = unsupported_algorithm.into_inner() {
-        return Err(Die::Fatal(msg::algorithm_not_supported(&name)));
-    }
 
     let mut repo = if object_id.get() {
         let setup = match setup {
@@ -149,7 +134,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         base_label: label(1),
         theirs_label: label(2),
         diff: DiffOptions {
-            minimal: minimal.get(),
+            algorithm: algorithm.get().0,
+            minimal: algorithm.get().1,
             ..merge::merge_diff_options()
         },
     };

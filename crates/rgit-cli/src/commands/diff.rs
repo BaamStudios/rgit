@@ -168,7 +168,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         _ => return Err(Die::Fatal(msg::not_supported("this form of diff"))),
     };
     page(ctx, Some(&repo), &opts)?;
-    let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true);
+    let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true)?;
     out.set_color(&opts)?;
     out.combined_unmerged = trees.is_empty() && !cached;
     if let Some((s, d)) = mnemonic {
@@ -252,7 +252,7 @@ fn run_no_index(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts, args: &[Str
     }
     no_index_walk(hash, &a, &b, &mut pairs)?;
     page(ctx, repo, opts)?;
-    let mut out = Output::new(repo, hash, opts, formats, true);
+    let mut out = Output::new(repo, hash, opts, formats, true)?;
     out.set_color(opts)?;
     if repo.is_some() {
         out.mnemonic(opts, "1", "2");

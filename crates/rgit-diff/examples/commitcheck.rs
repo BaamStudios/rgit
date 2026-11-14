@@ -6,10 +6,12 @@
 //! and compare with git's own output.
 //!
 //! usage: commitcheck REPO COUNT [OUT_DIR]
+//! With `DIFF_ALGORITHM=<name>` in the environment both sides use that
+//! algorithm (`--diff-algorithm=<name>`).
 //! Prints one line per mismatching commit; with OUT_DIR the expected and
 //! actual patches are written there.
 
-use rgit_diff::{MODE_SYMLINK, PatchFile, PatchOptions, write_file_patch};
+use rgit_diff::{Algorithm, DiffOptions, MODE_SYMLINK, PatchFile, PatchOptions, write_file_patch};
 use rgit_hash::{HashKind, ObjectId};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
@@ -95,8 +97,16 @@ fn main() {
         ],
     );
     let mut cat = CatFile::new(repo);
+    let algorithm = std::env::var("DIFF_ALGORITHM").unwrap_or_else(|_| "myers".into());
+    let (alg, minimal) = Algorithm::parse(&algorithm).expect("DIFF_ALGORITHM");
+    let alg_arg = format!("--diff-algorithm={algorithm}");
     let opts = PatchOptions {
         abbrev: 40,
+        diff: DiffOptions {
+            algorithm: alg,
+            minimal,
+            ..DiffOptions::default()
+        },
         ..PatchOptions::default()
     };
     let (mut ok, mut bad) = (0, 0);
@@ -120,6 +130,7 @@ fn main() {
                 "--no-renames",
                 "--full-index",
                 "--no-color",
+                &alg_arg,
                 &parent,
                 c,
             ],

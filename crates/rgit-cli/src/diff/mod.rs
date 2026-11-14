@@ -71,6 +71,16 @@ pub fn parse_args(
             args.extend(it.by_ref().cloned());
             break;
         }
+        if a == "--diff-algorithm" || a == "--anchored" {
+            // The value may also be the next argument.
+            let Some(v) = it.next() else {
+                return Err(options::usage_exit(crate::messages::diff::requires_value(
+                    &a[2..],
+                )));
+            };
+            opts.parse_arg(&format!("{a}={v}"))?;
+            continue;
+        }
         if a.starts_with('-') && a != "-" {
             if own(a)? || opts.parse_arg(a)? {
                 continue;

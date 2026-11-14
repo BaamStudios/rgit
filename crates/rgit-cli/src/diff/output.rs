@@ -63,7 +63,7 @@ impl<'a> Output<'a> {
         opts: &DiffOpts,
         formats: Formats,
         porcelain: bool,
-    ) -> Output<'a> {
+    ) -> Result<Output<'a>, Die> {
         let config_bool = |key: &str| repo.and_then(|r| r.config.bool(key).ok().flatten());
         let config_int = |key: &str| {
             repo.and_then(|r| r.config.int(key).ok().flatten())
@@ -109,7 +109,29 @@ impl<'a> Output<'a> {
         if let Some(h) = opts.indent_heuristic {
             diff.indent_heuristic = h;
         }
-        diff.minimal = opts.minimal;
+        // diff.algorithm applies to the porcelain commands only; the
+        // command line wins (`--minimal` means minimal Myers).
+        if porcelain {
+            if let Some(e) = repo.and_then(|r| r.config.get("diff.algorithm")) {
+                let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+                let Some((algorithm, minimal)) = rgit_diff::Algorithm::parse(&v) else {
+                    crate::messages::print_error(&msg::unknown_config_value("diff.algorithm", &v));
+                    return Err(Die::Fatal(crate::revisions::unable_to_parse(
+                        "diff.algorithm",
+                        e,
+                    )));
+                };
+                diff.algorithm = algorithm;
+                diff.minimal = minimal;
+            }
+        }
+        if let Some(a) = opts.algorithm {
+            diff.algorithm = a;
+        }
+        if let Some(m) = opts.minimal {
+            diff.minimal = m;
+        }
+        diff.anchors = opts.anchors.clone();
         let quote_high = repo.is_none_or(|r| r.quote_path());
         let mut src = b"a/".to_vec();
         let mut dst = b"b/".to_vec();
@@ -138,7 +160,7 @@ impl<'a> Output<'a> {
         } else {
             (None, None)
         };
-        Output {
+        Ok(Output {
             repo,
             hash,
             formats,
@@ -163,7 +185,7 @@ impl<'a> Output<'a> {
             porcelain,
             combined_unmerged: false,
             colors: None,
-        }
+        })
     }
 
     /// Decide about colours: `--color` (`opts.color`), and for `git diff`

@@ -25,6 +25,19 @@ const MIN_COST_LIMIT: isize = 256;
 /// `a` and `b` hold interned line ids; `classes` is one more than the largest
 /// id.
 pub(crate) fn diff(a: &[u32], b: &[u32], classes: usize, minimal: bool) -> (Vec<bool>, Vec<bool>) {
+    // Small regions of large files (patience and histogram fall back to
+    // Myers for them) get dense ids of their own, so that the partner
+    // counts below do not cost the size of the whole files each time.
+    if classes > 2 * (a.len() + b.len()) + 64 {
+        let mut map = std::collections::HashMap::new();
+        let mut id = |x: &u32| -> u32 {
+            let next = map.len() as u32;
+            *map.entry(*x).or_insert(next)
+        };
+        let la: Vec<u32> = a.iter().map(&mut id).collect();
+        let lb: Vec<u32> = b.iter().map(&mut id).collect();
+        return diff(&la, &lb, map.len(), minimal);
+    }
     let mut ca = vec![false; a.len()];
     let mut cb = vec![false; b.len()];
 
