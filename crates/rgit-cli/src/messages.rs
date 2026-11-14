@@ -35,6 +35,7 @@ pub mod pager;
 pub mod push;
 pub mod read_tree;
 pub mod reflog;
+pub mod remote;
 pub mod reset;
 pub mod restore;
 pub mod rev_list;

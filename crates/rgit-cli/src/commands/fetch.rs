@@ -2,7 +2,7 @@
 //! `git fetch` (Documentation/git-fetch.adoc) from one remote or URL, on
 //! top of `rgit-fetch`.
 //!
-//! Supported: `[<repository> [<refspec>...]]`, `-v`, `-q`, `-f`, `-t` /
+//! Supported: `[<repository> [<refspec>...]]`, `-v`, `-q`, `-a`, `-f`, `-t` /
 //! `--no-tags` / `-n`, `-p` / `--prune`, `--dry-run`,
 //! `--[no-]write-fetch-head`, `-u`, `--upload-pack`, `-o`, `-4` / `-6`,
 //! `--[no-]progress`. Accepted and ignored: `-k`, `--auto-maintenance`,
@@ -31,6 +31,17 @@ fn columns() -> usize {
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
+    run_with_reflog_action(ctx, argv, None)
+}
+
+/// [`run`] for another command fetching in-process (`remote update`):
+/// `action` replaces the reflog action derived from `argv` (an explicit
+/// `$GIT_REFLOG_ACTION` still wins).
+pub fn run_with_reflog_action(
+    ctx: &mut Context,
+    argv: &[String],
+    action: Option<&str>,
+) -> CmdResult {
     let verbose = Cell::new(0);
     let quiet = Cell::new(0);
     let force = Cell::new(0);
@@ -38,6 +49,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let prune = Cell::new(-1);
     let dry_run = Cell::new(0);
     let write_fetch_head = Cell::new(true);
+    let append = Cell::new(false);
     let keep = Cell::new(false);
     let update_head_ok = Cell::new(false);
     let progress = Cell::new(-1);
@@ -59,6 +71,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::bool('p', "prune", &prune, msg::HELP_PRUNE),
             Opt::bool(None, "dry-run", &dry_run, msg::HELP_DRY_RUN),
             Opt::flag(None, "write-fetch-head", &write_fetch_head, msg::HELP_WRITE_FETCH_HEAD),
+            Opt::flag('a', "append", &append, msg::HELP_APPEND),
             Opt::flag('k', "keep", &keep, msg::HELP_KEEP),
             Opt::flag('u', "update-head-ok", &update_head_ok, msg::HELP_UPDATE_HEAD_OK),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
@@ -113,6 +126,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let reflog_action = match std::env::var("GIT_REFLOG_ACTION") {
         Ok(a) if !a.is_empty() => a,
+        _ if action.is_some() => action.unwrap_or_default().to_owned(),
         _ => {
             let mut a = String::from("fetch");
             for arg in &argv[1..] {
@@ -142,6 +156,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         dry_run: dry_run.get() > 0,
         update_head_ok: update_head_ok.get(),
         write_fetch_head: write_fetch_head.get(),
+        append: append.get(),
         reflog_action,
         no_progress: !show_progress,
         server_options: server_options.borrow().clone(),

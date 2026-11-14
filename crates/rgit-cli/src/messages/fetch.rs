@@ -16,6 +16,7 @@ pub const HELP_TAGS: &str = "fetch all tags and associated objects";
 pub const HELP_NO_TAGS: &str = "do not fetch all tags (--no-tags)";
 pub const HELP_PRUNE: &str = "prune remote-tracking branches no longer on remote";
 pub const HELP_DRY_RUN: &str = "dry run";
+pub const HELP_APPEND: &str = "append to .git/FETCH_HEAD instead of overwriting";
 pub const HELP_WRITE_FETCH_HEAD: &str = "write fetched references to the FETCH_HEAD file";
 pub const HELP_KEEP: &str = "keep downloaded pack";
 pub const HELP_UPDATE_HEAD_OK: &str = "allow updating of HEAD ref";
