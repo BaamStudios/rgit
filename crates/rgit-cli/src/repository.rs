@@ -5,7 +5,7 @@
 //! settings.
 
 use std::cell::OnceCell;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use std::path::PathBuf;
 
@@ -64,6 +64,12 @@ impl Deref for Repo {
 
     fn deref(&self) -> &repo_objects::Repo {
         &self.inner
+    }
+}
+
+impl DerefMut for Repo {
+    fn deref_mut(&mut self) -> &mut repo_objects::Repo {
+        &mut self.inner
     }
 }
 
