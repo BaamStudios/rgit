@@ -253,6 +253,7 @@ fn run_no_index(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts, args: &[Str
     no_index_walk(hash, &a, &b, &mut pairs)?;
     page(ctx, repo, opts)?;
     let mut out = Output::new(repo, hash, opts, formats, true)?;
+    out.convert = false;
     out.set_color(opts)?;
     if repo.is_some() {
         out.mnemonic(opts, "1", "2");
@@ -335,4 +336,3 @@ fn no_index_walk(hash: HashKind, a: &Path, b: &Path, pairs: &mut Vec<Pair>) -> R
     pairs.push(p);
     Ok(())
 }
-

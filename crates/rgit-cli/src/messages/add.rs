@@ -8,6 +8,7 @@ pub const HELP_DRY_RUN: &str = "dry run";
 pub const HELP_VERBOSE: &str = "be verbose";
 pub const HELP_FORCE: &str = "allow adding otherwise ignored files";
 pub const HELP_UPDATE: &str = "update tracked files";
+pub const HELP_RENORMALIZE: &str = "renormalize EOL of tracked files (implies -u)";
 pub const HELP_ALL: &str = "add changes from all tracked and untracked files";
 
 pub const NOTHING_SPECIFIED: &str = "Nothing specified, nothing added.";
@@ -28,11 +29,11 @@ pub fn remove(path: &str) -> String {
     format!("remove '{path}'")
 }
 
-/// rgit-specific (decision on #107): attributes that would convert content
-/// are not applied yet.
+/// rgit-specific (decision on #107): a configured filter driver is not
+/// run yet (#112).
 #[must_use]
 pub fn attributes_not_applied(path: &str) -> String {
-    format!("rgit: eol/filter attributes are not applied yet; '{path}' added unconverted")
+    format!("rgit: filter drivers are not applied yet; '{path}' added unfiltered")
 }
 
 pub const HELP_INTENT_TO_ADD: &str = "record only the fact that the path will be added later";

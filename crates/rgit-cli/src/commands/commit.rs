@@ -529,7 +529,7 @@ fn update_path(
             return Ok(());
         }
     }
-    match entry_for(repo, checker, root, path, old.as_ref(), false).map_err(Die::Fatal)? {
+    match entry_for(repo, checker, root, path, old.as_ref(), false, false).map_err(Die::from)? {
         Some(e) => {
             index
                 .add(
@@ -583,7 +583,8 @@ fn update_all(
         let st = checker
             .check(e)
             .map_err(|err| fatal(format!("{}: {err}", lossy(e.path()))))?;
-        if st != Status::Unchanged {
+        // Racily clean files are converted again, as git does.
+        if st != Status::Unchanged || (checker.is_racy(e) && repo.converter()?.converts(e.path())) {
             paths.push(e.path().to_vec());
         }
     }

@@ -599,7 +599,7 @@ fn reset_worktree(
 ) -> Result<(), Die> {
     use crate::commands::read_tree::{lock_failed, path_options, unpack_failed};
     use rgit_fs::{LockFile, LockOptions};
-    use rgit_unpack::{Identity, Merge, Options, Worktree};
+    use rgit_unpack::{Merge, Options, Worktree};
 
     let work_tree = repo.work_tree()?;
     let index_path = repo.setup.cwd.join(repo.index_path());
@@ -642,8 +642,13 @@ fn reset_worktree(
         }
         Err(e) => return Err(unpack_failed(e)),
     };
-    let applied = plan.apply(repo.odb(), &wt, &Identity);
+    let conv = crate::convert::Converter::checkout(repo, plan.index())?;
+    let applied = plan.apply(repo.odb(), &wt, &conv);
+    if conv.skipped_filter() {
+        eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);
+    }
     let mut index = applied.index;
+    repo.converter()?.use_index(&index);
     if mode == KEEP {
         reset_index(repo, &mut index, Some(&target), &|_| true, false)?;
     }

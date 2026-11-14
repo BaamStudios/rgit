@@ -226,7 +226,7 @@ impl Plan {
                 Vec::new()
             } else {
                 match read_blob(odb, &entry.id) {
-                    Ok(d) if entry.mode.is_file() => filter.to_worktree(path, d),
+                    Ok(d) if entry.mode.is_file() => filter.to_worktree(path, &entry.id, d),
                     Ok(d) => d,
                     Err(e) => {
                         errors.push(e.to_string());

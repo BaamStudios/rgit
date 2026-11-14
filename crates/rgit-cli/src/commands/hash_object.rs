@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 //! `git hash-object` (Documentation/git-hash-object.adoc).
 //!
-//! Content filters (`--path`, `--no-filters`) are accepted but no filter
-//! runs yet (#111, #112): files are hashed as they are.
+//! Blobs read from files in a repository (or from standard input with
+//! `--path`) go through the content conversion (line endings, `ident`,
+//! `working-tree-encoding`) for their path unless `--no-filters` is given;
+//! `core.safecrlf` applies with `-w`. Filter drivers do not run (#112).
 
 use std::io::{BufRead, Read, Write};
 
@@ -84,6 +86,25 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         write: write.get(),
         literally: literally.get(),
     };
+    let conv = match &repo {
+        Some(r) if kind == ObjectKind::Blob && !no_filters.get() => {
+            Some(crate::convert::Converter::worktree(r)?)
+        }
+        _ => None,
+    };
+    let path = path.borrow().clone();
+    // The blob form of `data` as if it were at `at` (relative to the top).
+    let filter = |at: Option<&str>, data: Vec<u8>| -> Result<Vec<u8>, Die> {
+        let (Some(c), Some(at)) = (&conv, at) else {
+            return Ok(data);
+        };
+        let opts = if write.get() {
+            rgit_convert::Options::store(c.config())
+        } else {
+            rgit_convert::Options::QUIET
+        };
+        c.to_git(at.as_bytes(), data, opts)
+    };
 
     let mut out = std::io::stdout().lock();
     if stdin.get() > 0 {
@@ -92,12 +113,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .lock()
             .read_to_end(&mut data)
             .map_err(|e| Die::Fatal(msg::could_not_read_from_stdin(&crate::global::strerror(&e))))?;
+        let data = filter(path.as_deref(), data)?;
         let oid = hasher.hash(&data)?;
         let _ = writeln!(out, "{oid}");
     }
     for a in &args {
         let file = prefixed(&prefix, a);
         let data = read_file(&file)?;
+        let data = filter(Some(path.as_deref().unwrap_or(&file)), data)?;
         let oid = hasher.hash(&data)?;
         let _ = writeln!(out, "{oid}");
     }
@@ -114,6 +137,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             // git does not apply the prefix to these paths.
             let file = String::from_utf8_lossy(&name).into_owned();
             let data = read_file(&file)?;
+            let data = filter(Some(&file), data)?;
             let oid = hasher.hash(&data)?;
             let _ = writeln!(out, "{oid}");
             let _ = out.flush();

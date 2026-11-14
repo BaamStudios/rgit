@@ -48,6 +48,7 @@ pub const PREFIX_UNSUPPORTED: &str = "rgit: read-tree --prefix is not implemente
 pub const OVERLAY_UNSUPPORTED: &str =
     "rgit: read-tree with several trees and without -m is not implemented yet";
 
-/// rgit's own: the work tree was written without eol/filter conversion.
+/// rgit's own: the work tree was written without running configured
+/// filter drivers (#112).
 pub const ATTRIBUTES_NOT_APPLIED: &str =
-    "rgit: eol/filter attributes are not applied yet; files were checked out unconverted";
+    "rgit: filter drivers are not applied yet; files were checked out unfiltered";

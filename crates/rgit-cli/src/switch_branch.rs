@@ -19,7 +19,7 @@ use rgit_object::ObjectKind;
 use rgit_refs::files::FilesStore;
 use rgit_refs::{RefStore, RefUpdate, Target as RefTarget, Transaction};
 use rgit_revwalk::walk::{CommitInfo, CommitSource, Walk, WalkOptions};
-use rgit_unpack::{Identity, Merge, Options, Porcelain, Worktree};
+use rgit_unpack::{Merge, Options, Porcelain, Worktree};
 use rgit_worktree::stat::{Checker, Status, smudge_racy_entries};
 
 use crate::commands::read_tree::{lock_failed, path_options, unpack_failed};
@@ -226,15 +226,16 @@ pub fn move_index_with(
         }
         Err(e) => return Err(unpack_failed(e)),
     };
-    let wrote_files = !plan.updates().is_empty();
-    let applied = plan.apply(repo.odb(), &wt, &Identity);
-    if wrote_files && crate::commands::add::attributes_may_apply(repo, &work_tree) {
+    let conv = crate::convert::Converter::checkout(repo, plan.index())?;
+    let applied = plan.apply(repo.odb(), &wt, &conv);
+    if conv.skipped_filter() {
         eprintln!(
             "warning: {}",
             crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED
         );
     }
     let mut index = applied.index;
+    repo.converter()?.use_index(&index);
     if let Some(reference) = mtime {
         let _ = smudge_racy_entries(&mut index, reference, &checker);
     }

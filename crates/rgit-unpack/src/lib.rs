@@ -106,7 +106,7 @@
 //! Files are created with mode 0666 or 0777 (minus umask), symbolic links
 //! as links or, with `core.symlinks=false`, as files holding the target;
 //! gitlinks become empty directories. Regular file content goes through a
-//! [`Filter`] (identity until rgit has eol conversion and filters).
+//! [`Filter`] (line endings, `ident`, `working-tree-encoding`).
 //! [`write_entry`] and [`remove_entry`] are public for `checkout-index` and
 //! path-wise checkouts.
 //!

@@ -847,7 +847,7 @@ fn initial_checkout(
     commit: ObjectId,
 ) -> Result<crate::repository::Repo, Die> {
     use crate::commands::read_tree::{path_options, unpack_failed};
-    use rgit_unpack::{Identity, Merge, Options as UnpackOptions, Worktree};
+    use rgit_unpack::{Merge, Options as UnpackOptions, Worktree};
 
     let mut repo = crate::repository::Repo::from_setup(ctx, setup)?;
     let tree = repo
@@ -872,9 +872,9 @@ fn initial_checkout(
     };
     let plan = rgit_unpack::plan(repo.odb(), &old, &Merge::OneWay(tree), Some(&wt), &mut opts)
         .map_err(unpack_failed)?;
-    let wrote_files = !plan.updates().is_empty();
-    let applied = plan.apply(repo.odb(), &wt, &Identity);
-    if wrote_files && crate::commands::add::attributes_may_apply(&repo, &root) {
+    let conv = crate::convert::Converter::checkout(&repo, plan.index())?;
+    let applied = plan.apply(repo.odb(), &wt, &conv);
+    if conv.skipped_filter() {
         eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);
     }
     for e in &applied.errors {

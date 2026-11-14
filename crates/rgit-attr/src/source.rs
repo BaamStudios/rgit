@@ -3,6 +3,7 @@
 //! Where per-directory `.gitattributes` files come from: the work tree,
 //! the index or a tree, and reading the other attributes files.
 
+use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -72,6 +73,35 @@ pub enum Source<'a> {
     /// The tree `tree` (`--source`, `--attr-source`, `attr.tree`); `None`
     /// is the empty tree.
     Tree(Option<ObjectId>, &'a dyn ObjectReader),
+    /// Like [`Source::WorkTree`] (or [`Source::Index`] without `root`),
+    /// with the index copies read beforehand: the contents of the index's
+    /// `.gitattributes` blobs by path (see [`snapshot`]). Owns everything,
+    /// so the attributes can outlive the index they were taken from.
+    Snapshot {
+        /// The top of the work tree; `None` reads the index copies only.
+        root: Option<PathBuf>,
+        /// `<dir>.gitattributes` blobs of the index by path.
+        index: HashMap<Vec<u8>, Vec<u8>>,
+        /// Which copy wins.
+        order: Order,
+    },
+}
+
+/// The contents of the stage-0 `.gitattributes` blobs of `index` by path,
+/// for [`Source::Snapshot`]. Blobs `objects` cannot read are left out.
+pub fn snapshot(index: &Index, objects: &dyn ObjectReader) -> HashMap<Vec<u8>, Vec<u8>> {
+    let mut out = HashMap::new();
+    for e in index.entries() {
+        let p = e.path();
+        let name = p.rsplit(|&b| b == b'/').next().unwrap_or(p);
+        if name != b".gitattributes" || e.stage() != Stage::MERGED || !e.mode.is_file() {
+            continue;
+        }
+        if let Some(data) = objects.blob(&e.id) {
+            out.insert(p.to_vec(), data);
+        }
+    }
+    out
 }
 
 impl std::fmt::Debug for Source<'_> {
@@ -86,6 +116,12 @@ impl std::fmt::Debug for Source<'_> {
                 .finish(),
             Source::Index(..) => f.write_str("Index"),
             Source::Tree(t, _) => f.debug_tuple("Tree").field(t).finish(),
+            Source::Snapshot { root, index, order } => f
+                .debug_struct("Snapshot")
+                .field("root", root)
+                .field("index", &index.len())
+                .field("order", order)
+                .finish(),
         }
     }
 }
@@ -127,6 +163,24 @@ impl Source<'_> {
             Source::Tree(tree, o) => {
                 let id = tree.as_ref()?;
                 read_tree(*o, id, rel, &shown, warnings)
+            }
+            Source::Snapshot { root, index, order } => {
+                let read = |from_index: bool, w: &mut Vec<String>| match (from_index, root) {
+                    (true, _) => match index.get(rel) {
+                        Some(d) => Read1::Data(checked_blob(d.clone(), &shown, w)),
+                        None => Read1::Missing,
+                    },
+                    (false, Some(root)) => read_work_tree(root, rel, &shown, w),
+                    (false, None) => Read1::Missing,
+                };
+                let index_first = *order == Order::IndexFirst;
+                match read(index_first, warnings) {
+                    Read1::Data(d) => d,
+                    Read1::Missing => match read(!index_first, warnings) {
+                        Read1::Data(d) => d,
+                        Read1::Missing => None,
+                    },
+                }
             }
         }
     }

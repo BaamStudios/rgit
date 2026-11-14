@@ -97,6 +97,8 @@ struct State<'a> {
     mark: [Option<bool>; 2],
     index_version: Option<i64>,
     out: Vec<u8>,
+    /// A fatal conversion problem met while processing a path.
+    pending: Option<Die>,
 }
 
 type FlagKey = u8;
@@ -137,7 +139,8 @@ impl State<'_> {
             self.repo.hash,
             self.repo.stat_options(),
             self.index_mtime,
-        ))
+        )
+        .with_filter(self.repo.converter()?))
     }
 
     /// A path from the command line or `--stdin`, relative to the current
@@ -177,6 +180,9 @@ impl State<'_> {
             return Ok(());
         }
         if let Err(e) = self.process_path(path) {
+            if let Some(d) = self.pending.take() {
+                return Err(Stop::Die(d));
+            }
             if let Some(m) = e {
                 eprintln!("error: {m}");
             }
@@ -224,6 +230,24 @@ impl State<'_> {
         }
         self.say(msg::verbose_chmod(flip, &lossy(path)));
         Ok(())
+    }
+
+    /// The blob form of the work tree file `path` (content conversion).
+    fn to_git(&self, path: &[u8], data: Vec<u8>) -> Result<Vec<u8>, Die> {
+        let conv = self.repo.converter()?;
+        let c = conv.conversion(path);
+        if conv.unapplied_filter(&c) {
+            eprintln!(
+                "warning: {}",
+                crate::messages::add::attributes_not_applied(&lossy(path))
+            );
+        }
+        let opts = if self.flag(Flag::InfoOnly) {
+            rgit_convert::Options::QUIET
+        } else {
+            rgit_convert::Options::store(conv.config())
+        };
+        conv.to_git_with(&c, path, data, opts)
     }
 
     /// Add, update or remove `path` from the work tree. The error is the
@@ -288,7 +312,16 @@ impl State<'_> {
                     .map(|t| t.as_os_str().as_encoded_bytes().to_vec())
                     .map_err(|e| Some(format!("readlink(\"{shown}\"): {e}")))?
             } else {
-                std::fs::read(&full).map_err(|e| Some(format!("open(\"{shown}\"): {e}")))?
+                let raw =
+                    std::fs::read(&full).map_err(|e| Some(format!("open(\"{shown}\"): {e}")))?;
+                if mode.is_file() {
+                    self.to_git(path, raw).map_err(|d| {
+                        self.pending = Some(d);
+                        None
+                    })?
+                } else {
+                    raw
+                }
             };
             let id = if self.flag(Flag::InfoOnly) {
                 rgit_hash::hash_object(self.repo.hash, "blob", &data)
@@ -1008,6 +1041,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         mark: [None, None],
         index_version: None,
         out: Vec::new(),
+        pending: None,
     };
     let ctx: &Context = ctx;
     let mut only_paths = false;

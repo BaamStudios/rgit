@@ -12,7 +12,7 @@ use rgit_fs::{LockError, LockFile, LockOptions};
 use rgit_hash::ObjectId;
 use rgit_index::{AddOptions, CacheTree, Index, TreeNode, WriteOptions};
 use rgit_object::ObjectKind;
-use rgit_unpack::{Identity, Merge, Options, PathOptions, Worktree};
+use rgit_unpack::{Merge, Options, PathOptions, Worktree};
 use rgit_worktree::stat::smudge_racy_entries;
 
 use crate::messages::read_tree as msg;
@@ -230,12 +230,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         match (&wt, update) {
             (Some(wt), true) => {
-                let wrote_files = !plan.updates().is_empty();
-                let applied = plan.apply(repo.odb(), wt, &Identity);
-                if wrote_files && super::add::attributes_may_apply(&repo, wt.root) {
+                let conv = crate::convert::Converter::checkout(&repo, plan.index())?;
+                let applied = plan.apply(repo.odb(), wt, &conv);
+                if conv.skipped_filter() {
                     eprintln!("warning: {}", msg::ATTRIBUTES_NOT_APPLIED);
                 }
                 let mut index = applied.index;
+                repo.converter()?.use_index(&index);
                 if let (Some(reference), Some(checker)) = (old_mtime, &checker) {
                     let _ = smudge_racy_entries(&mut index, reference, checker);
                 }

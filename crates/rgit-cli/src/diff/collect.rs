@@ -328,9 +328,13 @@ impl WorkTree<'_> {
             });
         }
         let status = self.checker.check_with(e, &meta).map_err(io)?;
+        // A converted file whose stat data changed is read again for the
+        // output, where git prints its conversion warnings (and drops it
+        // as unchanged).
+        let converted = || self.checker.filter().is_some_and(|f| f.converts(e.path()));
         Ok(match status {
             Status::Unchanged => None,
-            Status::StatOnly if self.porcelain => None,
+            Status::StatOnly if self.porcelain && !converted() => None,
             Status::Deleted => Some(None),
             _ => Some(Some(self.file_side(e.path(), &meta, Some(e.mode.0)))),
         })

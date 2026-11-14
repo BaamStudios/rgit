@@ -13,6 +13,7 @@ mod color;
 mod commands;
 mod comment;
 mod context;
+mod convert;
 mod diff;
 mod external;
 mod format;

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use rgit_fs::{LockFile, LockOptions};
 use rgit_index::{Entry, Index, Stage, WriteOptions};
 use rgit_unpack::messages as umsg;
-use rgit_unpack::{CheckoutError, Filter, Identity};
+use rgit_unpack::CheckoutError;
 use rgit_worktree::stat::{Checker, Status, compare, stat_from_metadata};
 
 use crate::messages::checkout_index as msg;
@@ -26,6 +26,7 @@ struct State<'a> {
     repo: &'a Repo,
     root: PathBuf,
     checker: Checker,
+    conv: crate::convert::Converter,
     force: bool,
     quiet: bool,
     no_create: bool,
@@ -77,7 +78,7 @@ impl State<'_> {
                 .map_err(|e| Die::Error(e.to_string(), 128))?;
             if entry.mode.is_file() {
                 self.wrote_files = true;
-                Identity.to_worktree(entry.path(), blob)
+                self.conv.to_worktree(entry.path(), &entry.id, blob)
             } else {
                 blob
             }
@@ -207,6 +208,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut state = State {
         repo: &repo,
         checker: repo.checker(mtime)?,
+        conv: crate::convert::Converter::paths(&repo, &index)?,
         root: root.clone(),
         force: force.get() > 0,
         quiet: quiet.get() > 0,
@@ -253,7 +255,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             state.checkout(&mut index, pos)?;
         }
     }
-    if state.wrote_files && super::add::attributes_may_apply(&repo, &root) {
+    if state.wrote_files && state.conv.skipped_filter() {
         eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);
     }
     if let Some(mut lock) = lock.take() {
