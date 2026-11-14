@@ -12,8 +12,7 @@ use rgit_index::Index;
 use rgit_object::Object;
 
 use crate::Die;
-use crate::commands::ls_files::{ExcludeArg, build_excludes};
-use crate::commands::status::{Change, Untracked, Walker, check_worktree};
+use crate::commands::status::{Change, Untracked, check_worktree};
 use crate::messages::wt_status as msg;
 use crate::quote::{relative_to, write_quoted};
 use crate::repository::Repo;
@@ -88,18 +87,14 @@ pub fn collect(
         };
         unstaged.push((kind, e.path().to_vec()));
     }
-    let mut found = Vec::new();
-    if untracked != Untracked::No {
-        let excludes = build_excludes(repo, &[ExcludeArg::Standard])?;
-        let mut w = Walker {
-            root: &work_tree,
-            tracked: &tracked,
-            excludes,
-            mode: untracked,
-            out: Vec::new(),
-        };
-        w.walk(b"", &mut found);
-    }
+    let (found, _) = crate::commands::status::untracked_and_ignored(
+        repo,
+        &work_tree,
+        index,
+        None,
+        untracked,
+        crate::untracked::IgnoredMode::No,
+    )?;
     Ok(Collected {
         staged,
         unstaged,

@@ -2,9 +2,10 @@
 //! `git status` (Documentation/git-status.adoc): the long format (branch
 //! and upstream lines, sections with `advice.statusHints`, closing
 //! summary), `-s`/`--short`, `--porcelain[=v1]` and `--porcelain=v2`, with
-//! `-z`, `-b`, `--[no-]ahead-behind` and `--untracked-files=no|normal|all`.
-//! Rename detection, submodule details, `--ignored`, colour and the state
-//! banners other than merging are not implemented yet.
+//! `-z`, `-b`, `--[no-]ahead-behind`, `--untracked-files=no|normal|all` and
+//! `--ignored[=traditional|matching|no]` (the walk is in
+//! [`crate::untracked`]). Rename detection, submodule details, colour and
+//! the state banners other than merging are not implemented yet.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -15,7 +16,6 @@ use rgit_hash::ObjectId;
 use rgit_index::Entry;
 use rgit_object::{Object, ObjectKind};
 use rgit_pathspec::{ParseOptions, Pathspec};
-use rgit_worktree::ignore::Excludes;
 use rgit_worktree::stat::{Checker, Status};
 
 use super::ls_files::{ExcludeArg, build_excludes};
@@ -25,6 +25,7 @@ use crate::quote::{relative_to, write_quoted};
 use crate::refs_support::Revs;
 use crate::repo::Mode;
 use crate::repository::{self, Repo};
+use crate::untracked::{self, IgnoredMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Untracked {
@@ -111,91 +112,30 @@ fn conflict_code(c: &Change) -> Option<&'static str> {
     })
 }
 
-pub(crate) struct Walker<'a> {
-    pub(crate) root: &'a Path,
-    pub(crate) tracked: &'a BTreeMap<Vec<u8>, Change>,
-    pub(crate) excludes: Excludes,
-    pub(crate) mode: Untracked,
-    pub(crate) out: Vec<Vec<u8>>,
-}
-
-fn os_path(root: &Path, rel: &[u8]) -> std::path::PathBuf {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        root.join(std::ffi::OsStr::from_bytes(rel))
+/// The untracked and the ignored paths of the work tree, as `status`
+/// shows them.
+pub(crate) fn untracked_and_ignored(
+    repo: &Repo,
+    work_tree: &Path,
+    index: &rgit_index::Index,
+    pathspec: Option<&Pathspec>,
+    mode: Untracked,
+    ignored: IgnoredMode,
+) -> Result<untracked::StatusLists, Die> {
+    if mode == Untracked::No {
+        return Ok((Vec::new(), Vec::new()));
     }
-    #[cfg(not(unix))]
-    {
-        root.join(String::from_utf8_lossy(rel).as_ref())
+    let mut excludes = build_excludes(repo, &[ExcludeArg::Standard])?;
+    untracked::use_skip_worktree_ignores(repo, index, b".gitignore", &mut excludes);
+    let roots = untracked::Walker {
+        root: work_tree,
+        index,
+        excludes: Some(&mut excludes),
+        pathspec,
+        scan_excluded: ignored != IgnoredMode::No,
     }
-}
-
-impl Walker<'_> {
-    fn tracked_below(&self, dir: &[u8]) -> bool {
-        let mut d = dir.to_vec();
-        d.push(b'/');
-        self.tracked
-            .range(d.clone()..)
-            .next()
-            .is_some_and(|(p, c)| p.starts_with(&d) && (c.index.is_some() || c.stages.iter().any(Option::is_some)))
-    }
-
-    fn is_tracked(&self, path: &[u8]) -> bool {
-        self.tracked
-            .get(path)
-            .is_some_and(|c| c.index.is_some() || c.stages.iter().any(Option::is_some))
-    }
-
-    /// Walk `dir` (empty or ending in `/`); collect untracked paths into
-    /// `found`. Returns whether anything untracked was found.
-    pub(crate) fn walk(&mut self, dir: &[u8], found: &mut Vec<Vec<u8>>) {
-        let Ok(rd) = std::fs::read_dir(os_path(self.root, dir)) else {
-            return;
-        };
-        let mut entries: Vec<(Vec<u8>, std::fs::FileType)> = rd
-            .flatten()
-            .filter_map(|e| Some((e.file_name().as_encoded_bytes().to_vec(), e.file_type().ok()?)))
-            .collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, ft) in entries {
-            if name == b".git" {
-                continue;
-            }
-            let mut path = dir.to_vec();
-            path.extend_from_slice(&name);
-            if ft.is_dir() {
-                if self.is_tracked(&path) {
-                    continue;
-                }
-                if self.excludes.is_excluded(&path, true) {
-                    continue;
-                }
-                let nested = std::fs::symlink_metadata(os_path(self.root, &path).join(".git")).is_ok();
-                if nested {
-                    path.push(b'/');
-                    found.push(path);
-                    continue;
-                }
-                let has_tracked = self.tracked_below(&path);
-                path.push(b'/');
-                if !has_tracked && self.mode == Untracked::Normal {
-                    let mut inner = Vec::new();
-                    self.walk(&path, &mut inner);
-                    if !inner.is_empty() {
-                        found.push(path);
-                    }
-                } else {
-                    self.walk(&path, found);
-                }
-            } else {
-                if self.is_tracked(&path) || self.excludes.is_excluded(&path, false) {
-                    continue;
-                }
-                found.push(path);
-            }
-        }
-    }
+    .walk();
+    Ok(untracked::status_lists(&roots, mode == Untracked::All, ignored))
 }
 
 struct Printer {
@@ -352,6 +292,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let format = Cell::new(F_UNSET);
     let porcelain: RefCell<Option<String>> = RefCell::new(None);
     let untracked: RefCell<Option<String>> = RefCell::new(None);
+    let ignored: RefCell<Option<String>> = RefCell::new(None);
     let ahead_behind = Cell::new(-1);
     let mut parser = Parser::new(
         msg::USAGE,
@@ -379,6 +320,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('z', "null", &nul, msg::HELP_Z),
             Opt::string('u', "untracked-files", &untracked, "mode", msg::HELP_UNTRACKED)
                 .optional(Some("all")),
+            Opt::string(None, "ignored", &ignored, "mode", msg::HELP_IGNORED)
+                .optional(Some("traditional")),
         ],
     );
     let args = parser.parse(argv)?.args;
@@ -486,25 +429,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
     let wanted = |p: &[u8]| pathspec.is_empty() || pathspec.match_path(p).is_some();
 
-    let mut untracked_paths = Vec::new();
-    if mode != Untracked::No {
-        let excludes = build_excludes(&repo, &[ExcludeArg::Standard])?;
-        let mut w = Walker {
-            root: &work_tree,
-            tracked: &changes,
-            excludes,
-            mode,
-            out: Vec::new(),
-        };
-        let mut found = Vec::new();
-        w.walk(b"", &mut found);
-        w.out = found;
-        untracked_paths = std::mem::take(&mut w.out);
+    let ignored_mode = match ignored.borrow().as_deref() {
+        None | Some("no") => IgnoredMode::No,
+        Some("traditional") => IgnoredMode::Traditional,
+        Some("matching") => IgnoredMode::Matching,
+        Some(m) => return Err(Die::Fatal(msg::invalid_ignored(m))),
+    };
+    if ignored_mode == IgnoredMode::Matching && mode == Untracked::No {
+        return Err(Die::Fatal(msg::IGNORED_UNTRACKED_COMBINATION.to_string()));
     }
-    untracked_paths.retain(|u| {
-        let bare = u.strip_suffix(b"/").unwrap_or(u);
-        wanted(bare) || wanted(u)
-    });
+    let (untracked_paths, ignored_paths) = untracked_and_ignored(
+        &repo,
+        &work_tree,
+        &index,
+        (!pathspec.is_empty()).then_some(&pathspec),
+        mode,
+        ignored_mode,
+    )?;
 
     let relative = !matches!(format, Format::Porcelain(_))
         && !nul.get()
@@ -533,19 +474,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 merging: repo.setup.git_dir.join("MERGE_HEAD").exists(),
                 mode,
             };
-            long(&mut p, &ctx, &entries, &untracked_paths);
+            long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
         }
         Format::Short | Format::Porcelain(1) => {
             if show_branch {
                 header(&mut p, 1, &info);
             }
-            short(&mut p, &entries, &untracked_paths);
+            short(&mut p, &entries, &untracked_paths, &ignored_paths);
         }
         Format::Porcelain(_) => {
             if show_branch {
                 header(&mut p, 2, &info);
             }
-            porcelain_v2(&mut p, &entries, &untracked_paths, zero);
+            porcelain_v2(&mut p, &entries, &untracked_paths, &ignored_paths, zero);
         }
     }
     let mut o = std::io::stdout().lock();
@@ -555,7 +496,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 }
 
 /// Short format and porcelain v1: `XY <path>`.
-fn short(p: &mut Printer, entries: &[(&Vec<u8>, &Change)], untracked: &[Vec<u8>]) {
+fn short(
+    p: &mut Printer,
+    entries: &[(&Vec<u8>, &Change)],
+    untracked: &[Vec<u8>],
+    ignored: &[Vec<u8>],
+) {
     for (path, c) in entries {
         if let Some(code) = conflict_code(c) {
             p.text(code);
@@ -580,12 +526,18 @@ fn short(p: &mut Printer, entries: &[(&Vec<u8>, &Change)], untracked: &[Vec<u8>]
         p.path(u);
         p.end();
     }
+    for u in ignored {
+        p.text("!! ");
+        p.path(u);
+        p.end();
+    }
 }
 
 fn porcelain_v2(
     p: &mut Printer,
     entries: &[(&Vec<u8>, &Change)],
     untracked: &[Vec<u8>],
+    ignored: &[Vec<u8>],
     zero: ObjectId,
 ) {
     // Ordinary entries first, then unmerged ones (like git).
@@ -639,6 +591,11 @@ fn porcelain_v2(
         p.path(u);
         p.end();
     }
+    for u in ignored {
+        p.text("! ");
+        p.path(u);
+        p.end();
+    }
 }
 
 struct LongContext<'a> {
@@ -678,6 +635,7 @@ fn long(
     ctx: &LongContext,
     entries: &[(&Vec<u8>, &Change)],
     untracked: &[Vec<u8>],
+    ignored: &[Vec<u8>],
 ) {
     let info = ctx.info;
     let hint = |p: &mut Printer, text: &str| {
@@ -788,6 +746,17 @@ fn long(
         p.text("\n");
         hint(p, msg::HINT_INCLUDE);
         for u in untracked {
+            p.text("\t");
+            p.path(u);
+            p.text("\n");
+        }
+        p.text("\n");
+    }
+    if !ignored.is_empty() {
+        p.text(msg::IGNORED_HEADER);
+        p.text("\n");
+        hint(p, msg::HINT_INCLUDE_IGNORED);
+        for u in ignored {
             p.text("\t");
             p.path(u);
             p.text("\n");

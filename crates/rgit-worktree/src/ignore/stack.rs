@@ -47,6 +47,7 @@ pub struct Excludes {
     cmdline: PatternList,
     per_dir_name: Option<Vec<u8>>,
     per_dir: HashMap<Vec<u8>, Option<PatternList>>,
+    per_dir_override: HashMap<Vec<u8>, Vec<u8>>,
     files: Vec<PatternList>,
     warnings: Vec<String>,
 }
@@ -61,6 +62,7 @@ impl Excludes {
             cmdline: PatternList::new(None, Vec::new()),
             per_dir_name: None,
             per_dir: HashMap::new(),
+            per_dir_override: HashMap::new(),
             files: Vec::new(),
             warnings: Vec::new(),
         }
@@ -83,6 +85,15 @@ impl Excludes {
     pub fn set_per_directory(&mut self, name: impl Into<Vec<u8>>) {
         self.per_dir_name = Some(name.into());
         self.per_dir.clear();
+    }
+
+    /// Uses `data` as the per-directory file of `dir` (empty or ending in
+    /// `/`) instead of reading it from the work tree, for a file that is
+    /// marked skip-worktree in the index.
+    pub fn set_per_directory_contents(&mut self, dir: impl Into<Vec<u8>>, data: Vec<u8>) {
+        let dir = dir.into();
+        self.per_dir.remove(&dir);
+        self.per_dir_override.insert(dir, data);
     }
 
     /// Adds already parsed patterns with file precedence (group 3).
@@ -163,7 +174,11 @@ impl Excludes {
         rel.extend_from_slice(name);
         let path = os::join(&self.root, &rel);
         let shown = String::from_utf8_lossy(&rel).into_owned();
-        let list = match read_pattern_file(&path, &shown) {
+        let read = match self.per_dir_override.get(dir) {
+            Some(data) => Ok(Some(data.clone())),
+            None => read_pattern_file(&path, &shown),
+        };
+        let list = match read {
             Ok(Some(data)) => Some(PatternList::from_bytes(&data, Some(rel), dir.to_vec())),
             Ok(None) => None,
             Err(warning) => {
