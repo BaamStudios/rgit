@@ -34,6 +34,7 @@ use std::cell::{Cell, RefCell};
 use std::fs::Metadata;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use rgit_hash::{HashKind, ObjectId, hash_object};
 use rgit_index::{Entry, Index, Mode, Stat, Time};
@@ -337,10 +338,23 @@ pub enum Status {
     Deleted,
 }
 
+/// Turns the content of a regular work tree file into the form it has as
+/// a blob (line endings, `ident`, `working-tree-encoding`), so that it can
+/// be compared with the index.
+pub trait ContentFilter {
+    /// The blob form of `data`, the content of the work tree file `path`.
+    /// Warnings are not printed; problems leave the content unconverted.
+    fn to_git(&self, path: &[u8], data: Vec<u8>) -> Vec<u8>;
+
+    /// Whether the content of `path` may change at all.
+    fn converts(&self, _path: &[u8]) -> bool {
+        true
+    }
+}
+
 /// Decides whether work tree files match their index entries, reading
 /// file contents only when the stat data cannot decide. Counts the files
 /// it hashes ([`Checker::files_hashed`]).
-#[derive(Debug)]
 pub struct Checker {
     root: PathBuf,
     kind: HashKind,
@@ -349,6 +363,19 @@ pub struct Checker {
     hashed: Cell<usize>,
     /// The last leading directory found to be a real directory.
     dir_cache: RefCell<Vec<u8>>,
+    filter: Option<Rc<dyn ContentFilter>>,
+}
+
+impl std::fmt::Debug for Checker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Checker")
+            .field("root", &self.root)
+            .field("kind", &self.kind)
+            .field("opts", &self.opts)
+            .field("index_mtime", &self.index_mtime)
+            .field("filter", &self.filter.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Checker {
@@ -369,13 +396,36 @@ impl Checker {
             index_mtime,
             hashed: Cell::new(0),
             dir_cache: RefCell::new(Vec::new()),
+            filter: None,
         }
+    }
+
+    /// Converts regular files with `filter` before comparing them with
+    /// their blobs.
+    #[must_use]
+    pub fn with_filter(mut self, filter: Rc<dyn ContentFilter>) -> Checker {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// The content filter, if any.
+    #[must_use]
+    pub fn filter(&self) -> Option<&Rc<dyn ContentFilter>> {
+        self.filter.as_ref()
     }
 
     /// The options in use.
     #[must_use]
     pub fn options(&self) -> &StatOptions {
         &self.opts
+    }
+
+    /// Whether `entry` is racily clean relative to the index this checker
+    /// compares with ([`is_racy`]).
+    #[must_use]
+    pub fn is_racy(&self, entry: &Entry) -> bool {
+        self.index_mtime
+            .is_some_and(|t| is_racy(entry, t, &self.opts))
     }
 
     /// How many files [`Checker::content_differs`] has read and hashed.
@@ -492,7 +542,7 @@ impl Checker {
 
     /// Whether the work tree content of `entry` differs from its blob: the
     /// file (or the target of the symbolic link) is read and hashed as a
-    /// blob, without content filters.
+    /// blob, regular files after the [`ContentFilter`] if there is one.
     ///
     /// # Errors
     /// If the file cannot be read.
@@ -501,7 +551,11 @@ impl Checker {
         let data = if meta.file_type().is_symlink() {
             os::path_bytes(&std::fs::read_link(&path)?)
         } else {
-            std::fs::read(&path)?
+            let data = std::fs::read(&path)?;
+            match &self.filter {
+                Some(f) if entry.mode.is_file() => f.to_git(entry.path(), data),
+                _ => data,
+            }
         };
         self.hashed.set(self.hashed.get() + 1);
         Ok(blob_id(self.kind, &data)? != entry.id)

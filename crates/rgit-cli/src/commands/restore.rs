@@ -285,6 +285,7 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
             index_changed = true;
         }
     }
+    let conv = crate::convert::Converter::paths(repo, &index)?;
     for (path, action) in &actions {
         let Action::Write(entry) = action else {
             continue;
@@ -297,6 +298,7 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
             Vec::new()
         } else {
             match rgit_unpack::read_blob(repo.odb(), &entry.id) {
+                Ok(d) if entry.mode.is_file() => conv.to_worktree(path, &entry.id, d),
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("error: {e}");

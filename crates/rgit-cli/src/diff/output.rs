@@ -25,6 +25,9 @@ use crate::repository::Repo;
 /// Output settings, resolved from options and configuration.
 pub struct Output<'a> {
     pub repo: Option<&'a Repo>,
+    /// Whether work tree files are converted to their blob form (not with
+    /// `--no-index`).
+    pub convert: bool,
     pub hash: HashKind,
     pub formats: Formats,
     pub nul: bool,
@@ -162,6 +165,7 @@ impl<'a> Output<'a> {
         };
         Ok(Output {
             repo,
+            convert: repo.is_some(),
             hash,
             formats,
             nul: opts.nul,
@@ -260,9 +264,14 @@ impl<'a> Output<'a> {
         res.map_err(|_| Die::Error(msg::read_failed(&path.to_string_lossy()), 1))
     }
 
-    fn load(&self, side: &Side) -> Result<Loaded, Die> {
+    fn load(&self, side: &Side, path: &[u8]) -> Result<Loaded, Die> {
         if side.file.is_some() {
-            let data = self.read_file(side)?;
+            let mut data = self.read_file(side)?;
+            if let (Some(repo), true) = (self.repo, self.convert && is_file_mode(side.mode)) {
+                let conv = repo.converter()?;
+                let opts = rgit_convert::Options::inspect(conv.config());
+                data = conv.to_git(path, data, opts)?;
+            }
             let oid = rgit_hash::hash_object(self.hash, "blob", &data)
                 .map_err(|e| Die::Fatal(e.to_string()))?;
             return Ok(Loaded {
@@ -368,8 +377,11 @@ impl<'a> Output<'a> {
             let load = !p.unmerged && (need || (self.porcelain && has_file));
             let (o, n) = if load {
                 (
-                    p.old.as_ref().map(|s| self.load(s)).transpose()?,
-                    p.new.as_ref().map(|s| self.load(s)).transpose()?,
+                    p.old
+                        .as_ref()
+                        .map(|s| self.load(s, &p.old_path))
+                        .transpose()?,
+                    p.new.as_ref().map(|s| self.load(s, &p.path)).transpose()?,
                 )
             } else {
                 (None, None)

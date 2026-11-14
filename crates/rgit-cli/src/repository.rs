@@ -8,6 +8,7 @@ use std::cell::OnceCell;
 use std::ops::{Deref, DerefMut};
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_index::{Index, ReadOptions, Time};
@@ -15,6 +16,7 @@ use rgit_object::{Object, ObjectKind};
 use rgit_odb::ObjectDatabase;
 use rgit_worktree::stat::{CheckStat, Checker, StatOptions, index_mtime};
 
+use crate::convert::Converter;
 use crate::repo::{self, Mode};
 use crate::repo_objects;
 use crate::revision::Resolver;
@@ -57,6 +59,7 @@ pub fn submodule_head(dir: &std::path::Path, hash: HashKind) -> Option<rgit_hash
 pub struct Repo {
     inner: repo_objects::Repo,
     auto_abbrev: OnceCell<usize>,
+    converter: OnceCell<Rc<Converter>>,
 }
 
 impl Deref for Repo {
@@ -80,6 +83,7 @@ impl Repo {
         Ok(Repo {
             inner: repo_objects::Repo::open(ctx, setup)?,
             auto_abbrev: OnceCell::new(),
+            converter: OnceCell::new(),
         })
     }
 
@@ -89,6 +93,7 @@ impl Repo {
         Ok(Repo {
             inner: repo_objects::Repo::open(ctx, setup)?,
             auto_abbrev: OnceCell::new(),
+            converter: OnceCell::new(),
         })
     }
 
@@ -100,6 +105,7 @@ impl Repo {
         Ok(Some(Repo {
             inner: repo_objects::Repo::open(ctx, setup)?,
             auto_abbrev: OnceCell::new(),
+            converter: OnceCell::new(),
         }))
     }
 
@@ -227,14 +233,30 @@ impl Repo {
             .map_err(repo::die)
     }
 
-    /// A checker comparing index entries with the work tree.
+    /// A checker comparing index entries with the work tree, converting
+    /// work tree files with [`Repo::converter`].
     pub fn checker(&self, index_mtime: Option<Time>) -> Result<Checker, Die> {
-        Ok(Checker::new(
+        let checker = Checker::new(
             self.work_tree()?,
             self.hash,
             self.stat_options(),
             index_mtime,
-        ))
+        );
+        Ok(checker.with_filter(self.converter()?))
+    }
+
+    /// The conversion of work tree files into blobs (line endings,
+    /// `ident`, `working-tree-encoding`), created on first use.
+    ///
+    /// # Errors
+    /// Invalid `core.autocrlf` or `core.safecrlf`.
+    pub fn converter(&self) -> Result<Rc<Converter>, Die> {
+        if let Some(c) = self.converter.get() {
+            return Ok(c.clone());
+        }
+        let c = Rc::new(Converter::worktree(self)?);
+        let _ = self.converter.set(c.clone());
+        Ok(c)
     }
 
     /// `core.quotePath` (default true).

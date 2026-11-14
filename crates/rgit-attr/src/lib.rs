@@ -60,7 +60,7 @@ use std::path::PathBuf;
 use rgit_pathspec::{AttrRequirement, AttrSpec};
 
 pub use parse::{Pattern, State, is_reserved_name, is_valid_name};
-pub use source::{ObjectReader, Order, Source};
+pub use source::{ObjectReader, Order, Source, snapshot};
 
 use parse::Line;
 

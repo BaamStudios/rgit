@@ -21,6 +21,7 @@ rgit-attr = { path = "../rgit-attr" }
 rgit-apply = { path = "../rgit-apply" }
 rgit-commit = { path = "../rgit-commit" }
 rgit-config = { path = "../rgit-config" }
+rgit-convert = { path = "../rgit-convert" }
 rgit-ident = { path = "../rgit-ident" }
 rgit-date = { path = "../rgit-date" }
 rgit-diff = { path = "../rgit-diff" }

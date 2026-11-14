@@ -95,6 +95,8 @@ struct Lister<'a> {
     format: Option<Result<Vec<format::Piece<Field>>, String>>,
     out: Vec<u8>,
     last_path: Option<Vec<u8>>,
+    /// `--eol`: the work tree (if any) and the attributes.
+    eol: Option<(Option<PathBuf>, std::rc::Rc<crate::convert::Converter>)>,
 }
 
 impl Lister<'_> {
@@ -170,6 +172,29 @@ impl Lister<'_> {
         self.out.clear();
     }
 
+    /// The `--eol` columns: line endings of the blob of `entry` and of
+    /// the work tree file, and the conversion attributes of `path`.
+    fn eol_columns(&mut self, entry: Option<&Entry>, path: &[u8]) {
+        let Some((root, conv)) = &self.eol else {
+            return;
+        };
+        let describe = |d: &[u8]| rgit_convert::Stats::new(d).describe();
+        let index = entry
+            .filter(|e| e.mode.is_file())
+            .and_then(|e| self.repo.odb().read(&e.id).ok().flatten())
+            .filter(|o| o.kind == ObjectKind::Blob)
+            .map_or("", |o| describe(&o.data));
+        let work = root
+            .as_ref()
+            .map(|r| os_path(r, path))
+            .filter(|f| std::fs::symlink_metadata(f).is_ok_and(|m| m.is_file()))
+            .and_then(|f| std::fs::read(f).ok())
+            .map_or("", |d| describe(&d));
+        let attr = conv.attrs(path).describe();
+        let cols = format!("i/{index:<5} w/{work:<5} attr/{attr:<17}\t");
+        self.out.extend_from_slice(cols.as_bytes());
+    }
+
     /// A work tree path (others, killed).
     fn show_file(&mut self, tag: &str, path: &[u8]) {
         let bare = path.strip_suffix(b"/").unwrap_or(path).to_vec();
@@ -178,6 +203,7 @@ impl Lister<'_> {
             self.out.extend_from_slice(tag.as_bytes());
             self.out.push(b' ');
         }
+        self.eol_columns(None, &bare);
         self.write_path(path);
         self.end_line();
     }
@@ -254,6 +280,7 @@ impl Lister<'_> {
             );
             self.out.extend_from_slice(line.as_bytes());
         }
+        self.eol_columns(Some(e), e.path());
         self.write_path(e.path());
         self.end_line();
         self.debug_block(e);
@@ -654,9 +681,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if with_tree.borrow().is_some() && (stage.get() || unmerged.get()) {
         return Err(Die::Fatal(msg::WITH_TREE_AND_STAGE.to_string()));
     }
-    if eol.get() {
-        return Err(Die::Fatal(msg::not_supported("--eol")));
-    }
 
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let need_work_tree = deleted.get() || modified.get() || others.get() || killed.get();
@@ -758,6 +782,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         format: fmt.map(|f| format::parse(&f, "ls-files", field_named)),
         out: Vec::new(),
         last_path: None,
+        eol: if eol.get() {
+            Some((repo.setup.work_tree.clone(), repo.converter()?))
+        } else {
+            None
+        },
     };
 
     if lister.show.others {

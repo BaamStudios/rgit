@@ -25,9 +25,12 @@
 //!   `--ignore-missing` a missing path that would be ignored is reported
 //!   as ignored and other missing paths are accepted.
 //!
-//! Not done yet: eol/filter attributes (a warning is printed instead, see
-//! issue #107), `--renormalize`, `--refresh`, interactive modes, untracked
-//! nested repositories.
+//! Regular files go through the content conversion (line endings,
+//! `ident`, `working-tree-encoding`, see `crate::convert`); configured
+//! filter drivers are not run yet (#112, a warning is printed instead).
+//!
+//! Not done yet: `--refresh`, interactive modes, untracked nested
+//! repositories.
 
 use std::path::{Path, PathBuf};
 
@@ -60,41 +63,21 @@ fn os_path(root: &Path, rel: &[u8]) -> PathBuf {
     }
 }
 
-/// Whether eol or filter attributes may apply (core.autocrlf, or a
-/// top-level `.gitattributes` mentioning them). Decision on #107: warn,
-/// never convert silently.
-pub(crate) fn attributes_may_apply(repo: &Repo, root: &Path) -> bool {
-    if let Ok(Some(v)) = repo.config.string("core.autocrlf") {
-        let v = String::from_utf8_lossy(v).to_ascii_lowercase();
-        if ["true", "input", "yes", "on", "1"].contains(&v.as_str()) {
-            return true;
+/// Why [`entry_for`] failed.
+pub(crate) enum EntryError {
+    /// The file could not be read (git's `error:` text).
+    Read(String),
+    /// A fatal conversion problem (`core.safecrlf=true`, encodings).
+    Fatal(Die),
+}
+
+impl From<EntryError> for Die {
+    fn from(e: EntryError) -> Die {
+        match e {
+            EntryError::Read(m) => Die::Fatal(m),
+            EntryError::Fatal(d) => d,
         }
     }
-    let Ok(text) = std::fs::read(root.join(".gitattributes")) else {
-        return false;
-    };
-    // `* -text -eol` in `$GIT_DIR/info/attributes` (which wins over every
-    // `.gitattributes`) switches eol conversion off.
-    let no_eol = std::fs::read(repo.setup.git_dir.join("info/attributes"))
-        .ok()
-        .is_some_and(|t| {
-            String::from_utf8_lossy(&t).lines().any(|l| {
-                let w: Vec<&str> = l.split_whitespace().collect();
-                w.first() == Some(&"*") && w.contains(&"-text") && w.contains(&"-eol")
-            })
-        });
-    let text = String::from_utf8_lossy(&text);
-    text.lines().any(|l| {
-        let l = l.trim();
-        !l.starts_with('#')
-            && l.split_whitespace().skip(1).any(|a| {
-                let a = a.trim_start_matches(['-', '!']);
-                (!no_eol && (a.starts_with("text") || a.starts_with("eol") || a.starts_with("crlf")))
-                    || a.starts_with("filter")
-                    || a.starts_with("ident")
-                    || a.starts_with("working-tree-encoding")
-            })
-    })
 }
 
 struct Walk<'a> {
@@ -227,7 +210,9 @@ pub(crate) fn build_excludes(repo: &Repo, root: &Path) -> Excludes {
 }
 
 /// Hash (and unless `dry_run`, store) the work tree file `path` and build
-/// its stage-0 entry. `Err` is git's error text for an unreadable file.
+/// its stage-0 entry. Regular files go through the content conversion
+/// (`core.safecrlf` applies unless `quiet`). `Err` is git's error text
+/// for an unreadable file, or a fatal conversion problem.
 pub(crate) fn entry_for(
     repo: &Repo,
     checker: &Checker,
@@ -235,12 +220,14 @@ pub(crate) fn entry_for(
     path: &[u8],
     old: Option<&Entry>,
     dry_run: bool,
-) -> Result<Option<Entry>, String> {
+    quiet: bool,
+) -> Result<Option<Entry>, EntryError> {
     let shown = lossy(path);
     let strerror = |e: &std::io::Error| crate::global::strerror(e);
+    let read_err = EntryError::Read;
     let Some(meta) = checker
         .lstat(path)
-        .map_err(|e| format!("lstat(\"{shown}\"): {}", strerror(&e)))?
+        .map_err(|e| read_err(format!("lstat(\"{shown}\"): {}", strerror(&e))))?
     else {
         return Ok(None);
     };
@@ -251,16 +238,33 @@ pub(crate) fn entry_for(
     let data = if meta.file_type().is_symlink() {
         std::fs::read_link(&full)
             .map(|t| t.as_os_str().as_encoded_bytes().to_vec())
-            .map_err(|e| format!("readlink(\"{shown}\"): {}", strerror(&e)))?
+            .map_err(|e| read_err(format!("readlink(\"{shown}\"): {}", strerror(&e))))?
     } else {
-        std::fs::read(&full).map_err(|e| format!("open(\"{shown}\"): {}", strerror(&e)))?
+        let raw = std::fs::read(&full)
+            .map_err(|e| read_err(format!("open(\"{shown}\"): {}", strerror(&e))))?;
+        if mode.is_file() {
+            let conv = repo.converter().map_err(EntryError::Fatal)?;
+            let c = conv.conversion(path);
+            if !dry_run && conv.unapplied_filter(&c) {
+                eprintln!("warning: {}", msg::attributes_not_applied(&shown));
+            }
+            let opts = if quiet {
+                rgit_convert::Options::QUIET
+            } else {
+                rgit_convert::Options::store(conv.config())
+            };
+            conv.to_git_with(&c, path, raw, opts)
+                .map_err(EntryError::Fatal)?
+        } else {
+            raw
+        }
     };
     let id = if dry_run {
-        rgit_hash::hash_object(repo.hash, "blob", &data).map_err(|e| e.to_string())?
+        rgit_hash::hash_object(repo.hash, "blob", &data).map_err(|e| read_err(e.to_string()))?
     } else {
         repo.odb()
             .write(ObjectKind::Blob, &data)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| read_err(e.to_string()))?
     };
     let mut entry = Entry::new(path.to_vec(), Stage::MERGED, mode, id);
     entry.stat = stat_from_metadata(&meta);
@@ -309,6 +313,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let verbose = Cell::new(false);
     let force = Cell::new(false);
     let update = Cell::new(false);
+    let renormalize = Cell::new(false);
     let intent = Cell::new(false);
     let all = Cell::new(false);
     let ignore_errors = Cell::new(-1);
@@ -326,6 +331,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::group(""),
             Opt::flag('f', "force", &force, msg::HELP_FORCE),
             Opt::flag('u', "update", &update, msg::HELP_UPDATE),
+            Opt::flag(None, "renormalize", &renormalize, msg::HELP_RENORMALIZE),
             Opt::flag('N', "intent-to-add", &intent, msg::HELP_INTENT_TO_ADD),
             Opt::flag('A', "all", &all, msg::HELP_ALL),
             Opt::bool(None, "ignore-errors", &ignore_errors, msg::HELP_IGNORE_ERRORS),
@@ -349,10 +355,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         dry_run.get(),
         verbose.get(),
         force.get(),
-        update.get(),
+        update.get() || renormalize.get(),
         intent.get(),
         all.get(),
     );
+    let renormalize = renormalize.get();
     let chmod = chmod.into_inner();
     let from_file = from_file.into_inner();
     if update && all {
@@ -423,8 +430,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let (mut index, index_mtime) = repo.read_index()?;
     let checker = repo.checker(index_mtime)?;
+    let conv = repo.converter()?;
+    if renormalize {
+        conv.set_renormalize();
+    }
     let mut seen = vec![false; pathspec.items().len()];
-    let warn_attrs = attributes_may_apply(&repo, &root);
     let show = verbose || dry_run;
     // With -N, git stores the empty blob for every file it lists as added
     // (tracked or new), with --dry-run too.
@@ -540,9 +550,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 write_empty_blob()?;
                 Ok(intent_entry(&repo, &checker, path)?)
             } else {
-                entry_for(&repo, &checker, &root, path, Some(base), dry_run)
+                entry_for(&repo, &checker, &root, path, Some(base), dry_run, dry_run)
             };
             match resolved {
+                Err(EntryError::Fatal(d)) => return Err(d),
                 Ok(n) => {
                     if show {
                         println!("{}", msg::add(&lossy(path)));
@@ -556,7 +567,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                         updates.push(n);
                     }
                 }
-                Err(err) => {
+                Err(EntryError::Read(err)) => {
                     report_failure(path, &err);
                     failed = true;
                     if !ignore_errors {
@@ -605,6 +616,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let status = checker
             .check(e)
             .map_err(|err| Die::Fatal(format!("{}: {err}", lossy(e.path()))))?;
+        // --renormalize: every tracked file is cleaned afresh.
+        let status = match status {
+            Status::Unchanged | Status::StatOnly if renormalize => Status::Modified,
+            s => s,
+        };
         match status {
             Status::Deleted => {
                 if show {
@@ -618,26 +634,28 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     println!("{}", msg::add(&lossy(e.path())));
                 }
             }
-            Status::Unchanged => {}
-            Status::StatOnly => {
-                if let Ok(Some(n)) = entry_for(&repo, &checker, &root, e.path(), Some(e), true) {
-                    updates.push(n);
+            // Racily clean files are added again: git converts them with
+            // its warnings.
+            Status::Unchanged if !(checker.is_racy(e) && conv.converts(e.path())) => {}
+            Status::Unchanged | Status::StatOnly => {
+                match entry_for(&repo, &checker, &root, e.path(), Some(e), true, dry_run) {
+                    Ok(Some(n)) => updates.push(n),
+                    Err(EntryError::Fatal(d)) => return Err(d),
+                    _ => {}
                 }
             }
             Status::Modified | Status::TypeChanged => {
-                match entry_for(&repo, &checker, &root, e.path(), Some(e), dry_run) {
+                match entry_for(&repo, &checker, &root, e.path(), Some(e), dry_run, dry_run) {
+                    Err(EntryError::Fatal(d)) => return Err(d),
                     Ok(n) => {
                         if show {
                             println!("{}", msg::add(&lossy(e.path())));
                         }
                         if let Some(n) = n {
-                            if warn_attrs {
-                                eprintln!("warning: {}", msg::attributes_not_applied(&lossy(e.path())));
-                            }
                             updates.push(n);
                         }
                     }
-                    Err(err) => {
+                    Err(EntryError::Read(err)) => {
                         report_failure(e.path(), &err);
                         failed = true;
                         if !ignore_errors {
@@ -706,19 +724,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
             continue;
         }
-        match entry_for(&repo, &checker, &root, path, None, dry_run) {
+        match entry_for(&repo, &checker, &root, path, None, dry_run, dry_run) {
+            Err(EntryError::Fatal(d)) => return Err(d),
             Ok(n) => {
                 if show {
                     println!("{}", msg::add(&lossy(path)));
-                }
-                if warn_attrs {
-                    eprintln!("warning: {}", msg::attributes_not_applied(&lossy(path)));
                 }
                 if let Some(n) = n {
                     updates.push(n);
                 }
             }
-            Err(err) => {
+            Err(EntryError::Read(err)) => {
                 report_failure(path, &err);
                 add_failed = true;
                 if !ignore_errors {

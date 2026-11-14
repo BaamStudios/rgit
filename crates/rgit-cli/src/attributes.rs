@@ -27,7 +27,7 @@ use crate::{Context, Die};
 const SYSTEM_ATTRIBUTES: &str = "/etc/gitattributes";
 
 /// The files outside the work tree and `core.ignoreCase`.
-pub fn options(repo: &Repo) -> Options {
+pub fn options(repo: &crate::repo_objects::Repo) -> Options {
     let env = SystemEnv::default();
     let nosystem = std::env::var_os("GIT_ATTR_NOSYSTEM")
         .and_then(|v| rgit_config::value::parse_bool(Some(v.as_encoded_bytes())))

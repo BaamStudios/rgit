@@ -11,16 +11,18 @@ use std::fs::{self, Metadata};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use rgit_hash::ObjectId;
 use rgit_index::Entry;
 
 use crate::messages as msg;
 
 /// Content conversion applied to regular files on their way into the work
-/// tree (line endings, filters). rgit has none yet (#111, #112); the
-/// default [`Identity`] leaves the blob unchanged.
+/// tree (line endings, `ident`, `working-tree-encoding`; filter drivers
+/// are #112). [`Identity`] leaves the blob unchanged.
 pub trait Filter {
-    /// The work tree form of `data`, the blob of the index entry at `path`.
-    fn to_worktree(&self, path: &[u8], data: Vec<u8>) -> Vec<u8>;
+    /// The work tree form of `data`, the blob `id` of the index entry at
+    /// `path`.
+    fn to_worktree(&self, path: &[u8], id: &ObjectId, data: Vec<u8>) -> Vec<u8>;
 }
 
 /// The filter that changes nothing.
@@ -28,7 +30,7 @@ pub trait Filter {
 pub struct Identity;
 
 impl Filter for Identity {
-    fn to_worktree(&self, _path: &[u8], data: Vec<u8>) -> Vec<u8> {
+    fn to_worktree(&self, _path: &[u8], _id: &ObjectId, data: Vec<u8>) -> Vec<u8> {
         data
     }
 }

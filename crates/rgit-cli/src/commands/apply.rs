@@ -195,7 +195,14 @@ impl State<'_> {
             let t = std::fs::read_link(&full)?;
             return Ok(Some((t.as_os_str().as_encoded_bytes().to_vec(), S_IFLNK)));
         }
-        let data = std::fs::read(&full)?;
+        let mut data = std::fs::read(&full)?;
+        if let Some(conv) = self.repo.and_then(|r| r.converter().ok()) {
+            // Patches apply to the blob form; no core.safecrlf check
+            // (gitattributes(5)).
+            data = conv
+                .to_git(path, data, rgit_convert::Options::QUIET)
+                .map_err(|_| std::io::Error::other("conversion"))?;
+        }
         let mode = if self.s.file_mode {
             #[cfg(unix)]
             {
@@ -587,6 +594,16 @@ impl State<'_> {
                     IndexMode(*mode),
                     self.hash().null(),
                 );
+                let converted;
+                let data = match self.repo.and_then(|r| r.converter().ok()) {
+                    Some(conv) if entry.mode.is_file() => {
+                        let id = rgit_hash::hash_object(self.hash(), "blob", data)
+                            .unwrap_or_else(|_| self.hash().null());
+                        converted = conv.to_worktree(path, &id, data.clone());
+                        &converted
+                    }
+                    _ => data,
+                };
                 match rgit_unpack::write_entry(&self.root, path, &entry, data, self.s.symlinks) {
                     Ok(m) => meta = m,
                     Err(e) => {
