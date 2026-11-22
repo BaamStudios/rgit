@@ -111,6 +111,8 @@ pub struct Output<'a> {
     pub text: bool,
     /// `--quiet`.
     pub quiet: bool,
+    /// The command line chose the diff algorithm (it beats the driver's).
+    cli_algorithm: bool,
     /// Output was written to `--output` already (by external diff
     /// programs): the rest is appended.
     output_started: std::cell::Cell<bool>,
@@ -647,6 +649,7 @@ impl<'a> Output<'a> {
                 .then(|| external::global(repo.map(|r| &r.config))),
             text: opts.text,
             quiet: opts.quiet,
+            cli_algorithm: opts.algorithm.is_some() || opts.minimal.is_some(),
             output_started: std::cell::Cell::new(false),
             repo,
             convert: repo.is_some(),
@@ -1750,12 +1753,13 @@ impl Output<'_> {
     /// an algorithm; `None` to use the common ones.
     fn pair_options(&self, attr: &DiffAttr) -> Option<PatchOptions> {
         let d = attr.driver()?;
-        if d.funcname.is_none() && d.algorithm.is_none() {
+        let algorithm = d.algorithm.filter(|_| !self.cli_algorithm);
+        if d.funcname.is_none() && algorithm.is_none() {
             return None;
         }
         let mut o = self.patch.clone();
         o.diff.funcname = d.funcname.clone();
-        if let Some((a, minimal)) = d.algorithm {
+        if let Some((a, minimal)) = algorithm {
             o.diff.algorithm = a;
             o.diff.minimal = minimal;
         }
