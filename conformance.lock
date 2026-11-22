@@ -1,4 +1,4 @@
 # Version of the conformance suite this rgit revision is tested against.
 # Repository: https://github.com/BaamStudios/rgit-conformance (GPL-2.0, separate work)
 repo = "https://github.com/BaamStudios/rgit-conformance.git"
-commit = "10d3c90ba44ca24d4c777fd3a501d82a8383a8b8"
+commit = "7fb82d47c12d997a8bb121b42069972e6f85ddc6"
