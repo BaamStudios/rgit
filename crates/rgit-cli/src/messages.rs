@@ -4,6 +4,7 @@
 
 pub mod add;
 pub mod apply;
+pub mod blame;
 pub mod branch;
 pub mod cat_file;
 pub mod check_attr;
