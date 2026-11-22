@@ -38,6 +38,11 @@ pub struct Resolved {
     pub pending: Vec<Pending>,
     /// Excluded tags, trees and blobs.
     pub excluded: Vec<(ObjectId, ObjectKind)>,
+    /// The paths: after `--`, or the arguments from the first one that is
+    /// not a revision but names a file (without `--`).
+    pub paths: Vec<String>,
+    /// All arguments turned out to be paths: no revision was given.
+    pub no_revisions: bool,
 }
 
 fn print_diagnostics(resolver: &Resolver<'_>) {
@@ -92,8 +97,6 @@ pub fn rev_items(repo: &Repo<'_>, arg: &str) -> Result<Vec<RevItem>, Die> {
             print_diagnostics(resolver);
             if negated {
                 Err(Die::Fatal(msg::bad_revision(arg)))
-            } else if repo.is_path(arg) {
-                Err(Die::Fatal(msg::not_supported("path limiting")))
             } else {
                 Err(Die::Fatal(msg::ambiguous_argument(arg)))
             }
@@ -123,6 +126,14 @@ fn path_name(name: Option<&str>) -> Vec<u8> {
 }
 
 impl Resolved {
+    /// Start at `HEAD` (log with paths only).
+    pub fn push_head(&mut self, repo: &Repo<'_>) -> Result<(), Die> {
+        for item in rev_items(repo, "HEAD")? {
+            self.add(repo, item.oid, false, None, Vec::new(), "HEAD")?;
+        }
+        Ok(())
+    }
+
     /// Add `id` (any object): commits go to the walk, tags are peeled.
     fn add(
         &mut self,
@@ -254,13 +265,102 @@ fn ref_set(
     Ok(ids)
 }
 
-/// Resolve the starting points in command-line order.
-pub fn resolve(repo: &Repo<'_>, opts: &Options) -> Result<Resolved, Die> {
+/// The path part of a pathspec argument and whether it is relative to
+/// the top (`:/`, `:(top)`): the magic is stripped.
+fn strip_magic(arg: &str) -> (bool, &str) {
+    if let Some(rest) = arg.strip_prefix(":(") {
+        let Some(end) = rest.find(')') else {
+            return (false, arg);
+        };
+        let top = rest[..end].split(',').any(|w| w == "top");
+        return (top, &rest[end + 1..]);
+    }
+    let Some(rest) = arg.strip_prefix(':') else {
+        return (false, arg);
+    };
+    let mut top = false;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '/' => top = true,
+            '!' | '^' => {}
+            ':' => return (top, &rest[i + 1..]),
+            _ => return (top, &rest[i..]),
+        }
+    }
+    (top, "")
+}
+
+/// Whether `arg` names paths without `--`: after the pathspec magic it is
+/// a file or directory of the work tree, empty, or a wildcard pattern.
+fn names_path(repo: &Repo<'_>, arg: &str) -> bool {
+    let (top, rest) = strip_magic(arg);
+    if rest.is_empty() {
+        // `:/` is the top; a lone `:` is nothing.
+        return arg != ":";
+    }
+    if rgit_pathspec::wildmatch::has_glob_special(rest.as_bytes()) {
+        return true;
+    }
+    file_exists(repo, top, rest)
+}
+
+/// `path` exists in the work tree (relative to the top or to the current
+/// directory).
+fn file_exists(repo: &Repo<'_>, top: bool, path: &str) -> bool {
+    let Some(root) = &repo.setup.work_tree else {
+        return false;
+    };
+    let mut full = root.clone();
+    if !top && let Some(prefix) = &repo.setup.prefix {
+        full.push(prefix);
+    }
+    full.push(path);
+    full.symlink_metadata().is_ok()
+}
+
+/// A revision argument that also names a file (git then wants `--`).
+fn also_a_file(repo: &Repo<'_>, arg: &str) -> bool {
+    let (top, rest) = strip_magic(arg);
+    !rest.is_empty() && file_exists(repo, top, rest)
+}
+
+/// Resolve the starting points in command-line order. Without `--`, an
+/// argument that is not a revision but a file in the work tree (or looks
+/// like a pathspec) starts the paths when `paths` allows it.
+pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Resolved, Die> {
     let mut out = Resolved::default();
+    let mut in_paths = false;
+    let mut revisions = false;
     for tip in &opts.tips {
         match tip {
+            Tip::Rev { arg, .. } if in_paths => {
+                if !names_path(repo, arg) {
+                    return Err(Die::Fatal(msg::no_such_path(arg)));
+                }
+                out.paths.push(arg.clone());
+            }
             Tip::Rev { arg, negate } => {
-                let mut items = rev_items(repo, arg)?;
+                let found = rev_items(repo, arg);
+                let mut items = match found {
+                    Err(e) if paths && !opts.dashdash && !arg.starts_with('^') => {
+                        if names_path(repo, arg) {
+                            in_paths = true;
+                            out.no_revisions = !revisions;
+                            out.paths.push(arg.clone());
+                            continue;
+                        }
+                        return Err(e);
+                    }
+                    // After `--` an argument can only be a revision.
+                    Err(Die::Fatal(m)) if opts.dashdash && m == msg::ambiguous_argument(arg) => {
+                        return Err(Die::Fatal(msg::bad_revision(arg)));
+                    }
+                    found => found?,
+                };
+                revisions = true;
+                if !opts.dashdash && arg != "-" && also_a_file(repo, arg) {
+                    return Err(Die::Fatal(msg::revision_and_filename(arg)));
+                }
                 let symmetric = items.iter().any(|i| i.left);
                 if symmetric {
                     // The left side is pushed first, like git does.
@@ -285,11 +385,19 @@ pub fn resolve(repo: &Repo<'_>, opts: &Options) -> Result<Resolved, Die> {
                 negative,
                 exclude,
             } => {
+                revisions = true;
+                out.no_revisions = false;
                 for (refname, id) in ref_set(repo, set, exclude)? {
                     out.add(repo, id, *negative, None, Vec::new(), &refname)?;
                 }
             }
         }
     }
+    out.paths.extend(opts.paths.iter().cloned());
     Ok(out)
+}
+
+/// [`resolve_with`] taking paths.
+pub fn resolve(repo: &Repo<'_>, opts: &Options) -> Result<Resolved, Die> {
+    resolve_with(repo, opts, true)
 }

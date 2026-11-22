@@ -14,9 +14,11 @@
 //! Checking out, the log of the first bad commit and `visualize` run
 //! rgit's own `checkout`, `log` and `diff-tree` as child processes.
 //!
-//! Not yet: pathspecs (`BISECT_NAMES` is written, but choosing a commit
-//! with paths stops with an error), the interactive "start for you?"
-//! question, and `gitk` for `visualize` (it always runs `log`).
+//! The pathspec of `start` (`BISECT_NAMES`) limits the walk like
+//! `rev-list -- <paths>`.
+//!
+//! Not yet: the interactive "start for you?" question, and `gitk` for
+//! `visualize` (it always runs `log`).
 
 #[path = "bisect/next.rs"]
 mod next;
@@ -436,7 +438,7 @@ impl<'c> Bisect<'c> {
         }
         let terms = self.terms();
         let mut a: Vec<String> = vec!["log".into()];
-        a.extend(args.iter().filter(|x| *x != "--").cloned());
+        a.extend(args.iter().take_while(|x| *x != "--").cloned());
         let (bad, goods, _) = self.marks(&terms);
         if bad.is_some() {
             a.push(format!("refs/bisect/{}", terms.new));
@@ -457,9 +459,8 @@ impl<'c> Bisect<'c> {
             .chain(names)
             .filter(|x| x != "--")
             .collect();
-        if !paths.is_empty() {
-            return Err(Die::Fatal(msg::path_limiting_not_supported()));
-        }
+        a.push("--".into());
+        a.extend(paths);
         let refs: Vec<&str> = a.iter().map(String::as_str).collect();
         let _ = std::io::stdout().flush();
         let status = self

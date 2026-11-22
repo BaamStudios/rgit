@@ -46,9 +46,6 @@ impl Bisect<'_> {
             return Ok(o);
         }
         let names = self.names();
-        if names.iter().any(|n| n != "--") {
-            return Err(Die::Fatal(msg::path_limiting_not_supported()));
-        }
         let mut args: Vec<String> = Vec::new();
         if self.path("BISECT_FIRST_PARENT").exists() {
             args.push("--first-parent".into());
@@ -57,6 +54,8 @@ impl Bisect<'_> {
         for g in &goods {
             args.push(format!("^{}", g.to_hex()));
         }
+        args.push("--".into());
+        args.extend(names.into_iter().filter(|n| n != "--"));
         let list = crate::history::walk_with_parents(self.ctx, &args)?;
         if list.is_empty() {
             self.flush();
