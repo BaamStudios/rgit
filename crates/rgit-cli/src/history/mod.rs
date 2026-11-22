@@ -934,8 +934,11 @@ impl Printer<'_, '_> {
             _ => match d.merges {
                 MergeDiff::Off => return Ok(Vec::new()),
                 MergeDiff::FirstParent => Some(parents[0]),
-                // Combined diffs need #148; a clean merge has none.
-                MergeDiff::Combined | MergeDiff::Dense => return Ok(b"\n".to_vec()),
+                MergeDiff::Combined | MergeDiff::Dense if d.formats.patch || d.formats.raw => {
+                    return self.combined_diff(d, &parents, &tree, walk_error);
+                }
+                // Other formats compare with the first parent.
+                MergeDiff::Combined | MergeDiff::Dense => Some(parents[0]),
                 MergeDiff::Separate => {
                     return Err(Die::Fatal(msg::not_supported("-m")));
                 }
@@ -967,6 +970,61 @@ impl Printer<'_, '_> {
         } else if d.formats.stat && d.formats.patch {
             text.extend_from_slice(b"---\n");
         } else {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(&bytes);
+        Ok(text)
+    }
+
+    /// The combined diff (`-c`, `--cc`) of a merge with `parents` and
+    /// tree `tree`: raw lines and/or the combined patch.
+    fn combined_diff(
+        &self,
+        d: &LogDiff,
+        parents: &[ObjectId],
+        tree: &ObjectId,
+        walk_error: impl Fn() -> Die,
+    ) -> Result<Vec<u8>, Die> {
+        let mut trees = Vec::new();
+        for p in parents {
+            trees.push(self.repo.tree_of(p).ok_or_else(&walk_error)?);
+        }
+        let renames =
+            d.formats.patch && !matches!(d.opts.detect, Some(rgit_diff::diffcore::Detect::Off));
+        let files: Vec<_> = crate::diff::combined::collect(&d.repo, &trees, tree, renames)
+            .into_iter()
+            .filter(|f| d.pathspec.is_empty() || d.pathspec.matches(&f.path))
+            .collect();
+        let quote = d.repo.quote_path();
+        let mut bytes = Vec::new();
+        if d.formats.raw {
+            // log and show abbreviate raw ids unless --full-index.
+            let abbrev = match d.opts.abbrev {
+                _ if d.opts.full_index => None,
+                Some(Some(n)) => Some(n),
+                _ => Some(d.repo.default_abbrev()),
+            };
+            crate::diff::combined::raw(&d.repo, &files, abbrev, quote, &mut bytes);
+        }
+        if d.formats.patch {
+            if d.formats.raw && !bytes.is_empty() {
+                bytes.push(b'\n');
+            }
+            let diff = rgit_diff::DiffOptions::default();
+            let opts = crate::diff::combined::PatchOptions {
+                dense: d.merges == MergeDiff::Dense,
+                abbrev: d.repo.default_abbrev(),
+                quote,
+                diff: &diff,
+            };
+            crate::diff::combined::patch(&d.repo, &files, &opts, &mut bytes);
+        }
+        let mut text = Vec::new();
+        if self.style.pretty == Pretty::Oneline && self.cmd != Command::RevList && !bytes.is_empty()
+        {
+            // Right after the one-line entry.
+        } else {
+            // A merge without differences still gets the separator.
             text.push(b'\n');
         }
         text.extend_from_slice(&bytes);

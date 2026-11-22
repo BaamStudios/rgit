@@ -8,6 +8,7 @@
 mod check;
 pub mod collect;
 pub mod color;
+pub mod combined;
 mod dirstat;
 pub mod moved;
 pub mod options;
