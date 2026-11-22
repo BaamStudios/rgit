@@ -59,7 +59,7 @@ use rgit_index::{AddOptions, Entry, Index, Stage};
 use rgit_merge::{MergeResult, ObjectCommits};
 use rgit_object::{ObjectKind, Signature};
 use rgit_refs::{RefUpdate, Transaction};
-use rgit_unpack::{Identity, Merge, Porcelain, Worktree};
+use rgit_unpack::{Merge, Porcelain, Worktree};
 use rgit_worktree::stat::smudge_racy_entries;
 
 use self::message::Head;
@@ -867,8 +867,10 @@ impl Session<'_> {
             }
             Err(e) => return Err(unpack_failed(e)),
         };
-        let applied = plan.apply(repo.odb(), &wt, &Identity);
+        let conv = crate::convert::Converter::checkout(repo, plan.index())?;
+        let applied = plan.apply(repo.odb(), &wt, &conv);
         let mut index = applied.index;
+        repo.converter()?.use_index(&index);
         if let Some(reference) = mtime {
             let _ = smudge_racy_entries(&mut index, reference, &checker);
         }
@@ -939,7 +941,10 @@ impl Session<'_> {
         self.create_autostash()?;
         let old_tree = self.tree_of(&head)?;
         let new_tree = self.tree_of(&theirs.commit)?;
-        self.checkout(old_tree, new_tree, None)?;
+        crate::convert::set_checkout_meta(None, Some(&theirs.commit));
+        let moved = self.checkout(old_tree, new_tree, None);
+        crate::convert::set_checkout_meta(None, None);
+        moved?;
         if !self.args.quiet {
             println!("{}", msg::FAST_FORWARD);
         }
@@ -1506,8 +1511,10 @@ impl Session<'_> {
             }
             Err(e) => return Err(unpack_failed(e)),
         };
-        let applied = plan.apply(repo.odb(), &wt, &Identity);
+        let conv = crate::convert::Converter::checkout(repo, plan.index())?;
+        let applied = plan.apply(repo.odb(), &wt, &conv);
         let mut index = applied.index;
+        repo.converter()?.use_index(&index);
         if let Some(result) = result {
             add_conflicts(&mut index, result)?;
         }

@@ -25,9 +25,8 @@
 //!   `--ignore-missing` a missing path that would be ignored is reported
 //!   as ignored and other missing paths are accepted.
 //!
-//! Regular files go through the content conversion (line endings,
-//! `ident`, `working-tree-encoding`, see `crate::convert`); configured
-//! filter drivers are not run yet (#112, a warning is printed instead).
+//! Regular files go through the content conversion (filter drivers, line
+//! endings, `ident`, `working-tree-encoding`, see `crate::convert`).
 //!
 //! `-p`, `-i` and `-e` are in `crate::interactive`.
 //!
@@ -246,9 +245,6 @@ pub(crate) fn entry_for(
         if mode.is_file() {
             let conv = repo.converter().map_err(EntryError::Fatal)?;
             let c = conv.conversion(path);
-            if !dry_run && conv.unapplied_filter(&c) {
-                eprintln!("warning: {}", msg::attributes_not_applied(&shown));
-            }
             let opts = if quiet {
                 rgit_convert::Options::QUIET
             } else {

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use rgit_fs::{LockFile, LockOptions};
 use rgit_hash::ObjectId;
-use rgit_index::{AddOptions, Entry, Stage};
+use rgit_index::{AddOptions, Entry, Index, Stage};
 use rgit_object::ObjectKind;
 use rgit_pathspec::{GlobalFlags, ParseOptions, Pathspec};
 use rgit_worktree::stat::{Status, smudge_racy_entries};
@@ -300,28 +300,9 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         }
     }
     let conv = crate::convert::Converter::paths(repo, &index)?;
-    for (path, action) in &actions {
-        let Action::Write(entry) = action else {
-            continue;
-        };
-        count += 1;
-        if !how.worktree {
-            continue;
-        }
-        let data = if entry.mode.is_gitlink() {
-            Vec::new()
-        } else {
-            match rgit_unpack::read_blob(repo.odb(), &entry.id) {
-                Ok(d) if entry.mode.is_file() => conv.to_worktree(path, &entry.id, d),
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    failed = true;
-                    continue;
-                }
-            }
-        };
-        match rgit_unpack::write_entry(&work_tree, path, entry, &data, symlinks) {
+    // Writes `data` for `entry` and records the new stat data.
+    let write = |index: &mut Index, path: &[u8], entry: &Entry, data: &[u8]| -> bool {
+        match rgit_unpack::write_entry(&work_tree, path, entry, data, symlinks) {
             Ok(Some(meta)) => {
                 // The index entry (for `--ours`/`--theirs` the stage
                 // written) now describes the new file, unless the index
@@ -337,13 +318,57 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
                         }
                     }
                 }
+                true
             }
-            Ok(None) => {}
+            Ok(None) => true,
             Err(e) => {
                 eprintln!("error: {e}");
-                failed = true;
+                false
             }
         }
+    };
+    let mut delayed: Vec<(&[u8], &Entry)> = Vec::new();
+    for (path, action) in &actions {
+        let Action::Write(entry) = action else {
+            continue;
+        };
+        count += 1;
+        if !how.worktree {
+            continue;
+        }
+        let data = if entry.mode.is_gitlink() {
+            Vec::new()
+        } else {
+            match rgit_unpack::read_blob(repo.odb(), &entry.id) {
+                Ok(d) if entry.mode.is_file() => {
+                    match conv.to_worktree_delayable(path, &entry.id, d, true) {
+                        Some(d) => d,
+                        None => {
+                            delayed.push((path, entry));
+                            continue;
+                        }
+                    }
+                }
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    failed = true;
+                    continue;
+                }
+            }
+        };
+        failed |= !write(&mut index, path, entry, &data);
+    }
+    if !delayed.is_empty() {
+        let missing = conv.finish_delayed(&mut |path, data| {
+            if let Some((p, entry)) = delayed.iter().find(|(p, _)| *p == path) {
+                failed |= !write(&mut index, p, entry, &data);
+            }
+        });
+        for m in &missing {
+            eprintln!("error: {m}");
+        }
+        failed |= !missing.is_empty();
     }
     if index_changed {
         index.set_cache_tree(None);

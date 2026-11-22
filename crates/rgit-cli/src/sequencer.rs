@@ -1638,13 +1638,8 @@ pub(crate) fn two_way(
     // `.gitattributes` the commit brings applies to its own files.
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
     let applied = plan.apply(repo.odb(), &wt, &conv);
-    if conv.skipped_filter() {
-        eprintln!(
-            "warning: {}",
-            crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED
-        );
-    }
     let mut index = applied.index;
+    repo.converter()?.use_index(&index);
     if let Some(result) = result {
         crate::commands::merge::add_conflicts(&mut index, result)?;
     }

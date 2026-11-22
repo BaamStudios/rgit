@@ -69,3 +69,75 @@ pub fn bom_required_hint(path: &str, bits: &str) -> String {
 pub fn checking_roundtrip(enc: &str) -> String {
     format!("Checking roundtrip encoding for {enc}...")
 }
+
+/// A filter program given with a path could not be started.
+pub fn cannot_exec(program: &str, reason: &str) -> String {
+    format!("cannot exec '{program}': {reason}")
+}
+
+/// A filter program looked up in `PATH` could not be started.
+pub fn cannot_run(program: &str, reason: &str) -> String {
+    format!("cannot run {program}: {reason}")
+}
+
+/// A single-file filter could not be started.
+pub fn cannot_fork_filter(cmd: &str) -> String {
+    format!("cannot fork to run external filter '{cmd}'")
+}
+
+/// A single-file or `process` filter failed.
+pub fn filter_failed(cmd: &str) -> String {
+    format!("external filter '{cmd}' failed")
+}
+
+/// A single-file filter exited with a non-zero status.
+pub fn filter_failed_code(cmd: &str, code: i32) -> String {
+    format!("external filter '{cmd}' failed {code}")
+}
+
+/// A `process` filter could not be started.
+pub fn cannot_fork_subprocess(cmd: &str) -> String {
+    format!("cannot fork to run subprocess '{cmd}'")
+}
+
+/// The handshake with a `process` filter failed.
+pub fn subprocess_init_failed(cmd: &str) -> String {
+    format!("initialization for subprocess '{cmd}' failed")
+}
+
+/// A `process` filter ended before its greeting.
+pub fn could_not_read_greeting(cmd: &str) -> String {
+    format!("could not read greeting from subprocess '{cmd}'")
+}
+
+/// A `process` filter sent something else in the handshake.
+pub fn unexpected_line(got: &str, want: &str) -> String {
+    format!("Unexpected line '{got}', expected {want}")
+}
+
+/// A filter process was ended by a signal.
+pub fn died_of_signal(cmd: &str, sig: i32) -> String {
+    format!("{cmd} died of signal {sig}")
+}
+
+/// A required clean filter failed (fatal).
+pub fn clean_filter_failed(path: &str, driver: &str) -> String {
+    format!("{path}: clean filter '{driver}' failed")
+}
+
+/// A required smudge filter failed (fatal).
+pub fn smudge_filter_failed(path: &str, driver: &str) -> String {
+    format!("{path}: smudge filter {driver} failed")
+}
+
+/// A delayed blob never came from its `process` filter.
+pub fn not_filtered_properly(path: &str) -> String {
+    format!("'{path}' was not filtered properly")
+}
+
+/// A `process` filter named a blob it had not delayed.
+pub fn not_delayed_earlier(cmd: &str, path: &str) -> String {
+    format!(
+        "external filter '{cmd}' signaled that '{path}' is now available although it has not been delayed earlier"
+    )
+}

@@ -91,6 +91,11 @@ pub fn only_for_buffer(cmd: &str) -> String {
     format!("{cmd} is only for --buffer mode")
 }
 
+/// `--filters` / `--textconv` with an object name that has no path.
+pub fn path_required(name: &str) -> String {
+    format!("<object>:<path> required, only <object> '{name}' given")
+}
+
 /// rgit wording: a cat-file feature that is not implemented yet.
 pub fn cat_file_not_supported(what: &str) -> String {
     format!("rgit cat-file: {what} is not supported yet")

@@ -465,8 +465,9 @@ fn working_tree_encoding() {
 }
 
 #[test]
-fn filter_drivers_are_not_run_but_reported() {
-    // Unconfigured drivers are ignored by git as well: no message.
+fn unconfigured_filter_driver() {
+    // Unconfigured drivers are ignored: no message (filter_drivers.rs
+    // tests configured ones).
     let mut fx = untracked("*.txt filter=nosuch\n");
     fx.compare(["add", "lf.txt"]).checks(STATE).run();
 }

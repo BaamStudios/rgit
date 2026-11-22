@@ -508,8 +508,11 @@ name = "rgit-convert"
 version = "0.1.0"
 dependencies = [
  "encoding_rs",
+ "libc",
  "rgit-attr",
+ "rgit-protocol",
  "rgit-trace",
+ "rgit-transport",
 ]
 
 [[package]]

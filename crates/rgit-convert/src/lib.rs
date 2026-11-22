@@ -5,7 +5,8 @@
 //! ([`eol`]: `text`, `eol`, legacy `crlf`, `core.autocrlf`, `core.eol`,
 //! `core.safecrlf`), keyword expansion ([`ident`]) and
 //! `working-tree-encoding` ([`encoding`]). Filter drivers (`filter`) are
-//! not applied; [`Attrs::filter`] lets callers report them.
+//! run by [`filter`]; callers apply them before [`to_git`] and after
+//! [`to_worktree`].
 //!
 //! On the way into the repository ([`to_git`]) the content is re-encoded
 //! to UTF-8, line endings are normalized, then `$Id$` collapsed; checkout
@@ -30,6 +31,7 @@
 
 pub mod encoding;
 pub mod eol;
+pub mod filter;
 pub mod ident;
 pub mod messages;
 pub mod stats;

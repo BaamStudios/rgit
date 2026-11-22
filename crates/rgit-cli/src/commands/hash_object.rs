@@ -2,9 +2,9 @@
 //! `git hash-object` (Documentation/git-hash-object.adoc).
 //!
 //! Blobs read from files in a repository (or from standard input with
-//! `--path`) go through the content conversion (line endings, `ident`,
-//! `working-tree-encoding`) for their path unless `--no-filters` is given;
-//! `core.safecrlf` applies with `-w`. Filter drivers do not run (#112).
+//! `--path`) go through the content conversion (filter drivers, line
+//! endings, `ident`, `working-tree-encoding`) for their path unless
+//! `--no-filters` is given; `core.safecrlf` applies with `-w`.
 
 use std::io::{BufRead, Read, Write};
 

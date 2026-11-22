@@ -1,6 +1,6 @@
 [package]
 name = "rgit-convert"
-description = "Content conversion for rgit: line endings (text, eol, core.autocrlf), ident and working-tree-encoding"
+description = "Content conversion for rgit: line endings (text, eol, core.autocrlf), ident, working-tree-encoding and filter drivers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,4 +13,10 @@ workspace = true
 [dependencies]
 encoding_rs = "0.8.35"
 rgit-attr = { path = "../rgit-attr" }
+rgit-protocol = { path = "../rgit-protocol" }
 rgit-trace = { path = "../rgit-trace" }
+rgit-transport = { path = "../rgit-transport" }
+
+[target.'cfg(unix)'.dependencies]
+# SIGTERM for a filter process that failed.
+libc = "0.2"

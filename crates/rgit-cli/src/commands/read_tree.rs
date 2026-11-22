@@ -247,9 +247,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             (Some(wt), true) => {
                 let conv = crate::convert::Converter::checkout(&repo, plan.index())?;
                 let applied = plan.apply(repo.odb(), wt, &conv);
-                if conv.skipped_filter() {
-                    eprintln!("warning: {}", msg::ATTRIBUTES_NOT_APPLIED);
-                }
                 let mut index = applied.index;
                 repo.converter()?.use_index(&index);
                 if let (Some(reference), Some(checker)) = (old_mtime, &checker) {

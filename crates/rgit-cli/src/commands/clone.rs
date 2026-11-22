@@ -1078,6 +1078,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 write_branch_config(&config_path, config, &origin, name)?;
             }
             checkout_oid = Some(*oid);
+            crate::convert::set_checkout_meta(Some(name.clone()), Some(oid));
         }
         Some(Our::Tag(_, oid) | Our::Detached(oid)) => {
             let commit_id = objects.peel(oid).unwrap_or(*oid);
@@ -1100,6 +1101,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 &mut hooks,
             )?;
             checkout_oid = Some(commit_id);
+            crate::convert::set_checkout_meta(None, Some(&commit_id));
             detached_name = Some(commit_id.to_hex());
         }
         None => {
@@ -1202,9 +1204,6 @@ fn initial_checkout(
         .map_err(unpack_failed)?;
     let conv = crate::convert::Converter::checkout(&repo, plan.index())?;
     let applied = plan.apply(repo.odb(), &wt, &conv);
-    if conv.skipped_filter() {
-        eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);
-    }
     for e in &applied.errors {
         eprintln!("error: {e}");
     }
