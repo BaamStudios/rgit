@@ -991,11 +991,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let cherry_pick_head = pseudo_head("CHERRY_PICK_HEAD");
     let reverting = pseudo_head("REVERT_HEAD").is_some();
+    let rebasing = crate::rebase::in_progress(&git_dir);
     if cherry_pick_head.is_some() && args.amend {
-        return Err(fatal(msg::AMEND_DURING_CHERRY_PICK));
+        return Err(fatal(if rebasing {
+            msg::AMEND_DURING_REBASE
+        } else {
+            msg::AMEND_DURING_CHERRY_PICK
+        }));
     }
     if cherry_pick_head.is_some() && !args.paths.is_empty() && !args.include {
-        return Err(fatal(msg::PARTIAL_DURING_CHERRY_PICK));
+        return Err(fatal(if rebasing {
+            msg::PARTIAL_DURING_REBASE
+        } else {
+            msg::PARTIAL_DURING_CHERRY_PICK
+        }));
     }
     let picked_commit = match cherry_pick_head {
         Some(id) => match repo.read_object(&id) {

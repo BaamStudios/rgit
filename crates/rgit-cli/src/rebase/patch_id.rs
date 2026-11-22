@@ -138,6 +138,15 @@ pub(crate) fn patch_key(repo: &Repo, changes: &[Change]) -> Vec<u8> {
         }
     };
     for (_, old, new) in changes {
+        // Submodules ("Subproject commit <id>"): by their commits.
+        let gitlink = |side: &Option<(u32, ObjectId)>| side.is_some_and(|(m, _)| m == 0o160000);
+        if gitlink(old) || gitlink(new) {
+            for (_, o) in [old, new].into_iter().flatten() {
+                key.extend_from_slice(o.to_hex().as_bytes());
+                key.push(b'\n');
+            }
+            continue;
+        }
         let a = read(old);
         let b = read(new);
         if rgit_diff::is_binary(&a) || rgit_diff::is_binary(&b) {

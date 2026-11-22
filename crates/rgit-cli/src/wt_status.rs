@@ -240,6 +240,9 @@ pub struct Rebasing {
     pub todo: Vec<String>,
     /// `.git/rebase-merge/done` as git names it.
     pub done_path: String,
+    /// Stopped for the user to edit (`edit`, `break`, a failed `exec`),
+    /// not at a conflict (whose message waits in `MERGE_MSG`).
+    pub editing: bool,
 }
 
 /// The rebase in progress in `repo`, if any.
@@ -268,11 +271,20 @@ pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .map(|l| {
                 let mut parts = l.splitn(3, [' ', '\t']);
-                let word = parts.next().unwrap_or_default();
-                let Some(name) = parts.next() else {
+                let mut word = parts.next().unwrap_or_default().to_owned();
+                let Some(mut name) = parts.next() else {
                     return l.to_owned();
                 };
-                let rest = parts.next();
+                let mut rest = parts.next();
+                // `fixup -C <commit>`, `merge -c <commit>`.
+                if matches!(name, "-C" | "-c")
+                    && let Some(r) = rest
+                {
+                    word = format!("{word} {name}");
+                    let mut more = r.splitn(2, [' ', '\t']);
+                    name = more.next().unwrap_or_default();
+                    rest = more.next();
+                }
                 let name = ObjectId::from_hex(repo.hash, name.as_bytes())
                     .map(abbrev)
                     .unwrap_or_else(|_| name.to_owned());
@@ -294,12 +306,20 @@ pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
             .join("rebase-merge/done")
             .to_string_lossy()
             .into_owned(),
+        editing: !repo
+            .setup
+            .cwd
+            .join(&repo.setup.git_dir)
+            .join("MERGE_MSG")
+            .exists(),
     })
 }
 
 /// The banner lines of a rebase in progress after the first line (see
 /// [`rebasing_head_line`]); the caller adds the empty line.
-pub fn rebasing_lines(r: &Rebasing, unmerged: bool, hints: bool) -> Vec<String> {
+/// `split`: the work tree has unstaged changes (a commit is being
+/// split at an `edit` stop).
+pub fn rebasing_lines(r: &Rebasing, unmerged: bool, split: bool, hints: bool) -> Vec<String> {
     use crate::messages::rebase as rmsg;
     let mut out = Vec::new();
     if r.done.is_empty() {
@@ -310,7 +330,7 @@ pub fn rebasing_lines(r: &Rebasing, unmerged: bool, hints: bool) -> Vec<String> 
         for l in &r.done[start..] {
             out.push(format!("   {l}"));
         }
-        if r.done.len() > 2 {
+        if r.done.len() > 2 && hints {
             out.push(rmsg::see_more(&r.done_path));
         }
     }
@@ -324,6 +344,21 @@ pub fn rebasing_lines(r: &Rebasing, unmerged: bool, hints: bool) -> Vec<String> 
         if hints {
             out.push(rmsg::HINT_EDIT_TODO.to_owned());
         }
+    }
+    if r.editing && !unmerged {
+        if split {
+            out.push(rmsg::splitting_a_commit(r.branch.as_deref(), &r.onto));
+            if hints {
+                out.push(rmsg::HINT_CONTINUE_CLEAN.to_owned());
+            }
+        } else {
+            out.push(rmsg::editing_a_commit(r.branch.as_deref(), &r.onto));
+            if hints {
+                out.push(rmsg::HINT_AMEND.to_owned());
+                out.push(rmsg::HINT_CONTINUE_SATISFIED.to_owned());
+            }
+        }
+        return out;
     }
     out.push(rmsg::currently_rebasing(r.branch.as_deref(), &r.onto));
     if hints {
@@ -648,7 +683,7 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
         line("");
     }
     if let Some(rb) = &header.rebasing {
-        for l in rebasing_lines(rb, false, r.hints) {
+        for l in rebasing_lines(rb, false, false, r.hints) {
             line(&l);
         }
         line("");
