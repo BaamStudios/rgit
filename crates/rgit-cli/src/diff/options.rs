@@ -96,6 +96,14 @@ pub struct DiffOpts {
     pub color_moved: Option<Option<super::moved::Mode>>,
     /// `--color-moved-ws=<modes>`.
     pub color_moved_ws: Option<super::moved::MovedWs>,
+    /// `-a` / `--text`: no file is binary.
+    pub text: bool,
+    /// `--[no-]textconv` (`git diff` defaults to on).
+    pub textconv: Option<bool>,
+    /// `--[no-]ext-diff` (`git diff` defaults to on).
+    pub ext_diff: Option<bool>,
+    /// `--output=<file>`.
+    pub output: Option<String>,
 }
 
 /// How submodule changes are shown (`--submodule`, `diff.submodule`).
@@ -301,7 +309,13 @@ impl DiffOpts {
             "--no-indent-heuristic" => self.indent_heuristic = Some(false),
             "--no-prefix" => self.no_prefix = true,
             "--default-prefix" => self.default_prefix = true,
-            "--no-ext-diff" | "--no-textconv" | "--myers" | "--default" => {}
+            "--myers" | "--default" => {}
+            "-a" | "--text" => self.text = true,
+            "--no-text" => self.text = false,
+            "--textconv" => self.textconv = Some(true),
+            "--no-textconv" => self.textconv = Some(false),
+            "--ext-diff" => self.ext_diff = Some(true),
+            "--no-ext-diff" => self.ext_diff = Some(false),
             "--no-renames" => self.detect = Some(Detect::Off),
             "-M" | "--find-renames" => self.detect = Some(Detect::Renames),
             "-C" | "--find-copies" => {
@@ -481,6 +495,8 @@ impl DiffOpts {
                 Some(SubmoduleFormat::parse(v).ok_or_else(|| {
                     usage_exit(crate::messages::submodule::bad_submodule_format(v))
                 })?);
+        } else if let Some(v) = arg.strip_prefix("--output=") {
+            self.output = Some(v.to_owned());
         } else if let Some(v) = arg.strip_prefix("--diff-filter=") {
             self.diff_filter
                 .parse_into(v)
@@ -559,6 +575,13 @@ impl DiffOpts {
             .as_deref()
             .map(crate::submodules::parse_ignore_arg)
             .transpose()
+    }
+
+    /// `git diff` runs textconv filters and external diff programs unless
+    /// told otherwise.
+    pub fn porcelain_drivers(&mut self) {
+        self.textconv.get_or_insert(true);
+        self.ext_diff.get_or_insert(true);
     }
 
     pub fn wants_exit_code(&self) -> bool {

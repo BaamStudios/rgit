@@ -129,7 +129,7 @@ pub(crate) fn write_hunks(
     // Function-name search: lines before `scanned` were already searched;
     // `funcname` is the last match found there.
     let mut scanned = 0;
-    let mut funcname: Option<usize> = None;
+    let mut funcname: Option<&[u8]> = None;
     for &(i, j) in groups {
         let first = &changes[i];
         let last = &changes[j];
@@ -147,13 +147,17 @@ pub(crate) fn write_hunks(
         push_range(out, b_start, b_end - b_start);
         out.extend_from_slice(b" @@");
         // Hunks only move forward, so each line is scanned at most once.
-        if let Some(k) = (scanned..a_start).rev().find(|&k| default_funcname(a[k])) {
-            funcname = Some(k);
+        let f = opts.funcname.as_ref();
+        if let Some(text) = (scanned..a_start)
+            .rev()
+            .find_map(|k| crate::funcname::find_func(f, a[k]))
+        {
+            funcname = Some(text);
         }
         scanned = scanned.max(a_start);
-        if let Some(k) = funcname {
+        if let Some(text) = funcname.map(funcname_text).filter(|t| !t.is_empty()) {
             out.push(b' ');
-            out.extend_from_slice(funcname_text(a[k]));
+            out.extend_from_slice(text);
         }
         out.push(b'\n');
 

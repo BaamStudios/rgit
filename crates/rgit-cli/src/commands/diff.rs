@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! `git diff` (Documentation/git-diff.adoc): work tree against index,
 //! `--cached`/`--staged [<commit>]`, `<commit>` against the work tree,
-//! `<commit> <commit>`, `A..B`, `A...B` and `--no-index <path> <path>`.
-//! No blob or combined diffs.
+//! `<commit> <commit>`, `A..B`, `A...B`, `<blob> <blob>` and
+//! `--no-index <path> <path>`. No combined diffs.
 
 use std::path::{Path, PathBuf};
 
@@ -45,6 +45,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         |a| usage_exit(format!("{}{}", msg::invalid_option(a), usage())),
     )?;
     let mut opts = parsed.opts;
+    opts.porcelain_drivers();
     let formats = opts.formats(true)?;
 
     let repo = Repo::open_gently(ctx)?;
@@ -97,6 +98,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     paths.extend(parsed.args[split..].iter().cloned());
     let _ = symmetric;
 
+    if revs.len() == 2 && !symmetric {
+        if let Some(pairs) = blob_pair(&repo, &parsed.args[..split], &revs) {
+            page(ctx, Some(&repo), &opts)?;
+            let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true)?;
+            out.set_color(&opts)?;
+            let (bytes, changed) = out.render(pairs)?;
+            return Ok(out.finish(&bytes, changed, &opts));
+        }
+    }
     let pathspec = diff::pathspec(ctx, &repo, &paths)?;
     let mut trees = Vec::new();
     for id in &revs {
@@ -201,6 +211,29 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let (bytes, changed) = out.render(pairs)?;
     Ok(out.finish(&bytes, changed, &opts))
+}
+
+/// `git diff <blob> <blob>`: the pair of two blobs, named by the paths
+/// of `<rev>:<path>` arguments (else by the names as given).
+fn blob_pair(repo: &Repo, names: &[String], revs: &[ObjectId]) -> Option<Vec<Pair>> {
+    let blob = |id: &ObjectId| matches!(repo.read_object(id), Some(rgit_object::Object::Blob(_)));
+    if names.len() != 2 || !revs.iter().all(blob) {
+        return None;
+    }
+    let path = |name: &str| -> Vec<u8> {
+        match name.split_once(':') {
+            Some((_, p)) if !p.is_empty() => p.as_bytes().to_vec(),
+            _ => name.as_bytes().to_vec(),
+        }
+    };
+    let side = |id: ObjectId| Side {
+        mode: 0o100644,
+        oid: id,
+        file: None,
+    };
+    let mut pair = Pair::new(path(&names[1]), Some(side(revs[0])), Some(side(revs[1])));
+    pair.old_path = path(&names[0]);
+    Some(vec![pair])
 }
 
 /// Start the pager (`pager.diff`, on by default) unless the exit code is

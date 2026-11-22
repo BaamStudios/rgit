@@ -11,6 +11,7 @@
 
 mod compact;
 pub mod diffcore;
+pub mod funcname;
 mod histogram;
 mod indent;
 mod lines;
@@ -20,9 +21,11 @@ mod myers;
 mod patch;
 mod patience;
 mod unified;
+pub mod userdiff;
 pub mod whitespace;
 pub mod ws_rule;
 
+pub use funcname::{FuncName, FuncPattern};
 pub use lines::{BINARY_CHECK_BYTES, is_binary, split_lines};
 pub use patch::{
     MODE_SYMLINK, PatchExtra, PatchFile, PatchOptions, quote_path, write_file_patch,
@@ -81,6 +84,9 @@ pub struct DiffOptions {
     pub ignore_blank_lines: bool,
     /// `-I<regex>`.
     pub ignore_regex: IgnoreRegexes,
+    /// Function-name patterns of the file's diff driver; `None` for the
+    /// default rule.
+    pub funcname: Option<FuncName>,
 }
 
 impl DiffOptions {
@@ -104,6 +110,7 @@ impl Default for DiffOptions {
             whitespace: Whitespace::default(),
             ignore_blank_lines: false,
             ignore_regex: IgnoreRegexes::default(),
+            funcname: None,
         }
     }
 }

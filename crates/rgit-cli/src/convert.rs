@@ -258,6 +258,16 @@ impl Converter {
         rgit_convert::Attrs::from_states(l.ids.map(|id| out.get(id)))
     }
 
+    /// The state of attribute `name` for `path`, from the same files as
+    /// the conversion attributes (e.g. `diff`).
+    pub fn attr(&self, path: &[u8], name: &[u8]) -> rgit_attr::State {
+        self.attrs(path);
+        let mut slot = self.lookup.borrow_mut();
+        let l = slot.as_mut().expect("created by attrs");
+        let id = l.attrs.id(name);
+        l.attrs.lookup(path, false).get(id).clone()
+    }
+
     /// The conversion of `path`.
     pub fn conversion(&self, path: &[u8]) -> Conversion {
         Conversion::new(self.attrs(path), &self.cfg)

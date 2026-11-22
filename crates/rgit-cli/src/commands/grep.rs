@@ -484,28 +484,19 @@ impl Attrs<'_> {
         }
     }
 
-    fn funcname(&mut self, driver: Option<&[u8]>) -> &FuncName {
+    fn funcname(&mut self, driver: Option<&[u8]>) -> Result<&FuncName, Die> {
         let Some(drv) = driver else {
-            return &self.default_funcname;
+            return Ok(&self.default_funcname);
         };
-        let config = self.config;
-        self.funcnames.entry(drv.to_vec()).or_insert_with(|| {
+        if !self.funcnames.contains_key(drv) {
             let name = String::from_utf8_lossy(drv);
-            let get = |k: &str| {
-                config
-                    .string(format!("diff.{name}.{k}"))
-                    .ok()
-                    .flatten()
-                    .map(|v| v.to_string())
+            let f = match crate::diff::driver::load(self.config, &name)?.funcname {
+                Some(f) => FuncName::Custom(f),
+                None => FuncName::Default,
             };
-            if let Some(v) = get("xfuncname") {
-                FuncName::custom(&v, true)
-            } else if let Some(v) = get("funcname") {
-                FuncName::custom(&v, false)
-            } else {
-                FuncName::Default
-            }
-        })
+            self.funcnames.insert(drv.to_vec(), f);
+        }
+        Ok(&self.funcnames[drv])
     }
 
     /// The textconv output for `data` (`--textconv` and a driver with a
@@ -617,7 +608,7 @@ impl Grepper<'_> {
             Some(d) => (d.as_slice(), Some(false)),
             None => (data, info.binary),
         };
-        let funcname = self.attrs.funcname(info.driver.as_deref());
+        let funcname = self.attrs.funcname(info.driver.as_deref())?;
         let src = Source {
             name,
             data,

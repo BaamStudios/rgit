@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! `git cat-file` (Documentation/git-cat-file.adoc).
 //!
-//! Not implemented yet: `--textconv`, `--filters` (#112, #147),
+//! `--textconv` and `--filters` work for single objects (filter drivers
+//! are not run, #112). Not implemented yet: both in batch mode,
 //! `--use-mailmap` (#127) and `--filter=` (#24); they are parsed and
 //! checked like git, then refused.
 
@@ -189,7 +190,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     drop(parser);
 
-    if opt == MODE_TEXTCONV || opt == MODE_FILTERS {
+    if (opt == MODE_TEXTCONV || opt == MODE_FILTERS) && batch.is_some() {
         return Err(Die::Fatal(msg::cat_file_not_supported(mode_name(opt))));
     }
     let use_mailmap = mailmap.get();
@@ -224,7 +225,46 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if opt == 0 {
         return show_typed(&mut repo, &args[0], &args[1]);
     }
+    if opt == MODE_TEXTCONV || opt == MODE_FILTERS {
+        return filtered(&mut repo, opt == MODE_TEXTCONV, &args[0], path.as_deref());
+    }
     single(&mut repo, opt, &args[0])
+}
+
+/// `--textconv` and `--filters` for one object: a blob named
+/// `<tree-ish>:<path>` or `:<path>` (or any blob with `--path`), shown
+/// through the textconv filter of its diff driver (symbolic links and
+/// paths without one as they are), or converted as on checkout.
+fn filtered(repo: &mut Repo, textconv: bool, name: &str, path: Option<&str>) -> CmdResult {
+    let r = resolve_arg(repo, name)?;
+    let path = match path {
+        Some(p) => p.to_owned(),
+        None => match name.split_once(':') {
+            Some((_, p)) if !p.is_empty() => p.to_owned(),
+            _ => return Err(Die::Fatal(msg::object_path_required(name))),
+        },
+    };
+    let oid = repo.replaced(&r.oid);
+    let mut data = read_data(repo, &oid, name)?;
+    let conv = crate::convert::Converter::worktree(repo)?;
+    let is_link = r.mode == Some(0o120000);
+    if textconv {
+        let state = conv.attr(path.as_bytes(), b"diff");
+        let cmd = match state {
+            rgit_attr::State::Value(v) if !is_link => {
+                crate::diff::driver::load(&repo.config, &String::from_utf8_lossy(&v))?.textconv
+            }
+            _ => None,
+        };
+        if let Some(cmd) = cmd {
+            data = crate::diff::driver::run_textconv(&cmd, &data)
+                .map_err(|()| Die::Fatal(msg::textconv_failed(name)))?;
+        }
+    } else if !is_link {
+        data = conv.to_worktree(path.as_bytes(), &oid, data);
+    }
+    let _ = std::io::stdout().lock().write_all(&data);
+    Ok(0)
 }
 
 /// Whether a mailmap would change anything: `mailmap.file`,

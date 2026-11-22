@@ -82,13 +82,19 @@ fn number(s: &str) -> Option<(i64, &str)> {
 /// Parse one `-L` argument against the lines of the final file. `anchor`
 /// is the (0-based) line where relative regex searches start: the line
 /// after the previous range. `path` is used in messages.
-pub fn parse(spec: &str, lines: &[&[u8]], anchor: usize, path: &str) -> Result<Range, RangeError> {
+pub fn parse(
+    spec: &str,
+    lines: &[&[u8]],
+    anchor: usize,
+    path: &str,
+    func: Option<&rgit_diff::FuncName>,
+) -> Result<Range, RangeError> {
     let nlines = lines.len();
     if let Some(rest) = spec.strip_prefix("^:") {
-        return funcname(rest, lines, 0);
+        return funcname(rest, lines, 0, func);
     }
     if let Some(rest) = spec.strip_prefix(':') {
-        return funcname(rest, lines, anchor);
+        return funcname(rest, lines, anchor, func);
     }
 
     // <start>
@@ -164,10 +170,16 @@ fn search(pattern: &str, lines: &[&[u8]], from: usize) -> Result<usize, RangeErr
 }
 
 /// `:<funcname>`: from the first function line at or after `from` that
-/// matches the regex up to (not including) the next function line.
-fn funcname(pattern: &str, lines: &[&[u8]], from: usize) -> Result<Range, RangeError> {
+/// matches the regex up to (not including) the next function line
+/// (`func`: the diff driver's patterns, else the default rule).
+fn funcname(
+    pattern: &str,
+    lines: &[&[u8]],
+    from: usize,
+    func: Option<&rgit_diff::FuncName>,
+) -> Result<Range, RangeError> {
     let re = compile(pattern)?;
-    let is_func = |l: &[u8]| rgit_diff::default_funcname(l);
+    let is_func = |l: &[u8]| rgit_diff::funcname::find_func(func, l).is_some();
     let start = (from..lines.len())
         .find(|&i| is_func(lines[i]) && re.is_match(text(lines[i])))
         .ok_or_else(|| RangeError::Fatal(msg::no_funcname_match(pattern, from + 1)))?;
@@ -199,7 +211,7 @@ mod tests {
     }
 
     fn ok(spec: &str, anchor: usize) -> Range {
-        parse(spec, &lines(), anchor, "f").unwrap()
+        parse(spec, &lines(), anchor, "f", None).unwrap()
     }
 
     #[test]
@@ -224,11 +236,11 @@ mod tests {
 
     #[test]
     fn errors() {
-        assert!(matches!(parse("X", &lines(), 0, "f"), Err(RangeError::Usage)));
-        assert!(matches!(parse("1,+", &lines(), 0, "f"), Err(RangeError::Usage)));
-        assert!(matches!(parse("0", &lines(), 0, "f"), Err(RangeError::Fatal(_))));
-        assert!(matches!(parse("6", &lines(), 0, "f"), Err(RangeError::Fatal(_))));
-        assert!(matches!(parse("1,+0", &lines(), 0, "f"), Err(RangeError::Fatal(_))));
+        assert!(matches!(parse("X", &lines(), 0, "f", None), Err(RangeError::Usage)));
+        assert!(matches!(parse("1,+", &lines(), 0, "f", None), Err(RangeError::Usage)));
+        assert!(matches!(parse("0", &lines(), 0, "f", None), Err(RangeError::Fatal(_))));
+        assert!(matches!(parse("6", &lines(), 0, "f", None), Err(RangeError::Fatal(_))));
+        assert!(matches!(parse("1,+0", &lines(), 0, "f", None), Err(RangeError::Fatal(_))));
     }
 
     #[test]
