@@ -100,6 +100,7 @@ pub fn run_with_reflog_action(
     }
     let remotes = Remotes::from_config(&repo.config).map_err(|e| Die::Fatal(e.to_string()))?;
 
+    let mut defaulted = false;
     let (name, refspecs): (Vec<u8>, Vec<String>) = match args.split_first() {
         Some((r, rest)) => (r.as_bytes().to_vec(), rest.to_vec()),
         None => {
@@ -110,6 +111,7 @@ pub fn run_with_reflog_action(
                         .ok()
                 })
                 .and_then(|b| b.remote);
+            defaulted = branch_remote.is_none();
             let name = remotes.default_remote_name(branch_remote.as_ref().map(|r| r.as_bstr()));
             (name.to_vec(), Vec::new())
         }
@@ -117,8 +119,13 @@ pub fn run_with_reflog_action(
     let remote = remotes
         .get(&name, Some(&repo.git_dir))
         .map_err(|e| Die::Fatal(e.to_string()))?;
-    if args.is_empty() && !remote.is_configured() {
-        return Err(Die::Fatal(rgit_fetch::messages::NO_URL.into()));
+    if defaulted && !remote.is_configured() {
+        // No remote to fall back to: like git, there is nothing to fetch
+        // (`FETCH_HEAD` ends up empty, which `pull` relies on).
+        if write_fetch_head.get() && !append.get() && dry_run.get() == 0 {
+            let _ = std::fs::write(repo.git_dir.join("FETCH_HEAD"), b"");
+        }
+        return Ok(0);
     }
     for w in &remote.warnings {
         eprintln!("warning: {w}");

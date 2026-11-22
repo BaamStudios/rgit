@@ -165,39 +165,132 @@ fn suppressed(repo: &Repo, into: &str) -> bool {
         .any(|g| wildmatch(g, into.as_bytes(), WildmatchFlags::NONE))
 }
 
-/// The title line of several heads: "Merge branches 'a' and 'b', tag 'c'".
-fn title_many(repo: &Repo, heads: &[Head], into: &str) -> String {
-    // Groups of one kind, in the order they first appear.
-    let mut groups: Vec<(&'static str, &'static str, Vec<String>)> = Vec::new();
-    for h in heads {
-        let (one, many) = match h.kind {
-            Kind::Branch | Kind::EarlyPart => (msg::KIND_BRANCH, msg::KIND_BRANCHES),
-            Kind::Tag => (msg::KIND_TAG, msg::KIND_TAGS),
-            Kind::Remote => (msg::KIND_REMOTE, msg::KIND_REMOTES),
-            Kind::Commit | Kind::Fetch => (msg::KIND_COMMIT, msg::KIND_COMMITS),
-        };
-        let mut name = format!("'{}'", h.name);
-        if h.kind == Kind::EarlyPart {
-            name.push(' ');
-            name.push_str(msg::EARLY_PART);
+/// The groups of the title line, in this order within one source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    /// A `FETCH_HEAD` line naming only a URL (its `HEAD`).
+    Head,
+    Branch,
+    Remote,
+    Tag,
+    Commit,
+}
+
+/// Where a head comes from (`.` for this repository, empty for a commit
+/// named locally, which is shown without a source) and how the title line
+/// calls it (the name keeps its quotes).
+struct Origin {
+    src: String,
+    slot: Slot,
+    name: String,
+}
+
+/// Splits a `FETCH_HEAD` description ("branch 'x' of <url>", "tag 't' of
+/// <url>", "remote-tracking branch 'r' of <url>", "'<name>' of <url>" or
+/// just "<url>").
+fn fetch_origin(desc: &str) -> Origin {
+    let typed = [
+        ("branch ", Slot::Branch),
+        ("remote-tracking branch ", Slot::Remote),
+        ("tag ", Slot::Tag),
+    ];
+    for (prefix, slot) in typed {
+        if let Some(rest) = desc.strip_prefix(prefix) {
+            let (name, src) = rest.split_once(" of ").unwrap_or((rest, "."));
+            return Origin {
+                src: src.to_owned(),
+                slot,
+                name: name.to_owned(),
+            };
         }
-        match groups.iter_mut().find(|g| g.0 == one) {
-            Some(g) => g.2.push(name),
-            None => groups.push((one, many, vec![name])),
+    }
+    match desc.split_once(" of ") {
+        Some((name, src)) => Origin {
+            src: src.to_owned(),
+            slot: Slot::Commit,
+            name: name.to_owned(),
+        },
+        None => Origin {
+            src: desc.to_owned(),
+            slot: Slot::Head,
+            name: "HEAD".to_owned(),
+        },
+    }
+}
+
+fn origin(head: &Head) -> Origin {
+    let quoted = format!("'{}'", head.name);
+    let (src, slot, name) = match head.kind {
+        Kind::Fetch => return fetch_origin(&head.name),
+        Kind::Branch => (".", Slot::Branch, quoted),
+        Kind::EarlyPart => (".", Slot::Branch, format!("{quoted} {}", msg::EARLY_PART)),
+        Kind::Remote => (".", Slot::Remote, quoted),
+        Kind::Tag => (".", Slot::Tag, quoted),
+        Kind::Commit => ("", Slot::Commit, quoted),
+    };
+    Origin {
+        src: src.to_owned(),
+        slot,
+        name,
+    }
+}
+
+/// The title line (git-fmt-merge-msg(1)): per source in the order of
+/// appearance "HEAD, branches 'a' and 'b', remote-tracking branch 'r',
+/// tag 't', commit 'c' of <url>", sources separated by "; ", then " into
+/// <branch>".
+fn title(repo: &Repo, heads: &[Head], into: &str) -> String {
+    let mut sources: Vec<(String, Vec<Origin>)> = Vec::new();
+    for o in heads.iter().map(origin) {
+        match sources.iter_mut().find(|(s, _)| *s == o.src) {
+            Some((_, list)) => list.push(o),
+            None => sources.push((o.src.clone(), vec![o])),
         }
     }
     let mut t = String::from("Merge ");
-    for (i, (one, many, names)) in groups.iter().enumerate() {
+    for (i, (src, list)) in sources.iter().enumerate() {
         if i > 0 {
-            t.push_str(", ");
+            t.push_str("; ");
         }
-        t.push_str(if names.len() > 1 { many } else { one });
-        t.push(' ');
-        for (j, n) in names.iter().enumerate() {
-            if j > 0 {
-                t.push_str(if j + 1 == names.len() { " and " } else { ", " });
+        let mut parts = Vec::new();
+        for slot in [Slot::Head, Slot::Branch, Slot::Remote, Slot::Tag, Slot::Commit] {
+            let names: Vec<&str> = list
+                .iter()
+                .filter(|o| o.slot == slot)
+                .map(|o| o.name.as_str())
+                .collect();
+            if names.is_empty() {
+                continue;
             }
-            t.push_str(n);
+            let (one, many) = match slot {
+                Slot::Head => {
+                    parts.push("HEAD".to_owned());
+                    continue;
+                }
+                Slot::Branch => (msg::KIND_BRANCH, msg::KIND_BRANCHES),
+                Slot::Remote => (msg::KIND_REMOTE, msg::KIND_REMOTES),
+                Slot::Tag => (msg::KIND_TAG, msg::KIND_TAGS),
+                Slot::Commit => (msg::KIND_COMMIT, msg::KIND_COMMITS),
+            };
+            let mut p = String::from(if names.len() > 1 { many } else { one });
+            p.push(' ');
+            for (j, n) in names.iter().enumerate() {
+                if j > 0 {
+                    p.push_str(if j + 1 == names.len() { " and " } else { ", " });
+                }
+                p.push_str(n);
+            }
+            parts.push(p);
+        }
+        // Only the HEAD of a URL: the URL alone.
+        if parts.len() == 1 && list.iter().all(|o| o.slot == Slot::Head) {
+            t.push_str(src);
+            continue;
+        }
+        t.push_str(&parts.join(", "));
+        if !src.is_empty() && src != "." {
+            t.push_str(" of ");
+            t.push_str(src);
         }
     }
     if !suppressed(repo, into) {
@@ -207,42 +300,19 @@ fn title_many(repo: &Repo, heads: &[Head], into: &str) -> String {
     t
 }
 
-/// The title line: "Merge branch 'side' into topic".
-fn title(repo: &Repo, head: &Head, into: &str) -> String {
-    let mut t = String::from("Merge ");
-    if head.kind == Kind::Fetch {
-        // "'<name>' of <url>" names a commit; "branch ..." and "tag ..."
-        // name themselves.
-        if head.name.starts_with('\'') {
-            t.push_str(msg::KIND_COMMIT);
-            t.push(' ');
-        }
-        t.push_str(&head.name);
-        if !suppressed(repo, into) {
-            t.push_str(" into ");
-            t.push_str(into);
-        }
-        return t;
+/// The heading of a fetched head in the `--log` part: "<name>" from this
+/// repository, "'<name>' of <url>" from another, "tag '<name>'" with the
+/// source for tags, only the source for anything else.
+fn fetch_log_heading(desc: &str) -> String {
+    let o = fetch_origin(desc);
+    let local = o.src == ".";
+    match o.slot {
+        Slot::Branch | Slot::Remote if local => o.name.trim_matches('\'').to_owned(),
+        Slot::Branch | Slot::Remote => format!("{} of {}", o.name, o.src),
+        Slot::Tag if local => format!("{} {}", msg::KIND_TAG, o.name),
+        Slot::Tag => format!("{} {} of {}", msg::KIND_TAG, o.name, o.src),
+        Slot::Head | Slot::Commit => o.src,
     }
-    let kind = match head.kind {
-        Kind::Branch | Kind::EarlyPart => msg::KIND_BRANCH,
-        Kind::Tag => msg::KIND_TAG,
-        Kind::Remote => msg::KIND_REMOTE,
-        Kind::Commit | Kind::Fetch => msg::KIND_COMMIT,
-    };
-    t.push_str(kind);
-    t.push_str(" '");
-    t.push_str(&head.name);
-    t.push('\'');
-    if head.kind == Kind::EarlyPart {
-        t.push(' ');
-        t.push_str(msg::EARLY_PART);
-    }
-    if !suppressed(repo, into) {
-        t.push_str(" into ");
-        t.push_str(into);
-    }
-    t
 }
 
 /// A walk source over the repository's commits.
@@ -307,13 +377,7 @@ fn shortlog(repo: &Repo, head: &Head, ours: Option<&ObjectId>, limit: usize) -> 
     let mut out = b"* ".to_vec();
     match head.kind {
         Kind::Branch | Kind::Remote => out.extend_from_slice(head.name.as_bytes()),
-        // "branch 'x' of <url>" is listed as "'x' of <url>".
-        Kind::Fetch => out.extend_from_slice(
-            head.name
-                .strip_prefix("branch ")
-                .unwrap_or(&head.name)
-                .as_bytes(),
-        ),
+        Kind::Fetch => out.extend_from_slice(fetch_log_heading(&head.name).as_bytes()),
         Kind::EarlyPart => {
             out.extend_from_slice(format!("'{}' {}", head.name, msg::EARLY_PART).as_bytes())
         }
@@ -348,11 +412,7 @@ pub(super) fn default_message(
     ours: Option<&ObjectId>,
     log: usize,
 ) -> Vec<u8> {
-    let mut out = match heads {
-        [one] => title(repo, one, into),
-        _ => title_many(repo, heads, into),
-    }
-    .into_bytes();
+    let mut out = title(repo, heads, into).into_bytes();
     out.push(b'\n');
     for head in heads {
         if let Some(t) = &head.tag_message {
