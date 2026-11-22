@@ -420,25 +420,61 @@ pub(crate) fn warn_comment_char_auto(repo: &Repo) {
             "core.commentString"
         }
     };
-    let scope = |e: &rgit_config::Entry| match e.source.scope {
-        Scope::Global => Some("--global "),
-        Scope::System => Some("--system "),
-        Scope::Worktree => Some("--worktree "),
-        Scope::Local => Some(""),
-        _ => None,
+    // The option that names an entry's file: the scope for its standard
+    // file, `--file <path>` (with `~` for the home directory) for an
+    // included one; nothing for the command line.
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let shown = |p: &std::path::Path| -> String {
+        match home.as_deref().and_then(|h| p.strip_prefix(h).ok()) {
+            Some(rest) => format!("~/{}", rest.display()),
+            None => p.display().to_string(),
+        }
+    };
+    let same = |a: &std::path::Path, b: &std::path::Path| {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+    };
+    let local = repo.setup.cwd.join(&repo.setup.git_dir).join("config");
+    let scope = |e: &rgit_config::Entry| -> Option<String> {
+        let rgit_config::Origin::File(path) = &e.source.origin else {
+            return None;
+        };
+        let standard = match e.source.scope {
+            Scope::Local => same(path, &local),
+            Scope::Global => {
+                home.as_ref()
+                    .is_some_and(|h| same(path, &h.join(".gitconfig")))
+                    || path.ends_with("git/config")
+            }
+            Scope::Worktree => return Some("--worktree ".to_owned()),
+            Scope::System => return Some("--system ".to_owned()),
+            _ => return None,
+        };
+        Some(match (standard, e.source.scope) {
+            (true, Scope::Global) => "--global ".to_owned(),
+            (true, _) => String::new(),
+            (false, _) => format!("--file {} ", shown(path)),
+        })
     };
     let mut out = format!("warning: {}\n", msg::comment_auto_deprecated(key(last)));
-    let in_files: Vec<_> = entries.iter().filter(|e| scope(e).is_some()).collect();
+    let in_files: Vec<(String, &str)> = entries
+        .iter()
+        .filter_map(|e| scope(e).map(|s| (s, key(e))))
+        .collect();
     if let Some(set) = in_files.last() {
-        let mut unset = String::new();
-        for e in &in_files {
-            unset.push_str(&format!(
-                "    git config unset {}{}\n",
-                scope(e).unwrap_or_default(),
-                key(e)
-            ));
+        // One line per file and key, `--all` for several values.
+        let mut groups: Vec<(&(String, &str), usize)> = Vec::new();
+        for item in &in_files {
+            match groups.iter_mut().find(|(g, _)| *g == item) {
+                Some((_, n)) => *n += 1,
+                None => groups.push((item, 1)),
+            }
         }
-        let set = format!("{}{}", scope(set).unwrap_or_default(), key(set));
+        let mut unset = String::new();
+        for ((option, k), n) in &groups {
+            let all = if *n > 1 { "--all " } else { "" };
+            unset.push_str(&format!("    git config unset {option}{all}{k}\n"));
+        }
+        let set = format!("{}{}", set.0, set.1);
         for line in msg::comment_auto_hint(&unset, &set).lines() {
             if line.is_empty() {
                 out.push_str("hint:\n");
@@ -1233,10 +1269,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let committer_ident = ident(Role::Committer)?;
     let committer = signature_from(&committer_ident.to_bstring())?;
+    // `--fixup` makes a new commit even with `--amend`: the author is not
+    // taken over (observed with the git binary).
     let author_commit = reused
         .as_ref()
         .map(|(_, c)| c)
-        .or(old_commit.as_ref())
+        .or(old_commit.as_ref().filter(|_| args.fixup.is_none()))
         .or(picked_commit.as_ref());
     let author_from_commit = author_commit.is_some() && !args.reset_author;
     let mut author_parts: (Vec<u8>, Vec<u8>, u64, i32) = match author_commit {
@@ -1426,6 +1464,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut header = wt_status::header(&repo, head);
     header.merging = merging;
     header.amend = args.amend;
+    // Amending a root commit compares with nothing, like a first commit.
+    header.initial |= args.amend && parents.is_empty();
     let prefix = repo.prefix();
     let quote_high = repo.quote_path();
 
@@ -1801,7 +1841,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             ..Default::default()
         };
         let mut on_error = |m: &str| eprintln!("error: {m}");
-        let out = rgit_trailer::process(&data, &trailer_conf, &opts, &new, &mut on_error);
+        let mut out = rgit_trailer::process(&data, &trailer_conf, &opts, &new, &mut on_error);
+        // A message without a final newline (`--cleanup=verbatim`) gets
+        // the trailers on the next line, without the empty line before
+        // them (observed with the git binary).
+        if !data.is_empty() && !data.ends_with(b"\n") {
+            let mut ended = data.clone();
+            ended.push(b'\n');
+            let mut separated = ended.clone();
+            separated.push(b'\n');
+            if out.starts_with(&separated) {
+                let rest = out.split_off(separated.len());
+                out = ended;
+                out.extend_from_slice(&rest);
+            }
+        }
         std::fs::write(&editmsg, &out).map_err(|e| fatal(e.to_string()))?;
     }
     // Nothing to commit: git has written COMMIT_EDITMSG by now.
