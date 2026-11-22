@@ -591,8 +591,14 @@ impl<S: CommitSource> Walk<S> {
             // Only the commits on the path count, so every parent is walked.
             self.opts.full_history = true;
         }
-        // Children are known only after the whole walk.
-        if self.opts.ancestry_path || self.opts.simplify_merges || self.opts.children {
+        // Children are known only after the whole walk; `--cherry-*` compare
+        // both sides as a whole (also without a merge base).
+        if self.opts.ancestry_path
+            || self.opts.simplify_merges
+            || self.opts.children
+            || self.opts.cherry_pick
+            || self.opts.cherry_mark
+        {
             self.limited = true;
         }
         self.lookahead = self.opts.prune

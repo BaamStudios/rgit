@@ -97,6 +97,14 @@ pub fn ambiguous_argument(arg: &str) -> String {
 
 pub const FOLLOW_ONE_PATHSPEC: &str = "--follow requires exactly one pathspec";
 
+pub fn follow_magic(words: &[&str]) -> String {
+    let quoted: Vec<String> = words.iter().map(|w| format!("'{w}'")).collect();
+    format!(
+        "pathspec magic not supported by --follow: {}",
+        quoted.join(", ")
+    )
+}
+
 pub fn revision_and_filename(arg: &str) -> String {
     format!(
         "ambiguous argument '{arg}': both revision and filename\n\

@@ -228,6 +228,25 @@ fn follow_filter(
     let Some(item) = pathspec.items().first() else {
         return Err(Die::Fatal(msg::FOLLOW_ONE_PATHSPEC.to_string()));
     };
+    // Only `top` and `literal` magic can be followed.
+    let unsupported: Vec<&str> = item
+        .magic()
+        .iter()
+        .filter(|w| {
+            !matches!(
+                w,
+                rgit_pathspec::MagicWord::Top | rgit_pathspec::MagicWord::Literal
+            )
+        })
+        .map(|w| w.name())
+        .collect();
+    if !unsupported.is_empty() {
+        if opts.follow.is_none() {
+            // `log.follow` quietly does not apply.
+            return Ok(None);
+        }
+        return Err(Die::Fatal(msg::follow_magic(&unsupported)));
+    }
     let plain = !item.has_wildcard() && !item.is_exclude() && item.magic().is_empty();
     let path = item.pattern().to_vec();
     Ok(Some(follow::Follow::new(
@@ -537,7 +556,16 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
         Commits {
             repo: &repo,
             grep,
-            patch_ids: cherry_repo.as_ref().map(crate::patch_id::CommitIds::new),
+            patch_ids: match &cherry_repo {
+                Some(r) => Some(
+                    crate::patch_id::CommitIds::new(r).with_pathspec(paths::parse_pathspec(
+                        ctx,
+                        &repo,
+                        &resolved.paths,
+                    )?),
+                ),
+                None => None,
+            },
             paths,
         },
         walk_opts,
@@ -1565,8 +1593,16 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     } else {
         None
     };
-    let patch_ids = (walk_opts.cherry_pick || walk_opts.cherry_mark)
-        .then(|| crate::patch_id::CommitIds::new(cherry_repo.as_ref().expect("opened")));
+    let patch_ids = match &cherry_repo {
+        Some(r) => Some(
+            crate::patch_id::CommitIds::new(r).with_pathspec(paths::parse_pathspec(
+                ctx,
+                repo,
+                &resolved.paths,
+            )?),
+        ),
+        None => None,
+    };
     let mut walk = Walk::new(
         Commits {
             repo,

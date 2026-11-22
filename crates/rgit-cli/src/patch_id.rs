@@ -328,6 +328,12 @@ impl<'r> CommitIds<'r> {
         }
     }
 
+    /// Limit the diffs to `pathspec` (`rev-list --cherry-pick -- <paths>`).
+    pub fn with_pathspec(mut self, pathspec: Pathspec) -> Self {
+        self.pathspec = pathspec;
+        self
+    }
+
     /// The changed paths of `id` against its first parent; `None` for a
     /// merge or an unreadable commit.
     fn pairs(&self, id: &ObjectId) -> Option<Vec<Pair>> {
