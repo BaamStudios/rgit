@@ -43,7 +43,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let wt = WorkTree {
         root: &root,
         checker: &checker,
-        porcelain: false,
         hash: repo.hash,
         submodules: submodules.as_ref(),
         dirty: Default::default(),

@@ -3,10 +3,10 @@
 //!
 //! The layout of `--stat` was derived from the documentation and from
 //! differential tests against the `git` binary: the line is
-//! ` <name> | <count> <graph>`; when it does not fit into the width, the
-//! graph shrinks first (down to 3/8 of the width minus the fixed columns),
-//! then names are cut at the front to `...` plus a trailing part starting
-//! at a `/`.
+//! ` <name> | <count> <graph>`; when it does not fit into the width (see
+//! [`write_stat`] for the split between name and graph), names are cut at
+//! the front to `...` plus a trailing part starting at a `/`. The width
+//! comes from `--stat=<width>`, else (porcelain) `$COLUMNS`, else 80.
 
 use std::io::Write;
 
@@ -42,8 +42,13 @@ pub struct StatLayout {
     pub count: Option<usize>,
 }
 
+/// Columns of a name on the terminal (wide characters take two).
 fn display_width(name: &[u8]) -> usize {
-    String::from_utf8_lossy(name).chars().count()
+    unicode_width::UnicodeWidthStr::width(String::from_utf8_lossy(name).as_ref())
+}
+
+fn char_width(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
 }
 
 /// `count` scaled from `0..=max` to `0..=width`: at least one column for
@@ -85,8 +90,15 @@ fn truncate(name: &[u8], width: usize) -> Vec<u8> {
         return name.to_vec();
     }
     let chars: Vec<char> = String::from_utf8_lossy(name).chars().collect();
+    // The longest tail that fits into the columns left after "...".
     let keep = width.saturating_sub(3);
-    let mut tail: &[char] = &chars[chars.len() - keep..];
+    let mut start = chars.len();
+    let mut used = 0;
+    while start > 0 && used + char_width(chars[start - 1]) <= keep {
+        used += char_width(chars[start - 1]);
+        start -= 1;
+    }
+    let mut tail: &[char] = &chars[start..];
     if let Some(p) = tail.iter().position(|&c| c == '/') {
         tail = &tail[p..];
     }
@@ -135,14 +147,40 @@ pub fn write_stat(
     number_width = number_width.max(max_change.to_string().len());
     let width = layout.width;
     let mut name_width = layout.name_width.map_or(max_len, |w| w.min(max_len));
-    let mut graph_width = layout.graph_width.map_or(max_change, |w| w.min(max_change));
-    let fixed = number_width + 6;
-    if name_width + graph_width + fixed > width {
-        let min_graph = (width * 3 / 8).saturating_sub(fixed);
-        if graph_width > min_graph {
-            graph_width = min_graph.max(width.saturating_sub(fixed + name_width));
-        }
-        name_width = name_width.min(width.saturating_sub(fixed + graph_width));
+    let bar_cap = layout.graph_width.map_or(max_change, |w| w.min(max_change));
+    let mut graph_width = bar_cap;
+    // A binary file needs room for 6 graph columns (observed).
+    if shown
+        .iter()
+        .any(|f| matches!(f.kind, StatKind::Binary { .. } | StatKind::BinarySame))
+    {
+        graph_width = graph_width.max(6);
+    }
+    // A line takes at most `width - 1` columns: " ", name, " | ",
+    // count, " ", graph; the width is at least enough for 10 columns of
+    // name and 6 of graph. When name and graph do not both fit, the name
+    // gets up to 5/8 of the width and the graph the rest; a graph that
+    // would get fewer than 6 columns (and less than it needs) gets 6, a
+    // graph that needs less leaves the rest to the name.
+    let width = width.max(22 + number_width);
+    let usable = width - 1;
+    let fixed = number_width + 5;
+    if name_width + graph_width + fixed > usable {
+        let need = graph_width;
+        let name = name_width.min(width - width * 3 / 8);
+        let graph = usable as isize - (fixed + name) as isize;
+        let reserved = if graph < need as isize && graph < 6 {
+            6
+        } else {
+            (graph.max(0) as usize).min(need)
+        };
+        name_width = name_width.min(usable.saturating_sub(fixed + reserved));
+        graph_width = reserved.min(need);
+    }
+    graph_width = graph_width.min(bar_cap);
+    // A cut name is at least "...".
+    if name_width < max_len {
+        name_width = name_width.max(3);
     }
     for f in shown {
         let name = truncate(&f.name, name_width);

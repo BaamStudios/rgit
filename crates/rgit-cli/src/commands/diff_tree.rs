@@ -49,12 +49,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     opts.resolve_objects(&mut repo)?;
     let repo = repo;
     let pathspec = diff::pathspec(ctx, &repo, &args)?;
+    diff::check_max_depth(&opts, &pathspec)?;
     let mut w = TreeDiff {
         repo: &repo,
         pathspec: &pathspec,
         // -p and -t imply -r
-        recursive: opts.recursive || formats.patch || opts.show_trees || formats.needs_content(),
+        recursive: opts.recursive
+            || formats.patch
+            || opts.show_trees
+            || formats.needs_content()
+            || opts.max_depth_given,
         show_trees: opts.show_trees,
+        max_depth: opts.max_depth,
         pairs: Vec::new(),
     };
     w.walk(Some(&trees[0]), Some(&trees[1]), b"")?;

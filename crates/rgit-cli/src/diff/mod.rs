@@ -8,8 +8,10 @@
 mod check;
 pub mod collect;
 pub mod color;
+mod dirstat;
 pub mod moved;
 pub mod options;
+mod order;
 pub mod output;
 mod stat;
 mod words;
@@ -35,6 +37,16 @@ pub fn pathspec(ctx: &Context, repo: &Repo, args: &[String]) -> Result<Pathspec,
         ..Default::default()
     };
     Pathspec::parse(args, &opts).map_err(|e| Die::Fatal(e.to_string()))
+}
+
+/// `--max-depth` cannot be combined with wildcards in the pathspec.
+pub fn check_max_depth(opts: &options::DiffOpts, ps: &Pathspec) -> Result<(), Die> {
+    if opts.max_depth.is_some() && ps.items().iter().any(|i| i.has_wildcard()) {
+        return Err(Die::Fatal(
+            crate::messages::diff::MAX_DEPTH_WILDCARD.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// `-h` / `--help-all` as the only argument: the usage on stdout, exit 0
@@ -76,7 +88,7 @@ pub fn parse_args(
             args.extend(it.by_ref().cloned());
             break;
         }
-        if matches!(a.as_str(), "-S" | "-G" | "-l" | "-I") {
+        if matches!(a.as_str(), "-S" | "-G" | "-l" | "-I" | "-O") {
             // The value may also be the next argument.
             let Some(v) = it.next() else {
                 return Err(options::usage_exit(crate::messages::diff::requires_value(
@@ -88,7 +100,12 @@ pub fn parse_args(
         }
         if matches!(
             a.as_str(),
-            "--find-object" | "--diff-filter" | "--ignore-matching-lines"
+            "--find-object"
+                | "--diff-filter"
+                | "--ignore-matching-lines"
+                | "--output"
+                | "--rotate-to"
+                | "--skip-to"
         ) {
             let Some(v) = it.next() else {
                 return Err(options::usage_exit(crate::messages::diff::requires_value(

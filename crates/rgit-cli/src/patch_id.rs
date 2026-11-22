@@ -355,6 +355,7 @@ impl<'r> CommitIds<'r> {
             pathspec: &self.pathspec,
             recursive: true,
             show_trees: false,
+            max_depth: None,
             pairs: Vec::new(),
         };
         w.walk(parent_tree.as_ref(), Some(&tree), b"").ok()?;

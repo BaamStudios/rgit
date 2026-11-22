@@ -132,6 +132,9 @@ pub struct WsContext<'a> {
     /// The new side is a symbolic link (no `incomplete-line` errors).
     pub new_symlink: bool,
     pub old_symlink: bool,
+    /// The signs shown for added, removed and context lines
+    /// (`--output-indicator-*`).
+    pub indicators: [u8; 3],
 }
 
 /// Number of blank lines at the end of `data`.
@@ -275,6 +278,13 @@ pub fn patch(
             b'+' | b'-' | b' ' => {
                 let text = &line[1..];
                 let highlighted = ws.highlight & kind != 0;
+                let mut shown = line.to_vec();
+                shown[0] = ws.indicators[match sign {
+                    b'+' => 0,
+                    b'-' => 1,
+                    _ => 2,
+                }];
+                let line = &shown[..];
                 if sign == b'+' && highlighted && new_line >= blank_from && ws_rule::is_blank(text)
                 {
                     whole(out, &c.whitespace, line);
@@ -313,6 +323,7 @@ mod tests {
             new_data: new_data.as_bytes(),
             new_symlink: false,
             old_symlink: false,
+            indicators: *b"+- ",
         };
         patch(
             &mut out,
