@@ -803,6 +803,7 @@ dependencies = [
  "rgit-messages",
  "rgit-options",
  "rgit-pathspec",
+ "rgit-protocol",
  "rgit-refs",
  "rgit-repo",
  "rgit-submodule",
