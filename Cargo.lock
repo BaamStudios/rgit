@@ -563,6 +563,7 @@ dependencies = [
  "rgit-ident",
  "rgit-index",
  "rgit-mail",
+ "rgit-mailinfo",
  "rgit-merge",
  "rgit-messages",
  "rgit-object",
@@ -738,6 +739,13 @@ name = "rgit-mail"
 version = "0.1.0"
 dependencies = [
  "unicode-width",
+]
+
+[[package]]
+name = "rgit-mailinfo"
+version = "0.1.0"
+dependencies = [
+ "encoding_rs",
 ]
 
 [[package]]
