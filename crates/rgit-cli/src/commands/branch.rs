@@ -618,7 +618,7 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
             code = 1;
             continue;
         }
-        if !remote && (c.current.as_deref() == Some(name.as_str()) || busy.is_some()) {
+        if !remote && ((c.current.as_deref() == Some(name.as_str()) && !c.setup.is_bare()) || busy.is_some()) {
             eprintln!("error: {}", msg::cannot_delete_checked_out(name, &c.worktree_path()));
             code = 1;
             continue;

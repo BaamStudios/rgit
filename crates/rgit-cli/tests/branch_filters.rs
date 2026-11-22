@@ -139,3 +139,16 @@ fn create_reflog_and_description() {
         .git_file("config")
         .run();
 }
+
+/// In a repository configured as bare, the branch `HEAD` names is not
+/// checked out and can be deleted.
+#[test]
+fn delete_head_branch_in_bare_repository() {
+    let mut fx = fixture().git(["config", "--bool", "core.bare", "true"]);
+    if fx.is_skipped() {
+        return;
+    }
+    fx.compare(["branch", "-D", "main"])
+        .checks([Check::ExitCode, Check::Stdout, Check::Stderr, Check::Refs])
+        .run();
+}

@@ -503,7 +503,9 @@ pub fn prune(
         return Ok(());
     }
     let path = logs.path(&log.name);
-    let Ok(mut lock) = rgit_fs::LockFile::acquire(&path, &rgit_fs::LockOptions::default()) else {
+    let opts = rgit_fs::LockOptions::default()
+        .shared(crate::refs_support::shared_repository(&repo.config));
+    let Ok(mut lock) = rgit_fs::LockFile::acquire(&path, &opts) else {
         return Ok(());
     };
     let mut content = Vec::new();
