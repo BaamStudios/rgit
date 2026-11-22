@@ -7,10 +7,12 @@
 //! `rgit_revwalk::walk`; this module wires it to the repository and prints.
 
 mod decorate;
+mod follow;
 pub mod graph;
 pub mod layout;
 pub mod mailmap;
 mod options;
+mod paths;
 pub mod pretty;
 mod recode;
 mod tips;
@@ -133,18 +135,6 @@ impl Repo<'_> {
         out
     }
 
-    /// The work tree has a file `arg` (then git would take it as a path).
-    fn is_path(&self, arg: &str) -> bool {
-        if self.setup.work_tree.is_none() {
-            return false;
-        }
-        let prefix = self.setup.prefix.clone().unwrap_or_default();
-        std::path::Path::new(&prefix)
-            .join(arg)
-            .symlink_metadata()
-            .is_ok()
-    }
-
     /// The root tree of commit `id`.
     fn tree_of(&self, id: &ObjectId) -> Option<ObjectId> {
         self.read_commit(id)?.0.tree().ok()
@@ -157,6 +147,8 @@ struct Commits<'r, 'a> {
     grep: Option<CommitGrep>,
     /// Patch ids for `--cherry-pick` and `--cherry-mark`.
     patch_ids: Option<crate::patch_id::CommitIds<'r>>,
+    /// Path limiting and `--simplify-by-decoration`.
+    paths: Option<paths::PathFilter>,
 }
 
 impl CommitSource for Commits<'_, '_> {
@@ -196,6 +188,94 @@ impl CommitSource for Commits<'_, '_> {
             None => std::collections::HashSet::new(),
         })
     }
+    fn treesame(&mut self, id: &ObjectId, parent: Option<&ObjectId>) -> Result<bool, ObjectId> {
+        match &mut self.paths {
+            Some(p) => p.treesame(self.repo, id, parent),
+            None => Ok(false),
+        }
+    }
+
+    fn only_added(&mut self, id: &ObjectId, parent: &ObjectId) -> Result<bool, ObjectId> {
+        match &mut self.paths {
+            Some(p) => p.only_added(self.repo, id, parent),
+            None => Ok(false),
+        }
+    }
+}
+
+/// `log --follow` (or `log.follow` with exactly one path): the filter.
+fn follow_filter(
+    ctx: &Context,
+    repo: &Repo<'_>,
+    cmd: Command,
+    opts: &Options,
+    paths: &[String],
+) -> Result<Option<follow::Follow>, Die> {
+    if cmd != Command::Log {
+        return Ok(None);
+    }
+    let wanted = match opts.follow {
+        Some(f) => f,
+        None => paths.len() == 1 && repo.config.bool("log.follow").ok().flatten() == Some(true),
+    };
+    if !wanted {
+        return Ok(None);
+    }
+    if paths.len() != 1 {
+        return Err(Die::Fatal(msg::FOLLOW_ONE_PATHSPEC.to_string()));
+    }
+    let pathspec = paths::parse_pathspec(ctx, repo, paths)?;
+    let Some(item) = pathspec.items().first() else {
+        return Err(Die::Fatal(msg::FOLLOW_ONE_PATHSPEC.to_string()));
+    };
+    // Only `top` and `literal` magic can be followed.
+    let unsupported: Vec<&str> = item
+        .magic()
+        .iter()
+        .filter(|w| {
+            !matches!(
+                w,
+                rgit_pathspec::MagicWord::Top | rgit_pathspec::MagicWord::Literal
+            )
+        })
+        .map(|w| w.name())
+        .collect();
+    if !unsupported.is_empty() {
+        if opts.follow.is_none() {
+            // `log.follow` quietly does not apply.
+            return Ok(None);
+        }
+        return Err(Die::Fatal(msg::follow_magic(&unsupported)));
+    }
+    let plain = !item.has_wildcard() && !item.is_exclude() && item.magic().is_empty();
+    let path = item.pattern().to_vec();
+    Ok(Some(follow::Follow::new(
+        path,
+        (!plain).then_some(pathspec.clone()),
+    )))
+}
+
+/// Set up path limiting (`<paths>`, `--simplify-by-decoration`) for the
+/// walk: the filter, and the walk options it needs.
+fn path_filter(
+    ctx: &Context,
+    repo: &Repo<'_>,
+    opts: &Options,
+    paths: &[String],
+    walk: &mut rgit_revwalk::walk::WalkOptions,
+) -> Result<Option<paths::PathFilter>, Die> {
+    if paths.is_empty() && !opts.simplify_by_decoration {
+        return Ok(None);
+    }
+    let pathspec = paths::parse_pathspec(ctx, repo, paths)?;
+    let decorations = opts.simplify_by_decoration.then(|| {
+        // The same decorations `log` shows (`--decorate-refs*`,
+        // `--clear-decorations`, `log.excludeDecoration`).
+        Decorations::load(repo, &opts.decorate_filter)
+    });
+    walk.prune = true;
+    walk.rewrite_parents |= opts.parents || opts.children || opts.graph;
+    Ok(Some(paths::PathFilter::new(pathspec, decorations)))
 }
 
 /// Trees for `--objects`.
@@ -430,7 +510,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
         let _ = std::io::stdin().lock().read_to_end(&mut input);
         opts.read_stdin(&input)?;
     }
-    let resolved = tips::resolve(&repo, &opts).map_err(|e| match e {
+    let resolved = tips::resolve_with(&repo, &opts, false).map_err(|e| match e {
         Die::Fatal(m) => {
             let bad = opts.tips.iter().find_map(|t| match t {
                 options::Tip::Rev { arg, .. }
@@ -466,13 +546,27 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     } else {
         None
     };
+    let mut walk_opts = opts.walk.clone();
+    // The parents link the selected commits (bisect counts through them).
+    walk_opts.rewrite_parents = true;
+    let paths = path_filter(ctx, &repo, &opts, &resolved.paths, &mut walk_opts)?;
     let mut walk = Walk::new(
         Commits {
             repo: &repo,
             grep,
-            patch_ids: cherry_repo.as_ref().map(crate::patch_id::CommitIds::new),
+            patch_ids: match &cherry_repo {
+                Some(r) => Some(
+                    crate::patch_id::CommitIds::new(r).with_pathspec(paths::parse_pathspec(
+                        ctx,
+                        &repo,
+                        &resolved.paths,
+                    )?),
+                ),
+                None => None,
+            },
+            paths,
         },
-        opts.walk.clone(),
+        walk_opts,
     );
     for (id, negative, side) in &resolved.commits {
         walk.push_side(id, *negative, *side).map_err(walk_error)?;
@@ -851,10 +945,9 @@ impl Printer<'_, '_> {
             Some(p) => Some(self.repo.tree_of(&p).ok_or_else(walk_error)?),
             None => None,
         };
-        let pathspec = rgit_pathspec::Pathspec::default();
         let mut w = crate::diff::collect::TreeDiff {
             repo: &d.repo,
-            pathspec: &pathspec,
+            pathspec: &d.pathspec,
             recursive: true,
             show_trees: false,
             pairs: Vec::new(),
@@ -1222,6 +1315,7 @@ fn show_commit(p: &mut Printer<'_, '_>, id: &ObjectId) -> Result<(), Die> {
         repo: p.repo,
         grep: None,
         patch_ids: None,
+        paths: None,
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
@@ -1273,6 +1367,9 @@ struct LogDiff {
     merges: MergeDiff,
     /// Root commits get a diff against the empty tree.
     show_root: bool,
+    /// The paths the diffs are limited to (the walk's, unless
+    /// `--full-diff`).
+    pathspec: rgit_pathspec::Pathspec,
 }
 
 /// The diff `log` shows after every commit: only when a diff format was
@@ -1347,6 +1444,7 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
         formats,
         merges,
         show_root,
+        pathspec: rgit_pathspec::Pathspec::default(),
     }))
 }
 
@@ -1419,7 +1517,23 @@ fn user_settings(
 
 /// Run the walk and print the result.
 fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
-    let resolved = tips::resolve(repo, opts)?;
+    let mut resolved = tips::resolve(repo, opts)?;
+    if resolved.no_revisions && !opts.stdin && !opts.bisect {
+        // Only paths: like no arguments at all.
+        match cmd {
+            Command::RevList => {
+                let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
+                return Err(Die::Exit(rgit_options::EXIT_USAGE));
+            }
+            Command::Log => {
+                if let Some(branch) = repo.unborn_branch() {
+                    crate::pager::setup_for(ctx, repo.config, "log", true)?;
+                    return Err(Die::Fatal(msg::unborn_branch(&branch)));
+                }
+                resolved.push_head(repo)?;
+            }
+        }
+    }
     let commit_color = match cmd {
         Command::Log => {
             let pager = if opts.show { "show" } else { "log" };
@@ -1454,6 +1568,8 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         walk_opts.max_count = None;
         walk_opts.skip = 0;
         walk_opts.reverse = false;
+        // The weights count through the rewritten parents.
+        walk_opts.rewrite_parents = true;
     }
     // `--max-count-oldest`: the last commits of the whole walk.
     let oldest = opts
@@ -1465,18 +1581,36 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         walk_opts.max_count = None;
         walk_opts.reverse = false;
     }
+    let mut follow = follow_filter(ctx, repo, cmd, opts, &resolved.paths)?;
+    let max_count = walk_opts.max_count;
+    let paths = if follow.is_some() {
+        // `-n` counts the commits the filter shows.
+        walk_opts.max_count = None;
+        None
+    } else {
+        path_filter(ctx, repo, opts, &resolved.paths, &mut walk_opts)?
+    };
     let cherry_repo = if walk_opts.cherry_pick || walk_opts.cherry_mark {
         Some(crate::repository::Repo::open(ctx, Mode::Required)?)
     } else {
         None
     };
-    let patch_ids = (walk_opts.cherry_pick || walk_opts.cherry_mark)
-        .then(|| crate::patch_id::CommitIds::new(cherry_repo.as_ref().expect("opened")));
+    let patch_ids = match &cherry_repo {
+        Some(r) => Some(
+            crate::patch_id::CommitIds::new(r).with_pathspec(paths::parse_pathspec(
+                ctx,
+                repo,
+                &resolved.paths,
+            )?),
+        ),
+        None => None,
+    };
     let mut walk = Walk::new(
         Commits {
             repo,
             grep,
             patch_ids,
+            paths,
         },
         walk_opts,
     );
@@ -1560,7 +1694,13 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
         next: None,
-        diff: log_diff(ctx, opts, cmd)?,
+        diff: match log_diff(ctx, opts, cmd)? {
+            Some(mut d) if !opts.full_diff && !resolved.paths.is_empty() => {
+                d.pathspec = paths::parse_pathspec(ctx, repo, &resolved.paths)?;
+                Some(d)
+            }
+            d => d,
+        },
     };
     if opts.graph {
         let palette = p
@@ -1587,7 +1727,12 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         p.sources = Some(map);
     }
     if let Some(mode) = opts.objects {
-        return run_objects(&mut p, &mut walk, &resolved, mode);
+        let pathspec = if resolved.paths.is_empty() {
+            None
+        } else {
+            Some(paths::parse_pathspec(ctx, repo, &resolved.paths)?)
+        };
+        return run_objects(&mut p, &mut walk, &resolved, mode, pathspec);
     }
     // `show` walks only for ranges, exclusions and `-<n>`.
     let single = |t: &options::Tip| {
@@ -1639,7 +1784,21 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         return Ok(0);
     }
     let (mut left, mut right, mut same) = (0usize, 0usize, 0usize);
+    let mut shown = 0usize;
     while let Some(s) = next_shown(&mut walk, &mut kept)? {
+        if let Some(f) = &mut follow {
+            if max_count.is_some_and(|m| shown >= m) {
+                break;
+            }
+            let mut parents = walk.parents(&s.id).unwrap_or_default().to_vec();
+            if opts.walk.first_parent {
+                parents.truncate(1);
+            }
+            if !f.show(repo, &s.id, &parents).map_err(walk_error)? {
+                continue;
+            }
+            shown += 1;
+        }
         if opts.count {
             if opts.walk.cherry_mark && s.same {
                 same += 1;
@@ -1817,6 +1976,7 @@ fn run_objects(
     walk: &mut Walk<Commits<'_, '_>>,
     resolved: &Resolved,
     mode: ObjectsMode,
+    pathspec: Option<rgit_pathspec::Pathspec>,
 ) -> Result<i32, Die> {
     let repo = p.repo;
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
@@ -1825,6 +1985,16 @@ fn run_objects(
         shown.push(s);
     }
     let mut lister = ObjectLister::new(Trees(repo));
+    if let Some(ps) = &pathspec {
+        let ps = ps.clone();
+        lister.set_filter(Box::new(move |path, tree| {
+            if tree {
+                ps.dir_interest(path) != rgit_pathspec::DirInterest::None
+            } else {
+                ps.matches(path)
+            }
+        }));
+    }
     let edges = walk.edges();
     for e in &edges {
         if let Some(tree) = repo.tree_of(e) {
@@ -1891,7 +2061,7 @@ fn run_objects(
                 pending_done = true;
             }
             lister
-                .list_tree(&tree, b"", &mut |id, name| {
+                .list_commit_tree(&tree, &mut |id, name| {
                     count += 1;
                     if !counting {
                         p.object(id, name);
@@ -1907,7 +2077,7 @@ fn run_objects(
     }
     for tree in trees {
         lister
-            .list_tree(&tree, b"", &mut |id, name| {
+            .list_commit_tree(&tree, &mut |id, name| {
                 count += 1;
                 if !counting {
                     p.object(id, name);

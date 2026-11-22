@@ -220,10 +220,6 @@ pub fn what_are_you_talking_about(word: &str) -> String {
     format!("'{word}'?? what are you talking about?")
 }
 
-pub fn path_limiting_not_supported() -> String {
-    "rgit bisect: pathspecs are not supported yet".to_string()
-}
-
 /// The status banner (`git status`).
 pub fn status_banner(start: &str) -> String {
     format!("You are currently bisecting, started from branch '{start}'.")

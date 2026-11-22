@@ -12,7 +12,8 @@
 //!
 //! 1. names from tags beat names from other references;
 //! 2. among tag names the older tag (tagger date, commit date for
-//!    lightweight tags) wins; for equal dates the name offered first stays;
+//!    lightweight tags) wins; for equal dates the shorter distance, then
+//!    the name offered first;
 //! 3. among other names the shorter distance wins, then the smaller
 //!    `~<n>` part.
 //!
@@ -85,7 +86,7 @@ impl RevName {
 
     /// Whether `self` beats the name `old`.
     pub fn better_than(&self, old: &RevName) -> bool {
-        if self.from_tag && old.from_tag {
+        if self.from_tag && old.from_tag && self.date != old.date {
             return self.date < old.date;
         }
         if self.from_tag != old.from_tag {

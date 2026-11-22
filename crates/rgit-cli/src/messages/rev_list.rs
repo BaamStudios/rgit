@@ -95,6 +95,31 @@ pub fn ambiguous_argument(arg: &str) -> String {
     )
 }
 
+pub const FOLLOW_ONE_PATHSPEC: &str = "--follow requires exactly one pathspec";
+
+pub fn follow_magic(words: &[&str]) -> String {
+    let quoted: Vec<String> = words.iter().map(|w| format!("'{w}'")).collect();
+    format!(
+        "pathspec magic not supported by --follow: {}",
+        quoted.join(", ")
+    )
+}
+
+pub fn revision_and_filename(arg: &str) -> String {
+    format!(
+        "ambiguous argument '{arg}': both revision and filename\n\
+         Use '--' to separate paths from revisions, like this:\n\
+         'git <command> [<revision>...] -- [<file>...]'"
+    )
+}
+
+pub fn no_such_path(arg: &str) -> String {
+    format!(
+        "{arg}: no such path in the working tree.\n\
+         Use 'git <command> -- <path>...' to specify paths that do not exist locally."
+    )
+}
+
 pub fn bad_revision(arg: &str) -> String {
     format!("bad revision '{arg}'")
 }

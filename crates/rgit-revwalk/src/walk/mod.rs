@@ -54,6 +54,7 @@
 pub mod grep;
 pub mod messages;
 pub mod objects;
+mod simplify;
 
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
@@ -98,6 +99,19 @@ pub trait CommitSource {
         let _ = (left, right);
         Ok(HashSet::new())
     }
+    /// History simplification ([`WalkOptions::prune`]): whether `id` is
+    /// TREESAME to `parent` (to the empty tree for `None`), i.e. a diff
+    /// limited to the paths of interest shows no change.
+    fn treesame(&mut self, id: &ObjectId, parent: Option<&ObjectId>) -> Result<bool, Self::Error> {
+        let _ = (id, parent);
+        Ok(false)
+    }
+    /// `--remove-empty`: `parent` has none of the paths of interest and
+    /// `id` adds some of them.
+    fn only_added(&mut self, id: &ObjectId, parent: &ObjectId) -> Result<bool, Self::Error> {
+        let _ = (id, parent);
+        Ok(false)
+    }
 }
 
 impl<S: CommitSource + ?Sized> CommitSource for &mut S {
@@ -117,6 +131,12 @@ impl<S: CommitSource + ?Sized> CommitSource for &mut S {
         right: &[ObjectId],
     ) -> Result<HashSet<ObjectId>, Self::Error> {
         (**self).patch_equivalent(left, right)
+    }
+    fn treesame(&mut self, id: &ObjectId, parent: Option<&ObjectId>) -> Result<bool, Self::Error> {
+        (**self).treesame(id, parent)
+    }
+    fn only_added(&mut self, id: &ObjectId, parent: &ObjectId) -> Result<bool, Self::Error> {
+        (**self).only_added(id, parent)
     }
 }
 
@@ -166,6 +186,9 @@ pub struct WalkOptions {
     pub skip: usize,
     /// `--first-parent`: follow only the first parent of included commits.
     pub first_parent: bool,
+    /// `--exclude-first-parent-only`: exclude only the first-parent line
+    /// of excluded commits.
+    pub exclude_first_parent_only: bool,
     /// `--since`/`--max-age`: hide commits older than this time and do
     /// not walk past them.
     pub max_age: Option<i64>,
@@ -196,6 +219,25 @@ pub struct WalkOptions {
     pub cherry_pick: bool,
     /// `--cherry-mark`: mark such commits ([`Shown::same`]) instead.
     pub cherry_mark: bool,
+    /// History simplification: hide commits that are TREESAME (see
+    /// [`CommitSource::treesame`]); `<paths>` or
+    /// `--simplify-by-decoration`.
+    pub prune: bool,
+    /// `--full-history`: walk every parent of a merge, also when it is
+    /// TREESAME to one of them.
+    pub full_history: bool,
+    /// `--sparse`: show TREESAME commits too.
+    pub sparse: bool,
+    /// `--simplify-merges` (implies [`Self::full_history`]).
+    pub simplify_merges: bool,
+    /// `--show-pulls`: also show merges that are not TREESAME to their
+    /// first parent but to a later one.
+    pub show_pulls: bool,
+    /// `--remove-empty`: do not walk into parents without the paths.
+    pub remove_empty: bool,
+    /// Parent rewriting (`--parents`, `--children`, `--graph`): the
+    /// parents of shown commits skip the commits simplified away.
+    pub rewrite_parents: bool,
 }
 
 /// One commit of the output.
@@ -216,27 +258,47 @@ pub struct Shown {
 /// moderate clock skew.
 pub const SLOP: usize = 5;
 
-const SEEN: u16 = 1;
-const UNINTERESTING: u16 = 1 << 1;
-const SHOWN: u16 = 1 << 2;
-const LEFT: u16 = 1 << 3;
-const RIGHT: u16 = 1 << 4;
-const BOTTOM: u16 = 1 << 5;
-const TARGET: u16 = 1 << 6;
-const RELATED: u16 = 1 << 7;
-const BOUNDARY: u16 = 1 << 8;
+const SEEN: u32 = 1;
+const UNINTERESTING: u32 = 1 << 1;
+const SHOWN: u32 = 1 << 2;
+const LEFT: u32 = 1 << 3;
+const RIGHT: u32 = 1 << 4;
+const BOTTOM: u32 = 1 << 5;
+const TARGET: u32 = 1 << 6;
+const RELATED: u32 = 1 << 7;
+const BOUNDARY: u32 = 1 << 8;
 /// Read only to show it as a boundary commit: the walk never reached it,
 /// so its parents do not order it.
-const UNREACHED: u16 = 1 << 9;
+const UNREACHED: u32 = 1 << 9;
+/// History simplification: TREESAME to its (relevant) parents.
+const TREESAME: u32 = 1 << 10;
+/// `--show-pulls`: a merge TREESAME to a later parent only.
+const PULL: u32 = 1 << 11;
+/// Shown although TREESAME (merges with parent rewriting).
+const KEEP: u32 = 1 << 12;
+/// Its parents were simplified (TREESAME computed).
+const SIMPLIFIED: u32 = 1 << 13;
+/// Removed by `--simplify-merges`.
+const DROPPED: u32 = 1 << 14;
+/// Its parents were put in the queue while it was interesting.
+const EXPANDED: u32 = 1 << 15;
+/// `--remove-empty` removed a parent the commit is not TREESAME to.
+const ADDED: u32 = 1 << 16;
 /// `--cherry-mark`: the other side has an equivalent change.
-const PATCHSAME: u16 = 1 << 10;
+const PATCHSAME: u32 = 1 << 17;
 
 #[derive(Debug)]
 struct Node {
     id: ObjectId,
+    /// The parents as the walk uses them: simplification and parent
+    /// rewriting change them.
     parents: Vec<ObjectId>,
+    /// The parents as read, when [`Node::parents`] was changed.
+    orig_parents: Option<Vec<ObjectId>>,
+    /// Per entry of `parents`: TREESAME to it (history simplification).
+    same: Vec<bool>,
     time: i64,
-    flags: u16,
+    flags: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -269,12 +331,16 @@ pub struct Walk<S: CommitSource> {
     nodes: Vec<Node>,
     index: HashMap<ObjectId, u32>,
     /// Flags given to commits before they were read.
-    pending_flags: HashMap<ObjectId, u16>,
+    pending_flags: HashMap<ObjectId, u32>,
     queue: BinaryHeap<Entry>,
     /// Interesting tips in push order (`--no-walk`).
     tips: Vec<u32>,
     seq: u64,
     limited: bool,
+    /// The reference implementation would stream this walk while
+    /// rewriting parents: it looks ahead along the parents of every shown
+    /// commit (see [`Walk::prewalk`]).
+    lookahead: bool,
     started: bool,
     prepared: Option<VecDeque<u32>>,
     skipped: usize,
@@ -311,6 +377,7 @@ impl<S: CommitSource> Walk<S> {
             tips: Vec::new(),
             seq: 0,
             limited: false,
+            lookahead: false,
             started: false,
             prepared: None,
             skipped: 0,
@@ -363,7 +430,11 @@ impl<S: CommitSource> Walk<S> {
             self.mark_uninteresting(n);
             // The parents of an excluded tip are excluded right away, even
             // before the walk reads them.
-            for p in self.nodes[n as usize].parents.clone() {
+            let mut parents = self.nodes[n as usize].parents.clone();
+            if self.opts.exclude_first_parent_only {
+                parents.truncate(1);
+            }
+            for p in parents {
                 match self.index.get(&p) {
                     Some(&pn) => self.mark_uninteresting(pn),
                     None => *self.pending_flags.entry(p).or_default() |= UNINTERESTING,
@@ -512,7 +583,31 @@ impl<S: CommitSource> Walk<S> {
         if self.opts.no_walk.is_some() && !self.limited {
             return self.prepare_no_walk();
         }
+        if self.opts.simplify_merges {
+            self.opts.full_history = true;
+            self.opts.rewrite_parents = true;
+        }
         if self.opts.ancestry_path {
+            // Only the commits on the path count, so every parent is walked.
+            self.opts.full_history = true;
+        }
+        // Children are known only after the whole walk; `--cherry-*` compare
+        // both sides as a whole (also without a merge base).
+        if self.opts.ancestry_path
+            || self.opts.simplify_merges
+            || self.opts.children
+            || self.opts.cherry_pick
+            || self.opts.cherry_mark
+        {
+            self.limited = true;
+        }
+        self.lookahead = self.opts.prune
+            && self.opts.rewrite_parents
+            && !self.opts.sparse
+            && !self.limited
+            && !self.opts.children
+            && self.opts.order == Order::Default;
+        if self.opts.prune && (self.opts.full_history || self.opts.rewrite_parents) {
             self.limited = true;
         }
         if self.limited || self.opts.order != Order::Default {
@@ -559,6 +654,8 @@ impl<S: CommitSource> Walk<S> {
         self.nodes.push(Node {
             id: *id,
             parents: info.parents,
+            orig_parents: None,
+            same: Vec::new(),
             time: info.time,
             flags,
         });
@@ -595,7 +692,14 @@ impl<S: CommitSource> Walk<S> {
                 continue;
             }
             node.flags |= UNINTERESTING;
-            for p in &self.nodes[n as usize].parents {
+            let node = &self.nodes[n as usize];
+            let parents = node.orig_parents.as_ref().unwrap_or(&node.parents);
+            let count = if self.opts.exclude_first_parent_only {
+                parents.len().min(1)
+            } else {
+                parents.len()
+            };
+            for p in &parents[..count] {
                 if let Some(&pn) = self.index.get(p) {
                     stack.push(pn);
                 }
@@ -616,7 +720,18 @@ impl<S: CommitSource> Walk<S> {
         if !uninteresting && self.too_old(n) {
             return Ok(());
         }
-        let count = if self.opts.first_parent && !uninteresting {
+        if !uninteresting {
+            if self.nodes[n as usize].flags & EXPANDED != 0 {
+                return Ok(());
+            }
+            self.nodes[n as usize].flags |= EXPANDED;
+        }
+        if self.opts.prune && !uninteresting && self.nodes[n as usize].flags & SIMPLIFIED == 0 {
+            self.simplify_parents(n)?;
+        }
+        let count = if (self.opts.first_parent && !uninteresting)
+            || (self.opts.exclude_first_parent_only && uninteresting)
+        {
             self.nodes[n as usize].parents.len().min(1)
         } else {
             self.nodes[n as usize].parents.len()
@@ -648,6 +763,10 @@ impl<S: CommitSource> Walk<S> {
         {
             return Ok(false);
         }
+        if self.simplified_away(n) {
+            return Ok(false);
+        }
+        let node = &self.nodes[n as usize];
         let parents = node.parents.len();
         if self.opts.min_parents.is_some_and(|m| parents < m)
             || self.opts.max_parents.is_some_and(|m| parents > m)
@@ -676,8 +795,14 @@ impl<S: CommitSource> Walk<S> {
         if self.opts.cherry_pick || self.opts.cherry_mark {
             list = self.cherry(list)?;
         }
+        if self.opts.prune {
+            self.settle(&list);
+        }
         self.limited_list.clone_from(&list);
         match self.opts.order {
+            Order::Default if self.opts.simplify_merges => {
+                list = self.sort_topologically(&list, Order::Topo, None)
+            }
             Order::Default => {}
             Order::Date | Order::Topo => {
                 list = self.sort_topologically(&list, self.opts.order, None)
@@ -691,6 +816,9 @@ impl<S: CommitSource> Walk<S> {
                 }
                 list = self.sort_topologically(&list, Order::AuthorDate, Some(&times));
             }
+        }
+        if self.opts.prune {
+            self.rewrite_all(&list);
         }
         self.finish(list)
     }
@@ -722,6 +850,14 @@ impl<S: CommitSource> Walk<S> {
 
     /// `--no-walk`: the interesting tips themselves.
     fn prepare_no_walk(&mut self) -> Result<(), S::Error> {
+        if self.opts.prune {
+            // Path limiting still hides tips that change none of the paths.
+            for n in self.tips.clone() {
+                if self.nodes[n as usize].flags & SIMPLIFIED == 0 {
+                    self.simplify_parents(n)?;
+                }
+            }
+        }
         let mut seen = HashSet::new();
         let mut list: Vec<u32> = self
             .tips
@@ -759,6 +895,9 @@ impl<S: CommitSource> Walk<S> {
             }
             self.expand(n)?;
             if !self.uninteresting(n) {
+                if self.lookahead && self.shown_now(n) {
+                    self.prewalk(n)?;
+                }
                 list.push(n);
                 last_collected = Some(self.nodes[n as usize].time);
                 continue;

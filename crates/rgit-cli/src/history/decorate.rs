@@ -247,6 +247,11 @@ impl Decorations {
         d
     }
 
+    /// `id` has a decoration (`--simplify-by-decoration`).
+    pub fn contains(&self, id: &ObjectId) -> bool {
+        self.map.get(id).is_some_and(|n| !n.is_empty())
+    }
+
     /// The decoration of `id`, empty when it has none. `colors` when
     /// colouring.
     pub fn format(&self, id: &ObjectId, parts: &Parts, colors: Option<&Colors>) -> Vec<u8> {

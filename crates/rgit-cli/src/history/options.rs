@@ -164,6 +164,16 @@ pub struct Options {
     negate: bool,
     /// State while parsing: `--exclude` patterns for the next ref set.
     exclude: Vec<String>,
+    /// The paths after `--` (and after `--` on standard input).
+    pub paths: Vec<String>,
+    /// `--` was given: the arguments before it are revisions.
+    pub dashdash: bool,
+    /// `--simplify-by-decoration`.
+    pub simplify_by_decoration: bool,
+    /// `--full-diff`: the diffs of path-limited commits show every path.
+    pub full_diff: bool,
+    /// `--follow` / `--no-follow` (log); `None`: `log.follow`.
+    pub follow: Option<bool>,
 }
 
 fn parse_count(s: &str) -> Result<usize, Die> {
@@ -283,6 +293,11 @@ impl Options {
             bisect_all: false,
             negate: false,
             exclude: Vec::new(),
+            paths: Vec::new(),
+            dashdash: false,
+            simplify_by_decoration: false,
+            full_diff: false,
+            follow: None,
         }
     }
 
@@ -384,9 +399,8 @@ impl Options {
         while i < argv.len() {
             let a = argv[i].as_str();
             if a == "--" {
-                if i + 1 < argv.len() {
-                    return Err(Die::Fatal(msg::not_supported("path limiting")));
-                }
+                o.dashdash = true;
+                o.paths.extend(argv[i + 1..].iter().cloned());
                 break;
             }
             if end_of_options || !a.starts_with('-') || a == "-" {
@@ -430,6 +444,7 @@ impl Options {
                 "--no-graph-indent" => o.graph_indent = Some(false),
                 "--reverse" => o.walk.reverse = true,
                 "--first-parent" => o.walk.first_parent = true,
+                "--exclude-first-parent-only" => o.walk.exclude_first_parent_only = true,
                 "--parents" => o.parents = true,
                 "--children" => o.children = true,
                 "--timestamp" if cmd == Command::RevList => o.timestamp = true,
@@ -471,6 +486,20 @@ impl Options {
                     o.walk.right_only = true;
                 }
                 "--ancestry-path" => o.walk.ancestry_path = true,
+                "--full-history" => o.walk.full_history = true,
+                "--dense" => o.walk.sparse = false,
+                "--sparse" => o.walk.sparse = true,
+                "--simplify-merges" => o.walk.simplify_merges = true,
+                "--show-pulls" => o.walk.show_pulls = true,
+                "--remove-empty" => o.walk.remove_empty = true,
+                "--full-diff" if cmd == Command::Log => o.full_diff = true,
+                "--simplify-by-decoration" => {
+                    // It works like `--simplify-merges` with decorations.
+                    o.simplify_by_decoration = true;
+                    o.walk.simplify_merges = true;
+                }
+                "--follow" if cmd == Command::Log => o.follow = Some(true),
+                "--no-follow" if cmd == Command::Log => o.follow = Some(false),
                 "--merges" => o.walk.min_parents = Some(2),
                 "--no-merges" => o.walk.max_parents = Some(1),
                 "--no-min-parents" => o.walk.min_parents = None,
@@ -657,7 +686,8 @@ impl Options {
         if let Some(m) = &mut self.objects {
             m.in_commit_order = self.in_commit_order;
         }
-        if self.parents && self.children {
+        // `--simplify-merges` asks for parent rewriting like `--parents`.
+        if (self.parents || self.walk.simplify_merges) && self.children {
             return Err(Die::Fatal(msg::cannot_be_used_together(
                 "--parents",
                 "--children",
@@ -718,9 +748,13 @@ impl Options {
                 break;
             }
             if line == "--" {
-                if lines[i..].iter().any(|l| !l.is_empty()) {
-                    return Err(Die::Fatal(msg::not_supported("path limiting")));
-                }
+                self.dashdash = true;
+                self.paths.extend(
+                    lines[i..]
+                        .iter()
+                        .filter(|l| !l.is_empty())
+                        .map(|l| l.to_string()),
+                );
                 break;
             }
             if end_of_options || !line.starts_with('-') {
