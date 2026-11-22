@@ -143,8 +143,10 @@ pub(crate) enum Kind {
     AheadBehind(String),
     Worktreepath,
     Rest,
-    /// Atoms rgit does not implement yet (`describe`, `is-base`,
-    /// `signature`): an error when used.
+    /// `%(describe[:<options>])`: the `git describe` arguments.
+    Describe(Vec<String>),
+    /// Atoms rgit does not implement yet (`is-base`, `signature`): an
+    /// error when used.
     Unsupported(&'static str),
 }
 
@@ -558,6 +560,52 @@ fn parse_if(arg: Option<&str>) -> Result<Kind, FormatError> {
     }))
 }
 
+/// The options of `%(describe:...)` as `describe` arguments: `tags[=<bool>]`,
+/// `abbrev=<n>`, `match=<pattern>`, `exclude=<pattern>`,
+/// separated by commas.
+fn parse_describe(arg: Option<&str>) -> Result<Vec<String>, FormatError> {
+    let mut out = Vec::new();
+    let Some(mut rest) = arg else {
+        return Ok(out);
+    };
+    let bad = |r: &str| fatal(msg::unrecognized_arg("describe", r));
+    while !rest.is_empty() {
+        let whole = rest;
+        let key_end = rest.find(['=', ',']).unwrap_or(rest.len());
+        let key = &rest[..key_end];
+        rest = &rest[key_end..];
+        let value = if let Some(r) = rest.strip_prefix('=') {
+            let e = r.find(',').unwrap_or(r.len());
+            let (v, after) = (&r[..e], &r[e..]);
+            rest = after;
+            Some(v)
+        } else {
+            None
+        };
+        match (key, value) {
+            ("tags", None) => out.push("--tags".to_owned()),
+            ("tags", Some(v)) => match rgit_config::value::parse_bool(Some(v.as_bytes())) {
+                Some(true) => out.push("--tags".to_owned()),
+                Some(false) => {}
+                None => return Err(bad(whole)),
+            },
+            ("abbrev", Some(v)) => match v.parse::<usize>() {
+                Ok(_) => out.push(format!("--abbrev={v}")),
+                Err(_) => return Err(fatal(msg::cannot_parse_describe(&format!("abbrev={v}")))),
+            },
+            ("match", Some(v)) => out.push(format!("--match={v}")),
+            ("exclude", Some(v)) => out.push(format!("--exclude={v}")),
+            _ => return Err(bad(whole)),
+        }
+        match rest.strip_prefix(',') {
+            Some(r) => rest = r,
+            None if rest.is_empty() => {}
+            None => return Err(bad(whole)),
+        }
+    }
+    Ok(out)
+}
+
 /// Parses the text between `%(` and `)`.
 pub(crate) fn parse_atom(spec: &str) -> Result<Atom, FormatError> {
     let (deref, body) = match spec.strip_prefix('*') {
@@ -633,7 +681,7 @@ pub(crate) fn parse_atom(spec: &str) -> Result<Atom, FormatError> {
         },
         "worktreepath" => Kind::Worktreepath,
         "rest" => no_args(Kind::Rest)?,
-        "describe" => Kind::Unsupported("describe"),
+        "describe" => Kind::Describe(parse_describe(arg)?),
         "signature" => Kind::Unsupported("signature"),
         _ => match parse_person(name, arg)? {
             Some(k) => k,

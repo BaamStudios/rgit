@@ -9,7 +9,7 @@
 //! - here: sort keys and version order, and the small API the listing
 //!   commands use ([`RefFormat`], [`SortKey`], [`RefValues`]).
 //!
-//! Not yet: `%(describe)` (needs `git describe`), `%(is-base:...)`,
+//! `%(describe)` runs `describe` for each object. Not yet: `%(is-base:...)`,
 //! `%(signature...)` (needs signature verification); they fail with an
 //! rgit message.
 

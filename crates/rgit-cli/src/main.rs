@@ -10,6 +10,7 @@ mod attributes;
 mod autocorrect;
 mod cmdlist;
 mod color;
+mod column;
 mod commands;
 mod comment;
 mod context;

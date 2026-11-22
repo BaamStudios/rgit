@@ -238,7 +238,7 @@ pub fn create_and_switch(
     // `--track` or `branch.autoSetupMerge=always` says so).
     let track_start = match &nb.start {
         Some(_) => start_name.clone(),
-        None => tracking::default_start(&store),
+        None => tracking::default_start_ref(&store),
     };
     let trepo = tracking::Repo {
         setup: &repo.setup,

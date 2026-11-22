@@ -180,6 +180,28 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let list = Cell::new(false);
     let show_current = Cell::new(false);
     let force = Cell::new(false);
+    let create_reflog = Cell::new(false);
+    let edit_description = Cell::new(false);
+    let omit_empty = Cell::new(false);
+    let ignore_case = Cell::new(false);
+    let column: RefCell<Option<String>> = RefCell::new(None);
+    let format: RefCell<Option<String>> = RefCell::new(None);
+    let sorts: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let no_sort = Cell::new(false);
+    // Filter options in command-line order (`tag`'s numbering: 0
+    // contains, 1 no-contains, 2 merged, 3 no-merged, 4 points-at).
+    let specs: RefCell<Vec<(u8, Option<String>)>> = RefCell::new(Vec::new());
+    let filter_opt = |long: &'static str, help: &'static str, which: u8| {
+        let specs = &specs;
+        Opt::callback(None, long, Some("commit"), help, move |v, _| {
+            specs
+                .borrow_mut()
+                .push((which, Some(v.unwrap_or("HEAD").to_owned())));
+            Ok(())
+        })
+        .lastarg_default("HEAD")
+        .noneg()
+    };
     let track = Cell::new(Track::Unspecified);
     let color: Cell<Option<ColorBool>> = Cell::new(None);
     // Generic options, then the branch actions (the order of `-h`).
@@ -198,6 +220,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             })
             .optional(None),
             Opt::flag('r', "remotes", &remotes, msg::HELP_REMOTES).noneg(),
+            filter_opt("contains", msg::HELP_CONTAINS, 0),
+            filter_opt("no-contains", msg::HELP_NO_CONTAINS, 1),
+            filter_opt("with", msg::HELP_CONTAINS, 0).hidden(),
+            filter_opt("without", msg::HELP_NO_CONTAINS, 1).hidden(),
             Opt::string(None, "abbrev", &abbrev, "n", msg::HELP_ABBREV).optional(Some("")),
             Opt::group(msg::GROUP_ACTIONS),
             Opt::flag('a', "all", &all, msg::HELP_ALL).noneg(),
@@ -205,14 +231,45 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::set_int('D', None, &delete, msg::HELP_FORCE_DELETE, 2).noneg(),
             Opt::set_int('m', "move", &rename, msg::HELP_MOVE, 1),
             Opt::set_int('M', None, &rename, msg::HELP_FORCE_MOVE, 2).noneg(),
+            Opt::flag(None, "omit-empty", &omit_empty, msg::HELP_OMIT_EMPTY),
             Opt::set_int('c', "copy", &copy, msg::HELP_COPY, 1),
             Opt::set_int('C', None, &copy, msg::HELP_FORCE_COPY, 2).noneg(),
             Opt::flag('l', "list", &list, msg::HELP_LIST),
             Opt::flag(None, "show-current", &show_current, msg::HELP_SHOW_CURRENT),
+            Opt::flag(None, "create-reflog", &create_reflog, msg::HELP_CREATE_REFLOG),
+            Opt::flag(None, "edit-description", &edit_description, msg::HELP_EDIT_DESCRIPTION),
             Opt::flag('f', "force", &force, msg::HELP_FORCE),
+            filter_opt("merged", msg::HELP_MERGED, 2),
+            filter_opt("no-merged", msg::HELP_NO_MERGED, 3),
+            Opt::callback(None, "column", Some("style"), msg::HELP_COLUMN, |v, unset| {
+                *column.borrow_mut() = Some(if unset {
+                    "never".to_owned()
+                } else {
+                    v.unwrap_or("always").to_owned()
+                });
+                Ok(())
+            })
+            .optional(None),
+            Opt::callback(None, "sort", Some("key"), msg::HELP_SORT, |v, unset| {
+                if unset {
+                    sorts.borrow_mut().clear();
+                    no_sort.set(true);
+                } else {
+                    sorts.borrow_mut().push(v.unwrap_or_default().to_owned());
+                }
+                Ok(())
+            }),
+            Opt::callback(None, "points-at", Some("object"), msg::HELP_POINTS_AT, |v, unset| {
+                let v = (!unset).then(|| v.unwrap_or("HEAD").to_owned());
+                specs.borrow_mut().push((4, v));
+                Ok(())
+            }),
+            Opt::flag('i', "ignore-case", &ignore_case, msg::HELP_IGNORE_CASE),
+            Opt::string(None, "format", &format, "format", msg::HELP_FORMAT),
     ]);
     let mut parser = Parser::new(msg::USAGE, opts);
     let args = parser.parse(argv)?.args;
+    let abbrev_given = abbrev.borrow().is_some();
     let abbrev_len = match abbrev.borrow().as_deref() {
         None | Some("") => 7,
         Some(v) => match v.parse::<usize>() {
@@ -235,6 +292,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(Target::Symbolic(t)) => t.strip_prefix("refs/heads/").map(str::to_owned),
         _ => None,
     };
+    let specs = specs.borrow().clone();
+    // An unknown `--merged` commit is fatal here (not a usage error).
+    for (which, spec) in &specs {
+        if let (2 | 3, Some(name)) = (which, spec) {
+            if revs.resolve(name).is_none() {
+                return Err(Die::Fatal(crate::messages::tag::malformed_object_name(name)));
+            }
+        }
+    }
+    let filters = crate::commands::tag::resolve_filters(&specs, &objects, &revs)?;
+    let filtering = !specs.is_empty();
     let c = Ctx {
         setup: &setup,
         config: &config,
@@ -247,6 +315,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         auto,
     };
 
+    let modes = [
+        delete.get() > 0,
+        rename.get() > 0,
+        copy.get() > 0,
+        list.get(),
+        show_current.get(),
+        edit_description.get(),
+        set_upstream.borrow().is_some(),
+        unset_upstream.get(),
+    ];
+    if modes.iter().filter(|m| **m).count() > 1 {
+        return Err(parser.usage_error().into());
+    }
+    if filtering && (delete.get() > 0 || rename.get() > 0 || copy.get() > 0) {
+        return Err(parser.usage_error().into());
+    }
     if delete.get() > 0 {
         if args.is_empty() {
             return Err(Die::Fatal(msg::BRANCH_NAME_REQUIRED.to_owned()));
@@ -263,33 +347,87 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         return Ok(0);
     }
+    // `@{-<n>}` and `<branch>@{upstream}` name the branch they stand for.
+    let interpreted = |args: &[String]| -> Result<Vec<String>, Die> {
+        args.iter().map(|a| interpret_name(&c, a, false)).collect()
+    };
     if rename.get() > 0 || copy.get() > 0 {
         let is_copy = rename.get() == 0;
         let force = force.get() || if is_copy { copy.get() > 1 } else { rename.get() > 1 };
-        return rename_or_copy(&c, &args, is_copy, force);
+        return rename_or_copy(&c, &interpreted(&args)?, is_copy, force);
+    }
+    if edit_description.get() {
+        return edit_branch_description(ctx, &c, &interpreted(&args)?);
     }
     if let Some(up) = set_upstream.borrow().clone() {
-        return set_upstream_to(&c, &up, &args);
+        return set_upstream_to(&c, &up, &interpreted(&args)?);
     }
     if unset_upstream.get() {
-        return unset_upstream_of(&c, &args);
+        return unset_upstream_of(&c, &interpreted(&args)?);
     }
-    if !list.get() && !remotes.get() && !all.get() && verbose.get() == 0 && !args.is_empty() {
-        return create(&c, &args, &parser, track.get(), force.get());
+    let listing = list.get()
+        || filtering
+        || format.borrow().is_some()
+        || !sorts.borrow().is_empty();
+    if !listing && !args.is_empty() {
+        if remotes.get() || all.get() {
+            return Err(Die::Fatal(msg::ALL_REMOTES_NO_NAME.to_owned()));
+        }
+        let mut args = args.clone();
+        args[0] = interpret_name(&c, &args[0], false)?;
+        return create(&c, &args, &parser, track.get(), force.get(), create_reflog.get());
     }
-    let abbrev_len = if no_abbrev { 0 } else { abbrev_len };
+    // Without `--abbrev`, `core.abbrev=no` shows full ids.
+    let config_full = !abbrev_given
+        && config
+            .get("core.abbrev")
+            .and_then(|e| e.value.as_ref())
+            .is_some_and(|v| matches!(v.to_string().to_ascii_lowercase().as_str(), "no" | "false" | "off"));
+    let abbrev_len = if no_abbrev || config_full { 0 } else { abbrev_len };
     crate::pager::setup_for(ctx, &config, "branch", true)?;
     let colors = if crate::color::want(&config, Some("color.branch"), color.get())? {
         Some(Colors::from_config(&config)?)
     } else {
         None
     };
+    // `--sort`, else `branch.sort`; `--no-sort` drops both.
+    let sort_specs: Vec<String> = if no_sort.get() || !sorts.borrow().is_empty() {
+        sorts.borrow().clone()
+    } else {
+        config
+            .get_all("branch.sort")
+            .filter_map(|e| e.value.as_ref().map(|v| v.to_string()))
+            .collect()
+    };
+    let mut col_mode = crate::column::Mode::from_config(&config, "branch")?;
+    if let Some(spec) = column.borrow().as_deref() {
+        col_mode
+            .apply(spec)
+            .map_err(|t| Die::Error(crate::messages::column_unsupported(&t), 129))?;
+        if col_mode.active() && verbose.get() > 0 {
+            return Err(Die::Fatal(crate::messages::tag::incompatible(
+                "--column",
+                "--verbose",
+            )));
+        }
+    }
+    // `-v` lists one branch per line whatever the configuration says.
+    let columns = (verbose.get() == 0 && col_mode.active()).then_some(col_mode);
     let list = List {
+        columns,
         remotes: remotes.get(),
         all: all.get(),
         verbose: verbose.get(),
         abbrev: abbrev_len,
         colors,
+        filters,
+        keys: crate::ref_filter::parse_sort_keys(&sort_specs)?,
+        format: match format.borrow().as_deref() {
+            Some(f) => Some(crate::ref_filter::RefFormat::parse(f)?),
+            None => None,
+        },
+        omit_empty: omit_empty.get(),
+        icase: ignore_case.get(),
     };
     list_branches(&c, &args, &head, &list)
 }
@@ -326,7 +464,14 @@ fn interpret_name(c: &Ctx<'_>, arg: &str, remote: bool) -> Result<String, Die> {
     })
 }
 
-fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>, track: Track, force: bool) -> CmdResult {
+fn create(
+    c: &Ctx<'_>,
+    args: &[String],
+    parser: &Parser<'_>,
+    track: Track,
+    force: bool,
+    create_reflog: bool,
+) -> CmdResult {
     if args.len() > 2 {
         return Err(parser.usage_error().into());
     }
@@ -345,26 +490,111 @@ fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>, track: Track, force
             return Err(Die::Fatal(msg::cannot_force_update_checked_out(name, &path)));
         }
     }
-    let start = match args.get(1) {
-        Some(s) => s.clone(),
-        None => tracking::default_start(&c.store),
+    // Without a start point the current branch is looked up by its full
+    // name (a tag of the same name must not make it ambiguous).
+    let (start, lookup) = match args.get(1) {
+        Some(s) => (s.clone(), s.clone()),
+        None => (
+            tracking::default_start(&c.store),
+            tracking::default_start_ref(&c.store),
+        ),
     };
     let start = start.as_str();
     let oid = c
         .revs
-        .resolve(start)
+        .resolve(&lookup)
+        .or_else(|| merge_base_start(c, &lookup))
         .and_then(|id| c.objects.peel(&id).or(Some(id)));
     let repo = c.tracking_repo();
-    let plan = tracking::plan(&repo, name, start, oid.is_some(), track, &c.auto)?;
+    let plan = tracking::plan(&repo, name, &lookup, oid.is_some(), track, &c.auto)?;
     let oid = oid.ok_or_else(|| Die::Fatal(msg::not_valid_object_name(start)))?;
     let mut hooks = c.hooks();
     let update = match existing {
         Some(old) => RefUpdate::update(refname.as_str(), oid, Some(old)).message(msg::reset_to(start)),
         None => RefUpdate::create(refname.as_str(), oid).message(msg::created_from(start)),
     };
-    c.run_tx(update.create_reflog(true), &mut hooks)?;
+    c.run_tx(update.create_reflog(create_reflog), &mut hooks)?;
     if let Some(plan) = plan {
         plan.apply(&repo, name, &c.auto, c.quiet)?;
+    }
+    Ok(0)
+}
+
+/// `<a>...<b>` as a start point: the single merge base of the two (a
+/// missing side is `HEAD`).
+fn merge_base_start(c: &Ctx<'_>, start: &str) -> Option<ObjectId> {
+    let (a, b) = start.split_once("...")?;
+    let side = |s: &str| {
+        let s = if s.is_empty() { "HEAD" } else { s };
+        c.revs.resolve(s).and_then(|id| c.objects.peel(&id).or(Some(id)))
+    };
+    let (a, b) = (side(a)?, side(b)?);
+    let bases = c.revs.with_resolver(|r| r.merge_bases(&a, &b)).ok()?;
+    match bases.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    }
+}
+
+/// `--edit-description [<branch>]`: edits `branch.<name>.description` in
+/// the editor (an empty result removes it).
+fn edit_branch_description(ctx: &Context, c: &Ctx<'_>, args: &[String]) -> CmdResult {
+    let name = match args {
+        [] => match &c.current {
+            Some(b) if c.head_attached() => b.clone(),
+            _ => return Err(Die::Fatal(msg::DESCRIPTION_DETACHED.to_owned())),
+        },
+        [one] => one.clone(),
+        _ => return Err(Die::Fatal(msg::DESCRIPTION_MANY.to_owned())),
+    };
+    if c.branch_oid(&name).is_none() {
+        if c.current.as_deref() == Some(name.as_str()) {
+            return Err(Die::Error(msg::no_commit_on_branch(&name), 1));
+        }
+        return Err(Die::Error(msg::no_branch_named(&name), 1));
+    }
+    let key = format!("branch.{name}.description");
+    let comment = String::from_utf8_lossy(&crate::comment::comment(c.config)?.or_hash()).into_owned();
+    let mut text = match c.config.get(&key).and_then(|e| e.value.clone()) {
+        Some(v) => v.to_vec(),
+        None => b"\n".to_vec(),
+    };
+    if !text.ends_with(b"\n") {
+        text.push(b'\n');
+    }
+    for line in msg::description_template(&name, &comment).lines() {
+        text.extend_from_slice(comment.as_bytes());
+        if !line.is_empty() {
+            text.push(b' ');
+        }
+        text.extend_from_slice(line.as_bytes());
+        text.push(b'\n');
+    }
+    let path = c.setup.git_dir.join("EDIT_DESCRIPTION");
+    std::fs::write(&path, &text).map_err(|e| Die::Fatal(e.to_string()))?;
+    let env = rgit_config::SystemEnv::default();
+    let editor = rgit_ident::editor::editor(c.config, &env).map_err(|p| {
+        p.print();
+        Die::Exit(rgit_options::EXIT_FATAL)
+    })?;
+    let opts = rgit_ident::editor::LaunchOptions {
+        hint: c
+            .advisor
+            .enabled(Advice::WaitingForEditor)
+            .map_err(Die::Fatal)?,
+        env: ctx.child_env(),
+        cwd: None,
+    };
+    if let Err(e) = rgit_ident::editor::launch(editor.as_deref(), &path, &opts) {
+        e.print();
+        return Err(Die::Exit(1));
+    }
+    let edited = std::fs::read(&path).map_err(|e| Die::Fatal(e.to_string()))?;
+    let cleaned = rgit_commit::message::stripspace(&edited, Some(comment.as_bytes()));
+    if cleaned.is_empty() {
+        c.config_set(&key, None)?;
+    } else {
+        c.config_set(&key, Some(&String::from_utf8_lossy(&cleaned)))?;
     }
     Ok(0)
 }
@@ -395,6 +625,21 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
         }
         let oid = match c.store.read_raw(&refname) {
             Ok(Some(Target::Object(oid))) => oid,
+            // A symbolic reference goes by itself, whatever it points to.
+            Ok(Some(Target::Symbolic(target))) if !remote => {
+                let mut hooks = c.hooks();
+                let mut tx = Transaction::new(&c.store);
+                let r = tx
+                    .push(RefUpdate::symref_delete(refname.as_str(), hash, None).no_deref(true))
+                    .and_then(|()| tx.commit(&mut hooks));
+                if let Err(e) = r {
+                    eprintln!("error: {e}");
+                    code = 1;
+                } else if !c.quiet {
+                    println!("{}", msg::deleted(name, &target));
+                }
+                continue;
+            }
             _ => {
                 if remote {
                     eprintln!("error: {}", msg::remote_not_found(name));
@@ -406,6 +651,16 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
             }
         };
         if let Some(path) = (!remote).then(|| c.used_elsewhere(name)).flatten() {
+            let bisecting = crate::worktrees::list(c.setup, false).iter().any(|w| {
+                w.path.display().to_string() == path
+                    && std::fs::read_to_string(w.git_dir.join("BISECT_START"))
+                        .is_ok_and(|s| s.trim_end() == name.as_str())
+            });
+            if bisecting {
+                eprintln!("error: {}", msg::cannot_delete_for_bisect(name, &path));
+                code = 1;
+                continue;
+            }
             eprintln!("error: {}", msg::cannot_delete_checked_out(name, &path));
             code = 1;
             continue;
@@ -819,6 +1074,10 @@ enum Line {
         other: Option<String>,
         branch: Option<String>,
         target: Target,
+        /// The full reference name.
+        full: String,
+        /// The object it points to (through a symbolic reference).
+        value: Option<ObjectId>,
     },
 }
 
@@ -856,6 +1115,211 @@ struct List {
     abbrev: usize,
     /// Colours, when colouring.
     colors: Option<Colors>,
+    /// `--[no-]contains`, `--[no-]merged`, `--points-at`.
+    filters: crate::commands::tag::Filters,
+    /// `--sort`, `branch.sort`.
+    keys: Vec<crate::ref_filter::SortKey>,
+    /// `--format`.
+    format: Option<crate::ref_filter::RefFormat>,
+    omit_empty: bool,
+    /// `-i`: patterns and sorting ignore case.
+    icase: bool,
+    /// `--column`, `column.branch`, `column.ui`.
+    columns: Option<crate::column::Mode>,
+}
+
+impl List {
+    /// Writes `lines`, in columns when asked to.
+    fn emit(&self, lines: Vec<String>) -> Result<(), Die> {
+        let mut out = std::io::stdout().lock();
+        let lines = match self.columns {
+            Some(mode) => crate::column::layout(&lines, mode, crate::column::list_width(), 1, ""),
+            None => lines,
+        };
+        for l in lines {
+            writeln!(out, "{l}").map_err(|e| Die::Fatal(e.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+impl List {
+    /// Whether `oid` passes the filters (a commit for the commit filters).
+    fn keeps(&self, c: &Ctx<'_>, oid: &ObjectId) -> bool {
+        let f = &self.filters;
+        if !f.points_at.is_empty() && !f.points_at.contains(oid) {
+            return false;
+        }
+        if !f.by_commit() {
+            return true;
+        }
+        let Some(commit) = c.objects.peel(oid) else {
+            return false;
+        };
+        if c.objects.kind(&commit) != Some(ObjectKind::Commit) {
+            return false;
+        }
+        let anc = |a: &ObjectId, d: &ObjectId| c.revs.is_ancestor(a, d);
+        (f.contains.is_empty() || f.contains.iter().any(|x| anc(x, &commit)))
+            && !f.no_contains.iter().any(|x| anc(x, &commit))
+            && (f.merged.is_empty() || f.merged.iter().any(|m| anc(&commit, m)))
+            && !f.no_merged.iter().any(|m| anc(&commit, m))
+    }
+}
+
+/// "(HEAD detached at/from <name>)": the target of the last checkout in
+/// the `HEAD` reflog, by name when that name still points to the commit
+/// the checkout moved to.
+fn detached_label(c: &Ctx<'_>, head: &ObjectId) -> String {
+    let git_dir = c.setup.absolute_git_dir();
+    for d in ["rebase-merge", "rebase-apply"] {
+        let dir = git_dir.join(d);
+        let Ok(head_name) = std::fs::read_to_string(dir.join("head-name")) else {
+            continue;
+        };
+        let head_name = head_name.trim_end();
+        let what = match head_name.strip_prefix("refs/heads/") {
+            Some(b) => b.to_owned(),
+            None => {
+                let orig = std::fs::read_to_string(dir.join("orig-head")).unwrap_or_default();
+                let orig = ObjectId::from_hex(c.setup.format.object_format, orig.trim().as_bytes());
+                match orig {
+                    Ok(o) => format!("detached HEAD {}", c.abbrev(&o)),
+                    Err(_) => head_name.to_owned(),
+                }
+            }
+        };
+        return msg::rebasing(&what);
+    }
+    if let Ok(start) = std::fs::read_to_string(git_dir.join("BISECT_START")) {
+        return msg::bisect_started(start.trim_end());
+    }
+    let found = c.revs.with_resolver(|r| {
+        let log = r.repo().refs.reflog("HEAD").ok()??;
+        let (e, target) = log.iter().rev().find_map(|e| {
+            let rest = e.message.strip_prefix("checkout: moving from ")?;
+            let pos = rest.rfind(" to ")?;
+            Some((e.new, rest[pos + 4..].to_string()))
+        })?;
+        let by_name = r.dwim_ref(&target).ok().filter(|d| {
+            d.count > 0
+                && d.full_name.starts_with("refs/")
+                && d.oid
+                    .and_then(|o| r.peel_to_commit(&o).ok())
+                    .is_some_and(|commit| commit == e)
+        });
+        let _ = r.take_diagnostics();
+        let name = by_name.map(|d| {
+            d.full_name
+                .strip_prefix("refs/tags/")
+                .or_else(|| d.full_name.strip_prefix("refs/remotes/"))
+                .unwrap_or(&d.full_name)
+                .to_string()
+        });
+        Some((e, name))
+    });
+    match found {
+        Some((e, name)) => {
+            let name = name.unwrap_or_else(|| c.abbrev(&e));
+            if e == *head {
+                msg::detached_at(&name)
+            } else {
+                msg::detached_from(&name)
+            }
+        }
+        None => msg::detached_at(&c.abbrev(head)),
+    }
+}
+
+enum Listing {
+    Lines(Vec<Line>),
+    /// `--format` output is written.
+    Done,
+}
+
+/// `--sort` keys (the detached `HEAD` stays first) and `--format`.
+fn sort_and_format(c: &Ctx<'_>, lines: Vec<Line>, list: &List) -> Result<Listing, Die> {
+    if list.format.as_ref().is_some_and(crate::ref_filter::RefFormat::has_rest) {
+        return Err(Die::Fatal(crate::messages::ref_filter::rejected_atom("rest")));
+    }
+    let mut lines = lines;
+    if list.icase && list.keys.is_empty() {
+        // `-i` sorts the names ignoring case (the detached `HEAD` first).
+        lines.sort_by_key(|l| match l {
+            Line::Detached(_) => (0, String::new()),
+            Line::Ref { full, .. } => (1, full.to_lowercase()),
+        });
+    }
+    if list.keys.is_empty() && list.format.is_none() {
+        return Ok(Listing::Lines(lines));
+    }
+    let mut values = crate::ref_filter::RefValues::new(c.objects, &c.store)
+        .with_repo(crate::ref_filter::RepoParts {
+            setup: c.setup,
+            config: c.config,
+            revs: &c.revs,
+        })
+        .with_color(list.colors.is_some());
+    values.prepare(
+        list.format
+            .iter()
+            .flat_map(|f| f.atoms())
+            .chain(list.keys.iter().map(|k| &k.atom)),
+    )?;
+    let (head, refs): (Vec<Line>, Vec<Line>) =
+        lines.into_iter().partition(|l| matches!(l, Line::Detached(_)));
+    let mut lines = head;
+    if list.keys.is_empty() {
+        lines.extend(refs);
+    } else {
+        let suffixes = if list.keys.iter().any(|k| k.version) {
+            crate::ref_filter::version_suffixes(c.config)
+        } else {
+            Vec::new()
+        };
+        let mut keyed = Vec::with_capacity(refs.len());
+        for l in refs {
+            let Line::Ref { full, value, .. } = &l else {
+                continue;
+            };
+            let oid = value.unwrap_or_else(|| ObjectId::null(c.setup.format.object_format));
+            let mut vals = Vec::with_capacity(list.keys.len());
+            for k in &list.keys {
+                vals.push(values.atom_value(&k.atom, full, oid)?);
+            }
+            keyed.push((vals, l));
+        }
+        lines.extend(crate::ref_filter::sort_items(
+            keyed,
+            &list.keys,
+            list.icase,
+            &suffixes,
+            |l: &Line| match l {
+                Line::Ref { full, .. } => full.as_str(),
+                Line::Detached(_) => "HEAD",
+            },
+        ));
+    }
+    let Some(format) = &list.format else {
+        return Ok(Listing::Lines(lines));
+    };
+    let mut texts = Vec::new();
+    for l in &lines {
+        let (name, oid) = match l {
+            Line::Detached(o) => (detached_label(c, o), *o),
+            Line::Ref { full, value, .. } => (
+                full.clone(),
+                value.unwrap_or_else(|| ObjectId::null(c.setup.format.object_format)),
+            ),
+        };
+        let text = values.render(format, &name, oid)?;
+        if list.omit_empty && text.is_empty() {
+            continue;
+        }
+        texts.push(String::from_utf8_lossy(&text).into_owned());
+    }
+    list.emit(texts)?;
+    Ok(Listing::Done)
 }
 
 fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: &List) -> CmdResult {
@@ -873,8 +1337,11 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
     let local = !remotes || all;
     let remote = remotes || all;
     let mut lines: Vec<Line> = Vec::new();
-    if let (true, Some(Target::Object(oid))) = (local, head) {
-        lines.push(Line::Detached(*oid));
+    // A detached `HEAD` is listed unless patterns select the branches.
+    if let (true, Some(Target::Object(oid)), true) = (local, head, patterns.is_empty()) {
+        if list.keeps(c, oid) {
+            lines.push(Line::Detached(*oid));
+        }
     }
     // Branches checked out in other worktrees (git counts the `HEAD` of
     // a bare main repository too).
@@ -904,11 +1371,24 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
             } else {
                 short.to_owned()
             };
+            let flags = if list.icase {
+                WildmatchFlags::CASEFOLD
+            } else {
+                WildmatchFlags::default()
+            };
             if !patterns.is_empty()
                 && !patterns
                     .iter()
-                    .any(|p| wildmatch(p.as_bytes(), shown.as_bytes(), WildmatchFlags::default()))
+                    .any(|p| wildmatch(p.as_bytes(), shown.as_bytes(), flags))
             {
+                continue;
+            }
+            let value = match &r.target {
+                Target::Object(o) => Some(*o),
+                Target::Symbolic(_) => r.oid,
+            };
+            let filtered = list.filters.by_commit() || !list.filters.points_at.is_empty();
+            if filtered && !value.is_some_and(|v| list.keeps(c, &v)) {
                 continue;
             }
             let is_local = prefix == "refs/heads/";
@@ -922,10 +1402,17 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
                 branch: is_local.then(|| short.to_owned()),
                 shown,
                 target: r.target.clone(),
+                full: r.name.clone(),
+                value,
             });
         }
     }
 
+    let lines = sort_and_format(c, lines, list)?;
+    let lines = match lines {
+        Listing::Lines(l) => l,
+        Listing::Done => return Ok(0),
+    };
     let full_hex = |o: &ObjectId| {
         if abbrev == 0 {
             o.to_hex()
@@ -937,7 +1424,7 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
         lines
             .iter()
             .map(|l| match l {
-                Line::Detached(o) => msg::detached_at(&c.abbrev(o)).chars().count(),
+                Line::Detached(o) => detached_label(c, o).chars().count(),
                 Line::Ref { shown, .. } => shown.chars().count(),
             })
             .max()
@@ -945,11 +1432,11 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
     } else {
         0
     };
-    let mut out = std::io::stdout().lock();
+    let mut texts = Vec::new();
     for line in &lines {
         let text = match line {
             Line::Detached(oid) => {
-                let label = msg::detached_at(&c.abbrev(oid));
+                let label = detached_label(c, oid);
                 let label = format!("{label:<width$}");
                 let name = paint(|cs| &cs.current, &label);
                 if verbose > 0 {
@@ -965,7 +1452,14 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
                 other,
                 branch,
                 target,
+                value,
+                ..
             } => {
+                // `-v` shows the commit a local symbolic reference points to.
+                let target = match value {
+                    Some(v) if verbose > 0 && !*remote => &Target::Object(*v),
+                    _ => target,
+                };
                 let marker = if *current {
                     '*'
                 } else if other.is_some() {
@@ -1012,7 +1506,8 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
                 }
             }
         };
-        writeln!(out, "{text}").map_err(|e| Die::Fatal(e.to_string()))?;
+        texts.push(text);
     }
+    list.emit(texts)?;
     Ok(0)
 }

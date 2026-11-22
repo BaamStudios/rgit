@@ -138,3 +138,7 @@ pub fn could_not_parse_commit(oid: &str) -> String {
 }
 
 pub const REACHABILITY_FAILED: &str = "failed to check reachability";
+
+pub fn cannot_parse_describe(option: &str) -> String {
+    format!("cannot fully parse describe:{option}")
+}

@@ -155,6 +155,3 @@ pub const REFLOG_TAG: &str = "other tag object";
 
 /// rgit wording: signing and verifying signatures come with rgit #51.
 pub const SIGNING_NOT_SUPPORTED: &str = "rgit: signed tags are not supported yet (rgit #51)";
-
-/// rgit wording: `--column` is not implemented yet.
-pub const COLUMN_NOT_SUPPORTED: &str = "rgit: tag --column is not supported yet";
