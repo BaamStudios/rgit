@@ -334,17 +334,23 @@ impl Session {
                         consecutive.known_common(*id);
                     }
                 }
-                if let Some(h) = repo.resolve("HEAD") {
-                    consecutive.add_tip(h);
-                }
-                for (_, id) in repo.list_refs("") {
-                    consecutive.add_tip(id);
-                }
-                // The refs of alternates are tips too: their history is
-                // here.
-                for id in repo.alternate_tips() {
-                    if repo.has_object(&id) {
+                if let Some(tips) = &opts.tips {
+                    for id in tips {
+                        consecutive.add_tip(*id);
+                    }
+                } else {
+                    if let Some(h) = repo.resolve("HEAD") {
+                        consecutive.add_tip(h);
+                    }
+                    for (_, id) in repo.list_refs("") {
                         consecutive.add_tip(id);
+                    }
+                    // The refs of alternates are tips too: their history
+                    // is here.
+                    for id in repo.alternate_tips() {
+                        if repo.has_object(&id) {
+                            consecutive.add_tip(id);
+                        }
                     }
                 }
                 &mut consecutive
@@ -487,6 +493,9 @@ pub struct PackOptions {
     /// Store packs with fewer objects than this as loose objects
     /// (`fetch.unpackLimit`); `None` always keeps the pack.
     pub unpack_limit: Option<u32>,
+    /// `--negotiation-restrict`: the only tips the negotiation walks from
+    /// (`None`: every ref, `HEAD` and the alternates' refs).
+    pub tips: Option<Vec<ObjectId>>,
     /// `deepen <depth>` (`--depth`, `--deepen`, `--unshallow`).
     pub deepen: Option<u32>,
     /// `deepen-relative` (`--deepen`).

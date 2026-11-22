@@ -338,7 +338,7 @@ fn push_status(
     } else {
         remote.push.clone()
     };
-    let (list, errors) = matching::match_refs(&lctx, &advertised, &specs, None, false);
+    let (list, errors) = matching::match_refs(&lctx, &advertised, &specs, None, false, false);
     for e in errors {
         eprintln!("error: {}", e.error);
     }
