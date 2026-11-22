@@ -235,6 +235,11 @@ pub fn not_supported(what: &str) -> String {
     format!("rgit: rebase: {what} is not supported yet")
 }
 
+/// `what` (an option) on a rebase of the apply back end (#136).
+pub fn with_apply_backend(what: &str) -> String {
+    format!("{what} on a rebase with the apply back end (#136)")
+}
+
 // The status banner.
 
 pub fn in_progress_onto(onto: &str) -> String {

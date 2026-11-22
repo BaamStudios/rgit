@@ -150,6 +150,14 @@ fn state_dir(repo: &Repo) -> PathBuf {
     git_dir(repo).join("rebase-merge")
 }
 
+/// The state directory of a rebase with the apply back end (started by
+/// git), if one is in progress. `git am` uses the same directory without
+/// the `rebasing` marker.
+fn apply_state_dir(repo: &Repo) -> Option<PathBuf> {
+    let dir = git_dir(repo).join("rebase-apply");
+    dir.join("rebasing").exists().then_some(dir)
+}
+
 /// Whether a rebase with the merge back end is in progress.
 pub fn in_progress(git_dir: &Path) -> bool {
     git_dir.join("rebase-merge").is_dir()
@@ -539,7 +547,17 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         Some(b) => {
             let full = format!("refs/heads/{b}");
             match repo.refs.resolve(&full) {
-                Some(id) => (full, id, Some(b.clone())),
+                Some(id) => {
+                    if let Some(path) =
+                        crate::worktrees::checked_out_elsewhere(&repo.setup, &repo.config, &full)
+                    {
+                        return Err(Die::Fatal(crate::messages::worktree::already_used_by(
+                            b,
+                            &path.display().to_string(),
+                        )));
+                    }
+                    (full, id, Some(b.clone()))
+                }
                 None => {
                     let id = resolve_commit(&mut repo, b)
                         .ok_or_else(|| Die::Fatal(msg::no_such_branch(b)))?;
@@ -659,6 +677,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
                     } else {
                         detach_head(ctx, &repo, orig_head, &what)?;
                     }
+                    crate::hooks::post_checkout(&repo, current, Some(orig_head), true)?;
                 }
                 if !quiet {
                     println!("{}", msg::up_to_date(branch_short.as_deref(), false));
@@ -767,7 +786,12 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
     )?;
     crate::hooks::post_checkout(&repo, Some(orig_head), Some(onto), true)?;
     drop(repo);
-    let mut rb = Rebase { ctx, state, action };
+    let mut rb = Rebase {
+        ctx,
+        state,
+        action,
+        apply: false,
+    };
     rb.run(items)
 }
 
@@ -972,8 +996,7 @@ fn write_state(repo: &Repo, s: &State, items: &[Item]) -> Result<(), Die> {
 }
 
 /// Reads the state of the rebase in progress.
-fn read_state(repo: &Repo) -> Result<State, Die> {
-    let dir = state_dir(repo);
+fn read_state(repo: &Repo, dir: &Path) -> Result<State, Die> {
     let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
     let exists = |name: &str| dir.join(name).exists();
     let oid = |name: &str| read(name).and_then(|s| parse_oid(repo, &s));
@@ -1113,22 +1136,41 @@ struct Rebase<'c> {
     ctx: &'c mut Context,
     state: State,
     action: String,
+    /// The rebase in progress uses the apply back end (`rebase-apply`):
+    /// only `--abort` and `--quit` handle it so far.
+    apply: bool,
 }
 
 impl<'c> Rebase<'c> {
     fn load(ctx: &'c mut Context) -> Result<Rebase<'c>, Die> {
         let repo = Repo::open(ctx, Mode::Required)?;
         repo.work_tree()?;
-        if !state_dir(&repo).is_dir() {
+        let merge_dir = state_dir(&repo);
+        let (dir, apply) = if merge_dir.is_dir() {
+            (merge_dir, false)
+        } else if let Some(dir) = apply_state_dir(&repo) {
+            (dir, true)
+        } else {
             return Err(Die::Fatal(msg::NO_REBASE_IN_PROGRESS.to_owned()));
-        }
-        let state = read_state(&repo)?;
+        };
+        let state = read_state(&repo, &dir)?;
         drop(repo);
         Ok(Rebase {
             ctx,
             state,
             action: reflog_action(),
+            apply,
         })
+    }
+
+    /// Refuses to go on with a rebase of the apply back end (#136).
+    fn refuse_apply(&self, what: &str) -> Result<(), Die> {
+        if self.apply {
+            return Err(Die::Fatal(msg::not_supported(&msg::with_apply_backend(
+                what,
+            ))));
+        }
+        Ok(())
     }
 
     fn repo(&self) -> Result<Repo, Die> {
@@ -1136,7 +1178,12 @@ impl<'c> Rebase<'c> {
     }
 
     fn dir(&self) -> Result<PathBuf, Die> {
-        Ok(state_dir(&self.repo()?))
+        let repo = self.repo()?;
+        Ok(if self.apply {
+            git_dir(&repo).join("rebase-apply")
+        } else {
+            state_dir(&repo)
+        })
     }
 
     fn git_path(&self, name: &str) -> Result<PathBuf, Die> {
@@ -1617,6 +1664,7 @@ fn reset_protecting_untracked(
 /// `git rebase --continue`.
 pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
     let mut rb = Rebase::load(ctx)?;
+    rb.refuse_apply("--continue")?;
     let mut repo = rb.repo()?;
     let (index, mtime) = repo.read_index()?;
     let mut unmerged: Vec<Vec<u8>> = Vec::new();
@@ -1693,6 +1741,7 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
 /// `git rebase --skip`.
 pub fn skip(ctx: &mut Context) -> CmdResult {
     let mut rb = Rebase::load(ctx)?;
+    rb.refuse_apply("--skip")?;
     let mut repo = rb.repo()?;
     if let Some(h) = sequencer::head_commit(&mut repo) {
         let tree = sequencer::tree_of(&repo, &h).map_err(fail_die)?;
@@ -1707,6 +1756,7 @@ pub fn skip(ctx: &mut Context) -> CmdResult {
 /// `git rebase --abort`.
 pub fn abort(ctx: &mut Context) -> CmdResult {
     let rb = Rebase::load(ctx)?;
+    let dir = rb.dir()?;
     let mut repo = rb.repo()?;
     let head = sequencer::head_commit(&mut repo);
     let head_tree = match head {
@@ -1731,7 +1781,7 @@ pub fn abort(ctx: &mut Context) -> CmdResult {
     }
     rb.clear_stop()?;
     let _ = std::fs::remove_file(git_dir(&repo).join("AUTO_MERGE"));
-    let _ = std::fs::remove_dir_all(state_dir(&repo));
+    let _ = std::fs::remove_dir_all(dir);
     drop(repo);
     if let Some(s) = rb.state.autostash.clone() {
         apply_autostash(rb.ctx, &s)?;
