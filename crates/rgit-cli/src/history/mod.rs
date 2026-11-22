@@ -1282,6 +1282,14 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
     if cmd != Command::Log {
         return Ok(None);
     }
+    if let Some((regex, _)) = &opts.diff.pickaxe {
+        // Limiting the commits by their diff is not there yet.
+        return Err(Die::Fatal(msg::not_supported(if *regex {
+            "-G"
+        } else {
+            "-S"
+        })));
+    }
     let mut d = opts.diff.clone();
     // `-c` and `--cc` imply `-p`.
     let combined = matches!(opts.merges, Some(MergeDiff::Combined | MergeDiff::Dense));
