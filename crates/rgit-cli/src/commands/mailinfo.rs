@@ -95,6 +95,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(parser.usage_error().into());
     }
     drop(parser);
+    // Repository setup changes to the top of the work tree; the file
+    // names are relative to where the command started.
+    let start = std::env::current_dir().map_err(|e| Die::Fatal(crate::global::strerror(&e)))?;
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| start.join(a).to_string_lossy().into_owned())
+        .collect();
+    let shown = argv[argv.len() - 2..].to_vec();
     let config = crate::comment::gentle_config(ctx)?;
     let mut opts = Options::default();
     config_defaults(&config, &mut opts)?;
@@ -120,16 +128,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .lock()
         .read_to_end(&mut input)
         .map_err(|e| Die::Fatal(crate::global::strerror(&e)))?;
-    let create = |path: &str| {
+    let create = |path: &str, shown: &str| {
         std::fs::File::create(path).map_err(|e| {
-            eprintln!("{}", msg::no_such_file(path, &crate::global::strerror(&e)));
+            eprintln!("{}", msg::no_such_file(shown, &crate::global::strerror(&e)));
             Die::Exit(128)
         })
     };
-    let mut msg_file = create(&args[0])?;
-    let mut patch_file = create(&args[1])?;
+    let mut msg_file = create(&args[0], &shown[0])?;
+    let mut patch_file = create(&args[1], &shown[1])?;
     if input.is_empty() {
-        eprintln!("error: {}", msg::empty_patch(&args[1]));
+        eprintln!("error: {}", msg::empty_patch(&shown[1]));
         return Ok(1);
     }
     let info = rgit_mailinfo::info(&input, &opts);

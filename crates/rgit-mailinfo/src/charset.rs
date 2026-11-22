@@ -68,7 +68,10 @@ fn from_unicode(text: &str, to: &Kind) -> Option<Vec<u8>> {
     match to {
         Kind::Utf8 => Some(text.as_bytes().to_vec()),
         Kind::Ascii => text.is_ascii().then(|| text.as_bytes().to_vec()),
-        Kind::Latin1 => text.chars().map(|c| u8::try_from(u32::from(c)).ok()).collect(),
+        Kind::Latin1 => text
+            .chars()
+            .map(|c| u8::try_from(u32::from(c)).ok())
+            .collect(),
         Kind::Other(e) => {
             let (bytes, _, unmappable) = e.encode(text);
             (!unmappable).then(|| bytes.into_owned())
@@ -100,7 +103,10 @@ mod tests {
             convert(b"caf\xe9", "ISO8859-1", "UTF-8").unwrap(),
             "café".as_bytes()
         );
-        assert_eq!(convert(b"\x80", "latin1", "utf-8").unwrap(), "\u{80}".as_bytes());
+        assert_eq!(
+            convert(b"\x80", "latin1", "utf-8").unwrap(),
+            "\u{80}".as_bytes()
+        );
     }
 
     #[test]

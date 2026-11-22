@@ -3,6 +3,7 @@
 //! (see CLEANROOM.md, "User-visible messages").
 
 pub mod add;
+pub mod am;
 pub mod apply;
 pub mod branch;
 pub mod cat_file;

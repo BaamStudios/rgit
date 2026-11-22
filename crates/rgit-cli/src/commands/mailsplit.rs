@@ -60,7 +60,13 @@ impl Writer {
             format!("{:0width$}", self.next, width = self.prec)
         };
         let path = self.dir.join(&name);
-        std::fs::write(&path, mail).map_err(|e| {
+        // Existing files are not overwritten.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(mail))
+            .map_err(|e| {
             Die::Fatal(msg::unable_to_create(
                 &path.to_string_lossy(),
                 &crate::global::strerror(&e),

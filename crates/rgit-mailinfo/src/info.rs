@@ -338,7 +338,9 @@ fn is_format_patch_from(line: &[u8]) -> bool {
         return false;
     };
     rest.len() == 40 + 25
-        && rest[..40].iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+        && rest[..40]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
         && &rest[40..] == b" Mon Sep 17 00:00:00 2001"
 }
 
@@ -587,8 +589,8 @@ impl<'o> State<'o> {
                         .map(|c| String::from_utf8_lossy(&c).into_owned());
                     self.part.flowed = attribute(value, b"format")
                         .is_some_and(|f| f.eq_ignore_ascii_case(b"flowed"));
-                    self.part.delsp = attribute(value, b"delsp")
-                        .is_some_and(|f| f.eq_ignore_ascii_case(b"yes"));
+                    self.part.delsp =
+                        attribute(value, b"delsp").is_some_and(|f| f.eq_ignore_ascii_case(b"yes"));
                     if let Some(b) = attribute(value, b"boundary") {
                         let mut full = b"--".to_vec();
                         full.extend_from_slice(&b);
@@ -647,10 +649,10 @@ pub fn info(input: &[u8], opts: &Options) -> Info {
     let mut message_id: Option<Vec<u8>> = None;
     let mut decode_failed = false;
     for (name, value) in &headers {
-        let slot = match name.as_slice() {
-            b"from" => &mut fields.from,
-            b"subject" => &mut fields.subject,
-            b"date" => &mut fields.date,
+        let (slot, shown) = match name.as_slice() {
+            b"from" => (&mut fields.from, "From"),
+            b"subject" => (&mut fields.subject, "Subject"),
+            b"date" => (&mut fields.date, "Date"),
             b"message-id" => {
                 message_id = Some(value.clone());
                 continue;
@@ -658,6 +660,11 @@ pub fn info(input: &[u8], opts: &Options) -> Info {
             _ => continue,
         };
         match decode_value(value, target.as_deref()) {
+            Ok(v) if v.contains(&0) => {
+                st.out.errors.push(messages::nul_in_header(shown));
+                *slot = Some(value.clone());
+                decode_failed = true;
+            }
             Ok(v) => *slot = Some(v),
             Err(e) => {
                 if let DecodeError::Charset(cs) = e {
@@ -855,7 +862,13 @@ mod tests {
             use_scissors: true,
             ..Options::default()
         };
-        for yes in ["-- >8 --", "- - >8 - -", "-- %< --", "-- >8 -- cut here", ">8 -----"] {
+        for yes in [
+            "-- >8 --",
+            "- - >8 - -",
+            "-- %< --",
+            "-- >8 -- cut here",
+            ">8 -----",
+        ] {
             assert!(is_scissors(yes.as_bytes()), "{yes}");
         }
         for no in ["-->8--", "-- 8<", ">8", "----", "---- >8", "------>8"] {

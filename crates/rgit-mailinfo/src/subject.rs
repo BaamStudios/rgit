@@ -80,7 +80,10 @@ mod tests {
         assert_eq!(c("[PATCH] [other] message", true), "[other] message");
         assert_eq!(c("[PATCH] [PATCH] message", true), "message");
         assert_eq!(c("[other] [PATCH] message", true), "[other] message");
-        assert_eq!(c("[PATCH] [other] [PATCH] message", true), "[other] message");
+        assert_eq!(
+            c("[PATCH] [other] [PATCH] message", true),
+            "[other] message"
+        );
         assert_eq!(c("[a]b c", true), "[a]b c");
         assert_eq!(c("re: [a] re: [b] c", true), "[a] [b] c");
         assert_eq!(c("[patch] x", true), "[patch] x");

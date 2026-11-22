@@ -204,7 +204,10 @@ mod tests {
     fn bare_and_errors() {
         assert_eq!(split(b"", &Options::default()), Err(Error::Empty));
         assert_eq!(split(b" \n\n", &Options::default()), Err(Error::Empty));
-        assert_eq!(split(b"Subject: x\n", &Options::default()), Err(Error::Corrupt));
+        assert_eq!(
+            split(b"Subject: x\n", &Options::default()),
+            Err(Error::Corrupt)
+        );
         let o = Options {
             allow_bare: true,
             ..Options::default()

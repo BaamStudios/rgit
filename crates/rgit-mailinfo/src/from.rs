@@ -137,10 +137,7 @@ mod tests {
 
     fn p(s: &str) -> (String, String) {
         let (n, e) = parse(s.as_bytes());
-        (
-            String::from_utf8(n).unwrap(),
-            String::from_utf8(e).unwrap(),
-        )
+        (String::from_utf8(n).unwrap(), String::from_utf8(e).unwrap())
     }
 
     fn ok(input: &str, name: &str, email: &str) {
@@ -174,7 +171,15 @@ mod tests {
         ok("A (<c@d>)", "A ( )", "c@d");
         ok("(A\\) B) <c@d>", "A) B", "c@d");
         ok("A \\\"B <c@d>", "A \\B", "c@d");
-        ok("bob \"unterminated string smith <bob@x>", "bob unterminated string smith", "bob@x");
-        ok("bob (unterminated comment smith <bob@x>", "bob (unterminated comment smith", "bob@x");
+        ok(
+            "bob \"unterminated string smith <bob@x>",
+            "bob unterminated string smith",
+            "bob@x",
+        );
+        ok(
+            "bob (unterminated comment smith <bob@x>",
+            "bob (unterminated comment smith",
+            "bob@x",
+        );
     }
 }
