@@ -396,6 +396,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         _ => Format::Long,
     };
     let show_branch = match branch.get() {
+        -1 if matches!(format, Format::Porcelain(_)) => false,
         -1 => config_bool(&repo, "status.branch")?.unwrap_or(false),
         b => b != 0,
     };
