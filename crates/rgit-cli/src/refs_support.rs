@@ -68,10 +68,17 @@ pub fn ref_store(setup: &Setup, config: &ConfigSet) -> FilesStore {
     .with_worktree(setup.git_dir.clone())
 }
 
-/// Loose objects plus packs. Alternates are not read yet.
-pub struct Objects {
+/// The packs and loose objects of one object directory.
+struct Layer {
     packs: PackSet,
     loose: LooseStore,
+}
+
+/// Loose objects plus packs of the repository, then those of its
+/// alternates (`objects/info/alternates`, recursively, and
+/// `$GIT_ALTERNATE_OBJECT_DIRECTORIES`).
+pub struct Objects {
+    layers: Vec<Layer>,
     hash: HashKind,
 }
 
@@ -84,11 +91,13 @@ impl Objects {
     }
 
     fn at(dir: &Path, hash: HashKind) -> Objects {
-        Objects {
-            packs: PackSet::open(dir.join("pack"), hash),
-            loose: LooseStore::new(dir, hash, LooseOptions::default()),
-            hash,
-        }
+        let layer = |d: &Path| Layer {
+            packs: PackSet::open(d.join("pack"), hash),
+            loose: LooseStore::new(d, hash, LooseOptions::default()),
+        };
+        let mut layers = vec![layer(dir)];
+        layers.extend(rgit_odb::resolve_alternates(dir).iter().map(|d| layer(d)));
+        Objects { layers, hash }
     }
 
     /// The hash algorithm.
@@ -98,29 +107,37 @@ impl Objects {
 
     /// Whether the object exists.
     pub fn contains(&self, id: &ObjectId) -> bool {
-        self.packs.contains(id) || self.loose.contains(id)
+        self.layers
+            .iter()
+            .any(|l| l.packs.contains(id) || l.loose.contains(id))
     }
 
     /// Type and content of an object.
     pub fn read(&self, id: &ObjectId) -> Option<(ObjectKind, Vec<u8>)> {
         let mut cache = DeltaBaseCache::new(0);
-        if let Ok(Some(o)) = self.packs.read(id, &mut cache, &mut |_| {}) {
-            let kind = match o.kind {
-                rgit_pack::ObjectKind::Commit => ObjectKind::Commit,
-                rgit_pack::ObjectKind::Tree => ObjectKind::Tree,
-                rgit_pack::ObjectKind::Blob => ObjectKind::Blob,
-                rgit_pack::ObjectKind::Tag => ObjectKind::Tag,
-            };
-            return Some((kind, o.data));
+        for l in &self.layers {
+            if let Ok(Some(o)) = l.packs.read(id, &mut cache, &mut |_| {}) {
+                let kind = match o.kind {
+                    rgit_pack::ObjectKind::Commit => ObjectKind::Commit,
+                    rgit_pack::ObjectKind::Tree => ObjectKind::Tree,
+                    rgit_pack::ObjectKind::Blob => ObjectKind::Blob,
+                    rgit_pack::ObjectKind::Tag => ObjectKind::Tag,
+                };
+                return Some((kind, o.data));
+            }
+            if let Ok(Some(raw)) = l.loose.read(id) {
+                return Some((raw.kind, raw.data));
+            }
         }
-        let raw = self.loose.read(id).ok()??;
-        Some((raw.kind, raw.data))
+        None
     }
 
     /// The type of an object.
     pub fn kind(&self, id: &ObjectId) -> Option<ObjectKind> {
-        if let Ok(Some(h)) = self.loose.header(id) {
-            return Some(h.kind);
+        for l in &self.layers {
+            if let Ok(Some(h)) = l.loose.header(id) {
+                return Some(h.kind);
+            }
         }
         self.read(id).map(|(k, _)| k)
     }
@@ -143,8 +160,11 @@ impl Objects {
     }
 
     /// The pack holding `id` and the offset of its entry.
-    fn locate_packed(&self, id: &ObjectId) -> Option<(std::sync::Arc<rgit_pack::Pack>, u64)> {
-        self.packs.packs().into_iter().find_map(|p| {
+    fn locate_packed(
+        layer: &Layer,
+        id: &ObjectId,
+    ) -> Option<(std::sync::Arc<rgit_pack::Pack>, u64)> {
+        layer.packs.packs().into_iter().find_map(|p| {
             let pos = p.index().lookup(id)?;
             let off = p.index().offset_at(pos).ok()?;
             Some((p, off))
@@ -153,46 +173,64 @@ impl Objects {
 
     /// Bytes the stored copy of `id` takes on disk (loose before packed).
     pub fn disk_size(&self, id: &ObjectId) -> u64 {
-        if self.loose.contains(id) {
-            return std::fs::metadata(self.loose.path_of(id)).map_or(0, |m| m.len());
+        for l in &self.layers {
+            if l.loose.contains(id) {
+                return std::fs::metadata(l.loose.path_of(id)).map_or(0, |m| m.len());
+            }
+            if let Some((p, off)) = Objects::locate_packed(l, id) {
+                return p.entry_end(off).map_or(0, |e| e - off);
+            }
         }
-        match self.locate_packed(id) {
-            Some((p, off)) => p.entry_end(off).map_or(0, |e| e - off),
-            None => 0,
-        }
+        0
     }
 
     /// The delta base of the stored copy of `id` (the null id when it is
     /// not stored as a delta).
     pub fn delta_base(&self, id: &ObjectId) -> ObjectId {
-        if self.loose.contains(id) {
-            return self.hash.null();
+        for l in &self.layers {
+            if l.loose.contains(id) {
+                break;
+            }
+            if let Some((p, off)) = Objects::locate_packed(l, id) {
+                if let Ok(Some(base)) = p.delta_base(off) {
+                    return base;
+                }
+                break;
+            }
         }
-        self.locate_packed(id)
-            .and_then(|(p, off)| p.delta_base(off).ok().flatten())
-            .unwrap_or_else(|| self.hash.null())
+        self.hash.null()
     }
 
     /// Number of objects (for the default abbreviation length).
     pub fn approximate_count(&self) -> usize {
-        let mut n: usize = self
-            .packs
-            .packs()
-            .iter()
-            .map(|p| p.index().len() as usize)
-            .sum();
-        let _ = self.loose.for_each_object(&mut |_| n += 1);
+        let mut n = 0usize;
+        for l in &self.layers {
+            n += l
+                .packs
+                .packs()
+                .iter()
+                .map(|p| p.index().len() as usize)
+                .sum::<usize>();
+            let _ = l.loose.for_each_object(&mut |_| n += 1);
+        }
         n
     }
 
     /// Ids starting with `prefix`, at most `limit`.
     fn prefix_matches(&self, prefix: &Prefix, limit: usize) -> Vec<ObjectId> {
-        let mut found = self.packs.lookup_prefix(prefix, limit);
-        let _ = self.loose.for_each_prefix_match(prefix, &mut |id| {
-            if !found.contains(&id) {
-                found.push(id);
+        let mut found: Vec<ObjectId> = Vec::new();
+        for l in &self.layers {
+            for id in l.packs.lookup_prefix(prefix, limit) {
+                if !found.contains(&id) {
+                    found.push(id);
+                }
             }
-        });
+            let _ = l.loose.for_each_prefix_match(prefix, &mut |id| {
+                if !found.contains(&id) {
+                    found.push(id);
+                }
+            });
+        }
         found
     }
 

@@ -284,3 +284,67 @@ fn clone_over_smart_http_same_as_git() {
     );
     compare(&mut fx, &["clone", &format!("{base}/nope"), "h5"], "h5");
 }
+
+/// `--shared`, `--reference`, `--reference-if-able` and `--dissociate`
+/// (#93), then commands that read objects through the alternates (#354).
+#[test]
+fn clone_with_alternates_same_as_git() {
+    let mut fx = source()
+        .git(["clone", "-q", "--bare", "src", "ref.git"])
+        .git(["-C", "src", "commit", "-q", "--allow-empty", "-m", "two"])
+        .write("notrepo/x", "x\n");
+    if fx.is_skipped() {
+        return;
+    }
+    let url = format!("file://{}/src", fx.work_dir().display());
+    let cases: &[(&[&str], &str)] = &[
+        (&["clone", "-s", "src", "s1"], "s1"),
+        (&["clone", "--shared", "--bare", "src", "s2.git"], "s2.git"),
+        (&["clone", "--reference", "ref.git", "src", "r1"], "r1"),
+        (&["clone", "--reference=ref.git", &url, "r2"], "r2"),
+        (
+            &[
+                "clone",
+                "--reference",
+                "ref.git",
+                "--dissociate",
+                &url,
+                "r3",
+            ],
+            "r3",
+        ),
+        (
+            &["clone", "--reference-if-able", "notrepo", &url, "r4"],
+            "r4",
+        ),
+        (&["clone", "-s", "--no-local", "src", "s3"], "s3"),
+    ];
+    for (args, dir) in cases {
+        compare(&mut fx, args, dir);
+    }
+    for args in [
+        &["clone", "--reference", "notrepo", "src", "x1"][..],
+        &["clone", "--reference", "nope", "src", "x2"][..],
+    ] {
+        let path = server_path(&fx);
+        fx.compare(args)
+            .env("PATH", path)
+            .checks([
+                Check::ExitCode,
+                Check::Stdout,
+                Check::Stderr,
+                Check::Worktree,
+            ])
+            .run();
+    }
+    // Objects that only the alternate has (#354).
+    for (args, dir) in [
+        (&["-C", "s1", "switch", "side"][..], "s1"),
+        (&["-C", "s1", "checkout", "main"][..], "s1"),
+        (&["-C", "r1", "checkout", "-b", "new", "v1"][..], "r1"),
+        (&["-C", "s1", "log", "--oneline"][..], "s1"),
+        (&["-C", "r3", "log", "--oneline", "side"][..], "r3"),
+    ] {
+        fx.compare(args).repo(dir).run();
+    }
+}

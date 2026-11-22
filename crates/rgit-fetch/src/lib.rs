@@ -46,4 +46,6 @@ pub mod update;
 pub use error::{Error, Result};
 pub use fetch::{FetchOptions, FetchResult, fetch};
 pub use repo::LocalRepo;
-pub use session::{ConnectSettings, PackOptions, ReceivedPack, Session, protocol_name};
+pub use session::{
+    ConnectSettings, PackOptions, ReceivedPack, Session, protocol_name, store_pack_stream,
+};

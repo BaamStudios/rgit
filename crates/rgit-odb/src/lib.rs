@@ -51,7 +51,10 @@ mod packed;
 mod store;
 mod zlib;
 
-pub use alternates::{ALTERNATE_OBJECT_DIRECTORIES_ENV, resolve as resolve_alternates};
+pub use alternates::{
+    ALTERNATE_OBJECT_DIRECTORIES_ENV, resolve as resolve_alternates,
+    resolve_reporting as resolve_alternates_reporting,
+};
 pub use db::{
     OBJECT_DIRECTORY_ENV, ObjectDatabase, PrefixMatch, ReadObjectError, objects_dir,
     print_error_to_stderr,

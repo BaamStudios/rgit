@@ -8,8 +8,8 @@
 //! [`rgit_odb::ObjectStore`]; it can move into a library crate once more
 //! commands need it.
 
-use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use rgit_config::{CommandLine, ConfigSet, LoadOptions, SystemEnv, sources};
@@ -21,9 +21,6 @@ use rgit_repo::Setup;
 
 use crate::refs::Refs;
 use crate::{Context, Die};
-
-/// Alternates are followed this many levels deep.
-const MAX_ALTERNATE_DEPTH: usize = 5;
 
 /// Replacements are followed this many times.
 const MAX_REPLACE_DEPTH: usize = 5;
@@ -228,27 +225,10 @@ impl Repo {
             loose: Arc::new(LooseStore::new(&objects, hash, loose_opts.clone())),
             packs: main_packs,
         });
-        let mut seen = BTreeSet::new();
-        seen.insert(canonical(&objects));
-        let mut alts = Vec::new();
-        if let Ok(env) = std::env::var("GIT_ALTERNATE_OBJECT_DIRECTORIES") {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            for p in std::env::split_paths(&env) {
-                if !p.as_os_str().is_empty() {
-                    alts.push((cwd.join(p), 0));
-                }
-            }
-        }
-        for p in read_alternates(&objects) {
-            alts.push((p, 1));
-        }
-        let mut i = 0;
-        while i < alts.len() {
-            let (dir, depth) = alts[i].clone();
-            i += 1;
-            if !dir.is_dir() || !seen.insert(canonical(&dir)) {
-                continue;
-            }
+        let alternates = rgit_odb::resolve_alternates_reporting(&objects, &mut |e| {
+            eprintln!("error: {e}");
+        });
+        for dir in alternates {
             let loose = Arc::new(LooseStore::new(&dir, hash, loose_opts.clone()));
             let packs = Arc::new(PackStore::new(Arc::new(PackSet::open(
                 dir.join("pack"),
@@ -257,11 +237,6 @@ impl Repo {
             odb.push_store(loose.clone());
             odb.push_store(packs.clone());
             dirs.push(ObjectDir { loose, packs });
-            if depth < MAX_ALTERNATE_DEPTH {
-                for p in read_alternates(&dir) {
-                    alts.push((p, depth + 1));
-                }
-            }
         }
         let replace_enabled = !ctx.no_replace_objects
             && std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_none()
@@ -368,37 +343,8 @@ impl Repo {
     }
 }
 
-fn canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
-}
-
 /// The objects directory of a repository (`GIT_OBJECT_DIRECTORY` or
 /// `<common dir>/objects`).
 pub fn objects_dir(setup: &Setup) -> PathBuf {
     rgit_odb::objects_dir(&setup.common_dir)
-}
-
-/// The entries of `<objects>/info/alternates`, made absolute.
-fn read_alternates(objects: &Path) -> Vec<PathBuf> {
-    let Ok(data) = std::fs::read(objects.join("info").join("alternates")) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for line in data.split(|&b| b == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if line.is_empty() || line[0] == b'#' {
-            continue;
-        }
-        let path = if line[0] == b'"' {
-            match crate::quote::c_unquote(line) {
-                Some(p) => p,
-                None => continue,
-            }
-        } else {
-            line.to_vec()
-        };
-        let p = PathBuf::from(String::from_utf8_lossy(&path).into_owned());
-        out.push(if p.is_absolute() { p } else { objects.join(p) });
-    }
-    out
 }
