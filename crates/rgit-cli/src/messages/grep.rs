@@ -55,6 +55,9 @@ pub const HELP_MAX_COUNT: &str = "maximum number of results per file";
 pub const NO_PATTERN: &str = "no pattern given";
 pub const CACHED_AND_TREES: &str = "both --cached and trees are given";
 pub const NO_INDEX_WITH_REVS: &str = "--no-index or --untracked cannot be used with revs";
+pub const NUL_IN_PATTERN: &str = "given pattern contains NULL byte (via -f <file>). This is only supported with -P under PCRE v2";
+pub const ATTR_SOURCE_WITHOUT_REPO: &str =
+    "cannot use --attr-source or GIT_ATTR_SOURCE without repo";
 pub const UNTRACKED_WITH_SUBMODULES: &str = "--untracked not supported with --recurse-submodules";
 pub const OPEN_ONLY_WORKTREE: &str = "--open-files-in-pager only works on the worktree";
 pub const AND_NOT_PRECEDED: &str = "--and not preceded by pattern expression";
