@@ -4,15 +4,16 @@
 //! [`rgit_merge`], write the result tree and print it with the conflicted
 //! files and the merge messages.
 //!
-//! Not supported yet: rename detection (#151; every merge runs as with
-//! `-X no-renames`), `--stdin`, the deprecated `--trivial-merge` mode, and
+//! Not supported yet: `--stdin`, the deprecated `--trivial-merge` mode, and
 //! the `-X` options other than `ours`, `theirs`, the rename options and the
 //! diff algorithm.
 
 use std::io::Write;
 
 use rgit_hash::ObjectId;
-use rgit_merge::{Algorithm, Favor, MergeResult, MessageKind, ObjectCommits, Options};
+use rgit_merge::{
+    Algorithm, DirectoryRenames, Favor, MergeResult, MessageKind, ObjectCommits, Options,
+};
 use rgit_object::ObjectKind;
 
 use crate::messages::merge_tree as msg;
@@ -123,6 +124,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         allow_unrelated_histories: allow_unrelated.get(),
         ..Options::default()
     };
+    apply_rename_config(&repo.config, &mut opts);
     for x in xopts.into_inner() {
         strategy_option(&mut opts, &x)?;
     }
@@ -175,6 +177,41 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     Ok(if result.clean { 0 } else { 1 })
 }
 
+/// Applies the rename settings of the configuration to merge options:
+/// `merge.renames` (else `diff.renames`), `merge.renameLimit` (else
+/// `diff.renameLimit`) and `merge.directoryRenames`
+/// (git-config(1)). Unparsable values keep the defaults.
+pub(crate) fn apply_rename_config(config: &rgit_config::ConfigSet, opts: &mut Options) {
+    let renames = |key: &str| {
+        let e = config.get(key)?;
+        match e.string().ok().map(|v| v.to_ascii_lowercase()) {
+            Some(v) if v == b"copies" || v == b"copy" => Some(true),
+            _ => e.bool().ok(),
+        }
+    };
+    if let Some(on) = renames("merge.renames").or_else(|| renames("diff.renames")) {
+        opts.renames = on;
+    }
+    let limit = |key: &str| config.int(key).ok().flatten();
+    if let Some(n) = limit("merge.renamelimit").or_else(|| limit("diff.renamelimit")) {
+        opts.rename_limit = usize::try_from(n).unwrap_or(0);
+    }
+    if let Some(e) = config.get("merge.directoryrenames") {
+        let conflict = e
+            .string()
+            .is_ok_and(|v| v.eq_ignore_ascii_case(b"conflict"));
+        opts.directory_renames = if conflict {
+            DirectoryRenames::Conflict
+        } else {
+            match e.bool() {
+                Ok(true) => DirectoryRenames::True,
+                Ok(false) => DirectoryRenames::False,
+                Err(_) => opts.directory_renames,
+            }
+        };
+    }
+}
+
 /// Why a `-X` option was not applied.
 pub(crate) enum StrategyOptionError {
     /// git does not know it.
@@ -202,12 +239,18 @@ pub(crate) fn apply_strategy_option(opts: &mut Options, x: &str) -> Result<(), S
     match (name, value) {
         ("ours", None) => opts.favor = Favor::Ours,
         ("theirs", None) => opts.favor = Favor::Theirs,
-        // Rename detection is not implemented (#151): every merge runs as
-        // with `no-renames`.
-        ("no-renames", None) | ("find-renames", None) => {}
+        ("no-renames", None) => opts.renames = false,
+        ("find-renames", None) => {
+            opts.renames = true;
+            opts.rename_score = rgit_diff::diffcore::DEFAULT_RENAME_SCORE;
+        }
         ("find-renames" | "rename-threshold", Some(v)) => {
             if !valid_similarity(v) {
                 return Err(unknown());
+            }
+            opts.renames = true;
+            if let (Some(score), "") = rgit_diff::diffcore::parse_score(v) {
+                opts.rename_score = score;
             }
         }
         ("diff-algorithm", Some(v)) => match Algorithm::parse(v) {
@@ -266,8 +309,15 @@ fn tree_arg(repo: &mut Repo, name: &str) -> Result<ObjectId, Die> {
     Ok(r.peel_to(oid, ObjectKind::Tree, None).unwrap_or(oid))
 }
 
-/// `advice.submoduleMergeConflict` for submodules left in conflict.
+/// What follows the messages of a merge on stderr: the warnings when the
+/// rename limit was hit, and `advice.submoduleMergeConflict` for
+/// submodules left in conflict.
 pub(crate) fn advise_submodules(ctx: &Context, repo: &Repo, result: &MergeResult) -> Result<(), Die> {
+    if let Some(n) = result.rename_limit_needed {
+        for w in rgit_merge::messages::rename_limit_warnings(n) {
+            eprintln!("{w}");
+        }
+    }
     let paths: Vec<String> = result
         .messages
         .iter()

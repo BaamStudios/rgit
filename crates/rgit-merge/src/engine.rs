@@ -16,6 +16,9 @@ use rgit_diff::merge::{self as text, Favor, MergeOptions};
 use rgit_hash::ObjectId;
 use rgit_object::{EntryMode, ObjectKind, Tree, TreeEntry, TreeIter};
 
+#[path = "renames.rs"]
+mod renames;
+
 use crate::{
     ConflictedPath, Error, MergeResult, Message, MessageKind, Objects, Options, Version, messages,
 };
@@ -83,17 +86,28 @@ pub(crate) fn merge(
         conflicted: HashSet::new(),
         messages: Vec::new(),
         clean: true,
-        deferred: [
-            deletes_changed_file(objects, Some(*base), Some(*ours), Some(*theirs))?,
-            deletes_changed_file(objects, Some(*base), Some(*theirs), Some(*ours))?,
-        ],
+        deferred: [false, false],
+        notes: renames::Notes::default(),
+        extra_marker: 0,
+        quiet_conflict: false,
+        rename_limit_needed: None,
     };
     let tree = if ours == theirs || base == theirs {
         *ours
     } else if base == ours {
         *theirs
     } else {
-        match e.merge_dir(&mut Vec::new(), Some(*base), Some(*ours), Some(*theirs))? {
+        let [base, ours, theirs] = if opts.renames {
+            e.prepare_renames(base, ours, theirs)?
+                .unwrap_or([*base, *ours, *theirs])
+        } else {
+            [*base, *ours, *theirs]
+        };
+        e.deferred = [
+            deletes_changed_file(objects, Some(base), Some(ours), Some(theirs))?,
+            deletes_changed_file(objects, Some(base), Some(theirs), Some(ours))?,
+        ];
+        match e.merge_dir(&mut Vec::new(), Some(base), Some(ours), Some(theirs))? {
             Some(t) => t,
             None => e.write(ObjectKind::Tree, &[])?,
         }
@@ -107,6 +121,7 @@ pub(crate) fn merge(
         clean: e.clean,
         conflicts,
         messages,
+        rename_limit_needed: e.rename_limit_needed,
     })
 }
 
@@ -128,6 +143,13 @@ struct Engine<'a> {
     /// and unchanged on the other side is reported as moved out of the
     /// directory's way, although it stays deleted.
     deferred: [bool; 2],
+    /// What the rename detection noted about paths.
+    notes: renames::Notes,
+    /// Added to the conflict marker length (rename/rename merges).
+    extra_marker: usize,
+    /// Do not report a content conflict (rename/rename merges).
+    quiet_conflict: bool,
+    rename_limit_needed: Option<usize>,
 }
 
 /// One directory being merged: its path (with a trailing slash unless it
@@ -184,8 +206,19 @@ impl Engine<'_> {
 
     fn conflict(&mut self, path: Vec<u8>, stages: [Entry; 3]) {
         self.clean = false;
-        if self.depth == 0 && self.conflicted.insert(path.clone()) {
+        if self.depth > 0 {
+            return;
+        }
+        if self.conflicted.insert(path.clone()) {
             self.conflicts.push(ConflictedPath { path, stages });
+        } else if let Some(c) = self.conflicts.iter_mut().find(|c| c.path == path) {
+            // Reported twice (a rename/rename target that the walk also
+            // finds in conflict): the later stages fill in.
+            for (old, new) in c.stages.iter_mut().zip(stages) {
+                if new.is_some() {
+                    *old = new;
+                }
+            }
         }
     }
 
@@ -198,10 +231,21 @@ impl Engine<'_> {
         theirs: Option<ObjectId>,
     ) -> Result<Option<ObjectId>, Error> {
         let mut names: BTreeMap<Vec<u8>, [Entry; 3]> = BTreeMap::new();
+        // The trees the rename detection writes can hold a file and a
+        // directory of the same name; the directory part goes here then.
+        let mut both: BTreeMap<Vec<u8>, [Option<ObjectId>; 3]> = BTreeMap::new();
         for (side, tree) in [base, ours, theirs].into_iter().enumerate() {
             if let Some(id) = tree {
                 for (name, v) in read_tree(self.objects, &id)? {
-                    names.entry(name).or_default()[side] = Some(v);
+                    let slot = &mut names.entry(name.clone()).or_default()[side];
+                    match *slot {
+                        Some(old) if kind(old.mode) == Kind::Tree => {
+                            both.entry(name).or_default()[side] = Some(old.oid);
+                            *slot = Some(v);
+                        }
+                        Some(_) => both.entry(name).or_default()[side] = Some(v.oid),
+                        None => *slot = Some(v),
+                    }
                 }
             }
         }
@@ -211,23 +255,30 @@ impl Engine<'_> {
             out: Vec::with_capacity(names.len()),
         };
         for (name, [b, o, t]) in names {
-            if o == t {
+            let dual = both.get(&name).copied();
+            let noted = dual.is_some() || self.notes.touches(&dir.path(&name));
+            if o == t && !noted {
                 dir.out.extend(o.map(|v| (name, v)));
                 continue;
             }
             let has_tree = |e: Entry| e.is_some_and(|v| kind(v.mode) == Kind::Tree);
             let either_tree = has_tree(b) || has_tree(o) || has_tree(t);
-            if b == o && !(self.deferred[1] && either_tree) {
+            if b == o && !(self.deferred[1] && either_tree) && !noted {
                 dir.out.extend(t.map(|v| (name, v)));
                 continue;
             }
-            if b == t && !(self.deferred[0] && either_tree) {
+            if b == t && !(self.deferred[0] && either_tree) && !noted {
                 dir.out.extend(o.map(|v| (name, v)));
                 continue;
             }
-            let (bf, bd) = split(b);
-            let (of, od) = split(o);
-            let (tf, td) = split(t);
+            let (bf, mut bd) = split(b);
+            let (of, mut od) = split(o);
+            let (tf, mut td) = split(t);
+            if let Some([db, d_o, dt]) = dual {
+                bd = bd.or(db);
+                od = od.or(d_o);
+                td = td.or(dt);
+            }
             let sub = if bd.is_some() || od.is_some() || td.is_some() {
                 let len = prefix.len();
                 prefix.extend_from_slice(&name);
@@ -251,16 +302,54 @@ impl Engine<'_> {
                 continue;
             }
             let case = classify(bf, of, tf);
-            if sub.is_some() && self.produces_entry(case, bf) {
-                // The directory stays; the file moves out of its way.
-                let branch = if of.is_some() {
-                    self.labels.ours
-                } else {
-                    self.labels.theirs
+            let produces = self.produces_entry(case, bf)
+                || self.notes.rename_delete.contains(&dir.path(&name));
+            if sub.is_some() && produces {
+                // The directory stays; the file moves out of its way. A
+                // file renamed here belongs to the side that renamed it.
+                let path = dir.path(&name);
+                let renamed_by = self
+                    .notes
+                    .labels
+                    .get(&path)
+                    .and_then(|p| (1..3).find(|&k| p[k] == path && p[3 - k] != path));
+                let branch = match renamed_by {
+                    Some(1) => self.labels.ours,
+                    Some(_) => self.labels.theirs,
+                    None if of.is_some() => self.labels.ours,
+                    None => self.labels.theirs,
                 };
                 let target = self.move_out_of_the_way(&mut dir, &name, branch);
+                let moved = dir.path(&target);
+                if let Some(l) = self.notes.labels.get(&path).cloned() {
+                    self.notes.labels.insert(moved.clone(), l);
+                }
+                // A conflict reported before the walk (rename/rename)
+                // moves along.
+                let earlier = self.conflicts.iter().position(|c| c.path == path).map(|i| {
+                    self.conflicted.remove(&path);
+                    self.conflicts.remove(i).stages
+                });
                 self.merge_file(&mut dir, &name, &target, case, [bf, of, tf])?;
-                self.conflict(dir.path(&target), [bf, of, tf]);
+                if let Some(stages) = earlier {
+                    self.conflict(moved, stages);
+                    continue;
+                }
+                match renamed_by {
+                    Some(k) if !self.conflicted.contains(&moved) => {
+                        // Only the merged version, at the renaming side.
+                        let merged = dir
+                            .out
+                            .iter()
+                            .rev()
+                            .find(|(n, _)| *n == target)
+                            .map(|e| e.1);
+                        let mut stages = [None; 3];
+                        stages[k] = merged;
+                        self.conflict(moved, stages);
+                    }
+                    _ => self.conflict(moved, [bf, of, tf]),
+                }
                 continue;
             }
             if sub.is_some() && bf.is_some() {
@@ -311,6 +400,34 @@ impl Engine<'_> {
     /// Merges the non-directory versions of `name`, writing the result
     /// to `target` (`name` unless it moved out of a directory's way).
     fn merge_file(
+        &mut self,
+        dir: &mut Dir,
+        name: &[u8],
+        target: &[u8],
+        case: Case,
+        stages: [Entry; 3],
+    ) -> Result<(), Error> {
+        let [b, o, t] = stages;
+        let path = dir.path(target);
+        let noted_path = dir.path(name);
+        if let Case::Take(_) = case
+            && self.notes.rename_delete.contains(&noted_path)
+        {
+            // Renamed unchanged on one side, deleted on the other.
+            let kept = if self.depth > 0 { b } else { o.or(t) };
+            dir.out.extend(kept.map(|v| (target.to_vec(), v)));
+            self.conflict(path, stages);
+            return Ok(());
+        }
+        self.merge_file_inner(dir, name, target, case, stages)?;
+        if self.notes.location.contains(&noted_path) && !self.conflicted.contains(&path) {
+            // Moved by a directory rename: a conflict even when clean.
+            self.conflict(path, stages);
+        }
+        Ok(())
+    }
+
+    fn merge_file_inner(
         &mut self,
         dir: &mut Dir,
         name: &[u8],
@@ -441,7 +558,7 @@ impl Engine<'_> {
             r
         };
         let clean = mode_clean && content_clean;
-        if !clean {
+        if !clean && !self.quiet_conflict {
             let text = messages::content_conflict(path, b.is_none());
             self.message(vec![path.to_vec()], MessageKind::Contents, text);
         }
@@ -466,14 +583,30 @@ impl Engine<'_> {
         let marker_size = match self.opts.marker_size {
             0 => text::DEFAULT_MARKER_SIZE,
             n => n,
-        } + 2 * self.depth;
+        } + 2 * self.depth
+            + self.extra_marker;
+        // A file merged at a path it was renamed to: the labels name the
+        // path on each side.
+        let with_path = |label: &[u8], p: &[u8]| [label, b":", p].concat();
+        let [base_label, ours_label, theirs_label] = match self.notes.labels.get(path) {
+            Some(p) if p[1] != p[2] => [
+                with_path(self.labels.base, &p[0]),
+                with_path(self.labels.ours, &p[1]),
+                with_path(self.labels.theirs, &p[2]),
+            ],
+            _ => [
+                self.labels.base.to_vec(),
+                self.labels.ours.to_vec(),
+                self.labels.theirs.to_vec(),
+            ],
+        };
         let mopts = MergeOptions {
             style: self.opts.style,
             favor: self.opts.favor,
             marker_size,
-            ours_label: self.labels.ours,
-            base_label: self.labels.base,
-            theirs_label: self.labels.theirs,
+            ours_label: &ours_label,
+            base_label: &base_label,
+            theirs_label: &theirs_label,
             diff: DiffOptions {
                 algorithm: self.opts.algorithm,
                 minimal: self.opts.minimal,

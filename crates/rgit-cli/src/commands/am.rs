@@ -706,13 +706,14 @@ impl<'c> Am<'c> {
         if !self.cur.quiet {
             out(msg::FALLING_BACK);
         }
-        let opts = rgit_merge::Options {
+        let mut opts = rgit_merge::Options {
             branch1: b"HEAD".to_vec(),
             branch2: subject.as_bytes().to_vec(),
             ancestor: b"constructed merge base".to_vec(),
             style: crate::commands::merge_file::config_style(&repo.config)?,
             ..rgit_merge::Options::default()
         };
+        crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);
         let result = rgit_merge::merge_trees(repo.odb(), &base, &head_tree, &theirs, &opts)
             .map_err(|e| Die::Fatal(e.to_string()))?;
         if result.tree == ObjectId::empty_tree(repo.hash) {

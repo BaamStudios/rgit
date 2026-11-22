@@ -22,6 +22,16 @@ pub const TYPE_FILE_DIRECTORY: &str = "CONFLICT (file/directory)";
 pub const TYPE_DISTINCT_MODES: &str = "CONFLICT (distinct modes)";
 pub const TYPE_MODIFY_DELETE: &str = "CONFLICT (modify/delete)";
 pub const TYPE_SUBMODULE_NOT_INITIALIZED: &str = "CONFLICT (submodule not initialized)";
+pub const TYPE_RENAME_DELETE: &str = "CONFLICT (rename/delete)";
+pub const TYPE_RENAME_RENAME: &str = "CONFLICT (rename/rename)";
+pub const TYPE_DIRECTORY_RENAME_SUGGESTED: &str = "CONFLICT (directory rename suggested)";
+pub const TYPE_PATH_UPDATED: &str = "Path updated due to directory rename";
+pub const TYPE_DIRECTORY_RENAME_SPLIT: &str = "CONFLICT(directory rename unclear split)";
+pub const TYPE_DIRECTORY_RENAME_COLLISION: &str = "CONFLICT(directory rename collision)";
+pub const TYPE_DIRECTORY_RENAME_SKIPPED: &str =
+    "Directory rename skipped since directory was renamed on both sides";
+pub const TYPE_RENAME_COLLISION: &str = "CONFLICT (rename involved in collision)";
+pub const TYPE_FILE_IN_THE_WAY: &str = "CONFLICT (file in way of directory rename)";
 
 /// Concatenates byte strings.
 fn join(parts: &[&[u8]]) -> Vec<u8> {
@@ -95,6 +105,144 @@ pub fn distinct_types(path: &[u8], both: bool) -> Vec<u8> {
         which,
         b" of them so each can be recorded somewhere.",
     ])
+}
+
+pub fn rename_delete(old: &[u8], new: &[u8], renamed_in: &[u8], deleted_in: &[u8]) -> Vec<u8> {
+    join(&[
+        b"CONFLICT (rename/delete): ",
+        old,
+        b" renamed to ",
+        new,
+        b" in ",
+        renamed_in,
+        b", but deleted in ",
+        deleted_in,
+        b".",
+    ])
+}
+
+pub fn rename_rename(old: &[u8], new1: &[u8], side1: &[u8], new2: &[u8], side2: &[u8]) -> Vec<u8> {
+    join(&[
+        b"CONFLICT (rename/rename): ",
+        old,
+        b" renamed to ",
+        new1,
+        b" in ",
+        side1,
+        b" and to ",
+        new2,
+        b" in ",
+        side2,
+        b".",
+    ])
+}
+
+/// How a path came into a directory the other side renamed: added, or
+/// renamed from another path.
+fn arrived(path: &[u8], renamed_from: Option<&[u8]>, side: &[u8]) -> Vec<u8> {
+    match renamed_from {
+        None => join(&[path, b" added in ", side, b" inside"]),
+        Some(old) => join(&[old, b" renamed to ", path, b" in ", side, b", inside"]),
+    }
+}
+
+/// `merge.directoryRenames=conflict`: the path was moved, with a conflict.
+pub fn file_location(
+    path: &[u8],
+    renamed_from: Option<&[u8]>,
+    side: &[u8],
+    dir_renamed_in: &[u8],
+    new_path: &[u8],
+) -> Vec<u8> {
+    join(&[
+        b"CONFLICT (file location): ",
+        &arrived(path, renamed_from, side),
+        b" a directory that was renamed in ",
+        dir_renamed_in,
+        b", suggesting it should perhaps be moved to ",
+        new_path,
+        b".",
+    ])
+}
+
+/// `merge.directoryRenames=true`: the path was moved.
+pub fn path_updated(
+    path: &[u8],
+    renamed_from: Option<&[u8]>,
+    side: &[u8],
+    dir_renamed_in: &[u8],
+    new_path: &[u8],
+) -> Vec<u8> {
+    join(&[
+        b"Path updated: ",
+        &arrived(path, renamed_from, side),
+        b" a directory that was renamed in ",
+        dir_renamed_in,
+        b"; moving it to ",
+        new_path,
+        b".",
+    ])
+}
+
+pub fn directory_rename_split(dir: &[u8]) -> Vec<u8> {
+    join(&[
+        b"CONFLICT (directory rename split): Unclear where to rename ",
+        dir,
+        b" to; it was renamed to multiple other directories, with no destination getting a majority of the files.",
+    ])
+}
+
+pub fn directory_rename_collision(new_path: &[u8], paths: &[&[u8]]) -> Vec<u8> {
+    join(&[
+        b"CONFLICT (implicit dir rename): Cannot map more than one path to ",
+        new_path,
+        b"; implicit directory renames tried to put these paths there: ",
+        &paths.join(&b", "[..]),
+    ])
+}
+
+pub fn file_in_the_way(new_path: &[u8], paths: &[&[u8]]) -> Vec<u8> {
+    join(&[
+        b"CONFLICT (implicit dir rename): Existing file/dir at ",
+        new_path,
+        b" in the way of implicit directory rename(s) putting the following path(s) there: ",
+        &paths.join(&b", "[..]),
+        b".",
+    ])
+}
+
+pub fn directory_rename_skipped(old: &[u8], new: &[u8], path: &[u8]) -> Vec<u8> {
+    join(&[
+        b"WARNING: Avoiding applying ",
+        old,
+        b" -> ",
+        new,
+        b" rename to ",
+        path,
+        b", because ",
+        new,
+        b" itself was renamed.",
+    ])
+}
+
+pub fn rename_collision(old: &[u8], new: &[u8]) -> Vec<u8> {
+    join(&[
+        b"CONFLICT (rename involved in collision): rename of ",
+        old,
+        b" -> ",
+        new,
+        b" has content conflicts AND collides with another path; this may result in nested conflict markers.",
+    ])
+}
+
+/// The warnings when the exhaustive rename search was skipped.
+pub fn rename_limit_warnings(needed: usize) -> [String; 2] {
+    [
+        "warning: exhaustive rename detection was skipped due to too many files.".to_owned(),
+        format!(
+            "warning: you may want to set your merge.renamelimit variable to at least {needed} and retry the command."
+        ),
+    ]
 }
 
 /// Error texts of [`crate::Error`].

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Three-way merge of trees and commits with the results of git's default
-//! merge strategy (`ort`), without rename detection.
+//! merge strategy (`ort`), with rename and directory rename detection.
 //!
 //! The merge runs in memory: it reads trees and blobs, writes the merged
 //! blobs and trees, and returns the result tree, the conflicted paths with
@@ -45,8 +45,15 @@
 //! and differential tests against the `git` binary (`merge-tree
 //! --write-tree -X no-renames`).
 //!
-//! Not implemented yet: rename and directory rename detection (#151),
-//! merge attributes and drivers, `-X` whitespace options (#153), merging
+//! Renames ([`Options::renames`], on by default) are detected on each side
+//! before the paths are merged; renamed files are merged at their new
+//! path, with rename/delete, rename/rename, rename/add and directory
+//! renames (`merge.directoryRenames`) reported like `ort` does. The
+//! rules are described in the `renames` module.
+//!
+//! Not implemented yet: rename caching across a sequence of picks (a
+//! performance feature), some reports of directory rename splits when
+//! both sides renamed the same files, merge attributes and drivers, `-X` whitespace options (#153), merging
 //! submodule histories (a submodule changed on both sides is always
 //! reported as not checked out), `merge.renormalize`.
 
@@ -137,7 +144,33 @@ pub struct Options {
     /// Let [`merge_commits`] merge histories without a common ancestor
     /// against the empty tree.
     pub allow_unrelated_histories: bool,
+    /// Rename detection (`merge.renames`, `-X no-renames`); on by default.
+    pub renames: bool,
+    /// Minimum similarity of a rename (`-X find-renames=<n>`), in units
+    /// of [`rgit_diff::diffcore::MAX_SCORE`].
+    pub rename_score: u32,
+    /// `merge.renameLimit`: sources times destinations above its square
+    /// skip the exhaustive rename search; 0 is unlimited.
+    pub rename_limit: usize,
+    /// `merge.directoryRenames`.
+    pub directory_renames: DirectoryRenames,
 }
+
+/// What a merge does with a path the other side added to a directory
+/// one side renamed (`merge.directoryRenames`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DirectoryRenames {
+    /// Leave it in the old directory.
+    False,
+    /// Move it into the new directory.
+    True,
+    /// Move it, but report a conflict.
+    #[default]
+    Conflict,
+}
+
+/// `merge.renameLimit` when neither it nor `diff.renameLimit` is set.
+pub const DEFAULT_RENAME_LIMIT: usize = 7000;
 
 impl Default for Options {
     fn default() -> Self {
@@ -151,6 +184,10 @@ impl Default for Options {
             algorithm: Algorithm::Histogram,
             minimal: false,
             allow_unrelated_histories: false,
+            renames: true,
+            rename_score: rgit_diff::diffcore::DEFAULT_RENAME_SCORE,
+            rename_limit: DEFAULT_RENAME_LIMIT,
+            directory_renames: DirectoryRenames::Conflict,
         }
     }
 }
@@ -190,6 +227,15 @@ pub enum MessageKind {
     DistinctModes,
     ModifyDelete,
     SubmoduleNotInitialized,
+    RenameDelete,
+    RenameRename,
+    DirectoryRenameSuggested,
+    PathUpdated,
+    DirectoryRenameSplit,
+    DirectoryRenameCollision,
+    FileInTheWay,
+    DirectoryRenameSkipped,
+    RenameCollision,
 }
 
 impl MessageKind {
@@ -202,6 +248,15 @@ impl MessageKind {
             MessageKind::DistinctModes => messages::TYPE_DISTINCT_MODES,
             MessageKind::ModifyDelete => messages::TYPE_MODIFY_DELETE,
             MessageKind::SubmoduleNotInitialized => messages::TYPE_SUBMODULE_NOT_INITIALIZED,
+            MessageKind::RenameDelete => messages::TYPE_RENAME_DELETE,
+            MessageKind::RenameRename => messages::TYPE_RENAME_RENAME,
+            MessageKind::DirectoryRenameSuggested => messages::TYPE_DIRECTORY_RENAME_SUGGESTED,
+            MessageKind::PathUpdated => messages::TYPE_PATH_UPDATED,
+            MessageKind::DirectoryRenameSplit => messages::TYPE_DIRECTORY_RENAME_SPLIT,
+            MessageKind::DirectoryRenameCollision => messages::TYPE_DIRECTORY_RENAME_COLLISION,
+            MessageKind::FileInTheWay => messages::TYPE_FILE_IN_THE_WAY,
+            MessageKind::DirectoryRenameSkipped => messages::TYPE_DIRECTORY_RENAME_SKIPPED,
+            MessageKind::RenameCollision => messages::TYPE_RENAME_COLLISION,
         }
     }
 }
@@ -228,6 +283,10 @@ pub struct MergeResult {
     pub conflicts: Vec<ConflictedPath>,
     /// Messages in the order git prints them (by path).
     pub messages: Vec<Message>,
+    /// The exhaustive rename search was skipped because of
+    /// [`Options::rename_limit`]; the limit it would have needed (see
+    /// [`messages::rename_limit_warnings`]).
+    pub rename_limit_needed: Option<usize>,
 }
 
 impl MergeResult {
