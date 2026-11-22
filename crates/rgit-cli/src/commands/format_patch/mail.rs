@@ -7,6 +7,12 @@
 /// (without the blank lines after the subject and at the end), ending
 /// with a newline unless empty.
 pub fn split_message(message: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    split_message_with(message, b' ')
+}
+
+/// [`split_message`] with the subject lines joined by `sep` (`-k` keeps
+/// them apart with a newline, which then gets encoded).
+pub fn split_message_with(message: &[u8], sep: u8) -> (Vec<u8>, Vec<u8>) {
     let lines: Vec<&[u8]> = message.split(|&b| b == b'\n').collect();
     let blank = |l: &[u8]| l.iter().all(u8::is_ascii_whitespace);
     let mut i = 0;
@@ -16,7 +22,7 @@ pub fn split_message(message: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut subject = Vec::new();
     while i < lines.len() && !blank(lines[i]) {
         if !subject.is_empty() {
-            subject.push(b' ');
+            subject.push(sep);
         }
         subject.extend_from_slice(lines[i].trim_ascii_end());
         i += 1;
@@ -221,6 +227,8 @@ mod tests {
         assert_eq!(b, b"body\n\n\nmore\n");
         let (_, b) = split_message(b"s\n\ntrailing  \n\tx\t\n");
         assert_eq!(b, b"trailing\n\tx\n");
+        let (s, _) = split_message_with(b"one  \n two\n\nbody\n", b'\n');
+        assert_eq!(s, b"one\n two");
     }
 
     #[test]
