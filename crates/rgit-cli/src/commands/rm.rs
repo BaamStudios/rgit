@@ -134,6 +134,39 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
+    // Submodules to remove from the work tree: an embedded repository
+    // needs its name from `.gitmodules` to be moved away first.
+    let gitlinks: Vec<Vec<u8>> = chosen
+        .iter()
+        .filter(|p| {
+            index
+                .get(p, Stage::MERGED)
+                .is_some_and(|e| e.mode.is_gitlink())
+        })
+        .cloned()
+        .collect();
+    let gitmodules = if gitlinks.is_empty() || cached {
+        None
+    } else {
+        Some(crate::submodules::load_gitmodules(&repo, Some(&index))?)
+    };
+    if let Some(gm) = &gitmodules {
+        for p in &gitlinks {
+            let dot_git = os_path(&root, p).join(".git");
+            if std::fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_dir())
+                && gm.by_path(p).is_none()
+            {
+                return Err(Die::Fatal(crate::messages::submodule::no_name_for(&lossy(p))));
+            }
+        }
+        // Embedded git directories move to `.git/modules` first (also when
+        // a check below fails).
+        for p in &gitlinks {
+            if let Some(sub) = gm.by_path(p) {
+                crate::submodules::absorb_git_dir(&repo, &os_path(&root, p), &sub.name, Some(p))?;
+            }
+        }
+    }
     if !force {
         let mut head = HashMap::new();
         if let Some(id) = repo.resolve("HEAD") {
@@ -200,32 +233,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
-    // Submodules to remove from the work tree: an embedded repository
-    // needs its name from `.gitmodules` to be moved away first.
-    let gitlinks: Vec<Vec<u8>> = chosen
-        .iter()
-        .filter(|p| {
-            index
-                .get(p, Stage::MERGED)
-                .is_some_and(|e| e.mode.is_gitlink())
-        })
-        .cloned()
-        .collect();
-    let gitmodules = if gitlinks.is_empty() || cached {
-        None
-    } else {
-        Some(crate::submodules::load_gitmodules(&repo, Some(&index))?)
-    };
-    if let Some(gm) = &gitmodules {
-        for p in &gitlinks {
-            let dot_git = os_path(&root, p).join(".git");
-            if std::fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_dir())
-                && gm.by_path(p).is_none()
-            {
-                return Err(Die::Fatal(crate::messages::submodule::no_name_for(&lossy(p))));
-            }
-        }
-    }
     if !quiet {
         let mut out = String::new();
         for p in &chosen {
@@ -246,7 +253,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         for p in &gitlinks {
             let dir = os_path(&root, p);
             if let Some(sub) = gm.by_path(p) {
-                crate::submodules::absorb_git_dir(&repo, &dir, &sub.name)?;
+                crate::submodules::absorb_git_dir(&repo, &dir, &sub.name, None)?;
                 changed |= crate::submodules::remove_section(&repo, &sub.name)?;
             }
             if dir.join(".git").exists() {

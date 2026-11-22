@@ -628,7 +628,13 @@ pub fn stage_gitmodules(repo: &Repo, index: &mut Index) -> Result<(), Die> {
 /// Move an embedded `.git` directory of the submodule at `dir` to
 /// `$GIT_COMMON_DIR/modules/<name>` and leave a `.git` file pointing there
 /// (with `core.worktree` set), as `git submodule absorbgitdirs` does.
-pub fn absorb_git_dir(repo: &Repo, dir: &Path, name: &[u8]) -> Result<(), Die> {
+/// With `shown`, the move is reported under that path.
+pub fn absorb_git_dir(
+    repo: &Repo,
+    dir: &Path,
+    name: &[u8],
+    shown: Option<&[u8]>,
+) -> Result<(), Die> {
     use rgit_config::write::set_in_file;
     use rgit_config::{SetRequest, ValuePattern};
     let dot_git = dir.join(".git");
@@ -643,6 +649,18 @@ pub fn absorb_git_dir(repo: &Repo, dir: &Path, name: &[u8]) -> Result<(), Die> {
         std::fs::create_dir_all(parent).map_err(|e| Die::Fatal(e.to_string()))?;
     }
     std::fs::rename(&dot_git, &target).map_err(|e| Die::Fatal(e.to_string()))?;
+    if let Some(p) = shown {
+        let from =
+            rgit_repo::path::normalize(&std::path::absolute(&dot_git).unwrap_or(dot_git.clone()));
+        eprintln!(
+            "{}",
+            msg::migrating(
+                &String::from_utf8_lossy(p),
+                &from.to_string_lossy(),
+                &rgit_repo::path::normalize(&target).to_string_lossy()
+            )
+        );
+    }
     let dir = rgit_repo::path::normalize(&std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
     let target = rgit_repo::path::normalize(&target);
     let rel = relative_path(&dir, &target);
