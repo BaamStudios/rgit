@@ -103,6 +103,12 @@ impl Ctx<'_> {
         if self.current.as_deref() == Some(name) && self.head_attached() {
             return Some(self.worktree_path());
         }
+        // A rebase here works on it (or updates it with --update-refs).
+        if crate::worktrees::busy_here(self.setup, &format!("refs/heads/{name}"))
+            == Some(crate::worktrees::Busy::Rebase)
+        {
+            return Some(self.worktree_path());
+        }
         self.used_elsewhere(name)
     }
 

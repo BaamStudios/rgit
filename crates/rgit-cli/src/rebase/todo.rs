@@ -240,18 +240,32 @@ impl Todo {
     }
 }
 
-/// A line that could not be parsed: the error lines git prints.
+/// A line that could not be parsed: the error lines git prints, and the
+/// advice (`rebaseTodoError`) shown after the first one.
 #[derive(Debug, Clone)]
 pub(crate) struct BadLine {
     pub errors: Vec<String>,
+    pub hint: Option<&'static str>,
 }
 
 impl BadLine {
-    pub(crate) fn print(&self) {
-        for e in &self.errors {
+    /// Prints the lines; `advise` shows the hint.
+    pub(crate) fn print(&self, advise: &dyn Fn(&str)) {
+        for (k, e) in self.errors.iter().enumerate() {
             eprintln!("error: {e}");
+            if k == 0
+                && let Some(h) = self.hint
+            {
+                advise(h);
+            }
         }
     }
+}
+
+/// A commit a todo line names, and whether it is a merge.
+pub(crate) struct Named {
+    pub id: ObjectId,
+    pub merge: bool,
 }
 
 /// Parses `text`; `resolve` names commits. Blank lines at the start are
@@ -259,7 +273,7 @@ impl BadLine {
 pub(crate) fn parse(
     text: &str,
     comment: &str,
-    resolve: &mut dyn FnMut(&str) -> Option<ObjectId>,
+    resolve: &mut dyn FnMut(&str) -> Option<Named>,
 ) -> Result<Todo, Vec<BadLine>> {
     let mut todo = Todo::default();
     let mut bad = Vec::new();
@@ -281,8 +295,9 @@ pub(crate) fn parse(
         let tail = &text[(start + raw.len() - line.len()).min(text.len())..];
         match parse_line(line, tail, resolve) {
             Ok(item) => todo.lines.push(Line::Cmd(item)),
-            Err(e) => bad.push(BadLine {
+            Err((e, hint)) => bad.push(BadLine {
                 errors: vec![e, seqmsg::invalid_line(n + 1, raw)],
+                hint,
             }),
         }
     }
@@ -294,14 +309,39 @@ fn split_word(s: &str) -> (&str, &str) {
     (&s[..end], s[end..].trim_start_matches([' ', '\t']))
 }
 
+/// Why a line is bad: the error, and the advice to show with it.
+type LineError = (String, Option<&'static str>);
+
 fn parse_line(
     line: &str,
     tail: &str,
-    resolve: &mut dyn FnMut(&str) -> Option<ObjectId>,
-) -> Result<Item, String> {
+    resolve: &mut dyn FnMut(&str) -> Option<Named>,
+) -> Result<Item, LineError> {
+    parse_line_inner(line, tail, resolve).map_err(|e| match e {
+        Bad::Plain(m) => (m, None),
+        Bad::Hinted(m, h) => (m, Some(h)),
+    })
+}
+
+enum Bad {
+    Plain(String),
+    Hinted(String, &'static str),
+}
+
+impl From<String> for Bad {
+    fn from(m: String) -> Bad {
+        Bad::Plain(m)
+    }
+}
+
+fn parse_line_inner(
+    line: &str,
+    tail: &str,
+    resolve: &mut dyn FnMut(&str) -> Option<Named>,
+) -> Result<Item, Bad> {
     let (word, rest) = split_word(line);
     let Some(cmd) = Cmd::from_word(word) else {
-        return Err(seqmsg::invalid_command(word));
+        return Err(seqmsg::invalid_command(word).into());
     };
     let rest = rest.trim_end();
     let mut item = Item::new(cmd, "");
@@ -309,14 +349,15 @@ fn parse_line(
         Cmd::Noop | Cmd::Break => {
             if !rest.is_empty() {
                 let (_, after) = split_word(tail);
-                return Err(msg::does_not_accept_arguments(cmd.name(), after));
+                return Err(msg::does_not_accept_arguments(cmd.name(), after).into());
             }
         }
         Cmd::Exec | Cmd::Label | Cmd::Reset | Cmd::UpdateRef => {
             if rest.is_empty() {
-                return Err(msg::missing_arguments(cmd.name()));
+                return Err(msg::missing_arguments(cmd.name()).into());
             }
             item.arg = rest.to_owned();
+            check_name(cmd, rest)?;
         }
         Cmd::Merge => {
             let mut rest = rest;
@@ -328,11 +369,11 @@ fn parse_line(
                 } else {
                     (attached, r)
                 };
-                item.commit = Some(lookup(resolve, name)?);
+                item.commit = Some(lookup(resolve, name)?.id);
                 rest = r;
             }
             if rest.is_empty() {
-                return Err(msg::missing_arguments(cmd.name()));
+                return Err(msg::missing_arguments(cmd.name()).into());
             }
             item.arg = rest.to_owned();
         }
@@ -348,10 +389,37 @@ fn parse_line(
                 }
             }
             if rest.is_empty() && item.flag.is_none() {
-                return Err(msg::missing_arguments(cmd.name()));
+                return Err(msg::missing_arguments(cmd.name()).into());
             }
             let (name, r) = split_word(rest);
-            item.commit = Some(lookup(resolve, name)?);
+            let named = lookup(resolve, name)?;
+            if named.merge {
+                match cmd {
+                    Cmd::Pick => {
+                        return Err(Bad::Hinted(
+                            msg::no_merge_commits(cmd.name()),
+                            msg::PICK_MERGE_HINT,
+                        ));
+                    }
+                    Cmd::Reword => {
+                        return Err(Bad::Hinted(
+                            msg::no_merge_commits(cmd.name()),
+                            msg::REWORD_MERGE_HINT,
+                        ));
+                    }
+                    Cmd::Edit => {
+                        return Err(Bad::Hinted(
+                            msg::no_merge_commits(cmd.name()),
+                            msg::EDIT_MERGE_HINT,
+                        ));
+                    }
+                    Cmd::Fixup | Cmd::Squash => {
+                        return Err(msg::CANNOT_SQUASH_MERGE.to_owned().into());
+                    }
+                    _ => {}
+                }
+            }
+            item.commit = Some(named.id);
             item.arg = r.to_owned();
         }
     }
@@ -365,14 +433,26 @@ fn flag_word(word: &str) -> Option<(char, &str)> {
     Some((flag, &rest[1..]))
 }
 
-fn lookup(
-    resolve: &mut dyn FnMut(&str) -> Option<ObjectId>,
-    name: &str,
-) -> Result<ObjectId, String> {
+fn lookup(resolve: &mut dyn FnMut(&str) -> Option<Named>, name: &str) -> Result<Named, Bad> {
     if name.is_empty() {
-        return Err(seqmsg::could_not_parse(name));
+        return Err(seqmsg::could_not_parse(name).into());
     }
-    resolve(name).ok_or_else(|| seqmsg::could_not_parse(name))
+    resolve(name).ok_or_else(|| seqmsg::could_not_parse(name).into())
+}
+
+/// The names `label` and `update-ref` take must be valid ref names
+/// (`update-ref` a full one).
+fn check_name(cmd: Cmd, name: &str) -> Result<(), Bad> {
+    use rgit_refs::name::{RefNameFlags, is_valid_refname};
+    let valid = is_valid_refname(name.as_bytes(), RefNameFlags::ONELEVEL);
+    match cmd {
+        Cmd::Label if name == "#" || !valid => Err(msg::invalid_label(name).into()),
+        Cmd::UpdateRef if !valid => Err(msg::invalid_refname(name).into()),
+        Cmd::UpdateRef if !name.starts_with("refs/") => {
+            Err(msg::update_ref_needs_full_name(name).into())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The commits a todo list picks or drops (for `rebase.missingCommitsCheck`).
@@ -498,7 +578,9 @@ pub(crate) fn add_exec(todo: &mut Todo, execs: &[String]) {
         let is_pick = l
             .item()
             .is_some_and(|i| i.cmd.picks() || i.cmd == Cmd::Merge);
-        if pending && !is_meld && l.item().is_some() {
+        // Anything but a `fixup`/`squash` ends the chain (the comments of
+        // `--update-refs` too).
+        if pending && !is_meld {
             for e in execs {
                 out.push(Line::Cmd(Item::new(Cmd::Exec, e.clone())));
             }

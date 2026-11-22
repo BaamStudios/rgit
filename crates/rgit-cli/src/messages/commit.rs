@@ -116,6 +116,22 @@ pub fn could_not_read_log(path: &str, err: &str) -> String {
     format!("could not read log file '{path}': {err}")
 }
 
+/// `core.commentChar=auto` (shown by `commit` and `rebase`); `key` is
+/// `core.commentChar` or `core.commentString`.
+pub fn comment_auto_deprecated(key: &str) -> String {
+    format!("Support for '{key}=auto' is deprecated and will be removed in Git 3.0")
+}
+
+/// The hint after [`comment_auto_deprecated`]: `unset` holds the
+/// `git config unset` lines, `set` the scope option and key to set.
+pub fn comment_auto_hint(unset: &str, set: &str) -> String {
+    format!(
+        "\nTo use the default comment string (#) please run\n\n{unset}\n\
+To set a custom comment string please run\n\n    git config set {set} <comment string>\n\n\
+where '<comment string>' is the string you wish to use."
+    )
+}
+
 pub const COULD_NOT_READ_STDIN: &str = "could not read log from standard input";
 pub const NO_COMMENT_CHAR: &str =
     "unable to select a comment character that is not used\nin the current commit message";

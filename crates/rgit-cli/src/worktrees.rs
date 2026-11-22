@@ -253,8 +253,15 @@ pub fn busy_here(setup: &Setup, refname: &str) -> Option<Busy> {
     let rebase = ["rebase-merge", "rebase-apply"].iter().any(|d| {
         std::fs::read_to_string(git_dir.join(d).join("head-name"))
             .is_ok_and(|s| s.trim_end() == refname)
-    });
+    }) || updated_by_rebase(&git_dir, refname);
     Some(if rebase { Busy::Rebase } else { Busy::Bisect })
+}
+
+/// Whether the rebase in `git_dir` will update `refname` (`--update-refs`:
+/// the first of every three lines of `rebase-merge/update-refs`).
+fn updated_by_rebase(git_dir: &Path, refname: &str) -> bool {
+    std::fs::read_to_string(git_dir.join("rebase-merge/update-refs"))
+        .is_ok_and(|s| s.lines().step_by(3).any(|l| l.trim_end() == refname))
 }
 
 /// Whether a rebase or bisect in `git_dir` works on `refname`.
@@ -268,6 +275,9 @@ fn busy_with(git_dir: &Path, refname: &str) -> bool {
         if read(git_dir.join(dir).join("head-name")).as_deref() == Some(refname) {
             return true;
         }
+    }
+    if updated_by_rebase(git_dir, refname) {
+        return true;
     }
     match (
         read(git_dir.join("BISECT_START")),

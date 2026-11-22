@@ -40,6 +40,7 @@
 //! `git pull --rebase`.
 
 pub(crate) mod todo;
+mod update_refs;
 
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -115,6 +116,8 @@ pub struct Options {
     /// `-S[<keyid>]` (`Some(Some(_))`), `--no-gpg-sign` (`Some(None)`);
     /// `None`: `commit.gpgSign`.
     pub gpg_sign: Option<Option<Sign>>,
+    /// `--[no-]update-refs`; `None`: `rebase.updateRefs`.
+    pub update_refs: Option<bool>,
 }
 
 /// `--rebase-merges[=<mode>]`.
@@ -270,6 +273,26 @@ fn now() -> rgit_object::Time {
 fn resolve_commit(repo: &mut Repo, name: &str) -> Option<ObjectId> {
     let id = repo.resolve(name)?;
     repo.peel_to(id, ObjectKind::Commit)
+}
+
+/// The commit a todo line names, and whether it is a merge.
+fn resolve_named(repo: &mut Repo, name: &str) -> Option<todo::Named> {
+    let id = resolve_commit(repo, name)?;
+    let merge = matches!(repo.read_object(&id), Some(Object::Commit(c))
+        if c.parents().unwrap_or_default().len() > 1);
+    Some(todo::Named { id, merge })
+}
+
+/// Prints the lines of a todo list that could not be parsed.
+fn print_bad(ctx: &Context, repo: &Repo, bad: &[todo::BadLine]) -> Result<(), Die> {
+    let advisor = ctx.advisor(&repo.config)?;
+    let advise = |h: &str| {
+        let _ = advisor.advise(Advice::RebaseTodoError, h);
+    };
+    for b in bad {
+        b.print(&advise);
+    }
+    Ok(())
 }
 
 fn commits_of(repo: &Repo) -> rgit_merge::ObjectCommits<'_> {
@@ -565,6 +588,7 @@ fn configured_upstream(repo: &Repo) -> Result<String, Die> {
 pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
     let mut repo = Repo::open(ctx, Mode::Required)?;
     repo.work_tree()?;
+    crate::commands::commit::warn_comment_char_auto(&repo);
     for name in ["rebase-merge", "rebase-apply"] {
         if git_dir(&repo).join(name).is_dir() {
             let shown = repo.setup.git_dir.join(name);
@@ -839,7 +863,19 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         !o.no_keep_empty,
         quiet,
     )?);
-    instruction_format(ctx, &repo, &mut todo)?;
+    let update_refs = o
+        .update_refs
+        .unwrap_or_else(|| config_bool(&repo, "rebase.updaterefs").unwrap_or(false));
+    if update_refs {
+        update_refs::add_commands(&repo, &mut todo, &head_name, &comment);
+    }
+    if let Err(e) = instruction_format(ctx, &repo, &mut todo) {
+        if let Some(s) = &stash {
+            drop(repo);
+            apply_autostash(ctx, s)?;
+        }
+        return Err(e);
+    }
     if autosquash {
         todo::autosquash(&mut repo, &mut todo);
     }
@@ -927,7 +963,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
             }
             return Ok(1);
         }
-        match validate(&mut repo, &text, &comment, None) {
+        match validate(ctx, &mut repo, &text, &comment, None) {
             Ok(t) => todo = t,
             Err(()) => {
                 let autostash = state.autostash.as_deref();
@@ -944,6 +980,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         }
         write(&path, todo.text())?;
     }
+    update_refs::sync(&repo, &todo)?;
 
     // Commits that need not be replayed: the new base moves on to them.
     let mut start_at = onto;
@@ -1066,6 +1103,13 @@ fn instruction_format(ctx: &Context, repo: &Repo, todo: &mut todo::Todo) -> Resu
     else {
         return Ok(());
     };
+    // git formats `# <format>`: without a placeholder that is taken for
+    // the name of a pretty format, which does not exist.
+    if !fmt.contains('%') {
+        return Err(Die::Fatal(crate::messages::rev_list::invalid_pretty(
+            &format!("# {fmt}"),
+        )));
+    }
     let ids: Vec<String> = todo
         .items()
         .filter(|i| i.cmd.picks())
@@ -1079,11 +1123,17 @@ fn instruction_format(ctx: &Context, repo: &Repo, todo: &mut todo::Todo) -> Resu
         "--no-walk=unsorted".to_owned(),
         "--no-color".to_owned(),
         "-z".to_owned(),
+        // `%h` shows the full id, as in git.
+        "--no-abbrev".to_owned(),
         format!("--format=%H {fmt}"),
     ];
     args.extend(ids);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (_, out) = run_child(ctx, &refs, true)?;
+    let empty_mark = format!(
+        " {} empty",
+        crate::commands::commit::comment_string(repo, b"")?
+    );
     let mut by_id = std::collections::HashMap::new();
     for entry in out.split(|&b| b == 0) {
         let text = lossy(entry);
@@ -1098,7 +1148,11 @@ fn instruction_format(ctx: &Context, repo: &Repo, todo: &mut todo::Todo) -> Resu
             && let Some(c) = i.commit
             && let Some(d) = by_id.get(&c.to_hex())
         {
+            let empty = i.arg.ends_with(&empty_mark);
             i.arg = format!("# {d}");
+            if empty {
+                i.arg.push_str(&empty_mark);
+            }
         }
     }
     Ok(())
@@ -1227,18 +1281,17 @@ fn missing_commits_check(repo: &Repo) -> Check {
 /// (compared with `git-rebase-todo.backup`, plus `done` lines given in
 /// `done`). Problems are printed; `Err` when the rebase cannot go on.
 fn validate(
+    ctx: &Context,
     repo: &mut Repo,
     text: &str,
     comment: &str,
     extra: Option<&str>,
 ) -> Result<todo::Todo, ()> {
-    let mut resolve = |name: &str| resolve_commit(repo, name);
+    let mut resolve = |name: &str| resolve_named(repo, name);
     let mut todo = match todo::parse(text, comment, &mut resolve) {
         Ok(t) => t,
         Err(bad) => {
-            for b in &bad {
-                b.print();
-            }
+            let _ = print_bad(ctx, repo, &bad);
             match extra {
                 Some(e) => eprintln!("error: {e}"),
                 None => eprintln!("{}", msg::FIX_WITH_EDIT_TODO),
@@ -1266,7 +1319,7 @@ fn validate(
     }
     let backup = std::fs::read_to_string(dir.join("git-rebase-todo.backup")).unwrap_or_default();
     let done = done_text;
-    let mut resolve = |name: &str| resolve_commit(repo, name);
+    let mut resolve = |name: &str| resolve_named(repo, name);
     let original = todo::parse(&backup, comment, &mut resolve).unwrap_or_default();
     let done = todo::parse(&done, comment, &mut resolve).unwrap_or_default();
     let present: HashSet<ObjectId> = todo::commits(&todo)
@@ -1387,6 +1440,11 @@ fn todo_list(
 
     let mut items = Vec::new();
     let mut warned = false;
+    // The mark of empty commits is a comment.
+    let empty_mark = format!(
+        " {} empty",
+        crate::commands::commit::comment_string(repo, b"")?
+    );
     for c in commits {
         if skipped.contains(&c) {
             if !quiet {
@@ -1409,7 +1467,7 @@ fn todo_list(
             lossy(&rgit_commit::message::subject(commit.message()))
         );
         if is_empty_commit(repo, &commit) {
-            arg.push_str(" # empty");
+            arg.push_str(&empty_mark);
         }
         items.push(todo::Item::pick(c, arg));
     }
@@ -1659,6 +1717,15 @@ impl<'c> Rebase<'c> {
         Repo::open(self.ctx, Mode::Required)
     }
 
+    /// "You can amend the commit now", with the signing option.
+    fn edit_advice(&self) -> String {
+        let sign = match &self.state.gpg_sign {
+            Some(s) => sq_quote(s.to_opt().as_bytes()),
+            None => String::new(),
+        };
+        msg::edit_advice(&sign)
+    }
+
     fn dir(&self) -> Result<PathBuf, Die> {
         let repo = self.repo()?;
         Ok(if self.apply {
@@ -1684,16 +1751,14 @@ impl<'c> Rebase<'c> {
         let comment = crate::commands::commit::comment_string(&repo, b"")?;
         let text =
             std::fs::read_to_string(state_dir(&repo).join("git-rebase-todo")).unwrap_or_default();
-        let mut resolve = |name: &str| resolve_commit(&mut repo, name);
+        let mut resolve = |name: &str| resolve_named(&mut repo, name);
         Ok(match todo::parse(&text, &comment, &mut resolve) {
             Ok(mut t) => {
                 t.strip_comments(&comment);
                 Ok(t)
             }
             Err(bad) => {
-                for b in &bad {
-                    b.print();
-                }
+                print_bad(self.ctx, &repo, &bad)?;
                 eprintln!("error: {}", msg::PLEASE_FIX_WITH_EDIT_TODO);
                 Err(())
             }
@@ -1879,7 +1944,7 @@ impl<'c> Rebase<'c> {
             .map_err(Die::Fatal)?;
         match rest {
             Some(rest) => eprintln!("{}", msg::could_not_apply(&abbrev, rest)),
-            None => eprint!("{}", msg::EDIT_ADVICE),
+            None => eprint!("{}", self.edit_advice()),
         }
         Ok(Step::Exit(1))
     }
@@ -2033,7 +2098,7 @@ impl<'c> Rebase<'c> {
                 let _ = std::fs::remove_file(git_dir(&repo).join("MERGE_MSG"));
                 let abbrev = repo.abbrev(&id, repo.default_abbrev());
                 eprintln!("{}", msg::stopped_at_edit(&abbrev, &item.arg));
-                eprint!("{}", msg::EDIT_ADVICE);
+                eprint!("{}", self.edit_advice());
                 Ok(Step::Exit(0))
             }
             _ => {
@@ -2089,6 +2154,46 @@ impl<'c> Rebase<'c> {
             let original = self.author_of(&commit, &id, false)?;
             write(&dir.join("amend"), format!("{}\n", head.to_hex()))?;
             return self.stop_conflicted(&repo, &id, &result, &template, &original, None);
+        }
+
+        // A meld that leaves the (non-empty) commit empty stops: `commit
+        // --amend` refuses it, and the user decides.
+        let head_parent_tree = match head_commit.parents().unwrap_or_default().first() {
+            Some(p) => sequencer::tree_of(&repo, p)?,
+            None => ObjectId::empty_tree(repo.hash),
+        };
+        if result.tree == head_parent_tree && head_tree != head_parent_tree {
+            let original = self.author_of(&commit, &id, false)?;
+            write(&dir.join("amend"), format!("{}\n", head.to_hex()))?;
+            self.write_stopped(&repo, &id, &template, &original, false)?;
+            drop(repo);
+            let args = vec![
+                "--amend".to_owned(),
+                "-n".to_owned(),
+                "--cleanup=strip".to_owned(),
+                "-F".to_owned(),
+                dir.join(MESSAGE_SQUASH).to_string_lossy().into_owned(),
+            ];
+            let env = vec![(
+                "GIT_REFLOG_ACTION".to_owned(),
+                format!("{} ({})", self.action, item.cmd.name()),
+            )];
+            // git shows the refusal on standard output when the message
+            // would be edited (a squash), else on standard error.
+            let to_stderr = !(last && wants_editor);
+            if self.commit_child(&args, &env, to_stderr)? == 0 {
+                // Not refused after all (a hook changed the index).
+                let mut repo = self.repo()?;
+                let new = sequencer::head_commit(&mut repo).unwrap_or(head);
+                self.clear_stop()?;
+                if last {
+                    self.end_chain(&repo)?;
+                }
+                self.record_rewritten(&id, &new, todo.peek())?;
+                return Ok(Step::Done);
+            }
+            eprint!("{}", self.edit_advice());
+            return Ok(Step::Exit(1));
         }
 
         if last && wants_editor {
@@ -2509,10 +2614,7 @@ impl<'c> Rebase<'c> {
         let Some(head) = sequencer::head_commit(&mut repo) else {
             return Err(Die::Fatal(seqmsg::could_not_read("HEAD")));
         };
-        let path = state_dir(&repo).join("update-refs");
-        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
-        text.push_str(&format!("{} {}\n", item.arg, head.to_hex()));
-        write(&path, text)?;
+        update_refs::record(&repo, &item.arg, head)?;
         Ok(Step::Done)
     }
 
@@ -2763,25 +2865,8 @@ impl<'c> Rebase<'c> {
             .ok_or_else(|| Die::Fatal(seqmsg::could_not_read("HEAD")))?;
         let head_name = self.state.head_name.clone();
         let dir = state_dir(&repo);
-        // `update-ref` commands.
-        let updates = std::fs::read_to_string(dir.join("update-refs")).unwrap_or_default();
-        for line in updates.lines() {
-            if let Some((name, hex)) = line.rsplit_once(' ')
-                && let Some(id) = parse_oid(&repo, hex)
-            {
-                let old = repo.refs.resolve(name);
-                let update = match old {
-                    Some(o) => RefUpdate::update(name, id, Some(o)),
-                    None => RefUpdate::create(name, id),
-                };
-                let what = msg::reflog(
-                    &self.action,
-                    "finish",
-                    &msg::finish_onto(name, &self.state.onto.to_hex()),
-                );
-                ref_tx(self.ctx, &repo, update.message(what), false)?;
-            }
-        }
+        // The refs of `update-ref` commands move after the branch.
+        let ref_updates = update_refs::read(&repo);
         if head_name.starts_with("refs/") {
             let old = repo.refs.resolve(&head_name);
             let what = msg::reflog(
@@ -2811,7 +2896,11 @@ impl<'c> Rebase<'c> {
             }
         }
         delete_labels(self.ctx, &repo)?;
-        let _ = std::fs::remove_dir_all(&dir);
+        let applied = update_refs::apply(self.ctx, &repo, &ref_updates);
+        // A ref that could not be updated keeps the state (as git does).
+        if applied.ok() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         drop(repo);
         if let Some(s) = self.state.autostash.clone() {
             apply_autostash(self.ctx, &s)?;
@@ -2819,7 +2908,8 @@ impl<'c> Rebase<'c> {
         if !self.state.quiet {
             eprintln!("{}", msg::success(&head_name));
         }
-        Ok(0)
+        applied.report();
+        Ok(if applied.ok() { 0 } else { 1 })
     }
 
     /// Forgets the stop: the pseudo-refs and the stopped commit's files.
@@ -2994,12 +3084,13 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
         let comment = crate::commands::commit::comment_string(&repo, b"")?;
         let text = std::fs::read_to_string(dir.join("git-rebase-todo")).unwrap_or_default();
         {
-            let mut resolve = |name: &str| resolve_commit(&mut repo, name);
+            let mut resolve = |name: &str| resolve_named(&mut repo, name);
             if let Ok(t) = todo::parse(&text, &comment, &mut resolve) {
                 write(&dir.join("end"), format!("{}\n", t.count()))?;
             }
         }
         let todo = match validate(
+            rb.ctx,
             &mut repo,
             &text,
             &comment,
@@ -3009,6 +3100,7 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
             Err(()) => return Ok(1),
         };
         write(&dir.join("git-rebase-todo"), todo.text())?;
+        update_refs::sync(&repo, &todo)?;
         drop(repo);
         return rb.run(todo);
     }
@@ -3237,7 +3329,7 @@ pub fn edit_todo(ctx: &mut Context) -> CmdResult {
     let comment = crate::commands::commit::comment_string(&repo, b"")?;
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let parsed = {
-        let mut resolve = |name: &str| resolve_commit(&mut repo, name);
+        let mut resolve = |name: &str| resolve_named(&mut repo, name);
         todo::parse(&text, &comment, &mut resolve)
     };
     let help = todo_help(&repo, &comment, None);
@@ -3250,9 +3342,7 @@ pub fn edit_todo(ctx: &mut Context) -> CmdResult {
             render_for_edit(&repo, &t)
         }
         Err(bad) => {
-            for b in &bad {
-                b.print();
-            }
+            print_bad(rb.ctx, &repo, &bad)?;
             text.clone()
         }
     };
@@ -3262,9 +3352,10 @@ pub fn edit_todo(ctx: &mut Context) -> CmdResult {
         return Ok(code);
     }
     let edited = std::fs::read_to_string(&path).map_err(io_die)?;
-    match validate(&mut repo, &edited, &comment, None) {
+    match validate(rb.ctx, &mut repo, &edited, &comment, None) {
         Ok(t) => {
             write(&path, t.text())?;
+            update_refs::sync(&repo, &t)?;
             Ok(0)
         }
         Err(()) => Ok(1),

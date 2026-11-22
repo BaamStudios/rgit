@@ -396,6 +396,60 @@ fn config_bool(repo: &Repo, key: &str) -> Option<bool> {
     repo.config.bool(key).ok().flatten()
 }
 
+/// The deprecation warning for `core.commentChar=auto` (or
+/// `core.commentString`), with the commands that change the settings in
+/// the configuration files (none for `-c`).
+pub(crate) fn warn_comment_char_auto(repo: &Repo) {
+    use rgit_config::Scope;
+    let entries: Vec<_> = repo
+        .config
+        .entries()
+        .iter()
+        .filter(|e| e.name == "core.commentchar" || e.name == "core.commentstring")
+        .collect();
+    let Some(last) = entries.last() else {
+        return;
+    };
+    if last.value.as_ref().map(|v| v.as_slice()) != Some(b"auto".as_slice()) {
+        return;
+    }
+    let key = |e: &rgit_config::Entry| {
+        if e.name == "core.commentchar" {
+            "core.commentChar"
+        } else {
+            "core.commentString"
+        }
+    };
+    let scope = |e: &rgit_config::Entry| match e.source.scope {
+        Scope::Global => Some("--global "),
+        Scope::System => Some("--system "),
+        Scope::Worktree => Some("--worktree "),
+        Scope::Local => Some(""),
+        _ => None,
+    };
+    let mut out = format!("warning: {}\n", msg::comment_auto_deprecated(key(last)));
+    let in_files: Vec<_> = entries.iter().filter(|e| scope(e).is_some()).collect();
+    if let Some(set) = in_files.last() {
+        let mut unset = String::new();
+        for e in &in_files {
+            unset.push_str(&format!(
+                "    git config unset {}{}\n",
+                scope(e).unwrap_or_default(),
+                key(e)
+            ));
+        }
+        let set = format!("{}{}", scope(set).unwrap_or_default(), key(set));
+        for line in msg::comment_auto_hint(&unset, &set).lines() {
+            if line.is_empty() {
+                out.push_str("hint:\n");
+            } else {
+                out.push_str(&format!("hint: {line}\n"));
+            }
+        }
+    }
+    eprint!("{out}");
+}
+
 fn config_str(repo: &Repo, key: &str) -> Option<String> {
     repo.config
         .string(key)
@@ -1038,11 +1092,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         None => Untracked::Normal,
         Some(m) => untracked_mode(&m).ok_or_else(|| fatal(msg::invalid_untracked(&m)))?,
     };
-    if config_str(&repo, "core.commentchar").as_deref() == Some("auto")
-        || config_str(&repo, "core.commentstring").as_deref() == Some("auto")
-    {
-        eprintln!("warning: Support for 'core.commentChar=auto' is deprecated and will be removed in Git 3.0");
-    }
+    warn_comment_char_auto(&repo);
     // The commits named on the command line.
     let reuse_name = args.reuse.clone().or_else(|| args.reedit.clone());
     let reused = match &reuse_name {
@@ -1689,7 +1739,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     comment: Some(&comment),
                     prefix: &prefix,
                     quote_high,
-                    last: None,
+                    // Amending to an empty commit says so.
+                    last: (args.amend && !committable).then(|| {
+                        wt_status::nothing_line(&collected, &header, untracked, true, false)
+                    }),
                     untracked_not_listed: untracked == Untracked::No,
                 },
             ));
