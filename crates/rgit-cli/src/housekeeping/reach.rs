@@ -287,6 +287,8 @@ impl<'a> Walk<'a> {
             id,
             kind,
             tag_target,
+            // No path: the delta search orders these by type and size.
+            name_hash: 0,
         });
     }
 

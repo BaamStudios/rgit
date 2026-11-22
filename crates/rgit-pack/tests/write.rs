@@ -329,12 +329,26 @@ fn option_sets() -> Vec<WriteOptions> {
                 reuse_object,
                 compression: if reuse_object { None } else { Some(1) },
                 max_depth: 50,
+                ..WriteOptions::default()
             });
         }
     }
     v.push(WriteOptions {
         ofs_delta: true,
         max_depth: 2,
+        ..WriteOptions::default()
+    });
+    // Without delta search, and with a wide single-threaded search.
+    v.push(WriteOptions {
+        window: 0,
+        ..WriteOptions::default()
+    });
+    v.push(WriteOptions {
+        ofs_delta: true,
+        reuse_delta: false,
+        window: 50,
+        threads: 1,
+        max_depth: 3,
         ..WriteOptions::default()
     });
     v
