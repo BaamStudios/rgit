@@ -185,9 +185,9 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     let deepen: RefCell<Option<String>> = RefCell::new(None);
     let unshallow = Cell::new(false);
     let update_shallow = Cell::new(false);
-    let mut parser = Parser::new(
-        msg::USAGE,
-        vec![
+    // The options in the order of git's `-h` output: what transfers,
+    // then what is stored.
+    let mut table = vec![
             Opt::verbose(&verbose, msg::HELP_VERBOSE),
             Opt::quiet(&quiet, msg::HELP_QUIET),
             Opt::bool(None, "all", &all, msg::HELP_ALL),
@@ -195,6 +195,8 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::flag('a', "append", &append, msg::HELP_APPEND),
             Opt::flag(None, "atomic", &atomic, msg::HELP_ATOMIC),
             Opt::string(None, "upload-pack", &upload_pack, "path", msg::HELP_UPLOAD_PACK),
+    ];
+    table.extend([
             Opt::force(&force, msg::HELP_FORCE),
             Opt::flag('m', "multiple", &multiple, msg::HELP_MULTIPLE),
             Opt::bool('t', "tags", &tags, msg::HELP_TAGS),
@@ -264,8 +266,8 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::bool(None, "show-forced-updates", &ignored_i, msg::HELP_SHOW_FORCED),
             Opt::bool(None, "write-commit-graph", &ignored_i, msg::HELP_WRITE_COMMIT_GRAPH),
             Opt::flag(None, "stdin", &stdin, msg::HELP_STDIN),
-        ],
-    );
+    ]);
+    let mut parser = Parser::new(msg::USAGE, table);
     let rest = parser.parse(argv)?.args;
     drop(parser);
     let args = Args {
@@ -727,7 +729,7 @@ fn trace_parallel(tasks: i64) {
     if rgit_trace::TRACE.enabled() {
         rgit_trace::TRACE.write_line(
             rgit_trace::Location::caller(),
-            format!("run_processes_parallel: preparing to run up to {tasks} tasks").as_bytes(),
+            msg::trace_parallel(tasks).as_bytes(),
         );
     }
 }
@@ -735,7 +737,7 @@ fn trace_parallel(tasks: i64) {
 #[track_caller]
 fn trace_parallel_done() {
     if rgit_trace::TRACE.enabled() {
-        rgit_trace::TRACE.write_line(rgit_trace::Location::caller(), b"run_processes_parallel: done");
+        rgit_trace::TRACE.write_line(rgit_trace::Location::caller(), msg::TRACE_PARALLEL_DONE);
     }
 }
 

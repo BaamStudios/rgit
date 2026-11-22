@@ -60,6 +60,12 @@ pub const HELP_NEGOTIATION_INCLUDE: &str = "ensure this ref is always sent as a 
 pub const REFMAP_WITHOUT_REFSPECS: &str =
     "--refmap option is only meaningful with command-line refspec(s)";
 
+/// `GIT_TRACE` lines of a parallel multiple fetch.
+pub fn trace_parallel(tasks: i64) -> String {
+    format!("run_processes_parallel: preparing to run up to {tasks} tasks")
+}
+pub const TRACE_PARALLEL_DONE: &[u8] = b"run_processes_parallel: done";
+
 pub fn object_does_not_exist(oid: &str) -> String {
     format!("the object {oid} does not exist")
 }

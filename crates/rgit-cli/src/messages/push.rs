@@ -41,6 +41,7 @@ pub fn transport_not_supported(url: &str) -> String {
 }
 
 pub const DELETE_WITHOUT_REFS: &str = "--delete doesn't make sense without any refs";
+pub const DELETE_EMPTY: &str = "--delete only accepts plain target ref names";
 pub const ALL_WITH_REFSPECS: &str = "--all can't be combined with refspecs";
 pub const TAGS_WITH_ALL: &str = "options '--tags' and '--all/--branches' cannot be used together";
 pub const EVERYTHING_UP_TO_DATE: &str = "Everything up-to-date";

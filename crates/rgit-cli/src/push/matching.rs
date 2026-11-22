@@ -86,6 +86,7 @@ pub fn match_refs(
     specs: &RefspecSet,
     remote_push: Option<&RefspecSet>,
     force_all: bool,
+    prune: bool,
 ) -> (Vec<PushRef>, Vec<MatchError>) {
     let mut out: Vec<PushRef> = Vec::new();
     let mut errors = Vec::new();
@@ -141,6 +142,25 @@ pub fn match_refs(
             match explicit(local, remote, spec, remote_push) {
                 Ok((src, new, dst)) => add(&mut out, src, new, dst, spec.force),
                 Err(e) => errors.push(e),
+            }
+        }
+    }
+    // `--prune`: remote refs a pattern refspec covers whose source is gone
+    // locally are deleted.
+    if prune {
+        for spec in specs.positive().filter(|s| s.pattern) {
+            for r in remote {
+                let Some(src) = spec.map_dst(r.name.as_bytes()) else {
+                    continue;
+                };
+                let src = src.to_string();
+                if specs.is_excluded(src.as_bytes())
+                    || local.refs.iter().any(|(n, _)| *n == src)
+                    || out.iter().any(|o| o.dst == r.name)
+                {
+                    continue;
+                }
+                add(&mut out, None, None, r.name.clone(), spec.force);
             }
         }
     }
@@ -273,7 +293,7 @@ mod tests {
             })
             .collect();
         let set = RefspecSet::parse(specs, Direction::Push).unwrap();
-        let (out, errs) = match_refs(&local, &remote, &set, None, false);
+        let (out, errs) = match_refs(&local, &remote, &set, None, false, false);
         (
             out.into_iter().map(|r| (r.src, r.dst)).collect(),
             errs.into_iter().map(|e| e.error).collect(),
