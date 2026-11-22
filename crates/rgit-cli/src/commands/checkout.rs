@@ -66,9 +66,6 @@ impl Modes {
         if self.overlay.is_some() {
             return Err(Die::Fatal(rsmsg::OVERLAY_WITH_SWITCHING.to_owned()));
         }
-        if self.merge {
-            return Err(Die::Fatal(msg::not_supported("git checkout --merge")));
-        }
         Ok(())
     }
 
@@ -243,6 +240,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ignore_skip_worktree: skip_worktree_bits.get(),
         globals: repository::pathspec_globals(ctx),
     };
+    if modes.merge {
+        // Switching branches carries blocking local changes over.
+        sb::set_merge_mode(Some(sb::MergeMode {
+            env: ctx.child_env(),
+            style: modes.conflict.clone(),
+        }));
+    }
     let implied =track.is_given() && new_b.is_none() && new_bb.is_none() && orphan_name.is_none();
     let creating = implied || new_b.is_some() || new_bb.is_some() || orphan_name.is_some();
     if detach.get() && creating {

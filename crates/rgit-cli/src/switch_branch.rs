@@ -92,6 +92,49 @@ pub fn progress() -> bool {
     PROGRESS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// `-m`/`--merge` of the running `switch` / `checkout`: the environment
+/// of the child `stash` processes that carry the local changes over.
+static MERGE_MODE: std::sync::Mutex<Option<MergeMode>> = std::sync::Mutex::new(None);
+
+/// What `-m` needs to run the child `stash` commands.
+#[derive(Clone)]
+pub struct MergeMode {
+    pub env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    /// `--conflict=<style>`.
+    pub style: Option<String>,
+}
+
+/// Makes [`switch`] carry local changes that block the switch over with
+/// an autostash (`checkout -m`, `switch -m`); `env` is the environment of
+/// the child `stash` commands.
+pub fn set_merge_mode(mode: Option<MergeMode>) {
+    if let Ok(mut m) = MERGE_MODE.lock() {
+        *m = mode;
+    }
+}
+
+fn merge_mode() -> Option<MergeMode> {
+    MERGE_MODE.lock().ok().and_then(|m| m.clone())
+}
+
+/// Runs `rgit <args>` with `env`: (exit code, standard output, standard
+/// error).
+fn run_stash(mode: &MergeMode, args: &[&str]) -> Result<(i32, Vec<u8>, Vec<u8>), Die> {
+    let _ = std::io::stdout().flush();
+    let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut cmd = std::process::Command::new(exe);
+    if let Some(style) = &mode.style {
+        cmd.arg("-c").arg(format!("merge.conflictStyle={style}"));
+    }
+    let out = cmd
+        .args(args)
+        .envs(mode.env.iter().map(|(k, v)| (k, v)))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    Ok((out.status.code().unwrap_or(128), out.stdout, out.stderr))
+}
+
 /// `--ignore-other-worktrees` of the running `switch` / `checkout`.
 static IGNORE_OTHER_WORKTREES: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -235,6 +278,23 @@ pub fn move_index_with(
     force: bool,
     cmd: Porcelain,
 ) -> Result<Moved, Die> {
+    move_index_inner(repo, old, new, force, cmd, true)?.ok_or(Die::Exit(1))
+}
+
+/// [`move_index`] that answers `None`, without a message, when local
+/// changes would be overwritten.
+fn try_move_index(repo: &Repo, old: ObjectId, new: ObjectId) -> Result<Option<Moved>, Die> {
+    move_index_inner(repo, old, new, false, Porcelain::Checkout, false)
+}
+
+fn move_index_inner(
+    repo: &Repo,
+    old: ObjectId,
+    new: ObjectId,
+    force: bool,
+    cmd: Porcelain,
+    report: bool,
+) -> Result<Option<Moved>, Die> {
     let work_tree = repo.work_tree()?;
     let index_path = repo.setup.cwd.join(repo.index_path());
     let lock = LockFile::acquire(&index_path, &LockOptions::default()).map_err(lock_failed)?;
@@ -263,6 +323,9 @@ pub fn move_index_with(
     let plan = match rgit_unpack::plan(repo.odb(), &index, &merge, Some(&wt), &mut opts) {
         Ok(p) => p,
         Err(rgit_unpack::Error::Rejected(r)) => {
+            if !report {
+                return Ok(None);
+            }
             for m in r.porcelain_messages(cmd) {
                 eprintln!("error: {m}");
             }
@@ -291,7 +354,7 @@ pub fn move_index_with(
         }
         return Err(Die::Exit(128));
     }
-    Ok(Moved { changes })
+    Ok(Some(Moved { changes }))
 }
 
 /// `git diff-index --name-status <tree>` of the index and work tree: the
@@ -410,6 +473,8 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
     let skip_merge = !req.force
         && req.create.as_ref().is_some_and(|c| !c.start_given)
         && old_oid == Some(new_oid);
+    // Local changes were carried over with an autostash (`-m`).
+    let mut carried = false;
     let moved = if skip_merge {
         None
     } else {
@@ -418,12 +483,26 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
             _ => None,
         };
         crate::convert::set_checkout_meta(refname, Some(&new_oid));
-        let moved = move_index(repo, old_tree, new_tree, req.force);
+        let env = merge_mode().filter(|_| !req.force);
+        let moved = match &env {
+            Some(env) => match try_move_index(repo, old_tree, new_tree) {
+                Ok(Some(m)) => Ok(m),
+                Ok(None) => {
+                    carried = true;
+                    let names = (old_branch.as_deref(), &req.target);
+                    carry_over(repo, env, old_tree, new_tree, names, req.quiet)
+                }
+                Err(e) => Err(e),
+            },
+            None => move_index(repo, old_tree, new_tree, req.force),
+        };
         crate::convert::set_checkout_meta(None, None);
         Some(moved?)
     };
+    // After an autostash the local changes are listed after the switch.
+    let merging = carried;
     if let Some(m) = &moved {
-        if !req.quiet && !m.changes.is_empty() {
+        if !req.quiet && !m.changes.is_empty() && !merging {
             let mut o = std::io::stdout().lock();
             let _ = o.write_all(&m.changes);
             let _ = o.flush();
@@ -542,8 +621,93 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
         }
     }
     warn_cancelled(cancelled, req.quiet);
+    if merging && !req.quiet {
+        // The changes as they are after the autostash was applied.
+        let (index, mtime) = repo.read_index()?;
+        let checker = repo.checker(mtime)?;
+        let mut changes = local_changes(repo, &index, new_tree, &checker)?;
+        // Paths the autostash left conflicted count as modified here.
+        let mut at_line_start = true;
+        for b in &mut changes {
+            if at_line_start && *b == b'U' {
+                *b = b'M';
+            }
+            at_line_start = *b == b'\n';
+        }
+        if !changes.is_empty() {
+            let mut o = std::io::stdout().lock();
+            let _ = writeln!(o, "{}", msg::LOCAL_CHANGES_HEADER);
+            let _ = o.write_all(&changes);
+            let _ = o.flush();
+        }
+    }
     let code = crate::hooks::post_checkout(repo, old_oid, Some(new_oid), true)?;
     Ok(i32::from(code != 0))
+}
+
+/// `-m` when local changes block the switch: they are stashed, the index
+/// and work tree move to `new`, and the stash is applied there with the
+/// labels of the branches (`local` for the changes). A stash that does not
+/// apply cleanly is kept in the stash list (observed with the `git`
+/// binary).
+fn carry_over(
+    repo: &Repo,
+    env: &MergeMode,
+    old_tree: ObjectId,
+    new_tree: ObjectId,
+    (old_branch, target): (Option<&str>, &Target),
+    quiet: bool,
+) -> Result<Moved, Die> {
+    let target_name = match target {
+        Target::Branch(name) | Target::Detached { name } => name.clone(),
+    };
+    let message = msg::autostash_switching(&target_name);
+    let (code, out, _) = run_stash(env, &["stash", "create", &message])?;
+    let hex = String::from_utf8_lossy(&out).trim().to_owned();
+    if code != 0 || hex.is_empty() {
+        return Err(Die::Fatal(crate::messages::sequencer::could_not_read(
+            "stash",
+        )));
+    }
+    move_index(repo, old_tree, old_tree, true)?;
+    // Like git's autostash, a plain `stash apply` (no `--index`).
+    let apply = |labels: &[String]| -> Result<i32, Die> {
+        let mut args = vec!["stash", "apply", "-q"];
+        args.extend(labels.iter().map(String::as_str));
+        args.push(&hex);
+        Ok(run_stash(env, &args)?.0)
+    };
+    let moved = match move_index(repo, old_tree, new_tree, false) {
+        Ok(m) => m,
+        Err(e) => {
+            // The switch failed: the changes go back where they were.
+            if apply(&[])? == 0 {
+                eprintln!("{}", crate::messages::rebase::APPLIED_AUTOSTASH);
+            }
+            return Err(e);
+        }
+    };
+    let old_name = old_branch
+        .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_owned())
+        .unwrap_or_else(|| "HEAD".to_owned());
+    let labels = [
+        format!("--label-ours={target_name}"),
+        "--label-theirs=local".to_owned(),
+        format!("--label-base={old_name}"),
+    ];
+    if apply(&labels)? == 0 {
+        eprintln!("{}", crate::messages::rebase::APPLIED_AUTOSTASH);
+    } else {
+        run_stash(env, &["stash", "store", "-q", "-m", &message, &hex])?;
+        eprintln!(
+            "{}",
+            crate::messages::rebase::AUTOSTASH_APPLIED_WITH_CONFLICTS
+        );
+        if !quiet {
+            eprintln!();
+        }
+    }
+    Ok(moved)
 }
 
 /// "warning: cancelling a ... in progress" after [`remove_branch_state`]
