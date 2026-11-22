@@ -498,7 +498,7 @@ pub fn store_pack_stream(repo: &LocalRepo, reader: &mut dyn Read) -> Result<Rece
     repo.rescan_packs();
     Ok(ReceivedPack {
         objects: indexed.objects().iter().map(|o| o.id).collect(),
-        pack: stored.0,
+        pack: Some(stored.0),
         keep: stored.1,
         rounds: 0,
     })
