@@ -170,6 +170,7 @@ fn explore() {
         },
         minimal,
         anchors: anchors.iter().map(|s| s.as_bytes().to_vec()).collect(),
+        ..DiffOptions::default()
     };
     let alg_arg = format!("--diff-algorithm={alg}");
     let anchor_args: Vec<String> = anchors.iter().map(|s| format!("--anchored={s}")).collect();

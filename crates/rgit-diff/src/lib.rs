@@ -20,6 +20,7 @@ mod myers;
 mod patch;
 mod patience;
 mod unified;
+pub mod whitespace;
 
 pub use lines::{BINARY_CHECK_BYTES, is_binary, split_lines};
 pub use patch::{
@@ -27,6 +28,7 @@ pub use patch::{
     write_file_patch_extra, write_file_patch_with,
 };
 pub use unified::default_funcname;
+pub use whitespace::{IgnoreRegexes, Whitespace};
 
 /// The line-diff algorithm (`--diff-algorithm`, `diff.algorithm`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -72,6 +74,21 @@ pub struct DiffOptions {
     /// `--anchored=<text>`: line prefixes of anchor lines, used by the
     /// patience algorithm (anchored diff).
     pub anchors: Vec<Vec<u8>>,
+    /// Whitespace differences that do not count (`-w`, `-b`, ...).
+    pub whitespace: Whitespace,
+    /// `--ignore-blank-lines`.
+    pub ignore_blank_lines: bool,
+    /// `-I<regex>`.
+    pub ignore_regex: IgnoreRegexes,
+}
+
+impl DiffOptions {
+    /// Whether some differences are not shown (whitespace options, `-I`,
+    /// `--ignore-blank-lines`), so that two different texts may have an
+    /// empty diff.
+    pub fn ignores_changes(&self) -> bool {
+        self.whitespace.any() || self.ignore_blank_lines || !self.ignore_regex.0.is_empty()
+    }
 }
 
 impl Default for DiffOptions {
@@ -83,6 +100,9 @@ impl Default for DiffOptions {
             minimal: false,
             algorithm: Algorithm::Myers,
             anchors: Vec::new(),
+            whitespace: Whitespace::default(),
+            ignore_blank_lines: false,
+            ignore_regex: IgnoreRegexes::default(),
         }
     }
 }
@@ -107,7 +127,7 @@ pub struct Stats {
 
 /// Computes the edit script between two lists of lines.
 pub fn diff_lines(a: &[&[u8]], b: &[&[u8]], opts: &DiffOptions) -> Vec<Change> {
-    let (ia, ib, classes) = lines::intern(a, b);
+    let (ia, ib, classes) = lines::intern(a, b, &opts.whitespace);
     let (mut ca, mut cb) = match opts.algorithm {
         Algorithm::Myers => myers::diff(&ia, &ib, classes, opts.minimal),
         Algorithm::Patience => {
@@ -197,12 +217,16 @@ pub fn diff_text(a: &[u8], b: &[u8], opts: &DiffOptions) -> TextDiff {
     let la = split_lines(a);
     let lb = split_lines(b);
     let changes = diff_lines(&la, &lb, opts);
+    let shown = whitespace::shown_changes(&la, &lb, &changes, opts);
+    let groups = unified::hunk_groups(&changes, &shown, opts);
     let mut stats = Stats::default();
-    for c in &changes {
-        stats.deletions += c.a_len;
-        stats.insertions += c.b_len;
+    for &(i, j) in &groups {
+        for c in &changes[i..=j] {
+            stats.deletions += c.a_len;
+            stats.insertions += c.b_len;
+        }
     }
     let mut hunks = Vec::new();
-    unified::write_hunks(&la, &lb, &changes, opts, &mut hunks);
+    unified::write_hunks(&la, &lb, &changes, &groups, opts, &mut hunks);
     TextDiff { hunks, stats }
 }

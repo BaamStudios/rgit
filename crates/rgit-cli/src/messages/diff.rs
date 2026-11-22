@@ -172,3 +172,7 @@ pub fn rename_limit_hint(n: usize) -> String {
         "warning: you may want to set your diff.renameLimit variable to at least {n} and retry the command.\n"
     )
 }
+
+pub fn invalid_ignore_regex(pattern: &str) -> String {
+    format!("error: invalid regex given to -I: '{pattern}'\n")
+}

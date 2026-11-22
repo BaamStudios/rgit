@@ -73,34 +73,67 @@ fn push_line(out: &mut Vec<u8>, prefix: u8, line: &[u8]) {
     }
 }
 
-/// Writes the hunks for `changes` to `out`.
+/// The hunks as inclusive ranges of indices into `changes`: shown
+/// changes (see [`crate::whitespace::shown_changes`]) that are close
+/// enough are joined, with any changes between them.
+pub(crate) fn hunk_groups(
+    changes: &[Change],
+    shown: &[bool],
+    opts: &DiffOptions,
+) -> Vec<(usize, usize)> {
+    let join = 2 * opts.context + opts.interhunk_context;
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < changes.len() {
+        if !shown[i] {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        let mut k = i + 1;
+        // Lines added by ignored changes between `j` and `k` count as
+        // distance too (observed with git).
+        let mut ignored = 0;
+        while k < changes.len() {
+            if !shown[k] {
+                ignored += changes[k].b_len;
+                k += 1;
+                continue;
+            }
+            let gap = changes[k].a_start - (changes[j].a_start + changes[j].a_len) + ignored;
+            ignored = 0;
+            if gap > join {
+                break;
+            }
+            j = k;
+            k += 1;
+        }
+        groups.push((i, j));
+        i = j + 1;
+    }
+    groups
+}
+
+/// Writes the hunks `groups` of `changes` to `out`. Context lines are
+/// taken from the new side (they differ from the old side only in
+/// ignored whitespace).
 pub(crate) fn write_hunks(
     a: &[&[u8]],
     b: &[&[u8]],
     changes: &[Change],
+    groups: &[(usize, usize)],
     opts: &DiffOptions,
     out: &mut Vec<u8>,
 ) {
     let ctx = opts.context;
-    let mut i = 0;
     // Function-name search: lines before `scanned` were already searched;
     // `funcname` is the last match found there.
     let mut scanned = 0;
     let mut funcname: Option<usize> = None;
-    while i < changes.len() {
-        // Collect the changes that belong to one hunk.
-        let mut j = i;
-        while j + 1 < changes.len() {
-            let gap = changes[j + 1].a_start - (changes[j].a_start + changes[j].a_len);
-            if gap <= 2 * ctx + opts.interhunk_context {
-                j += 1;
-            } else {
-                break;
-            }
-        }
+    for &(i, j) in groups {
         let first = &changes[i];
         let last = &changes[j];
-        let pre = first.a_start.min(ctx);
+        let pre = first.a_start.min(first.b_start).min(ctx);
         let a_start = first.a_start - pre;
         let b_start = first.b_start - pre;
         let a_end = (last.a_start + last.a_len + ctx).min(a.len());
@@ -125,10 +158,12 @@ pub(crate) fn write_hunks(
         out.push(b'\n');
 
         let mut pa = a_start;
+        let mut pb = b_start;
         for c in &changes[i..=j] {
             while pa < c.a_start {
-                push_line(out, b' ', a[pa]);
+                push_line(out, b' ', b[pb]);
                 pa += 1;
+                pb += 1;
             }
             for line in &a[c.a_start..c.a_start + c.a_len] {
                 push_line(out, b'-', line);
@@ -137,12 +172,13 @@ pub(crate) fn write_hunks(
                 push_line(out, b'+', line);
             }
             pa = c.a_start + c.a_len;
+            pb = c.b_start + c.b_len;
         }
         while pa < a_end {
-            push_line(out, b' ', a[pa]);
+            push_line(out, b' ', b[pb]);
             pa += 1;
+            pb += 1;
         }
-        i = j + 1;
     }
 }
 

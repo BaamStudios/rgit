@@ -244,6 +244,11 @@ fn run_no_index(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts, args: &[Str
     }
     let hash = repo.map_or(HashKind::Sha1, |r| r.hash);
     let formats = opts.formats(true)?;
+    // The paths are relative to the directory the command started in,
+    // not to the top of the work tree.
+    if let Some(r) = repo {
+        let _ = std::env::set_current_dir(&r.setup.original_cwd);
+    }
     let (a, b) = (PathBuf::from(&args[0]), PathBuf::from(&args[1]));
     let meta = |p: &Path| {
         std::fs::symlink_metadata(p)

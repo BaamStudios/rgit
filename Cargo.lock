@@ -523,6 +523,7 @@ dependencies = [
 name = "rgit-diff"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "rgit-hash",
 ]
 
