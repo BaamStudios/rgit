@@ -140,6 +140,8 @@ pub struct Header {
     pub sequencing: Option<Sequencing>,
     /// A rebase in progress.
     pub rebasing: Option<Rebasing>,
+    /// A bisection in progress: where it started (see [`bisecting`]).
+    pub bisecting: Option<Option<String>>,
 }
 
 /// A cherry-pick or revert in progress, for the status banner.
@@ -191,6 +193,39 @@ pub fn sequencing(repo: &Repo) -> Option<Sequencing> {
         revert,
         commit: None,
     })
+}
+
+/// A bisection in progress (`BISECT_LOG`), for the status banner: the
+/// branch it started from (an abbreviated commit when it started on a
+/// detached `HEAD`), `None` when that is not known.
+pub fn bisecting(repo: &Repo) -> Option<Option<String>> {
+    let dir = repo.setup.cwd.join(&repo.setup.git_dir);
+    if !dir.join("BISECT_LOG").exists() {
+        return None;
+    }
+    let start = std::fs::read_to_string(dir.join("BISECT_START")).ok();
+    let start = start
+        .map(|s| s.trim_end_matches('\n').to_string())
+        .filter(|s| !s.is_empty());
+    Some(
+        start.map(|s| match ObjectId::from_hex(repo.hash, s.as_bytes()) {
+            Ok(id) => repo.abbrev(&id, repo.default_abbrev()),
+            Err(_) => s,
+        }),
+    )
+}
+
+/// The banner lines of a bisection in progress.
+pub fn bisecting_lines(start: &Option<String>, hints: bool) -> Vec<String> {
+    use crate::messages::bisect as bmsg;
+    let mut out = vec![match start {
+        Some(s) => bmsg::status_banner(s),
+        None => bmsg::status_banner_detached().to_string(),
+    }];
+    if hints {
+        out.push(bmsg::STATUS_RESET_HINT.to_string());
+    }
+    out
 }
 
 /// A rebase in progress (`.git/rebase-merge`), for the status banner.
@@ -392,6 +427,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
             amend: false,
             sequencing: sequencing(repo),
             rebasing: rebasing(repo),
+            bisecting: bisecting(repo),
         };
     };
     let branch = target
@@ -407,6 +443,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
         amend: false,
         sequencing: sequencing(repo),
         rebasing: rebasing(repo),
+        bisecting: bisecting(repo),
     }
 }
 
@@ -612,6 +649,12 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
     }
     if let Some(rb) = &header.rebasing {
         for l in rebasing_lines(rb, false, r.hints) {
+            line(&l);
+        }
+        line("");
+    }
+    if let Some(start) = &header.bisecting {
+        for l in bisecting_lines(start, r.hints) {
             line(&l);
         }
         line("");

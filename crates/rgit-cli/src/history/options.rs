@@ -118,6 +118,13 @@ pub struct Options {
     pub color: Option<ColorBool>,
     /// `--in-commit-order` (takes effect with `--objects`).
     in_commit_order: bool,
+    /// `--bisect`: add `refs/bisect/bad` and `^refs/bisect/good-*` (and,
+    /// for rev-list, show only the midpoint).
+    pub bisect: bool,
+    /// `--bisect-vars` (rev-list).
+    pub bisect_vars: bool,
+    /// `--bisect-all` (rev-list).
+    pub bisect_all: bool,
     /// State while parsing: an odd number of `--not` so far.
     negate: bool,
     /// State while parsing: `--exclude` patterns for the next ref set.
@@ -226,6 +233,9 @@ impl Options {
             mailmap: None,
             color: None,
             in_commit_order: false,
+            bisect: false,
+            bisect_vars: false,
+            bisect_all: false,
             negate: false,
             exclude: Vec::new(),
         }
@@ -372,6 +382,9 @@ impl Options {
                     o.set_objects(true);
                 }
                 "--in-commit-order" if cmd == Command::RevList => o.in_commit_order = true,
+                "--bisect" => o.bisect = true,
+                "--bisect-vars" if cmd == Command::RevList => o.bisect_vars = true,
+                "--bisect-all" if cmd == Command::RevList => o.bisect_all = true,
                 "--object-names" if cmd == Command::RevList => o.object_names = true,
                 "--no-object-names" if cmd == Command::RevList => o.object_names = false,
                 "--stdin" => {
@@ -640,6 +653,24 @@ impl Options {
             }
             _ => Syntax::Basic,
         };
+    }
+
+    /// `--bisect`: start at `refs/bisect/bad` (when `bad`) and exclude
+    /// `refs/bisect/good-*` (when `good`, some exist).
+    pub fn push_bisect_refs(&mut self, bad: bool, good: bool) {
+        if bad {
+            self.tips.push(Tip::Rev {
+                arg: "refs/bisect/bad".into(),
+                negate: false,
+            });
+        }
+        if good {
+            self.tips.push(Tip::Refs {
+                set: RefSet::Glob("refs/bisect/good-*".into()),
+                negative: true,
+                exclude: Vec::new(),
+            });
+        }
     }
 
     /// Start at `HEAD` (log without revisions).

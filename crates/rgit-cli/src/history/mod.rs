@@ -23,6 +23,7 @@ use rgit_date::DateContext;
 use rgit_hash::ObjectId;
 use rgit_object::{Commit, ObjectKind, TreeIter};
 use rgit_repo::Setup;
+use rgit_revwalk::bisect;
 use rgit_revwalk::revision::{self, ObjectLookup, RefLookup, Resolver};
 use rgit_revwalk::walk::grep::CommitGrep;
 use rgit_revwalk::walk::objects::{ItemKind, ObjectLister, TreeItem, TreeSource};
@@ -260,7 +261,13 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
         let _ = std::io::stdin().lock().read_to_end(&mut input);
         opts.read_stdin(&input)?;
     }
-    if opts.has_no_tips() && !opts.stdin {
+    if opts.bisect {
+        let bad = matches!(refs.resolve("refs/bisect/bad"), Ok(Some(r)) if r.oid.is_some());
+        let mut good = false;
+        let _ = refs.for_each_ref("refs/bisect/good-", &mut |_, _| good = true);
+        opts.push_bisect_refs(bad, good);
+    }
+    if opts.has_no_tips() && !opts.stdin && !opts.bisect {
         match cmd {
             Command::RevList => {
                 let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
@@ -321,9 +328,21 @@ pub fn walk_commits(ctx: &Context, args: &[String]) -> Result<Vec<ObjectId>, Die
     Ok(walk_args(ctx, args)?.commits)
 }
 
+/// The commits `rev-list <args>` lists, in walk order, each with its
+/// parents (for `bisect`).
+pub fn walk_with_parents(
+    ctx: &Context,
+    args: &[String],
+) -> Result<Vec<(ObjectId, Vec<ObjectId>)>, Die> {
+    let walked = walk_args(ctx, args)?;
+    Ok(walked.commits.into_iter().zip(walked.parents).collect())
+}
+
 /// The result of [`walk_args`].
 struct Walked {
     commits: Vec<ObjectId>,
+    /// The parents of each commit as the walk read them.
+    parents: Vec<Vec<ObjectId>>,
     other: Vec<(Vec<u8>, ObjectKind)>,
     /// A negative commit limited the walk.
     limited: bool,
@@ -406,11 +425,18 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
         walk.push_side(id, *negative, *side).map_err(walk_error)?;
     }
     let mut commits = Vec::new();
+    let mut parents = Vec::new();
     while let Some(s) = walk.next_shown().map_err(walk_error)? {
         commits.push(s.id);
+        parents.push(
+            walk.parents(&s.id)
+                .map(<[ObjectId]>::to_vec)
+                .unwrap_or_default(),
+        );
     }
     Ok(Walked {
         commits,
+        parents,
         other,
         limited,
         unsorted,
@@ -444,6 +470,8 @@ struct Printer<'r, 'a> {
     encoding: Vec<u8>,
     out: Vec<u8>,
     first: bool,
+    /// `--bisect-all`: the distance shown with the decorations.
+    dist: Option<usize>,
 }
 
 /// The `reference` format.
@@ -558,6 +586,9 @@ impl Printer<'_, '_> {
             None => {
                 line.extend_from_slice(mark.as_bytes());
                 line.extend_from_slice(self.name(&id, opts.abbrev_commit).as_bytes());
+                if let Some(d) = self.dist_decoration(&id) {
+                    line.extend_from_slice(&d);
+                }
                 for p in &related {
                     line.push(b' ');
                     // rev-list abbreviates only the commit itself.
@@ -595,6 +626,7 @@ impl Printer<'_, '_> {
                 let ts = String::from_utf8(line).unwrap_or_default();
                 let commit_name = format!("{ts}{commit_name}");
                 let decoration = match (&self.decorations, self.decorate) {
+                    _ if self.dist.is_some() => self.dist_decoration(&id).unwrap_or_default(),
                     (Some(d), true) => d.format(&id, &Parts::default(), self.deco_colors.as_ref()),
                     _ => Vec::new(),
                 };
@@ -621,6 +653,27 @@ impl Printer<'_, '_> {
         }
         self.flush_if_full();
         Ok(())
+    }
+
+    /// `--bisect-all`: the decorations of `id` followed by its distance,
+    /// ` (tag: v1, dist=2)`.
+    fn dist_decoration(&self, id: &ObjectId) -> Option<Vec<u8>> {
+        let dist = self.dist?;
+        let parts = Parts {
+            suffix: Vec::new(),
+            ..Parts::default()
+        };
+        let mut out = match &self.decorations {
+            Some(d) => d.format(id, &parts, None),
+            None => Vec::new(),
+        };
+        if out.is_empty() {
+            out.extend_from_slice(b" (");
+        } else {
+            out.extend_from_slice(b", ");
+        }
+        out.extend_from_slice(format!("dist={dist})").as_bytes());
+        Some(out)
     }
 
     /// Read commit `id` for showing, converted to the output encoding.
@@ -867,7 +920,15 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         Some(CommitGrep::new(&opts.grep).map_err(Die::Fatal)?)
     };
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
-    let mut walk = Walk::new(Commits { repo, grep }, opts.walk.clone());
+    let bisecting = cmd == Command::RevList && (opts.bisect || opts.bisect_vars || opts.bisect_all);
+    let mut walk_opts = opts.walk.clone();
+    if bisecting {
+        // The whole selection counts, whatever `-n` or `--reverse` say.
+        walk_opts.max_count = None;
+        walk_opts.skip = 0;
+        walk_opts.reverse = false;
+    }
+    let mut walk = Walk::new(Commits { repo, grep }, walk_opts);
     for (id, negative, side) in &resolved.commits {
         walk.push_side(id, *negative, *side).map_err(walk_error)?;
     }
@@ -943,6 +1004,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         encoding: recode::output_encoding(repo.config),
         out: Vec::with_capacity(1 << 16),
         first: true,
+        dist: None,
     };
     if is_user && cmd == Command::Log {
         let mut map = HashMap::new();
@@ -953,6 +1015,9 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     }
     if let Some(mode) = opts.objects {
         return run_objects(&mut p, &mut walk, &resolved, mode);
+    }
+    if bisecting {
+        return run_bisect(&mut p, &mut walk);
     }
     let (mut left, mut right) = (0usize, 0usize);
     while let Some(s) = walk.next_shown().map_err(walk_error)? {
@@ -979,6 +1044,99 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
 }
 
 /// `--objects`: the commits, then the tags, trees and blobs they need.
+/// `rev-list --bisect`, `--bisect-vars` and `--bisect-all`: the commit
+/// halfway between the included and the excluded ones (rgit_revwalk::bisect).
+fn run_bisect(p: &mut Printer<'_, '_>, walk: &mut Walk<Commits<'_, '_>>) -> Result<i32, Die> {
+    let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+    let opts = p.opts;
+    let mut list = Vec::new();
+    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+        if !s.boundary {
+            list.push(s.id);
+        }
+    }
+    let cands = bisect::candidates(
+        &list,
+        |id| {
+            walk.parents(id)
+                .map(<[ObjectId]>::to_vec)
+                .unwrap_or_default()
+        },
+        opts.walk.first_parent,
+    );
+    let found = bisect::find(&cands, opts.bisect_all);
+    let all = cands.len();
+    if opts.bisect_all {
+        let mut order = bisect::sorted(&cands, &found.weights);
+        let first = order.first().copied();
+        if opts.walk.reverse {
+            order.reverse();
+        }
+        let filter = decorate::Filter {
+            clear: true,
+            ..Default::default()
+        };
+        p.decorations = Some(Decorations::load(p.repo, &filter));
+        p.decorate = true;
+        for i in order {
+            p.dist = Some(bisect::distance(found.weights[i], all));
+            let s = Shown {
+                id: cands[i].id,
+                boundary: false,
+                side: None,
+            };
+            p.commit(walk, &s)?;
+        }
+        p.dist = None;
+        if opts.bisect_vars {
+            let Some(i) = first else {
+                p.flush();
+                return Ok(1);
+            };
+            p.out.extend_from_slice(b"------\n");
+            bisect_vars(p, &cands[i].id, bisect::Vars::new(found.weights[i], all));
+        }
+        p.flush();
+        return Ok(0);
+    }
+    let Some(best) = found.best else {
+        p.flush();
+        return Ok(if opts.bisect_vars { 1 } else { 0 });
+    };
+    if opts.bisect_vars {
+        bisect_vars(
+            p,
+            &cands[best].id,
+            bisect::Vars::new(found.weights[best], all),
+        );
+    } else if opts.count {
+        p.out.extend_from_slice(b"1\n");
+    } else {
+        let s = Shown {
+            id: cands[best].id,
+            boundary: false,
+            side: None,
+        };
+        p.commit(walk, &s)?;
+    }
+    p.flush();
+    Ok(0)
+}
+
+/// The shell assignments of `--bisect-vars`.
+fn bisect_vars(p: &mut Printer<'_, '_>, id: &ObjectId, v: bisect::Vars) {
+    let text = format!(
+        "bisect_rev='{}'\nbisect_nr={}\nbisect_good={}\nbisect_bad={}\nbisect_all={}\nbisect_steps={}\n",
+        id.to_hex(),
+        v.nr,
+        v.good,
+        v.bad,
+        v.all,
+        v.steps
+    );
+    p.out.extend_from_slice(text.as_bytes());
+}
+
 fn run_objects(
     p: &mut Printer<'_, '_>,
     walk: &mut Walk<Commits<'_, '_>>,
