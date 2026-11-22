@@ -46,6 +46,8 @@ pub struct ConnectSettings<'a> {
     pub upload_pack: Option<String>,
     /// `-4` / `-6`.
     pub ip: IpVersion,
+    /// `-v`: report connection steps (see [`ConnectOptions::verbose`]).
+    pub verbose: bool,
 }
 
 /// The protocol name `protocol.<name>.allow` uses for `url`.
@@ -190,6 +192,7 @@ impl Session {
         options.program = settings.upload_pack.clone();
         options.protocol_version = version;
         options.trace_name = Some(program.to_owned());
+        options.verbose = settings.verbose;
         let (mut reader, answered) = open(transport.as_mut(), &options, program)?;
         let proto = match answered {
             ProtocolVersion::V2 => {
@@ -458,8 +461,9 @@ impl Session {
                 client: Some(mut client),
                 ..
             } => {
+                // The service may end any way after the final flush.
                 client.close()?;
-                client.into_inner().close()?;
+                let _ = client.into_inner().close();
             }
             Proto::V0 { client: None, .. } => {}
         }

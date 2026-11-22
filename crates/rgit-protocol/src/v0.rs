@@ -236,7 +236,8 @@ impl<C: Duplex> Client<C> {
         if !self.stateless && !self.requested {
             let mut w = self.writer();
             w.flush_pkt()?;
-            self.send(&w.into_inner())?;
+            // A server that has gone away already does not need it.
+            let _ = self.send(&w.into_inner());
         }
         Ok(())
     }

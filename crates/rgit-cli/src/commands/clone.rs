@@ -73,6 +73,8 @@ struct Options {
     config: Vec<String>,
     server_options: Vec<String>,
     ip: IpVersion,
+    /// `-v` (connection steps of `git://`).
+    verbose: bool,
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
@@ -233,9 +235,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some((name, _)) = unsupported.iter().find(|(_, used)| *used) {
         return Err(Die::Fatal(msg::unsupported(name)));
     }
-    // -v, -j and --remote-submodules change nothing without submodules
-    // and progress meters.
-    let _ = (verbose.get(), jobs.get(), remote_submodules.get());
+    // -j and --remote-submodules change nothing without submodules.
+    let _ = (jobs.get(), remote_submodules.get());
 
     let mut opts = Options {
         quiet: quiet.get() > 0,
@@ -265,6 +266,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             6 => IpVersion::V6,
             _ => IpVersion::Any,
         },
+        verbose: verbose.get() > 0 && quiet.get() == 0,
     };
     if opts.bare {
         opts.no_checkout = true;
@@ -625,6 +627,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         base_env: ctx.child_env(),
         upload_pack: opts.upload_pack.clone(),
         ip: opts.ip,
+        verbose: opts.verbose,
     };
     let mut session = Session::connect(&source.url, &connect, "clone").map_err(|e| fatal(&e))?;
 

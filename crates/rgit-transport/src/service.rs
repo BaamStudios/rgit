@@ -44,6 +44,9 @@ pub struct ConnectOptions {
     /// The program name for packet traces of what the transport itself
     /// sends (the `git://` request line), e.g. `clone`, `fetch`.
     pub trace_name: Option<String>,
+    /// `-v`: report the steps of connecting (`git://`: host lookup and
+    /// connect) on stderr.
+    pub verbose: bool,
 }
 
 impl ConnectOptions {
@@ -55,6 +58,7 @@ impl ConnectOptions {
             protocol_version: ProtocolVersion::V0,
             extra_parameters: Vec::new(),
             trace_name: None,
+            verbose: false,
         }
     }
 

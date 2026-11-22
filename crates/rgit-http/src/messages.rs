@@ -114,6 +114,11 @@ pub fn too_slow(limit: u64, secs: u64) -> String {
 /// libcurl: the connection closed before a response.
 pub const EMPTY_REPLY: &str = "Empty reply from server";
 
+/// libcurl: a redirect to a protocol that is not allowed.
+pub fn protocol_disabled(scheme: &str) -> String {
+    format!("Protocol \"{scheme}\" not supported or disabled in libcurl")
+}
+
 /// libcurl: more than the allowed number of redirects.
 pub fn too_many_redirects(n: usize) -> String {
     format!("Maximum ({n}) redirects followed")

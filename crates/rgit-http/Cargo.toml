@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 rgit-config = { path = "../rgit-config" }
 rgit-protocol = { path = "../rgit-protocol" }
+rgit-remote = { path = "../rgit-remote" }
 rgit-trace = { path = "../rgit-trace" }
 rgit-transport = { path = "../rgit-transport" }
 thiserror = "2"

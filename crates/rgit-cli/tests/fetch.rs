@@ -337,6 +337,40 @@ fn protocol_v0_daemon_and_http() {
     }
 }
 
+/// `git://` details (t5570): `-v` reports the lookup and the connection,
+/// a newline in the URL is refused, the virtual host can be overridden;
+/// a local path starting with `-` is refused (t5810).
+#[test]
+fn git_daemon_details() {
+    let fx = fixture().git(["init", "-q", "--bare", "--", "cl/-repo.git"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let Some((_daemon, base)) = start_daemon(&fx) else {
+        return;
+    };
+    let mut fx = fx.git([
+        "-C",
+        "cl",
+        "remote",
+        "set-url",
+        "origin",
+        &format!("{base}/srv"),
+    ]);
+    compare(&mut fx, "cl", &["fetch", "-v"]);
+    compare(&mut fx, "cl", &["fetch", "-v", "-q"]);
+    let nl = format!("{base}/sr\nv");
+    compare(&mut fx, "cl", &["fetch", &nl]);
+    compare(&mut fx, "cl", &["fetch", "--", "-repo.git"]);
+    let path = server_path(&fx);
+    fx.compare(["ls-remote", &format!("{base}/srv")])
+        .in_dir("cl")
+        .env("PATH", path)
+        .env("GIT_OVERRIDE_VIRTUAL_HOST", "localhost")
+        .checks(CHECKS)
+        .run();
+}
+
 /// `git://` through `core.gitProxy`: a proxy script that runs the
 /// requested `upload-pack` locally (as in t5532).
 #[test]
