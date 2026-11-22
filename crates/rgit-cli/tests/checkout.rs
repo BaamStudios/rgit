@@ -77,3 +77,39 @@ fn checkout_paths() {
     let mut fx = fixture().git(["rm", "-q", "--cached", "b"]);
     fx.compare(["checkout", "HEAD", "b"]).run();
 }
+
+/// A commit whose subtree object is missing: `checkout`, `switch`,
+/// `reset --hard` and `read-tree` stop with "unable to read tree (<id>)"
+/// (t6030 "bisect fails if tree is broken").
+#[test]
+fn missing_subtree() {
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("a", "a\n")
+        .git(["add", "a"])
+        .git(["commit", "-q", "-m", "one"])
+        .git(["tag", "one"])
+        .tick()
+        .write("sub/x", "x\n")
+        .git(["add", "sub/x"])
+        .git(["commit", "-q", "-m", "two"])
+        .git(["tag", "two"])
+        .git(["checkout", "-q", "one"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let sub = String::from_utf8(fx.git_stdout(["rev-parse", "two:sub"])).unwrap();
+    let sub = sub.trim().to_owned();
+    let mut fx = fx.remove(format!(".git/objects/{}/{}", &sub[..2], &sub[2..]));
+    for args in [
+        &["checkout", "-q", "two", "--"][..],
+        &["checkout", "two"],
+        &["switch", "--detach", "two"],
+        &["reset", "--hard", "two"],
+        &["read-tree", "-m", "-u", "two"],
+        &["read-tree", "two"],
+    ] {
+        fx.compare(args).run();
+    }
+}

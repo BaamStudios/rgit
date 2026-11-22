@@ -597,3 +597,31 @@ fn delete_interpreted_names() {
         &[&["branch", "-D", "@{u}"]],
     );
 }
+
+/// A branch an interactive rebase or a bisection in this worktree works
+/// on cannot be deleted (t2400 "not allow to delete a branch under
+/// rebase").
+#[test]
+fn delete_branch_under_rebase_or_bisect() {
+    let fx = fixture()
+        .git(["checkout", "-q", "-b", "topic"])
+        .git(["commit", "-q", "--allow-empty", "-m", "two"])
+        .write_executable(".git/seq.sh", "#!/bin/sh\nsed -i 's/^pick/edit/' \"$1\"\n")
+        .env("GIT_SEQUENCE_EDITOR", ".git/seq.sh")
+        .git(["rebase", "-q", "-i", "HEAD~1"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx;
+    all_same(
+        &mut fx,
+        &[&["branch", "-D", "topic"], &["branch", "-d", "topic"]],
+    );
+    let mut fx = fixture()
+        .git(["checkout", "-q", "-b", "topic"])
+        .git(["commit", "-q", "--allow-empty", "-m", "two"])
+        .git(["checkout", "-q", "main"])
+        .git(["bisect", "start", "topic", "main"])
+        .git(["checkout", "-q", "topic"]);
+    all_same(&mut fx, &[&["branch", "-D", "main"]]);
+}

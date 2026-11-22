@@ -373,7 +373,16 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
         } else {
             format!("refs/heads/{name}")
         };
-        if !remote && c.current.as_deref() == Some(name.as_str()) {
+        // Checked out here, or a rebase or bisect here works on it.
+        let busy = (!remote)
+            .then(|| crate::worktrees::busy_here(c.setup, &refname))
+            .flatten();
+        if busy == Some(crate::worktrees::Busy::Bisect) && c.current.as_deref() != Some(name.as_str()) {
+            eprintln!("error: {}", msg::cannot_delete_for_bisect(name, &c.worktree_path()));
+            code = 1;
+            continue;
+        }
+        if !remote && (c.current.as_deref() == Some(name.as_str()) || busy.is_some()) {
             eprintln!("error: {}", msg::cannot_delete_checked_out(name, &c.worktree_path()));
             code = 1;
             continue;

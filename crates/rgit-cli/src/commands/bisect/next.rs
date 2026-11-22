@@ -87,6 +87,11 @@ impl Bisect<'_> {
             let top = order[0];
             let chosen = if skipped(top) {
                 let filtered: Vec<usize> = order.iter().copied().filter(|&i| !skipped(i)).collect();
+                if filtered.is_empty() {
+                    // Every candidate, the new commit included, is skipped.
+                    let sorted: Vec<ObjectId> = order.iter().map(|&i| cands[i].id).collect();
+                    return self.only_skipped(terms, &sorted, &ids);
+                }
                 filtered[skip_index(filtered.len())]
             } else {
                 top
@@ -186,7 +191,16 @@ impl Bisect<'_> {
     fn found(&mut self, terms: &Terms, id: &ObjectId) -> Result<Outcome, Die> {
         let hex = id.to_hex();
         self.say(&msg::first_bad(&hex, &terms.new));
-        let show = self.show(id)?;
+        let show = match self.show(id)? {
+            Ok(text) => text,
+            Err(stderr) => {
+                // The diffstat could not be computed (a broken tree): its
+                // error, then git's, and nothing is logged.
+                self.flush();
+                let _ = std::io::stderr().write_all(&stderr);
+                return Err(Die::Fatal(msg::unable_to_start_show(&hex)));
+            }
+        };
         self.out.push_str(&show);
         let subject = self.subject(id);
         self.append_log(&format!("{}\n", msg::first_bad_log(&terms.new, &hex, &subject)))?;
@@ -237,8 +251,9 @@ impl Bisect<'_> {
     }
 
     /// The log entry of the first new commit with its diffstat and
-    /// summary.
-    fn show(&self, id: &ObjectId) -> Result<String, Die> {
+    /// summary; `Err` with the error output of `diff-tree` when the
+    /// diffstat fails.
+    fn show(&self, id: &ObjectId) -> Result<Result<String, Vec<u8>>, Die> {
         let hex = id.to_hex();
         let _ = std::io::stdout().flush();
         let head = self
@@ -263,11 +278,14 @@ impl Bisect<'_> {
             .child(&["--no-pager", "diff-tree", "--stat", "--summary", &base, &hex])
             .output()
             .map_err(|e| Die::Fatal(e.to_string()))?;
+        if !stat.status.success() {
+            return Ok(Err(stat.stderr));
+        }
         if !stat.stdout.is_empty() {
             text.push('\n');
             text.push_str(&String::from_utf8_lossy(&stat.stdout));
         }
-        Ok(text)
+        Ok(Ok(text))
     }
 }
 

@@ -236,6 +236,27 @@ pub fn checked_out<'a>(
     })
 }
 
+/// What works on `refname` in the current worktree of `setup`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Busy {
+    Rebase,
+    Bisect,
+}
+
+/// Whether a rebase or bisect in the current worktree of `setup` works
+/// on `refname`.
+pub fn busy_here(setup: &Setup, refname: &str) -> Option<Busy> {
+    let git_dir = setup.cwd.join(&setup.git_dir);
+    if !busy_with(&git_dir, refname) {
+        return None;
+    }
+    let rebase = ["rebase-merge", "rebase-apply"].iter().any(|d| {
+        std::fs::read_to_string(git_dir.join(d).join("head-name"))
+            .is_ok_and(|s| s.trim_end() == refname)
+    });
+    Some(if rebase { Busy::Rebase } else { Busy::Bisect })
+}
+
 /// Whether a rebase or bisect in `git_dir` works on `refname`.
 fn busy_with(git_dir: &Path, refname: &str) -> bool {
     let read = |p: PathBuf| {

@@ -146,6 +146,11 @@ pub fn changes_from(from: &str, to: &str) -> String {
     format!("Changes from {from} to {to}:")
 }
 
+/// `-v` when the branch and the new base share no history.
+pub fn changes_to(to: &str) -> String {
+    format!("Changes to {to}:")
+}
+
 pub fn progress(n: usize, total: usize) -> String {
     format!("Rebasing ({n}/{total})")
 }

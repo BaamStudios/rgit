@@ -127,6 +127,46 @@ fn rev_list_bisect_options() {
     }
 }
 
+/// `--bisect` takes the refs `refs/bisect/<new>*` and `^refs/bisect/<old>*`
+/// by prefix, with the current terms (t1500 "rev-parse --bisect includes
+/// bad, excludes good", "rev-parse --bisect works with alternate terms").
+#[test]
+fn bisect_refs_by_prefix_and_terms() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx
+        .git(["update-ref", "refs/bisect/bad", "t10"])
+        .git(["update-ref", "refs/bisect/bad-1", "t11"])
+        .git(["update-ref", "refs/bisect/b", "t9"])
+        .git(["update-ref", "refs/bisect/good-a", "t2"])
+        .git(["update-ref", "refs/bisect/goodx", "t4"])
+        .git(["update-ref", "refs/bisect/go", "t6"]);
+    let cases: &[&[&str]] = &[
+        &["rev-parse", "--bisect"],
+        &["rev-parse", "--symbolic-full-name", "--bisect"],
+        &["rev-parse", "--symbolic", "--bisect"],
+        &["rev-parse", "--abbrev-ref", "--bisect"],
+        &["rev-parse", "--bisect", "HEAD"],
+        &["rev-list", "--bisect"],
+        &["rev-list", "--bisect-all", "--bisect"],
+        &["log", "--bisect", "--format=%s"],
+    ];
+    for args in cases {
+        fx.compare(*args).run();
+    }
+    let mut fx = fx
+        .git(["bisect", "start", "--term-old=aa", "--term-new=zz"])
+        .git(["update-ref", "refs/bisect/zz-1", "t8"])
+        .git(["update-ref", "refs/bisect/zz", "t7"])
+        .git(["update-ref", "refs/bisect/aa-1", "t1"])
+        .git(["update-ref", "refs/bisect/aab", "t3"]);
+    for args in cases {
+        fx.compare(*args).run();
+    }
+}
+
 #[test]
 fn session_good_bad_skip() {
     let mut fx = fixture();
@@ -183,6 +223,66 @@ fn session_skips_and_ranges() {
             // A commit both good and bad.
             &["bisect", "start", "t8", "t7"],
             &["bisect", "good", "t8"],
+            &["bisect", "reset"],
+        ],
+    );
+}
+
+#[test]
+fn first_bad_commit_with_missing_subtree() {
+    // t6030 "bisect: --no-checkout - target in breakage": the diffstat of
+    // the first bad commit cannot be computed.
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("a", "a\n")
+        .git(["add", "a"])
+        .git(["commit", "-q", "-m", "one"])
+        .git(["tag", "one"])
+        .tick()
+        .write("sub/x", "x\n")
+        .git(["add", "sub/x"])
+        .git(["commit", "-q", "-m", "two"])
+        .git(["tag", "two"])
+        .tick()
+        .write("a", "b\n")
+        .git(["commit", "-q", "-a", "-m", "three"])
+        .git(["tag", "three"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let sub = String::from_utf8(fx.git_stdout(["rev-parse", "two:sub"])).unwrap();
+    let sub = sub.trim().to_owned();
+    let mut fx = fx.remove(format!(".git/objects/{}/{}", &sub[..2], &sub[2..]));
+    steps(
+        &mut fx,
+        &[
+            &["bisect", "start", "three", "one", "--no-checkout"],
+            &["bisect", "bad", "two"],
+            &["bisect", "log"],
+            &["bisect", "reset"],
+        ],
+    );
+}
+
+#[test]
+fn session_bad_commit_also_skipped() {
+    let mut fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    // Every candidate left, the bad one included, is skipped (t6030
+    // "bisect skip: with commit both bad and skipped").
+    steps(
+        &mut fx,
+        &[
+            &["bisect", "start"],
+            &["bisect", "skip", "t4"],
+            &["bisect", "bad", "t4"],
+            &["bisect", "good", "t1"],
+            &["bisect", "skip"],
+            &["bisect", "good"],
+            &["bisect", "log"],
             &["bisect", "reset"],
         ],
     );
@@ -546,6 +646,10 @@ fn replay() {
         .write(
             "../unquoted.log",
             "git bisect start t7 t1\ngit bisect good t3\ngit bisect skip t4\ngit bisect bad t6\n",
+        )
+        .write(
+            "../old-new.log",
+            "git bisect start\ngit bisect old t1\ngit bisect new t8\ngit bisect new t5\n",
         );
     steps(
         &mut fx,
@@ -559,6 +663,11 @@ fn replay() {
             &["bisect", "replay", "../odd.log"],
             &["bisect", "reset"],
             &["bisect", "replay", "../unquoted.log"],
+            &["bisect", "reset"],
+            // The terms come from the first mark (t6030 "bisect replay with
+            // old and new").
+            &["bisect", "replay", "../old-new.log"],
+            &["bisect", "terms"],
             &["bisect", "reset"],
         ],
     );

@@ -655,21 +655,18 @@ impl Options {
         };
     }
 
-    /// `--bisect`: start at `refs/bisect/bad` (when `bad`) and exclude
-    /// `refs/bisect/good-*` (when `good`, some exist).
-    pub fn push_bisect_refs(&mut self, bad: bool, good: bool) {
-        if bad {
-            self.tips.push(Tip::Rev {
-                arg: "refs/bisect/bad".into(),
-                negate: false,
-            });
-        }
-        if good {
-            self.tips.push(Tip::Refs {
-                set: RefSet::Glob("refs/bisect/good-*".into()),
-                negative: true,
-                exclude: Vec::new(),
-            });
+    /// `--bisect`: start at the refs `refs/bisect/<new>*` (when `has_new`,
+    /// some exist) and exclude `refs/bisect/<old>*` (when `has_old`), as
+    /// the reference git matches them: by prefix, with the current terms.
+    pub fn push_bisect_refs(&mut self, new: &str, old: &str, has_new: bool, has_old: bool) {
+        for (term, negative, has) in [(new, false, has_new), (old, true, has_old)] {
+            if has {
+                self.tips.push(Tip::Refs {
+                    set: RefSet::Glob(format!("refs/bisect/{term}*")),
+                    negative,
+                    exclude: Vec::new(),
+                });
+            }
         }
     }
 
