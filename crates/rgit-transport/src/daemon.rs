@@ -142,6 +142,12 @@ impl Transport for DaemonTransport {
     fn connect(&mut self, options: &ConnectOptions) -> Result<Box<dyn Connection>> {
         let mut stream = self.open()?;
         let req = self.target.request(options);
+        if let Some(name) = &options.trace_name {
+            rgit_protocol::trace::Tracer::new(name.clone()).packet(
+                rgit_protocol::trace::Direction::Write,
+                rgit_protocol::trace::Traced::Data(&req),
+            );
+        }
         let len = req.len() + 4;
         stream.write_all(format!("{len:04x}").as_bytes())?;
         stream.write_all(&req)?;

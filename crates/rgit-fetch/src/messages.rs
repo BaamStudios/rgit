@@ -25,6 +25,16 @@ pub fn no_remote_helper(scheme: &str) -> String {
     format!("unable to find remote helper for '{scheme}'")
 }
 
+/// `fatal:` for a `protocol.version` other than 0, 1 or 2.
+pub fn unknown_protocol_version(value: &str) -> String {
+    format!("unknown value for config 'protocol.version': {value}")
+}
+
+/// `fatal:` for a `GIT_TEST_PROTOCOL_VERSION` other than 0, 1 or 2.
+pub fn unknown_test_protocol_version(value: &str) -> String {
+    format!("unknown value for GIT_TEST_PROTOCOL_VERSION: {value}")
+}
+
 /// `fatal:` when there is no URL to fetch from.
 pub const NO_URL: &str = "No remote repository specified.  Please, specify either a URL or a\n\
 remote name from which new revisions should be fetched.";

@@ -45,6 +45,49 @@ fn run(fx: &mut Fixture, cases: &[&[&str]]) {
     }
 }
 
+/// `protocol.version` (v1 asks for `version 1`, v2 falls back to v0) and
+/// `protocol.<name>.allow`.
+#[test]
+fn push_protocol_version_and_allow() {
+    let mut fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["-c", "protocol.version=1", "push", "origin", "main"][..],
+        &["-c", "protocol.version=2", "push", "origin", "main:b"],
+        &["-c", "protocol.version=0", "push", "origin", "main:c"],
+        &[
+            "-c",
+            "protocol.file.allow=never",
+            "push",
+            "origin",
+            "main:d",
+        ],
+        &["-c", "protocol.version=5", "push", "origin", "main:e"],
+    ] {
+        fx.compare(args).run();
+    }
+    // The client asks for version 1 and the server answers with it.
+    let trace = fx.work_dir().join("push.trace");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
+        .args(["-c", "protocol.version=1", "push", "origin", "main:f"])
+        .current_dir(fx.work_dir())
+        .env("HOME", fx.home_dir())
+        .env("XDG_CONFIG_HOME", fx.home_dir().join(".config"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TRACE_PACKET", &trace)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let t = std::fs::read_to_string(&trace).unwrap();
+    assert!(t.contains("push< version 1"), "{t}");
+}
+
 #[test]
 fn push_new_ff_force_delete_tags() {
     let mut fx = fixture();

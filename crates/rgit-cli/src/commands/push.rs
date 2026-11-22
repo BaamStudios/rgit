@@ -429,8 +429,22 @@ impl Push<'_> {
         let Some(mut transport) = rgit_http::transport_for(url, &settings).map_err(fatal)? else {
             return Err(Die::Fatal(msg::transport_not_supported(url)));
         };
+        rgit_remote::check_allowed(
+            rgit_fetch::protocol_name(url).as_bytes(),
+            self.config,
+            &env,
+        )
+        .map_err(fatal)?;
         let mut opts = ConnectOptions::new(Service::ReceivePack);
         opts.program = f.receive_pack.clone();
+        // There is no protocol v2 push: asking for 2 asks for nothing.
+        opts.protocol_version = match rgit_fetch::protocol_version(self.config, &env)
+            .map_err(fatal)?
+        {
+            rgit_protocol::ProtocolVersion::V1 => rgit_protocol::ProtocolVersion::V1,
+            _ => rgit_protocol::ProtocolVersion::V0,
+        };
+        opts.trace_name = Some("push".into());
         let conn = transport.connect(&opts).map_err(fatal)?;
         let mut session =
             send::start(conn, hash).map_err(|e| Die::Fatal(send::advertisement_error(&e)))?;

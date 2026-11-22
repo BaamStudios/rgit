@@ -251,6 +251,73 @@ fn clone_over_git_daemon_same_as_git() {
     );
 }
 
+/// Protocol v0 and v1 (`protocol.version`, `GIT_TEST_PROTOCOL_VERSION`)
+/// over `file://`, `git daemon` and smart HTTP.
+#[test]
+fn clone_protocol_v0_v1_same_as_git() {
+    let fx = source()
+        .git(["init", "-q", "--bare", "empty.git"])
+        .git(["init", "-q", "-b", "main", "headless"])
+        .git(["-C", "headless", "commit", "-q", "--allow-empty", "-m", "x"])
+        .git(["-C", "headless", "update-ref", "refs/notbranch/x", "HEAD"])
+        .git(["-C", "headless", "checkout", "-q", "--detach"])
+        .git(["-C", "headless", "branch", "-q", "-D", "main"])
+        .git(["-C", "headless", "symbolic-ref", "HEAD", "refs/heads/nope"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let Some((_daemon, daemon)) = start_daemon(&fx) else {
+        return;
+    };
+    let http = start_http(&fx);
+    let file = format!("file://{}", fx.work_dir().display());
+    let mut fx = fx;
+    let mut n = 0;
+    let all: &[(&[&str], &str)] = &[
+        (&[][..], "src"),
+        (&["--single-branch", "-b", "side"][..], "src"),
+        (&["--bare"][..], "src"),
+        (&["--mirror"][..], "src"),
+        (&[][..], "empty.git"),
+    ];
+    for (base, v, cases) in [
+        (&file, "protocol.version=0", all),
+        (&file, "protocol.version=1", &all[..1]),
+        (&daemon, "protocol.version=1", &all[..2]),
+        (&http, "protocol.version=0", &all[..2]),
+        (&http, "protocol.version=1", &all[4..]),
+    ] {
+        {
+            for &(extra, repo) in cases {
+                n += 1;
+                let dir = if extra.contains(&"--bare") || extra.contains(&"--mirror") {
+                    format!("p{n}.git")
+                } else {
+                    format!("p{n}")
+                };
+                let url = format!("{base}/{repo}");
+                let mut args = vec!["-c", v, "clone"];
+                args.extend_from_slice(extra);
+                args.push(&url);
+                args.push(&dir);
+                compare(&mut fx, &args, &dir);
+            }
+        }
+    }
+    let url = format!("{file}/headless");
+    compare(
+        &mut fx,
+        &["-c", "protocol.version=1", "clone", &url, "hl"],
+        "hl",
+    );
+    let path = server_path(&fx);
+    fx.compare(["clone", &format!("{file}/src"), "t0"])
+        .repo("t0")
+        .env("PATH", path)
+        .env("GIT_TEST_PROTOCOL_VERSION", "0")
+        .run();
+}
+
 #[test]
 fn clone_over_smart_http_same_as_git() {
     let fx = source().git(["init", "-q", "--bare", "empty.git"]);
