@@ -7,7 +7,7 @@
 //! Mail headers are written with `rgit_mail` (RFC 2047 encoding, quoting,
 //! folding). Not yet supported: `--attach`/`--inline`, `--base`,
 //! `--notes`, `--ignore-if-in-upstream`, `--interdiff`/`--range-diff`,
-//! `--commit-list-format` and binary patches.
+//! `--commit-list-format`.
 
 #[path = "format_patch/mail.rs"]
 mod mail;
@@ -607,6 +607,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if o.diff.abbrev.is_none() {
         o.diff.abbrev = Some(None);
     }
+    o.diff.binary = !o.no_binary;
     if o.diff.stat_width.is_none() {
         o.diff.stat_width = Some(72);
     }

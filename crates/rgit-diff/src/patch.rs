@@ -39,6 +39,8 @@ pub struct PatchOptions {
     pub dst_prefix: Vec<u8>,
     /// `-a` / `--text`: binary files get a text patch too.
     pub text: bool,
+    /// `--binary`: binary files as `GIT binary patch` data.
+    pub binary: bool,
 }
 
 impl Default for PatchOptions {
@@ -50,6 +52,7 @@ impl Default for PatchOptions {
             src_prefix: b"a/".to_vec(),
             dst_prefix: b"b/".to_vec(),
             text: false,
+            binary: false,
         }
     }
 }
@@ -255,14 +258,21 @@ pub fn write_file_patch_extra(
     if !content_changed && !extra.same_id_differs {
         return Stats::default();
     }
+    let binary = extra
+        .binary
+        .unwrap_or_else(|| !opts.text && (is_binary(old_data) || is_binary(new_data)));
     let kind = old.or(new).map(|f| f.oid.kind()).unwrap();
     let null = ObjectId::null(kind);
     let oa = old.map_or(null, |f| f.oid);
     let ob = new.map_or(null, |f| f.oid);
     // Without any object id (standard input against nothing) there is no
-    // index line.
+    // index line. Binary patches name the blobs in full.
     if content_changed && !(oa.is_null() && ob.is_null()) {
-        write!(out, "index {}..{}", abbrev(&oa), abbrev(&ob)).unwrap();
+        if binary && opts.binary {
+            write!(out, "index {}..{}", oa.to_hex(), ob.to_hex()).unwrap();
+        } else {
+            write!(out, "index {}..{}", abbrev(&oa), abbrev(&ob)).unwrap();
+        }
         if let (Some(o), Some(n)) = (old, new) {
             if o.mode == n.mode {
                 write!(out, " {:06o}", o.mode).unwrap();
@@ -284,11 +294,12 @@ pub fn write_file_patch_extra(
     if new.is_none() && extra.irreversible_delete {
         return Stats::default();
     }
-    if extra
-        .binary
-        .unwrap_or_else(|| !opts.text && (is_binary(old_data) || is_binary(new_data)))
-    {
-        messages::binary_files_differ(out, &a_shown, &b_shown);
+    if binary {
+        if opts.binary {
+            crate::binary::write_binary_patch(out, old_data, new_data);
+        } else {
+            messages::binary_files_differ(out, &a_shown, &b_shown);
+        }
         return Stats::default();
     }
     if extra.rewrite.is_some() {

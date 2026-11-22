@@ -131,7 +131,13 @@ pub struct Scoreboard<'r> {
     pub batches: Vec<usize>,
     settings: Settings,
     shallow: std::collections::HashSet<ObjectId>,
+    /// The textconv filter of a path's diff driver, applied to every
+    /// version (`--textconv`, on by default).
+    pub textconv: Option<TextConv<'r>>,
 }
+
+/// Converts the contents of a path (see [`Scoreboard::textconv`]).
+pub type TextConv<'r> = Box<dyn Fn(&[u8], Vec<u8>) -> Vec<u8> + 'r>;
 
 /// Why the computation stopped.
 #[derive(Debug)]
@@ -163,6 +169,7 @@ impl<'r> Scoreboard<'r> {
             batches: Vec::new(),
             settings,
             shallow,
+            textconv: None,
         }
     }
 
@@ -281,6 +288,10 @@ impl<'r> Scoreboard<'r> {
             return Ok(c.clone());
         }
         let (_, data) = self.read(&origin.blob)?;
+        let data = match &self.textconv {
+            Some(conv) => conv(&origin.path, data),
+            None => data,
+        };
         let blob = Rc::new(Blob::new(data));
         let _ = origin.content.set(blob.clone());
         Ok(blob)

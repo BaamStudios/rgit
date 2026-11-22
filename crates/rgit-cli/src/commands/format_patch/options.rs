@@ -51,6 +51,8 @@ pub struct Options {
     pub encoding: Option<String>,
     /// `-p` / `--no-stat`.
     pub no_stat: bool,
+    /// `--no-binary`: no binary patch data.
+    pub no_binary: bool,
     pub headers: Vec<HeaderOp>,
     /// `--from[=<ident>]`: `Some(None)` for the committer, `Some(Some(""))`
     /// after `--no-from`.
@@ -242,7 +244,8 @@ impl Options {
             ("zero-commit", None) => self.zero_commit = true,
             ("no-zero-commit", None) => self.zero_commit = false,
             ("no-stat", None) => self.no_stat = true,
-            ("binary", None) => {}
+            ("binary", None) => self.no_binary = false,
+            ("no-binary", None) => self.no_binary = true,
             ("to", Some(_)) => self.headers.push(HeaderOp::To(v())),
             ("no-to", None) => self.headers.push(HeaderOp::NoTo),
             ("cc", Some(_)) => self.headers.push(HeaderOp::Cc(v())),
@@ -288,7 +291,7 @@ impl Options {
             ("always" | "no-always", None) => {}
             ("no-attach" | "no-base" | "no-notes" | "no-progress" | "progress", None) => {}
             (
-                "attach" | "inline" | "base" | "notes" | "no-binary" | "interdiff" | "range-diff"
+                "attach" | "inline" | "base" | "notes" | "interdiff" | "range-diff"
                 | "creation-factor" | "commit-list-format",
                 _,
             ) => return Err(Die::Fatal(msg::not_supported(&format!("--{name}")))),

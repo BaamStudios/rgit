@@ -1273,6 +1273,8 @@ impl Printer<'_, '_> {
         w.walk(old_tree.as_ref(), Some(&tree), b"")?;
         let mut out =
             crate::diff::output::Output::new(Some(&d.repo), d.repo.hash, &d.opts, d.formats, true)?;
+        // log and show run textconv filters unless told not to.
+        out.textconv = d.opts.textconv.unwrap_or(true);
         out.set_color(&d.opts)?;
         let (bytes, _) = out.render(std::mem::take(&mut w.pairs))?;
         if bytes.is_empty() {

@@ -667,6 +667,7 @@ impl<'a> Output<'a> {
                 src_prefix: src,
                 dst_prefix: dst,
                 text: opts.text,
+                binary: opts.binary,
             },
             stat: StatLayout {
                 // The terminal width (porcelain) or 80, less the
@@ -1387,14 +1388,10 @@ impl<'a> Output<'a> {
                 let rgit_attr::State::Value(drv) = a.lookup(path, false).get(id).clone() else {
                     return Ok(None);
                 };
-                let key = format!("diff.{}.wordregex", String::from_utf8_lossy(&drv));
-                match repo.config.get(&key) {
-                    Some(e) => {
-                        let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
-                        Ok(Some(super::options::word_regex(&v)?))
-                    }
-                    None => Ok(None),
-                }
+                let attr = self
+                    .drivers
+                    .resolve(&repo.config, &rgit_attr::State::Value(drv))?;
+                Ok(attr.driver().and_then(|d| d.word_regex.clone()))
             };
             let mut driver_regexes = Vec::new();
             if need_driver {

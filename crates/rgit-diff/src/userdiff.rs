@@ -30,7 +30,7 @@ pub struct Builtin {
 
 /// Identifier-like runs, numbers with their suffixes and operators made of
 /// several characters, shared by C-like languages.
-const C_WORDS: &str = r"[A-Za-z_][A-Za-z0-9_]*|[-+]?[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?[A-Za-z]*|0[xXbB][0-9a-fA-F_]+[A-Za-z]*|[-+*/%&|^!=<>]=|--|\+\+|&&|\|\||<<=?|>>=?|->|::";
+const C_WORDS: &str = r"[A-Za-z_][A-Za-z0-9_]*|0[xXbB][0-9a-fA-F_]+[uUlL]*|[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?[fFlLuU]*|\.[0-9]+(?:[eE][-+]?[0-9]+)?[fFlL]*|->\*?|\.\*|<=>|<<=?|>>=?|[-+*/%&|^!=<>]=|--|\+\+|&&|\|\||::";
 
 /// The built-in drivers, sorted by name.
 pub const BUILTINS: &[Builtin] = &[
@@ -50,7 +50,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*((?:function[ \t]+[A-Za-z_][A-Za-z0-9_]*(?:[ \t]*\([ \t]*\)|[ \t]+)|[A-Za-z_][A-Za-z0-9_]*[ \t]*\([ \t]*\)).*)$",
         ],
         ignore_case: false,
-        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]*\}|[0-9]+|&&|\|\||<<|>>|[-+*/%=!<>]=",
+        word_regex: r"\$?[A-Za-z_][A-Za-z0-9_]*|\$[0-9#?*@!$-]|[0-9]+|--?[A-Za-z0-9][-A-Za-z0-9_]*|[-+*/%|^=!<>&]=|<<|>>|&&|\|\||:[-=+?]|##|%%|\^\^|,,",
     },
     Builtin {
         name: "bibtex",
@@ -84,7 +84,7 @@ pub const BUILTINS: &[Builtin] = &[
         name: "css",
         funcname: &[r"![:;][ \t]*$", r"^[:\[@.#]?[A-Za-z0-9_].*$"],
         ignore_case: true,
-        word_regex: r"-?[_A-Za-z][-_A-Za-z0-9]*|-?[0-9.]+[A-Za-z%]*|#[0-9A-Fa-f]+|[^ \t]",
+        word_regex: r"-?[_A-Za-z][-_A-Za-z0-9]*|-?[0-9]+(?:\.[0-9]+)?|#[0-9A-Fa-f]+|![A-Za-z]+",
     },
     Builtin {
         name: "dts",
@@ -94,7 +94,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*((?:/[ \t]*\{|&[A-Za-z_][A-Za-z0-9_,.+-]*[ \t]*\{|(?:[A-Za-z_][A-Za-z0-9_]*:[ \t]*)*[A-Za-z_][A-Za-z0-9_,.+-]*(?:@[0-9A-Za-z,._+-]+)?(?:[ \t]*/\*.*\*/)?[ \t]*\{).*)$",
         ],
         ignore_case: false,
-        word_regex: r"[A-Za-z_][A-Za-z0-9_,.+-]*|&[A-Za-z_][A-Za-z0-9_]*|0[xX][0-9a-fA-F]+|[0-9]+|<<|>>|&&|\|\||[=!<>]=",
+        word_regex: r"#?[A-Za-z_][-A-Za-z0-9_,.+!?]*|[0-9][-+0-9a-fA-FxX?]*|<<|>>|&&|\|\||[=!<>]=",
     },
     Builtin {
         name: "elixir",
@@ -127,7 +127,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*(type[ \t].*(?:struct|interface)[ \t]*(?:\{[ \t]*)?)",
         ],
         ignore_case: false,
-        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|[-+0-9.eE]+i?|0[xX]?[0-9a-fA-F]+i?|[-+*/%&|^=!<>]=|<-|--|\+\+|&&|\|\||<<=?|>>=?|&\^=?|:=|\.\.\.",
+        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|0[xXbBoO][0-9a-fA-F_]+i?|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?i?|[-+*/%&|^=!<>]=|<-|--|\+\+|&&|\|\||<<=?|>>=?|&\^=?|:=|\.\.\.",
     },
     Builtin {
         name: "html",
@@ -149,7 +149,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*((?:[A-Za-z_$<&,?][-A-Za-z0-9_$<>&,.?\[\]]*[ \t]+)+[A-Za-z_$][A-Za-z0-9_$]*[ \t]*\([^;]*)$",
         ],
         ignore_case: false,
-        word_regex: r"[A-Za-z_$][A-Za-z0-9_$]*|[-+0-9.eE]+[fFlLdD]?|0[xXbB]?[0-9a-fA-F_]+[lL]?|[-+*/%&|^!=<>]=|--|\+\+|&&|\|\||<<=?|>>>?=?|->|::",
+        word_regex: r"[A-Za-z_$][A-Za-z0-9_$]*|0[xXbB][0-9a-fA-F_]+[lL]?|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?[fFlLdD]?|[-+*/%&|^!=<>]=|--|\+\+|&&|\|\||<<=?|>>>?=?|->|::",
     },
     Builtin {
         name: "kotlin",
@@ -157,7 +157,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*((?:(?:public|private|protected|internal|open|abstract|final|sealed|data|enum|value|inline|annotation|inner|override|suspend|tailrec|operator|infix|external|expect|actual)[ \t]+)*(?:class|interface|fun)\b.*)$",
         ],
         ignore_case: false,
-        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|[-+0-9.eE]+[fFL]?|0[xXbB][0-9a-fA-F_]+L?|[-+*/%!=<>]=|--|\+\+|&&|\|\||->|::|\.\.|\?:|\?\.|!!",
+        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|0[xXbB][0-9a-fA-F_]+L?|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?[fFL]?|\.[0-9][0-9_]*(?:[eE][-+]?[0-9]+)?[fF]?|===|!==|<<=|>>=|[-+*/%!=<>&^|]=|--|\+\+|&&|\|\||->|::|\.\.|\?:|\?\.|!!",
     },
     Builtin {
         name: "markdown",
@@ -172,7 +172,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*((?:%%|##).*)$",
         ],
         ignore_case: false,
-        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|[-+0-9.eE]+|[=~<>]=|\.[*/\\^']|\|\||&&",
+        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|[-+]?[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?|[=~<>]=|\.[*/\\^\x27]|\|\||&&",
     },
     Builtin {
         name: "objc",
@@ -192,7 +192,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^(.*=[ \t]*(?:class|record).*)$",
         ],
         ignore_case: true,
-        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|[-+0-9.eE]+|0[xX]?[0-9a-fA-F]+|<>|<=|>=|:=|\.\.",
+        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|\$[0-9a-fA-F]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?|<>|<=|>=|:=|\.\.",
     },
     Builtin {
         name: "perl",
@@ -203,7 +203,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^=head[0-9].*$",
         ],
         ignore_case: false,
-        word_regex: r"[$@%&*]?[A-Za-z_][A-Za-z0-9_:]*|[-+0-9.eE]+|0[xXbB]?[0-9a-fA-F_]+|=>|->|::|\.\.\.?|<=>|[-+*/%.&|^!=<>~]=|\*\*|&&|\|\||//|<<|>>|=~|!~",
+        word_regex: r"[$@%&*]?[A-Za-z_][A-Za-z0-9_:]*|0[xXbB][0-9a-fA-F_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?|=>|->|::|\.\.\.?|<=>|[-+*/%.&|^!=<>~]=|\*\*|&&|\|\||//|<<|>>|=~|!~",
     },
     Builtin {
         name: "php",
@@ -212,25 +212,25 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*((?:(?:abstract|final)[ \t]+)*(?:class|enum|interface|trait)[ \t].*)$",
         ],
         ignore_case: false,
-        word_regex: r"\$?[A-Za-z_][A-Za-z0-9_]*|[-+0-9.eE]+|0[xXbB]?[0-9a-fA-F_]+|[-+*/%.&|^!=<>]=|===|!==|--|\+\+|&&|\|\||<<|>>|->|=>|::|\?\?",
+        word_regex: r"\$?[A-Za-z_][A-Za-z0-9_]*|0[xXbB][0-9a-fA-F_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?|===|!==|<<=|>>=|[-+*/%.&|^!=<>]=|--|\+\+|&&|\|\||<<|>>|->|=>|::|\?\?",
     },
     Builtin {
         name: "python",
         funcname: &[r"^[ \t]*((?:class|(?:async[ \t]+)?def)[ \t].*)$"],
         ignore_case: false,
-        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|[-+0-9.eE]+[jJlL]?|0[xXoObB]?[0-9a-fA-F_]+[lL]?|[-+*/%&|^=!<>]=|//=?|\*\*=?|<<=?|>>=?|->|:=",
+        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|0[xXoObB][0-9a-fA-F_]+[lL]?|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?[jJlL]?|//=?|\*\*=?|<<=?|>>=?|[-+*/%&|^=!<>]=|->|:=",
     },
     Builtin {
         name: "r",
         funcname: &[r"^[ \t]*([A-Za-z_.][A-Za-z0-9_.]*[ \t]*(?:<-|=)[ \t]*function.*)$"],
         ignore_case: false,
-        word_regex: r"[A-Za-z_.][A-Za-z0-9_.]*|[-+0-9.eE]+[iL]?|<<-|->>|<-|->|[=!<>]=|&&|\|\||%[^% ]*%",
+        word_regex: r"[A-Za-z_.][A-Za-z0-9_.]*|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?[iL]?|<<-|->>|<-|->|[=!<>]=|&&|\|\||%[^% ]*%",
     },
     Builtin {
         name: "ruby",
         funcname: &[r"^[ \t]*((?:class|module|def)[ \t].*)$"],
         ignore_case: false,
-        word_regex: r"[@$]{0,2}[A-Za-z_][A-Za-z0-9_]*[?!]?|:[A-Za-z_][A-Za-z0-9_]*|[-+0-9.eE]+|0[xXbB]?[0-9a-fA-F_]+|[-+*/%&|^!=<>]=|===|<=>|=~|!~|\*\*|&&|\|\||<<|>>|::|\.\.\.?",
+        word_regex: r"[@$]{0,2}[A-Za-z_][A-Za-z0-9_]*\??|:[A-Za-z_][A-Za-z0-9_]*|0[xXbB][0-9a-fA-F_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?|===|<=>|<<=?|>>=?|[-+*/%&|^!=<>]=|=~|!~|\*\*|&&|\|\||<<|>>|::|\.\.\.?",
     },
     Builtin {
         name: "rust",
@@ -250,7 +250,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*(\((?:module|library|class|struct)\*?[ \t].*)$",
         ],
         ignore_case: false,
-        word_regex: r"[^()\[\]{}'`,; \t]+|[()\[\]{}'`,]|,@",
+        word_regex: r"\|(?:[^\\|]|\\.)*\||[^()\[\]{}'`,; \t]+|[()\[\]{}'`,]|,@",
     },
     Builtin {
         name: "swift",
@@ -258,7 +258,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"^[ \t]*((?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?[ \t]+)*(?:(?:public|private|fileprivate|internal|open|static|class|final|override|mutating|nonmutating|convenience|required|dynamic|lazy|weak|unowned|indirect|nonisolated|async)[ \t]+)*(?:func|init[?!]?|deinit|subscript|class|struct|enum|protocol|extension|actor)\b.*)$",
         ],
         ignore_case: false,
-        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|[-+0-9.eE]+|0[xXbBoO][0-9a-fA-F_]+|[-+*/%&|^!=<>]=|===|!==|->|\.\.\.|\.\.<|&&|\|\||\?\?",
+        word_regex: r"[A-Za-z_][A-Za-z0-9_]*|0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?|===|!==|[-+*/%&|^!=<>]=|->|\.\.\.|\.\.<|&&|\|\||\?\?",
     },
     Builtin {
         name: "tex",
@@ -277,6 +277,19 @@ pub fn builtin(name: &str) -> Option<&'static Builtin> {
 }
 
 impl Builtin {
+    /// The compiled word pattern: the driver's words, else any multibyte
+    /// UTF-8 character or other non-space byte.
+    pub fn word_regex(&self) -> regex::bytes::Regex {
+        RegexBuilder::new(&format!(
+            "{}|[\\xc0-\\xff][\\x80-\\xbf]+|[^ \\t\\n\\r\\x0b\\x0c]",
+            self.word_regex
+        ))
+        .unicode(false)
+        .case_insensitive(self.ignore_case)
+        .build()
+        .expect("built-in word pattern compiles")
+    }
+
     /// The compiled function-name patterns.
     pub fn funcname(&self) -> FuncName {
         let patterns = self

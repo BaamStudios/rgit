@@ -46,6 +46,7 @@ struct Cli {
     show_stats: Cell<bool>,
     progress: Cell<i32>,
     score_debug: Cell<bool>,
+    textconv: Cell<i32>,
     show_name: Cell<i32>,
     show_number: Cell<bool>,
     porcelain: Cell<bool>,
@@ -90,6 +91,7 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
         progress: Cell::new(-1),
         show_name: Cell::new(-1),
         show_email: Cell::new(-1),
+        textconv: Cell::new(-1),
         ..Cli::default()
     };
     let mut parser = Parser::new(
@@ -105,6 +107,7 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             Opt::flag(None, "show-stats", &cli.show_stats, msg::HELP_SHOW_STATS),
             Opt::bool(None, "progress", &cli.progress, msg::HELP_PROGRESS),
             Opt::flag(None, "score-debug", &cli.score_debug, msg::HELP_SCORE_DEBUG),
+            Opt::bool(None, "textconv", &cli.textconv, msg::HELP_TEXTCONV).hidden(),
             Opt::bool('f', "show-name", &cli.show_name, msg::HELP_SHOW_NAME),
             Opt::flag('n', "show-number", &cli.show_number, msg::HELP_SHOW_NUMBER),
             Opt::flag('p', "porcelain", &cli.porcelain, msg::HELP_PORCELAIN),
@@ -349,6 +352,24 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
 
     let head = repo.resolve("HEAD").and_then(|h| peel_commit(&mut repo, h));
     let mut sb = Scoreboard::new(&repo, settings);
+    // Every version of a file goes through the textconv filter of its
+    // path's diff driver (not symbolic links: their target is shown as
+    // it is).
+    if cli.textconv.get() != 0 {
+        let repo_ref = &repo;
+        let commands: RefCell<HashMap<Vec<u8>, Option<String>>> = RefCell::new(HashMap::new());
+        sb.textconv = Some(Box::new(move |p: &[u8], data: Vec<u8>| {
+            let cmd = commands
+                .borrow_mut()
+                .entry(p.to_vec())
+                .or_insert_with(|| textconv_command(repo_ref, p))
+                .clone();
+            match cmd {
+                Some(cmd) => crate::diff::driver::run_textconv(&cmd, &data).unwrap_or(data),
+                None => data,
+            }
+        }));
+    }
     let mut fake: Option<(usize, Info)> = None;
     let contents = cli.contents.borrow().clone();
     let use_work_tree = positive.is_empty() && repo.setup.work_tree.is_some();
@@ -391,6 +412,10 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             n,
             Info::fake(name, mail, now, &tz, msg::summary(&path_str, &source)),
         ));
+        let data = match &sb.textconv {
+            Some(conv) => conv(&path, data),
+            None => data,
+        };
         sb.origin_with(n, &path, blob, Rc::new(Blob::new(data)))
     } else {
         let (name, id) = match positive.first() {
@@ -707,6 +732,24 @@ fn read_work_tree(repo: &Repo, path: &[u8], shown: &str) -> Result<Vec<u8>, Die>
     }
     repo.converter()?
         .to_git(path, data, rgit_convert::Options::QUIET)
+}
+
+/// The textconv program of `path`'s diff driver; none for a symbolic
+/// link in the work tree.
+fn textconv_command(repo: &Repo, path: &[u8]) -> Option<String> {
+    let link = repo.setup.work_tree.as_ref().is_some_and(|w| {
+        std::fs::symlink_metadata(w.join(String::from_utf8_lossy(path).as_ref()))
+            .is_ok_and(|m| m.file_type().is_symlink())
+    });
+    if link {
+        return None;
+    }
+    let rgit_attr::State::Value(v) = repo.converter().ok()?.attr(path, b"diff") else {
+        return None;
+    };
+    crate::diff::driver::load(&repo.config, &String::from_utf8_lossy(&v))
+        .ok()?
+        .textconv
 }
 
 /// `--contents <file>` (`-` for standard input).

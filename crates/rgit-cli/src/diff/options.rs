@@ -130,6 +130,8 @@ pub struct DiffOpts {
     pub textconv: Option<bool>,
     /// `--[no-]ext-diff` (`git diff` defaults to on).
     pub ext_diff: Option<bool>,
+    /// `--binary`: binary patches.
+    pub binary: bool,
 }
 
 /// How submodule changes are shown (`--submodule`, `diff.submodule`).
@@ -383,6 +385,10 @@ impl DiffOpts {
             "--no-prefix" => self.no_prefix = true,
             "--default-prefix" => self.default_prefix = true,
             "--myers" | "--default" => {}
+            "--binary" => {
+                self.format().patch = true;
+                self.binary = true;
+            }
             "--textconv" => self.textconv = Some(true),
             "--no-textconv" => self.textconv = Some(false),
             "--ext-diff" => self.ext_diff = Some(true),

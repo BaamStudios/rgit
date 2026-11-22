@@ -26,10 +26,26 @@
 //! - `--reject` implies `--verbose` (unless `--quiet`).
 //! - `--build-fake-ancestor` writes the index file and applies nothing.
 //!
-//! Not done yet (#150): `--3way`, binary patches, whitespace warnings and
-//! fixes (`--whitespace`, `--ignore-space-change` are accepted and
-//! ignored), `--inaccurate-eof` (accepted, ignored). Submodule (gitlink)
-//! patches are not supported.
+//! Binary patches (`GIT binary patch`, literal and delta) are applied
+//! when the preimage has the object id of the `index` line, and so must
+//! the result; without data the new blob must be in the repository.
+//!
+//! `--3way` merges from the preimage blob of the `index` line (labels
+//! `ours`/`theirs`, `merge.conflictStyle`, `--ours`/`--theirs`/`--union`),
+//! leaving conflicts in index stages 1-3; without the blob, and for
+//! created or deleted files, the patch is applied directly.
+//!
+//! Whitespace errors of added lines (`core.whitespace`, the `whitespace`
+//! attribute) are reported, fixed or fatal as `--whitespace` /
+//! `apply.whitespace` say; `--ignore-space-change` /
+//! `apply.ignoreWhitespace=change` match context lines regardless of the
+//! amount of whitespace.
+//!
+//! Submodules (gitlinks) are `Subproject commit <id>` texts: the preimage
+//! comes from the index (else the submodule's `HEAD`), the result goes
+//! into the index; their directories are only removed when empty.
+//! `--inaccurate-eof` drops the final line feed of the last lines of the
+//! last hunk.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -66,6 +82,48 @@ fn os_path(root: &Path, rel: &[u8]) -> PathBuf {
 
 /// The mode git records for a patch mode: symbolic link, gitlink, or a
 /// regular file that is executable when any owner execute bit is set.
+/// `--inaccurate-eof` (behaviour of the `git` binary): the last lines of
+/// the last hunk, on both sides, are taken to have no final line feed,
+/// whatever the patch says.
+fn inaccurate_eof(hunks: &[rgit_apply::Hunk]) -> Vec<rgit_apply::Hunk> {
+    let mut hunks = hunks.to_vec();
+    if let Some(h) = hunks.last_mut() {
+        let pre = h.lines.iter().rposition(|l| l.kind != LineKind::Add);
+        let post = h.lines.iter().rposition(|l| l.kind != LineKind::Remove);
+        for k in [pre, post].into_iter().flatten() {
+            if h.lines[k].text.ends_with(b"\n") {
+                h.lines[k].text.pop();
+            }
+        }
+    }
+    hunks
+}
+
+/// Mode of a submodule (gitlink).
+const GITLINK: u32 = 0o160000;
+
+/// The contents of a gitlink in a patch.
+fn gitlink_text(id: &rgit_hash::ObjectId) -> Vec<u8> {
+    format!("Subproject commit {}\n", id.to_hex()).into_bytes()
+}
+
+/// The commit named by gitlink contents.
+fn gitlink_id(hash: rgit_hash::HashKind, data: &[u8]) -> Option<rgit_hash::ObjectId> {
+    let hex = data.strip_prefix(b"Subproject commit ")?;
+    let hex = hex.strip_suffix(b"\n").unwrap_or(hex);
+    rgit_hash::ObjectId::from_hex(hash, hex).ok()
+}
+
+/// Removes a submodule directory if it is empty (git leaves a populated
+/// one in place with a warning).
+fn rmdir_submodule(full: &Path, shown: &str) {
+    if let Err(e) = std::fs::remove_dir(full) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("warning: {}", msg::unable_to_rmdir(shown, &crate::global::strerror(&e)));
+        }
+    }
+}
+
 fn canonical_mode(m: u32) -> u32 {
     match m & S_IFMT {
         S_IFLNK => S_IFLNK,
@@ -95,6 +153,33 @@ fn normalize_directory(d: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// `--whitespace=<action>` / `apply.whitespace`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum WsAction {
+    #[default]
+    NoWarn,
+    Warn,
+    Fix,
+    Error,
+    ErrorAll,
+}
+
+impl WsAction {
+    fn parse(v: &str) -> Option<WsAction> {
+        Some(match v {
+            "nowarn" => WsAction::NoWarn,
+            "warn" => WsAction::Warn,
+            "fix" | "strip" => WsAction::Fix,
+            "error" => WsAction::Error,
+            "error-all" => WsAction::ErrorAll,
+            _ => return None,
+        })
+    }
+}
+
+/// Errors shown before the rest are only counted.
+const WS_SHOWN: usize = 5;
+
 #[derive(Default)]
 struct Settings {
     stat: bool,
@@ -119,6 +204,24 @@ struct Settings {
     quote_path: bool,
     file_mode: bool,
     symlinks: bool,
+    /// `--3way`, with `--ours`/`--theirs`/`--union` and
+    /// `merge.conflictStyle`.
+    threeway: bool,
+    favor: rgit_diff::merge::Favor,
+    conflict_style: rgit_diff::merge::ConflictStyle,
+    ws_action: WsAction,
+    /// `--inaccurate-eof`.
+    inaccurate_eof: bool,
+    /// `core.whitespace`.
+    ws_rule: rgit_diff::ws_rule::WsRule,
+}
+
+/// Whitespace errors found so far (over all inputs).
+#[derive(Default)]
+struct WsCount {
+    lines: usize,
+    shown: usize,
+    squelched: usize,
 }
 
 /// Where the content of a path stands after earlier patches of the same
@@ -142,6 +245,9 @@ struct Plan {
     created: bool,
     /// 1-based numbers of rejected hunks.
     rejected: Vec<usize>,
+    /// A three-way merge with conflicts: the base blob and the contents
+    /// of ours and theirs (index stages 1-3).
+    conflict: Option<(Option<rgit_hash::ObjectId>, Vec<u8>, Vec<u8>)>,
 }
 
 struct State<'a> {
@@ -154,6 +260,11 @@ struct State<'a> {
     index: Option<Index>,
     checker: Option<Checker>,
     index_changed: bool,
+    /// A `--3way` merge left conflicts (exit code 1).
+    conflicted: bool,
+    ws: WsCount,
+    /// The summary of fatal whitespace errors was printed.
+    ws_summary_printed: bool,
     parse_opts: ParseOptions,
 }
 
@@ -244,6 +355,16 @@ impl State<'_> {
     /// mode, `Ok(None)` when it does not exist there.
     fn original(&self, path: &[u8]) -> Result<Option<(Vec<u8>, u32)>, String> {
         let shown = lossy(path);
+        // A submodule is its recorded commit, as `Subproject commit <id>`.
+        if let Some(e) = self.index_entry(path).filter(|e| e.mode.is_gitlink()) {
+            return Ok(Some((gitlink_text(&e.id), GITLINK)));
+        }
+        if !(self.s.cached || self.s.index || path.is_empty()) {
+            let full = os_path(&self.root, path);
+            if let Some(id) = crate::repository::submodule_head(&full, self.hash()) {
+                return Ok(Some((gitlink_text(&id), GITLINK)));
+            }
+        }
         if self.s.cached || self.s.index {
             let Some(entry) = self.index_entry(path) else {
                 return Ok(None);
@@ -408,7 +529,26 @@ impl State<'_> {
             }
         }
         let created = p.is_new == Some(true);
-        if created {
+        // `--3way` turns a creation of a path that is in the index into
+        // a merge of both additions.
+        let mut add_add: Option<Vec<u8>> = None;
+        if created && self.s.threeway {
+            let path = p.new_name.clone().unwrap_or_default();
+            if !removed(&path, table) {
+                if let Some(e) = self.index_entry(&path).filter(|e| !e.flags.intent_to_add) {
+                    let e = e.clone();
+                    let blob = self.read_blob(&e).map_err(&fail)?;
+                    if self.s.index {
+                        let wt = self.read_worktree(&path).ok().flatten();
+                        if wt.is_none_or(|(d, _)| d != blob) {
+                            return Err(fail(msg::does_not_match_index(&lossy(&path))));
+                        }
+                    }
+                    add_add = Some(blob);
+                }
+            }
+        }
+        if created && add_add.is_none() {
             let path = p.new_name.clone().unwrap_or_default();
             let shown = lossy(&path);
             let gone = removed(&path, table);
@@ -456,53 +596,63 @@ impl State<'_> {
                 .or(p.new_name.as_deref())
                 .unwrap_or_default(),
         );
-        if p.binary {
-            let full = |o: &Option<String>| o.as_ref().is_some_and(|h| h.len() == self.hash().hex_len());
-            let m = if !full(&p.old_oid) || !full(&p.new_oid) {
-                msg::binary_without_index(&name_for_fail)
+        let three = if self.s.threeway && !p.binary {
+            self.three_way(p, &image, created, add_add.as_deref())
+        } else {
+            None
+        };
+        let mut conflict = None;
+        let (content, rejected) = if let Some((merged, stages)) = three {
+            conflict = stages;
+            (merged, Vec::new())
+        } else if p.binary {
+            (self.binary_content(p, &image, &name_for_fail)?, Vec::new())
+        } else {
+            let eof_fixed;
+            let hunks = if self.s.inaccurate_eof {
+                eof_fixed = inaccurate_eof(&p.hunks);
+                &eof_fixed
             } else {
-                msg::binary_unsupported(&name_for_fail)
+                &p.hunks
             };
-            eprintln!("error: {m}");
-            return Err(fail(msg::does_not_apply(&name_for_fail)));
-        }
-        let applied = rgit_apply::apply_hunks(&image, &p.hunks, &self.s.match_opts);
-        let mut rejected = Vec::new();
-        for (k, r) in applied.hunks.iter().enumerate() {
-            match r {
-                HunkResult::Applied {
-                    line,
-                    offset,
-                    reduced,
-                } => {
-                    if self.s.verbose && *offset != 0 {
-                        eprintln!("{}", msg::hunk_offset(k + 1, *line, *offset));
-                    }
-                    if let (true, Some((l, t))) = (self.s.verbose, reduced) {
-                        eprintln!("{}", msg::context_reduced(*l, *t, *line));
-                    }
-                }
-                HunkResult::Failed { preimage } => {
-                    if self.s.verbose {
-                        eprintln!("error: {}\n{}", msg::WHILE_SEARCHING, lossy(preimage));
-                    }
-                    if !self.s.quiet {
-                        eprintln!(
-                            "error: {}",
-                            msg::patch_failed(&name_for_fail, p.hunks[k].old_start)
-                        );
-                    }
-                    if !self.s.reject {
-                        if !self.s.quiet {
-                            eprintln!("error: {}", msg::does_not_apply(&name_for_fail));
+            let applied = rgit_apply::apply_hunks(&image, hunks, &self.s.match_opts);
+            let mut rejected = Vec::new();
+            for (k, r) in applied.hunks.iter().enumerate() {
+                match r {
+                    HunkResult::Applied {
+                        line,
+                        offset,
+                        reduced,
+                    } => {
+                        if self.s.verbose && *offset != 0 {
+                            eprintln!("{}", msg::hunk_offset(k + 1, *line, *offset));
                         }
-                        return Err(Failure);
+                        if let (true, Some((l, t))) = (self.s.verbose, reduced) {
+                            eprintln!("{}", msg::context_reduced(*l, *t, *line));
+                        }
                     }
-                    rejected.push(k + 1);
+                    HunkResult::Failed { preimage } => {
+                        if self.s.verbose {
+                            eprintln!("error: {}\n{}", msg::WHILE_SEARCHING, lossy(preimage));
+                        }
+                        if !self.s.quiet {
+                            eprintln!(
+                                "error: {}",
+                                msg::patch_failed(&name_for_fail, p.hunks[k].old_start)
+                            );
+                        }
+                        if !self.s.reject {
+                            if !self.s.quiet {
+                                eprintln!("error: {}", msg::does_not_apply(&name_for_fail));
+                            }
+                            return Err(Failure);
+                        }
+                        rejected.push(k + 1);
+                    }
                 }
             }
-        }
-        let content = applied.content;
+            (applied.content, rejected)
+        };
         if p.is_delete == Some(true) && !content.is_empty() && rejected.is_empty() {
             return Err(fail(msg::REMOVAL_LEAVES_CONTENTS.to_string()));
         }
@@ -519,6 +669,7 @@ impl State<'_> {
             write: None,
             created,
             rejected,
+            conflict,
         };
         if p.is_delete == Some(true) {
             let o = p.old_name.clone().unwrap_or_default();
@@ -554,7 +705,12 @@ impl State<'_> {
         for plan in plans {
             let Some(path) = &plan.remove else { continue };
             if worktree {
-                let _ = rgit_unpack::remove_entry(&self.root, path, false);
+                let full = os_path(&self.root, path);
+                if std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()) {
+                    rmdir_submodule(&full, &lossy(path));
+                } else {
+                    let _ = rgit_unpack::remove_entry(&self.root, path, false);
+                }
             }
             if to_index {
                 if let Some(index) = &mut self.index {
@@ -566,6 +722,22 @@ impl State<'_> {
         }
         for plan in plans {
             let Some((path, data, mode)) = &plan.write else { continue };
+            if *mode == GITLINK {
+                // The submodule is not checked out: its directory is
+                // emptied and kept; the index records the commit.
+                if worktree {
+                    let full = os_path(&self.root, path);
+                    rmdir_submodule(&full, &lossy(path));
+                    let _ = std::fs::create_dir_all(&full);
+                }
+                if to_index {
+                    let Some(id) = gitlink_id(self.hash(), data) else {
+                        return Err(Die::Error(msg::bad_gitlink(&lossy(path)), 128));
+                    };
+                    self.add_entry(Entry::new(path.clone(), Stage::MERGED, IndexMode(GITLINK), id))?;
+                }
+                continue;
+            }
             let mut meta = None;
             if worktree {
                 // A leading symbolic link may only show up now (a renamed
@@ -621,7 +793,25 @@ impl State<'_> {
                     }
                 }
             }
-            if to_index {
+            if let (true, Some((base, ours, theirs))) = (to_index, &plan.conflict) {
+                if let Some(index) = &mut self.index {
+                    index.remove_path(path);
+                }
+                let ours = self.write_blob(ours)?;
+                let theirs = self.write_blob(theirs)?;
+                let stages = [(Stage::BASE, *base), (Stage::OURS, Some(ours)), (Stage::THEIRS, Some(theirs))];
+                for (stage, id) in stages {
+                    let Some(id) = id else { continue };
+                    let entry = Entry::new(path.clone(), stage, IndexMode(*mode), id);
+                    if let Some(index) = &mut self.index {
+                        if let Err(e) = index.add(entry, AddOptions::default()) {
+                            eprintln!("error: {e}");
+                            return Err(Die::Error(msg::unable_to_add(&lossy(path)), 128));
+                        }
+                        self.index_changed = true;
+                    }
+                }
+            } else if to_index {
                 let id = self.write_blob(data)?;
                 let mut entry = Entry::new(path.clone(), Stage::MERGED, IndexMode(*mode), id);
                 if let (true, Some(m)) = (self.s.index, &meta) {
@@ -643,6 +833,12 @@ impl State<'_> {
         }
         // Rejects and the final messages.
         let mut clean = true;
+        for plan in plans {
+            if let (Some(_), Some((path, _, _))) = (&plan.conflict, &plan.write) {
+                eprintln!("U {}", lossy(path));
+                self.conflicted = true;
+            }
+        }
         for plan in plans {
             let p = &patches[plan.patch];
             let shown = self.display(p);
@@ -684,6 +880,288 @@ impl State<'_> {
             }
         }
         Ok(clean)
+    }
+
+    /// The whitespace rule of `path`: `core.whitespace`, changed by the
+    /// `whitespace` attribute.
+    fn ws_rule_for(&self, path: &[u8]) -> rgit_diff::ws_rule::WsRule {
+        use rgit_diff::ws_rule::{self, WsRule};
+        let base = self.s.ws_rule;
+        let Some(conv) = self.repo.and_then(|r| r.converter().ok()) else {
+            return base;
+        };
+        match conv.attr(path, b"whitespace") {
+            rgit_attr::State::Set => WsRule {
+                bits: ws_rule::ATTRIBUTE_SET_RULES,
+                tab_width: base.tab_width,
+            },
+            rgit_attr::State::Unset => WsRule::none(base.tab_width),
+            rgit_attr::State::Value(v) => {
+                WsRule::parse(&String::from_utf8_lossy(&v)).unwrap_or(base)
+            }
+            rgit_attr::State::Unspecified => base,
+        }
+    }
+
+    /// Reports one whitespace error (the first few in full).
+    fn ws_report(&mut self, source: &str, line: usize, what: &str, text: &[u8]) {
+        if self.s.ws_action == WsAction::ErrorAll || self.ws.shown < WS_SHOWN {
+            self.ws.shown += 1;
+            eprintln!("{source}:{line}: {what}.\n{}", lossy(text));
+        } else {
+            self.ws.squelched += 1;
+        }
+    }
+
+    /// Looks for whitespace errors in the added lines (fixing them with
+    /// `--whitespace=fix`); returns how many lines have errors.
+    fn whitespace_check(&mut self, patches: &mut [FilePatch], source: &str) -> usize {
+        use rgit_diff::ws_rule;
+        let action = self.s.ws_action;
+        if action == WsAction::NoWarn {
+            return 0;
+        }
+        let kinds = [
+            (ws_rule::BLANK_AT_EOL, crate::messages::diff::WS_TRAILING),
+            (ws_rule::SPACE_BEFORE_TAB, crate::messages::diff::WS_SPACE_BEFORE_TAB),
+            (ws_rule::INDENT_WITH_NON_TAB, crate::messages::diff::WS_INDENT_WITH_SPACES),
+            (ws_rule::TAB_IN_INDENT, crate::messages::diff::WS_TAB_IN_INDENT),
+        ];
+        let mut found = 0;
+        for p in patches.iter_mut() {
+            if p.binary {
+                continue;
+            }
+            let path = p.new_name.clone().or_else(|| p.old_name.clone()).unwrap_or_default();
+            let rule = self.ws_rule_for(&path);
+            let mut reports = Vec::new();
+            for h in &mut p.hunks {
+                for l in &mut h.lines {
+                    if l.kind != LineKind::Add {
+                        continue;
+                    }
+                    let body = l.text.strip_suffix(b"\n").unwrap_or(&l.text).to_vec();
+                    let errors = ws_rule::check_line(&body, &rule).errors;
+                    if action == WsAction::Fix {
+                        l.text = ws_rule::fix_line(&l.text, &rule);
+                    }
+                    let names: Vec<&str> = kinds
+                        .iter()
+                        .filter(|(bit, _)| errors & bit != 0)
+                        .map(|(_, n)| *n)
+                        .collect();
+                    if names.is_empty() {
+                        continue;
+                    }
+                    found += 1;
+                    reports.push((l.line, names.join(", "), body));
+                }
+            }
+            for (line, names, text) in reports {
+                self.ws_report(source, line, &names, &text);
+            }
+        }
+        // New blank lines at the end of a file, found when the patches
+        // are applied: not when other errors already stop them.
+        let fatal = matches!(action, WsAction::Error | WsAction::ErrorAll);
+        if !(fatal && found > 0) {
+            for p in patches.iter_mut() {
+                let path = p.new_name.clone().or_else(|| p.old_name.clone()).unwrap_or_default();
+                if p.binary || !self.ws_rule_for(&path).has(ws_rule::BLANK_AT_EOF) {
+                    continue;
+                }
+                let Some(h) = p.hunks.last_mut() else { continue };
+                // The hunk ends the file when it has less than the usual
+                // trailing context; its end of blank lines, added or
+                // not, holds the new blank lines.
+                if h.trailing >= 3 || self.s.match_opts.unidiff_zero {
+                    continue;
+                }
+                let run = h
+                    .lines
+                    .iter()
+                    .rev()
+                    .take_while(|l| l.kind != LineKind::Remove && ws_rule::is_blank(&l.text))
+                    .count();
+                let tail = h.lines.len() - run;
+                let blank = h.lines[tail..]
+                    .iter()
+                    .filter(|l| l.kind == LineKind::Add)
+                    .count();
+                if blank == 0 {
+                    continue;
+                }
+                let line = h.lines[tail..]
+                    .iter()
+                    .find(|l| l.kind == LineKind::Add)
+                    .map_or(0, |l| l.line);
+                if action == WsAction::Fix {
+                    let mut k = 0;
+                    h.lines.retain(|l| {
+                        k += 1;
+                        k <= tail || l.kind != LineKind::Add
+                    });
+                    h.new_count -= blank;
+                    p.added = p.added.saturating_sub(blank);
+                    h.finish();
+                } else {
+                    found += 1;
+                }
+                self.ws_report(source, line, crate::messages::diff::WS_BLANK_AT_EOF, b"+");
+            }
+        }
+        self.ws.lines += found;
+        found
+    }
+
+    /// The summary of the whitespace errors; 128 when they are fatal.
+    fn ws_summary(&self) -> i32 {
+        let n = self.ws.lines;
+        if self.ws.squelched > 0 {
+            eprintln!("warning: {}", msg::ws_squelched(self.ws.squelched));
+        }
+        if n == 0 {
+            return 0;
+        }
+        match self.s.ws_action {
+            WsAction::NoWarn => 0,
+            WsAction::Warn => {
+                eprintln!("warning: {}", msg::ws_lines_add(n));
+                0
+            }
+            WsAction::Fix => {
+                eprintln!("warning: {}", msg::ws_lines_fixed(n));
+                0
+            }
+            WsAction::Error | WsAction::ErrorAll => {
+                eprintln!("error: {}", msg::ws_lines_add(n));
+                128
+            }
+        }
+    }
+
+    /// `--3way`: merge the change from the preimage blob named on the
+    /// `index` line to the patched blob into `ours`. `None` (after a
+    /// message) when that is not possible and the patch is applied
+    /// directly; else the result and, with conflicts, the index stages.
+    #[allow(clippy::type_complexity)]
+    fn three_way(
+        &self,
+        p: &FilePatch,
+        ours: &[u8],
+        created: bool,
+        add_add: Option<&[u8]>,
+    ) -> Option<(Vec<u8>, Option<(Option<rgit_hash::ObjectId>, Vec<u8>, Vec<u8>)>)> {
+        let fallback = |lacks: bool| {
+            if lacks {
+                eprintln!("error: {}", msg::LACKS_BLOB);
+            }
+            eprintln!("{}", msg::FALLING_BACK);
+            None
+        };
+        let (base_id, base, ours) = if let Some(existing) = add_add {
+            eprintln!("{}", msg::PERFORMING_3WAY);
+            // git records the empty base.
+            if self.s.index || self.s.cached {
+                let _ = self.write_blob(b"");
+            }
+            (None, Vec::new(), existing)
+        } else {
+            if created || p.is_delete == Some(true) {
+                return fallback(false);
+            }
+            let repo = self.repo?;
+            let base_id = p.old_oid.as_deref().and_then(|h| resolve_blob(repo, h));
+            let Some(base_id) = base_id else {
+                return fallback(true);
+            };
+            let Some(rgit_object::Object::Blob(base)) = repo.read_object(&base_id) else {
+                return fallback(true);
+            };
+            (Some(base_id), base.data, ours)
+        };
+        let applied = rgit_apply::apply_hunks(&base, &p.hunks, &self.s.match_opts);
+        if applied
+            .hunks
+            .iter()
+            .any(|h| matches!(h, HunkResult::Failed { .. }))
+        {
+            return fallback(false);
+        }
+        let theirs = applied.content;
+        let opts = rgit_diff::merge::MergeOptions {
+            style: self.s.conflict_style,
+            favor: self.s.favor,
+            marker_size: 0,
+            ours_label: b"ours",
+            base_label: b"base",
+            theirs_label: b"theirs",
+            diff: rgit_diff::merge::merge_diff_options(),
+        };
+        let name = lossy(p.new_name.as_deref().or(p.old_name.as_deref()).unwrap_or_default());
+        let Ok(result) = rgit_diff::merge::merge(&base, ours, &theirs, &opts) else {
+            return fallback(false);
+        };
+        if result.is_clean() {
+            eprintln!("{}", msg::applied_3way_cleanly(&name));
+            Some((result.content, None))
+        } else {
+            eprintln!("{}", msg::applied_3way_conflicts(&name));
+            Some((result.content, Some((base_id, ours.to_vec(), theirs))))
+        }
+    }
+
+    /// The result of a binary patch: the preimage must have the object
+    /// id of the `index` line, the result the new one. Without data the
+    /// new blob has to be in the repository.
+    fn binary_content(&self, p: &FilePatch, image: &[u8], name: &str) -> Result<Vec<u8>, Failure> {
+        let hash = self.hash();
+        let full = |o: &Option<String>| {
+            o.as_deref()
+                .filter(|h| h.len() == hash.hex_len())
+                .and_then(|h| rgit_hash::ObjectId::from_hex(hash, h.as_bytes()).ok())
+        };
+        let fail = |m: String| {
+            eprintln!("error: {m}");
+            eprintln!("error: {}", msg::does_not_apply(name));
+            Failure
+        };
+        let (old_id, new_id) = (full(&p.old_oid), full(&p.new_oid));
+        let blob_id = |data: &[u8]| rgit_hash::hash_object(hash, "blob", data).expect("hashable");
+        if p.binary_data.is_none() && (old_id.is_none() || new_id.is_none()) {
+            return Err(fail(msg::binary_without_index(name)));
+        }
+        if let Some(old) = old_id {
+            let have = blob_id(image);
+            let expected = if old.is_null() { blob_id(b"") } else { old };
+            if have != expected {
+                return Err(fail(msg::binary_preimage_mismatch(name, &have.to_hex())));
+            }
+        }
+        let result = match &p.binary_data {
+            Some((hunk, _)) if hunk.delta => rgit_pack::apply_delta(image, &hunk.data)
+                .map_err(|_| fail(msg::binary_delta_failed(name)))?,
+            Some((hunk, _)) => hunk.data.clone(),
+            None => {
+                let id = new_id.expect("checked");
+                if id.is_null() {
+                    Vec::new()
+                } else {
+                    match self.repo.and_then(|r| r.read_object(&id)) {
+                        Some(rgit_object::Object::Blob(b)) => b.data,
+                        _ => return Err(fail(msg::binary_without_index(name))),
+                    }
+                }
+            }
+        };
+        if let Some(new) = new_id {
+            let got = blob_id(&result);
+            let expected = if new.is_null() { blob_id(b"") } else { new };
+            if got != expected {
+                return Err(fail(msg::binary_wrong_result(name, &new.to_hex(), &got.to_hex())));
+            }
+        }
+        Ok(result)
     }
 
     fn hash(&self) -> rgit_hash::HashKind {
@@ -782,7 +1260,10 @@ impl State<'_> {
             patches.reverse();
         }
         let mut code = 0;
-        if self.s.check || self.s.apply {
+        let ws_errors = self.whitespace_check(&mut patches, source);
+        let ws_fatal =
+            ws_errors > 0 && matches!(self.s.ws_action, WsAction::Error | WsAction::ErrorAll);
+        if (self.s.check || self.s.apply) && !ws_fatal {
             let plans = self.check(&mut patches)?;
             if self.s.apply && !self.write(&patches, &plans)? {
                 code = 1;
@@ -790,6 +1271,12 @@ impl State<'_> {
         }
         if let Some(file) = &self.s.fake_ancestor {
             self.fake_ancestor(&patches, file)?;
+        }
+        let stats = self.s.stat || self.s.numstat || self.s.summary;
+        if ws_fatal && stats && !self.ws_summary_printed {
+            // The fatal errors are summed up before any statistics.
+            self.ws_summary_printed = true;
+            let _ = self.ws_summary();
         }
         let mut out = Vec::new();
         if self.s.stat {
@@ -1135,6 +1622,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag(None, "recount", &recount, msg::HELP_RECOUNT),
             Opt::string(None, "directory", &directory, "root", msg::HELP_DIRECTORY),
             Opt::flag(None, "allow-empty", &allow_empty, msg::HELP_ALLOW_EMPTY),
+            // Old options, accepted and ignored.
+            Opt::noop(None, "binary"),
+            Opt::noop(None, "allow-binary-replacement"),
         ],
     );
     let args = parser.parse(argv)?.args;
@@ -1155,15 +1645,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if conflict_style.get() != 0 && !threeway.get() {
         return Err(Die::Fatal(msg::OURS_NEEDS_3WAY.into()));
     }
-    if threeway.get() {
-        return Err(Die::Fatal(msg::THREEWAY_UNSUPPORTED.into()));
-    }
 
     let repo = Repo::open_gently(ctx)?;
     let in_worktree = repo
         .as_ref()
         .is_some_and(|r| r.setup.work_tree.is_some() && !r.setup.is_inside_git_dir());
-    let (index_wanted, cached_wanted) = (index.get() || cached.get(), cached.get());
+    let (index_wanted, cached_wanted) = (
+        index.get() || cached.get() || threeway.get(),
+        cached.get(),
+    );
     if index_wanted && repo.is_none() {
         let opt = if cached_wanted { "--cached" } else { "--index" };
         return Err(Die::Error(msg::outside_repository(opt), 128));
@@ -1181,13 +1671,41 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let file_mode = cfg_bool("core.filemode", true);
     let symlinks = cfg_bool("core.symlinks", true);
 
+    // `--whitespace`, else `apply.whitespace`; without either, warnings
+    // only when the patch is applied.
+    let applies = force_apply.get()
+        || !(stat.get()
+            || numstat.get()
+            || summary.get()
+            || check.get()
+            || fake_ancestor.borrow().is_some());
+    let ws_action = match whitespace.borrow().as_deref() {
+        Some(v) => WsAction::parse(v).expect("checked"),
+        None => match config.string("apply.whitespace").ok().flatten() {
+            Some(v) => {
+                let v = v.to_string();
+                WsAction::parse(&v).ok_or_else(|| Die::Error(msg::bad_whitespace(&v), 128))?
+            }
+            None if applies => WsAction::Warn,
+            None => WsAction::NoWarn,
+        },
+    };
+    let ignore_ws_config = match config.string("apply.ignorewhitespace").ok().flatten() {
+        Some(v) => match v.to_string().as_str() {
+            "change" => true,
+            "no" | "none" | "never" | "false" => false,
+            other => return Err(Die::Error(msg::bad_ignore_whitespace(other), 128)),
+        },
+        None => false,
+    };
+
     let quiet_v = quiet.get() > 0;
     let mut settings = Settings {
         stat: stat.get(),
         numstat: numstat.get(),
         summary: summary.get(),
         check: check.get(),
-        index: index.get() && !cached.get(),
+        index: (index.get() || threeway.get()) && !cached.get(),
         cached: cached.get(),
         ita: ita.get() && !index_wanted && in_worktree,
         unsafe_paths: unsafe_paths.get(),
@@ -1203,12 +1721,34 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             min_context: usize::try_from(context.get()).unwrap_or(usize::MAX),
             unidiff_zero: unidiff_zero.get(),
             allow_overlap: overlap.get(),
+            ignore_whitespace: ignore_ws.get() || ignore_ws_config,
         },
         filters: filters.take(),
         fake_ancestor: fake_ancestor.take(),
         quote_path,
         file_mode,
         symlinks,
+        threeway: threeway.get(),
+        favor: match conflict_style.get() {
+            1 => rgit_diff::merge::Favor::Ours,
+            2 => rgit_diff::merge::Favor::Theirs,
+            3 => rgit_diff::merge::Favor::Union,
+            _ => rgit_diff::merge::Favor::None,
+        },
+        conflict_style: config
+            .string("merge.conflictstyle")
+            .ok()
+            .flatten()
+            .and_then(|v| rgit_diff::merge::ConflictStyle::from_name(&v.to_string()))
+            .unwrap_or_default(),
+        ws_action,
+        inaccurate_eof: inaccurate_eof.get(),
+        ws_rule: config
+            .string("core.whitespace")
+            .ok()
+            .flatten()
+            .and_then(|v| rgit_diff::ws_rule::WsRule::parse(&v.to_string()).ok())
+            .unwrap_or_default(),
     };
     settings.apply = force_apply.get()
         || !(settings.stat
@@ -1230,11 +1770,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let writes_index = settings.apply && (index_wanted || settings.ita);
     // --build-fake-ancestor takes the blobs of patches without index lines
     // (pure renames and mode changes) from the index.
-    let needs_index = repo.is_some()
-        && (index_wanted
-            || settings.ita
-            || !settings.file_mode
-            || settings.fake_ancestor.is_some());
+    // Submodules take their commit from the index in every mode.
+    let needs_index = repo.is_some();
     let mut lock = None;
     let mut index_data = None;
     let mut checker = None;
@@ -1250,10 +1787,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 })?,
             );
         }
-        let (idx, mtime) = r.read_index()?;
-        index_data = Some(idx);
-        if in_worktree {
-            checker = Some(r.checker(mtime)?);
+        let wanted = index_wanted
+            || settings.ita
+            || !settings.file_mode
+            || settings.fake_ancestor.is_some();
+        match r.read_index() {
+            Ok((idx, mtime)) => {
+                index_data = Some(idx);
+                if in_worktree {
+                    checker = Some(r.checker(mtime)?);
+                }
+            }
+            Err(e) if wanted => return Err(e),
+            Err(_) => {}
         }
     }
 
@@ -1265,6 +1811,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         index: index_data,
         checker,
         index_changed: false,
+        conflicted: false,
+        ws: WsCount::default(),
+        ws_summary_printed: false,
         parse_opts: ParseOptions {
             p_value: p_value.get().unwrap_or(1),
             p_explicit: p_value.get().is_some(),
@@ -1310,5 +1859,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .and_then(|()| lock.commit())
             .map_err(|e| Die::Fatal(e.to_string()))?;
     }
-    Ok(code)
+    let ws = if state.ws_summary_printed {
+        128
+    } else {
+        state.ws_summary()
+    };
+    if ws != 0 {
+        return Ok(ws);
+    }
+    Ok(code | i32::from(state.conflicted))
 }

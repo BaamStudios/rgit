@@ -65,3 +65,14 @@ pub fn recount_unexpected(text: &str) -> String {
 pub fn inconsistent_lines(first: usize, second: usize) -> String {
     format!("inconsistent header lines {first} and {second}")
 }
+
+pub fn corrupt_binary(source: &str, line: usize, text: &str) -> String {
+    format!("corrupt binary patch at {source}:{line}: {text}")
+}
+
+/// Two lines: the patch is rejected and no valid patch is left.
+pub fn unrecognized_binary(source: &str, line: usize) -> String {
+    format!(
+        "unrecognized binary patch at {source}:{line}\nerror: No valid patches in input (allow with \"--allow-empty\")"
+    )
+}

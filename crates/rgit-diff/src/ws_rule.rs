@@ -252,6 +252,73 @@ pub fn check_line(line: &[u8], rule: &WsRule) -> LineCheck {
     }
 }
 
+/// Fixes `line` (with or without its line feed) for `rule`, as `git
+/// apply --whitespace=fix` does (checked against the `git` binary):
+/// trailing whitespace is removed (`blank-at-eol`); with `tab-in-indent`
+/// an indent with tabs becomes spaces of the same width; otherwise an
+/// indent is rewritten with tabs as far as possible when it has a run of
+/// at least `tabwidth` spaces (`indent-with-non-tab`), or, for
+/// `space-before-tab`, the part up to its last tab when that holds a
+/// space.
+pub fn fix_line(line: &[u8], rule: &WsRule) -> Vec<u8> {
+    let (body, eol): (&[u8], &[u8]) = match line.strip_suffix(b"\n") {
+        Some(b) => match b.strip_suffix(b"\r") {
+            Some(bb) if rule.has(CR_AT_EOL) => (bb, b"\r\n"),
+            _ => (b, b"\n"),
+        },
+        None => (line, b""),
+    };
+    let mut trail = body.len();
+    if rule.has(BLANK_AT_EOL) {
+        while trail > 0 && is_space(body[trail - 1]) {
+            trail -= 1;
+        }
+    }
+    let body = &body[..trail];
+    let indent_end = body
+        .iter()
+        .take_while(|&&c| c == b' ' || c == b'\t')
+        .count();
+    let indent = &body[..indent_end];
+    let tw = rule.tab_width.max(1);
+    let width_of = |part: &[u8]| {
+        part.iter().fold(
+            0usize,
+            |w, &c| {
+                if c == b'\t' { (w / tw + 1) * tw } else { w + 1 }
+            },
+        )
+    };
+    let tabs = |out: &mut Vec<u8>, w: usize| {
+        out.resize(out.len() + w / tw, b'\t');
+        out.resize(out.len() + w % tw, b' ');
+    };
+    let mut out = Vec::with_capacity(line.len());
+    let longest_run = indent
+        .split(|&c| c == b'\t')
+        .map(<[u8]>::len)
+        .max()
+        .unwrap_or(0);
+    let last_tab = indent
+        .iter()
+        .rposition(|&c| c == b'\t')
+        .map_or(0, |t| t + 1);
+    let errors = check_line(body, rule).errors;
+    if errors & TAB_IN_INDENT != 0 {
+        out.resize(width_of(indent), b' ');
+    } else if rule.has(INDENT_WITH_NON_TAB) && longest_run >= tw {
+        tabs(&mut out, width_of(indent));
+    } else if rule.has(SPACE_BEFORE_TAB) && indent[..last_tab].contains(&b' ') {
+        tabs(&mut out, width_of(&indent[..last_tab]));
+        out.extend_from_slice(&indent[last_tab..]);
+    } else {
+        out.extend_from_slice(indent);
+    }
+    out.extend_from_slice(&body[indent_end..]);
+    out.extend_from_slice(eol);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +373,17 @@ mod tests {
         assert_eq!(shape("       w", "indent"), (0, "tttttttt".into()));
         assert_eq!(shape("a \t", ""), (BLANK_AT_EOL, "tEE".into()));
         assert_eq!(shape("\td", ""), (0, "pt".into()));
+    }
+
+    #[test]
+    fn fixes() {
+        let fix = |l: &str, r: &str| {
+            String::from_utf8(fix_line(l.as_bytes(), &WsRule::parse(r).unwrap())).unwrap()
+        };
+        assert_eq!(fix("a \t\n", ""), "a\n");
+        assert_eq!(fix("  \tx \n", ""), "\tx\n");
+        assert_eq!(fix("        y\n", "indent"), "\ty\n");
+        assert_eq!(fix("\tz\n", "tab-in-indent,tabwidth=4"), "    z\n");
+        assert_eq!(fix("ok\n", "indent"), "ok\n");
     }
 }
