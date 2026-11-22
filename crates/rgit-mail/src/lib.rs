@@ -32,9 +32,10 @@ pub enum Context {
 }
 
 /// Whether `text` has to be written as encoded words: it contains bytes
-/// outside ASCII or something a reader would take for an encoded word.
+/// outside ASCII, a newline (a multi-line subject kept by `format-patch
+/// -k`) or something a reader would take for an encoded word.
 pub fn needs_encoding(text: &[u8]) -> bool {
-    !text.is_ascii() || text.windows(2).any(|w| w == b"=?")
+    !text.is_ascii() || text.contains(&b'\n') || text.windows(2).any(|w| w == b"=?")
 }
 
 /// The RFC 5322 "specials" that may not appear unquoted in a phrase.

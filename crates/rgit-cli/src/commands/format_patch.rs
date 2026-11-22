@@ -947,7 +947,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     for (i, p) in patches.iter().enumerate() {
         let n = s.start + i;
         let message = p.commit.message();
-        let (subject, mut body) = mail::split_message(message);
+        // `-k` keeps the newlines of a multi-line subject; they force the
+        // encoded form (without encoding they become spaces).
+        let sep = if s.keep_subject && s.encode {
+            b'\n'
+        } else {
+            b' '
+        };
+        let (subject, mut body) = mail::split_message_with(message, sep);
         if let Some(conf) = &trailer_conf {
             body = signoff(message, &subject, &body, &me, conf);
         }
