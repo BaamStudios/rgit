@@ -25,6 +25,7 @@ mod objects;
 mod pager;
 mod push;
 mod quote;
+mod rebase;
 mod ref_filter;
 mod refs;
 mod refs_support;

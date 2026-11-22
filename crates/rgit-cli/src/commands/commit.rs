@@ -1639,7 +1639,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             eprintln!("{}", msg::AMEND_EMPTY);
         }
         if cherry_pick_head.is_some() {
-            eprintln!("{}\n{}", msg::EMPTY_CHERRY_PICK, msg::EMPTY_CHERRY_PICK_SKIP);
+            let skip = if crate::rebase::in_progress(&git_dir) {
+                crate::messages::rebase::EMPTY_SKIP
+            } else {
+                msg::EMPTY_CHERRY_PICK_SKIP
+            };
+            eprintln!("{}\n{}", msg::EMPTY_CHERRY_PICK, skip);
         }
         let last = wt_status::nothing_line(&collected, &header, untracked, args.amend, hints);
         let text = wt_status::render(
@@ -1763,6 +1768,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         msg::REFLOG_AMEND
     } else if merging {
         msg::REFLOG_MERGE
+    } else if cherry_pick_head.is_some() && crate::rebase::in_progress(&git_dir) {
+        crate::messages::rebase::REFLOG_COMMIT_REBASE
     } else if cherry_pick_head.is_some() {
         msg::REFLOG_CHERRY_PICK
     } else if parents.is_empty() {
