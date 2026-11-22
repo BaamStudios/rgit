@@ -104,6 +104,9 @@ pub struct Opts {
     pub cleanup: Option<String>,
     /// `revert --reference`, `revert.reference`.
     pub reference: bool,
+    /// `-S[<key>]` or `commit.gpgSign` (resolved when the operation
+    /// starts).
+    pub gpg_sign: Option<crate::signing::Sign>,
 }
 
 impl Opts {
@@ -124,6 +127,7 @@ impl Opts {
             xopts: Vec::new(),
             cleanup: None,
             reference: false,
+            gpg_sign: None,
         }
     }
 
@@ -176,6 +180,11 @@ impl Opts {
         if let Some(c) = &self.cleanup {
             kv("default-msg-cleanup", c);
         }
+        match &self.gpg_sign {
+            Some(crate::signing::Sign::Key(k)) => kv("gpg-sign", k),
+            Some(crate::signing::Sign::Default) => kv("gpg-sign", ""),
+            None => {}
+        }
         out
     }
 
@@ -215,6 +224,7 @@ impl Opts {
                 "strategy" => self.strategy = Some(value),
                 "strategy-option" => self.xopts.push(value),
                 "default-msg-cleanup" => self.cleanup = Some(value),
+                "gpg-sign" => self.gpg_sign = Some(crate::signing::Sign::from_arg(Some(&value))),
                 _ => {}
             }
         }
@@ -748,6 +758,7 @@ impl<'c> Sequencer<'c> {
             if self.opts.allow_empty_message {
                 args.push("--allow-empty-message".into());
             }
+            args.push(self.sign_arg());
             let env = vec![("GIT_REFLOG_ACTION".to_owned(), self.reflog_action.clone())];
             let code = self.run_commit(&args, &env)?;
             if code != 0 {
@@ -988,8 +999,8 @@ impl<'c> Sequencer<'c> {
             encoding: encoding.as_deref(),
             message: &cleaned,
         };
-        let oid = rgit_commit::create_commit(repo.odb(), &new)
-            .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))?;
+        let oid = crate::signing::create_commit(repo, &new, self.opts.gpg_sign.as_ref())
+            .map_err(Fail::Die)?;
         let what = msg::reflog(&self.reflog_action, &lossy(cmsg::first_line(&cleaned)));
         update_head(self.ctx, repo, oid, head, &what)?;
         let o = RunOptions::with_args(std::iter::empty::<&str>());
@@ -1168,7 +1179,18 @@ impl<'c> Sequencer<'c> {
         if self.opts.allow_empty_message {
             args.push("--allow-empty-message".into());
         }
+        args.push(self.sign_arg());
         self.run_commit(&args, &[]).map_err(|f| self.fail(f))
+    }
+
+    /// The signing option for `git commit`: `-S[<key>]`, else
+    /// `--no-gpg-sign` (the request was resolved when the operation
+    /// started).
+    fn sign_arg(&self) -> String {
+        match &self.opts.gpg_sign {
+            Some(s) => s.to_opt(),
+            None => "--no-gpg-sign".to_owned(),
+        }
     }
 
     /// `--skip`: drop the commit that stopped and go on.

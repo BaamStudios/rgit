@@ -277,6 +277,8 @@ struct Am<'c> {
     ignore_date: bool,
     no_verify: bool,
     empty: Empty,
+    /// `-S[<key>]` / `--no-gpg-sign`, else `commit.gpgSign`.
+    sign: Option<crate::signing::Sign>,
 }
 
 /// How a patch ended when it did not end in a commit.
@@ -818,8 +820,7 @@ impl<'c> Am<'c> {
             encoding: encoding.as_deref(),
             message,
         };
-        let oid = rgit_commit::create_commit(repo.odb(), &new)
-            .map_err(|e| Die::Fatal(e.to_string()))?;
+        let oid = crate::signing::create_commit(&repo, &new, self.sign.as_ref())?;
         let action = std::env::var("GIT_REFLOG_ACTION")
             .ok()
             .filter(|s| !s.is_empty())
@@ -1385,7 +1386,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let committer_date = Cell::new(-1);
     let ignore_date = Cell::new(-1);
     let rerere = Cell::new(-1);
-    let gpg_sign = Cell::new(false);
+    let gpg_sign: RefCell<Option<Option<crate::signing::Sign>>> = RefCell::new(None);
     let empty: Cell<Empty> = Cell::new(Empty::Stop);
     let empty_error: RefCell<Option<String>> = RefCell::new(None);
     let rebasing = Cell::new(0);
@@ -1508,8 +1509,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ),
         Opt::bool(None, "ignore-date", &ignore_date, msg::HELP_IGNORE_DATE),
         Opt::bool(None, "rerere-autoupdate", &rerere, msg::HELP_RERERE),
-        Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |_, unset| {
-            gpg_sign.set(!unset);
+        Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |v, unset| {
+            *gpg_sign.borrow_mut() = Some((!unset).then(|| crate::signing::Sign::from_arg(v)));
             Ok(())
         })
         .optional(None),
@@ -1538,9 +1539,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if interactive.get() == 1 {
         return Err(Die::Fatal(msg::INTERACTIVE_UNSUPPORTED.to_owned()));
-    }
-    if gpg_sign.get() {
-        return Err(Die::Fatal(msg::GPG_UNSUPPORTED.to_owned()));
     }
     let format = match patch_format.borrow().as_deref() {
         None => None,
@@ -1614,8 +1612,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         committer_date_is_author_date: committer_date.get() == 1,
         ignore_date: ignore_date.get() == 1,
         no_verify: no_verify.get() == 1,
+        sign: None,
         empty: empty.get(),
     };
+    am.sign = crate::signing::resolve(&am.config, gpg_sign.into_inner());
 
     let in_progress = Am::in_progress(&dir);
     let mut mode = cmd.get();

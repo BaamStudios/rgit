@@ -39,6 +39,16 @@ pub trait Lookup {
     fn decoration(&self, id: &ObjectId, parts: &Parts, colors: Option<&Colors>) -> Vec<u8>;
     /// The note of `id` (`%N`).
     fn notes(&self, id: &ObjectId) -> Option<Vec<u8>>;
+    /// The signature check of commit `id` (`%G?` and the other `%G`
+    /// placeholders).
+    fn signature(
+        &self,
+        id: &ObjectId,
+        commit: &Commit,
+    ) -> std::rc::Rc<crate::signing::verify::Check> {
+        let _ = (id, commit);
+        std::rc::Rc::default()
+    }
 }
 
 /// Settings shared by every commit.
@@ -537,10 +547,16 @@ impl<L: Lookup> Expander<'_, L> {
                 if !b"G?SKFPT".contains(&k) {
                     return 0;
                 }
-                if k == b'?' {
-                    let signed =
-                        item.commit.gpgsig().is_some() || item.commit.gpgsig_sha256().is_some();
-                    out.push(if signed { b'E' } else { b'N' });
+                let c = self.lookup.signature(item.id, item.commit);
+                let text = |v: &Option<String>| v.as_deref().unwrap_or("").as_bytes().to_vec();
+                match k {
+                    b'?' => out.push(c.result),
+                    b'G' => out.extend_from_slice(&c.output),
+                    b'S' => out.extend(text(&c.signer)),
+                    b'K' => out.extend(text(&c.key)),
+                    b'F' => out.extend(text(&c.fingerprint)),
+                    b'P' => out.extend(text(&c.primary_key_fingerprint)),
+                    _ => out.extend_from_slice(c.trust.name().as_bytes()),
                 }
                 return 2;
             }

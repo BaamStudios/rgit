@@ -35,6 +35,7 @@ use rgit_revwalk::walk::{CommitInfo, CommitSource, Shown, Side, Walk};
 use crate::messages::rev_list as msg;
 use crate::repo::{self, Mode};
 use crate::revisions::{self, Config, IndexFile, Objects, Refs, WorkTree};
+use crate::signing::verify::{self, Check};
 use crate::{Context, Die};
 use decorate::{Colors, Decorations, Parts};
 pub use options::Options;
@@ -802,6 +803,14 @@ struct Printer<'r, 'a> {
     store: Option<crate::repo_objects::Repo>,
     /// `--disk-usage`: the bytes of the objects selected so far.
     usage: Option<u64>,
+    /// The `gpg.*` settings, when signatures are shown or formatted.
+    signing: Option<crate::signing::Settings>,
+    /// `--show-signature` (`log.showSignature`).
+    show_signature: bool,
+    /// The colours of good and bad signatures (when colouring).
+    signature_colors: Option<(String, String)>,
+    /// The last signature check (`%G?` and friends ask repeatedly).
+    signature_cache: std::cell::RefCell<Option<(ObjectId, std::rc::Rc<Check>)>>,
 }
 
 /// The `reference` format.
@@ -827,6 +836,10 @@ impl Lookup for FormatLookup<'_, '_, '_> {
     fn notes(&self, id: &ObjectId) -> Option<Vec<u8>> {
         let tree = self.p.notes?;
         note(self.p.repo, &tree, &id.to_hex())
+    }
+
+    fn signature(&self, id: &ObjectId, commit: &rgit_object::Commit) -> std::rc::Rc<Check> {
+        self.p.signature_check(id, &commit.serialize())
     }
 }
 
@@ -872,6 +885,70 @@ fn notes_tree(repo: &Repo<'_>) -> Option<ObjectId> {
 }
 
 impl Printer<'_, '_> {
+    /// The signature check of commit `id` (raw object `raw`), cached for
+    /// the placeholders of one commit.
+    fn signature_check(&self, id: &ObjectId, raw: &[u8]) -> std::rc::Rc<Check> {
+        if let Some((cached, c)) = &*self.signature_cache.borrow() {
+            if cached == id {
+                return c.clone();
+            }
+        }
+        let check = match (
+            &self.signing,
+            verify::commit_signature(self.repo.objects.hash_kind(), raw),
+        ) {
+            (Some(settings), Some((payload, sig))) => verify::check(settings, &payload, &sig),
+            _ => Check::default(),
+        };
+        let check = std::rc::Rc::new(check);
+        *self.signature_cache.borrow_mut() = Some((*id, check.clone()));
+        check
+    }
+
+    /// The `--show-signature` lines of commit `id`: the check of its own
+    /// signature and of the signed tags it merged (`mergetag`).
+    fn signature_block(&self, id: &ObjectId, commit: &rgit_object::Commit, raw: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        if !self.show_signature {
+            return out;
+        }
+        let Some(settings) = &self.signing else {
+            return out;
+        };
+        let min = settings.min_trust_or(crate::signing::Trust::Undefined);
+        let color = |good: bool| {
+            self.signature_colors
+                .as_ref()
+                .map(|(g, b)| if good { g.as_str() } else { b.as_str() })
+        };
+        for tag in commit.mergetags() {
+            let mut data = tag.to_vec();
+            if !data.ends_with(b"\n") {
+                data.push(b'\n');
+            }
+            let name = rgit_object::Tag::parse(self.repo.objects.hash_kind(), &data)
+                .ok()
+                .and_then(|t| t.name().map(|n| String::from_utf8_lossy(n).into_owned()))
+                .unwrap_or_default();
+            let mut text = crate::messages::signing::merged_tag(&name).into_bytes();
+            text.push(b'\n');
+            let good = match verify::tag_signature(&data) {
+                Some((payload, sig)) => {
+                    let c = verify::check(settings, &payload, &sig);
+                    text.extend_from_slice(&c.output);
+                    c.good(min)
+                }
+                None => false,
+            };
+            verify::show_lines(&text, color(good), &mut out);
+        }
+        if verify::commit_signature(self.repo.objects.hash_kind(), raw).is_some() {
+            let c = self.signature_check(id, raw);
+            verify::show_lines(&c.output, color(c.good(min)), &mut out);
+        }
+        out
+    }
+
     fn name(&self, id: &ObjectId, abbreviate: bool) -> String {
         if abbreviate {
             self.repo.abbrev(id, self.abbrev_len)
@@ -1029,6 +1106,7 @@ impl Printer<'_, '_> {
                     (Some(d), true) => d.format(&id, &Parts::default(), self.deco_colors.as_ref()),
                     _ => Vec::new(),
                 };
+                let signature = self.signature_block(&id, &commit, &raw);
                 let entry = Entry {
                     name: &commit_name,
                     shown_parents: &shown,
@@ -1036,6 +1114,7 @@ impl Printer<'_, '_> {
                     commit: &commit,
                     raw: &raw,
                     decoration: &decoration,
+                    signature: &signature,
                 };
                 if self.cmd == Command::RevList {
                     // rev-list ends every multi-line entry with an empty line
@@ -1981,6 +2060,30 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         None
     };
     let notes = if is_user { notes_tree(repo) } else { None };
+    let show_signature = cmd == Command::Log
+        && opts.show_signature.unwrap_or_else(|| {
+            repo.config
+                .bool("log.showsignature")
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+        });
+    let formats_signature = match &pretty {
+        Pretty::User { format, .. } => format.windows(2).any(|w| w == b"%G"),
+        _ => false,
+    };
+    let signing = if show_signature || formats_signature {
+        Some(crate::signing::Settings::from_config(repo.config)?)
+    } else {
+        None
+    };
+    let signature_colors = match &commit_color {
+        Some(_) if show_signature => {
+            let colors = crate::diff::color::DiffColors::from_config(repo.config)?;
+            Some((colors.frag, colors.whitespace))
+        }
+        _ => None,
+    };
     let style = Style {
         mailmap: use_mailmap.then(|| mailmap::Mailmap::load(repo)),
         pretty,
@@ -2022,6 +2125,10 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         },
         store: None,
         usage: opts.disk_usage.map(|_| 0),
+        signing,
+        show_signature,
+        signature_colors,
+        signature_cache: std::cell::RefCell::new(None),
     };
     if opts.graph {
         let palette = p

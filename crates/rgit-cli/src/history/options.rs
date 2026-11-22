@@ -133,6 +133,8 @@ pub struct Options {
     pub decorate_filter: Filter,
     /// `--no-notes` turns `%N` off.
     pub notes: bool,
+    /// `--[no-]show-signature`.
+    pub show_signature: Option<bool>,
     /// `-z` (log).
     pub zero: bool,
     /// `--[no-]commit-header` (rev-list with a user format).
@@ -299,6 +301,7 @@ impl Options {
             decorate_filter: Filter::default(),
             zero: false,
             notes: true,
+            show_signature: None,
             commit_header: true,
             mailmap: None,
             color: None,
@@ -642,7 +645,8 @@ impl Options {
                     o.abbrev_commit = true;
                 }
                 "--pretty" => o.pretty_arg = Some("medium".into()),
-                "--no-show-signature" => {}
+                "--show-signature" => o.show_signature = Some(true),
+                "--no-show-signature" => o.show_signature = Some(false),
                 "--no-notes" => o.notes = false,
                 "--no-decorate" => o.decorate = Some(Decorate::No),
                 "--decorate" => o.decorate = Some(Decorate::Short),
