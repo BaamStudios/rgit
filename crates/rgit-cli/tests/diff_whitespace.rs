@@ -88,3 +88,63 @@ fn bad_ignore_regex() {
         .checks(Check::OUTPUT)
         .run();
 }
+
+/// Whitespace errors: `--check`, their colours, `core.whitespace`, the
+/// `whitespace` attribute and `--ws-error-highlight`.
+#[test]
+fn whitespace_errors_match_git() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .write("f", "a\nb\n\nold \nq\r\n")
+        .write("g", "x\n")
+        .write("h", "one")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "first"])
+        .tick()
+        .write(
+            "f",
+            "a \nb\n  \tc\n\td\n        e\n\tx\r\n \t g \n\t \t\tz\n\nnew \nq\r\n\n\n",
+        )
+        .write("g", "x\n          y\n\t        w\nz")
+        .write("h", "two\n")
+        .write(".gitattributes", "g whitespace=indent,-trail\n");
+    let mut failures = Vec::new();
+    let configs: &[&[&str]] = &[
+        &[],
+        &["-c", "core.whitespace=tab-in-indent"],
+        &["-c", "core.whitespace=tab-in-indent,-space-before-tab"],
+        &["-c", "core.whitespace=cr-at-eol,incomplete-line,tabwidth=4"],
+        &["-c", "core.whitespace=-trailing-space,indent"],
+        &["-c", "diff.wsErrorHighlight=all"],
+        &["-c", "diff.color.whitespace=blue reverse"],
+    ];
+    let commands: &[&[&str]] = &[
+        &["diff", "--check"],
+        &["diff", "--check", "-R"],
+        &["diff", "--color"],
+        &["diff", "--color", "-R"],
+        &["diff", "--color", "--ws-error-highlight=old,context"],
+        &["diff", "--color", "--ws-error-highlight=none"],
+    ];
+    for c in configs {
+        for cmd in commands {
+            let mut argv = c.to_vec();
+            argv.extend_from_slice(cmd);
+            if let Err(m) = fx.compare(&argv).checks(Check::OUTPUT).try_run() {
+                failures.push(format!("{argv:?}\n{}", m.report()));
+            }
+        }
+    }
+    for argv in [
+        &["-c", "core.whitespace=tab-in-indent,indent", "diff"][..],
+        &["diff", "--ws-error-highlight=bogus"],
+        &["-c", "diff.wsErrorHighlight=bogus", "diff"],
+        &["diff", "--check", "--name-only"],
+    ] {
+        if let Err(m) = fx.compare(argv).checks(Check::OUTPUT).try_run() {
+            failures.push(format!("{argv:?}\n{}", m.report()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

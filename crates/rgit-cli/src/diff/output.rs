@@ -17,13 +17,14 @@ use rgit_object::Object;
 use rgit_config::ConfigSet;
 
 use super::collect::{GITLINK_MODE, Pair, Side, TREE_MODE, type_bits};
-use super::color::DiffColors;
+use super::color::{DiffColors, WsContext};
 use super::options::SubmoduleFormat;
 use super::options::{DiffOpts, Formats, usage_exit};
 use super::stat::{self, FileStat, StatKind, StatLayout};
 use crate::Die;
 use crate::messages::diff as msg;
 use crate::repository::Repo;
+use rgit_diff::ws_rule::{self, WsRule};
 
 /// Output settings, resolved from options and configuration.
 pub struct Output<'a> {
@@ -64,6 +65,12 @@ pub struct Output<'a> {
     /// The rename limit that would have been needed (warned about after
     /// the output).
     limit_needed: std::cell::Cell<Option<(usize, bool)>>,
+    /// `core.whitespace`.
+    ws_rule: WsRule,
+    /// `--ws-error-highlight` / `diff.wsErrorHighlight`.
+    pub ws_highlight: u8,
+    /// `--check` found whitespace errors.
+    ws_errors: std::cell::Cell<bool>,
 }
 
 /// `diff.submodule` (an unknown value is warned about and ignored).
@@ -309,6 +316,36 @@ impl<'a> Output<'a> {
             (None, None)
         };
         let core = core_options(repo, opts, porcelain)?;
+        let ws_rule = match repo.and_then(|r| r.config.get("core.whitespace")) {
+            Some(e) => {
+                let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+                for w in ws_rule::invalid_tab_widths(&v) {
+                    eprintln!("warning: {}", msg::tab_width_out_of_range(w));
+                }
+                WsRule::parse(&v).map_err(|_| Die::Fatal(msg::WS_RULE_CONFLICT.to_string()))?
+            }
+            None => WsRule::default(),
+        };
+        let ws_highlight = match opts.ws_error_highlight {
+            Some(k) => k,
+            None => match repo.and_then(|r| r.config.get("diff.wserrorhighlight")) {
+                Some(e) => {
+                    let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+                    let Some(k) = super::color::parse_highlight(&v) else {
+                        crate::messages::print_error(&msg::unknown_config_value(
+                            "diff.wserrorhighlight",
+                            &v,
+                        ));
+                        return Err(Die::Fatal(crate::revisions::unable_to_parse(
+                            "diff.wserrorhighlight",
+                            e,
+                        )));
+                    };
+                    k
+                }
+                None => super::color::HIGHLIGHT_NEW,
+            },
+        };
         let pickaxe = if !opts.find_object.is_empty() {
             if opts.found_objects.len() != opts.find_object.len() {
                 return Err(usage_exit(msg::unable_to_resolve(&opts.find_object[0])));
@@ -337,6 +374,9 @@ impl<'a> Output<'a> {
                 None => SubmoduleFormat::Short,
             },
             limit_needed: std::cell::Cell::new(None),
+            ws_rule,
+            ws_highlight,
+            ws_errors: std::cell::Cell::new(false),
             repo,
             convert: repo.is_some(),
             hash,
@@ -372,7 +412,13 @@ impl<'a> Output<'a> {
         let empty = ConfigSet::new();
         let config = self.repo.map_or(&empty, |r| &r.config);
         let on = if self.porcelain {
-            crate::color::want(config, Some("color.diff"), opts.color)?
+            // `diff.color` is the old name of `color.diff`.
+            let var = if config.get("color.diff").is_none() && config.get("diff.color").is_some() {
+                "diff.color"
+            } else {
+                "color.diff"
+            };
+            crate::color::want(config, Some(var), opts.color)?
         } else {
             match opts.color {
                 Some(c) => crate::color::want(config, None, Some(c))?,
@@ -909,11 +955,39 @@ impl<'a> Output<'a> {
                 }
             }
         }
-        if f.patch {
-            if changed && (f.raw || f.numstat || f.stat || f.shortstat || f.summary) {
+        if f.patch || f.check {
+            if f.patch && changed && (f.raw || f.numstat || f.stat || f.shortstat || f.summary) {
                 out.push(b'\n');
             }
             let abbrev = |id: &ObjectId| self.abbrev(id, self.index_abbrev);
+            // The whitespace rules of each path (`core.whitespace`, the
+            // `whitespace` attribute), for colours and `--check`.
+            let need_rules = f.check || self.colors.is_some();
+            let base_rule = self.ws_rule;
+            let index = match (need_rules, self.repo) {
+                (true, Some(r)) => r.read_index().ok().map(|(i, _)| i),
+                _ => None,
+            };
+            let mut attrs = match (self.repo, &index) {
+                (Some(r), Some(i)) => Some(crate::attributes::open(r, i, None, false)),
+                _ => None,
+            };
+            let ws_id = attrs.as_mut().map(|a| a.id(b"whitespace"));
+            let mut rule_for = |path: &[u8]| -> Result<WsRule, Die> {
+                let (Some(a), Some(id)) = (attrs.as_mut(), ws_id) else {
+                    return Ok(base_rule);
+                };
+                match a.lookup(path, false).get(id).clone() {
+                    rgit_attr::State::Set => Ok(WsRule {
+                        bits: ws_rule::ATTRIBUTE_SET_RULES,
+                        tab_width: base_rule.tab_width,
+                    }),
+                    rgit_attr::State::Unset => Ok(WsRule::none(base_rule.tab_width)),
+                    rgit_attr::State::Value(v) => WsRule::parse(&String::from_utf8_lossy(&v))
+                        .map_err(|_| Die::Fatal(msg::WS_RULE_CONFLICT.to_string())),
+                    rgit_attr::State::Unspecified => Ok(base_rule),
+                }
+            };
             for (p, o, n) in &items {
                 if p.unmerged {
                     out.extend_from_slice(msg::UNMERGED_PATH.as_bytes());
@@ -960,6 +1034,12 @@ impl<'a> Output<'a> {
                     data: &l.data,
                 });
                 let new_data = nf.as_ref().map_or(&[][..], |f| f.data);
+                let old_data = of.as_ref().map_or(&[][..], |f| f.data);
+                let rule = if need_rules {
+                    rule_for(&p.path)?
+                } else {
+                    base_rule
+                };
                 let extra = PatchExtra {
                     rename: p.renamed.map(|c| (c == b'C', p.percent())),
                     rewrite: p.is_rewrite().then(|| p.percent()),
@@ -968,17 +1048,26 @@ impl<'a> Output<'a> {
                 };
                 let emit = |out: &mut Vec<u8>,
                             old: Option<&PatchFile<'_>>,
-                            new: Option<&PatchFile<'_>>| match &self
-                    .colors
-                {
-                    None => {
-                        write_file_patch_extra(out, old, new, &self.patch, &abbrev, &extra);
-                    }
-                    Some(c) => {
-                        let mut plain = Vec::new();
-                        write_file_patch_extra(&mut plain, old, new, &self.patch, &abbrev, &extra);
-                        let data = if new.is_some() { new_data } else { &[][..] };
-                        super::color::patch(out, c, &plain, data);
+                            new: Option<&PatchFile<'_>>| {
+                    let mut plain = Vec::new();
+                    write_file_patch_extra(&mut plain, old, new, &self.patch, &abbrev, &extra);
+                    let ws = WsContext {
+                        rule,
+                        highlight: if f.check { 0 } else { self.ws_highlight },
+                        old_data: if old.is_some() { old_data } else { &[][..] },
+                        new_data: if new.is_some() { new_data } else { &[][..] },
+                        new_symlink: new.is_some_and(|f| type_bits(f.mode) == 0o120000),
+                        old_symlink: old.is_some_and(|f| type_bits(f.mode) == 0o120000),
+                    };
+                    if f.check {
+                        let name = String::from_utf8_lossy(&p.path).into_owned();
+                        if super::check::check_patch(out, &plain, &ws, &name) {
+                            self.ws_errors.set(true);
+                        }
+                    } else if let Some(c) = &self.colors {
+                        super::color::patch(out, c, &plain, &ws);
+                    } else {
+                        out.extend_from_slice(&plain);
                     }
                 };
                 let link = |f: &Option<PatchFile<'_>>| {
@@ -1045,7 +1134,12 @@ impl Output<'_> {
     pub fn finish(&self, out: &[u8], changed: bool, opts: &DiffOpts) -> i32 {
         let code = finish(out, changed, opts);
         self.warn();
-        code
+        code | self.check_code()
+    }
+
+    /// 2 when `--check` found whitespace errors, else 0.
+    pub fn check_code(&self) -> i32 {
+        if self.ws_errors.get() { 2 } else { 0 }
     }
 
     /// Warn that the rename limit was exceeded.

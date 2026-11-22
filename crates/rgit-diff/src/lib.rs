@@ -21,6 +21,7 @@ mod patch;
 mod patience;
 mod unified;
 pub mod whitespace;
+pub mod ws_rule;
 
 pub use lines::{BINARY_CHECK_BYTES, is_binary, split_lines};
 pub use patch::{

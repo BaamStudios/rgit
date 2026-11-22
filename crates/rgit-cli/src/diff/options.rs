@@ -84,6 +84,10 @@ pub struct DiffOpts {
     pub ignore_submodules: Option<String>,
     /// `--submodule[=<format>]`.
     pub submodule_format: Option<SubmoduleFormat>,
+    /// `--check`.
+    pub check: bool,
+    /// `--ws-error-highlight=<kinds>` (`color::HIGHLIGHT_*` bits).
+    pub ws_error_highlight: Option<u8>,
 }
 
 /// How submodule changes are shown (`--submodule`, `diff.submodule`).
@@ -159,12 +163,14 @@ pub struct Formats {
     pub stat: bool,
     pub shortstat: bool,
     pub summary: bool,
+    /// `--check`: whitespace errors instead of any other format.
+    pub check: bool,
 }
 
 impl Formats {
     /// Whether any format needs file contents.
     pub fn needs_content(&self) -> bool {
-        self.patch || self.numstat || self.stat || self.shortstat
+        self.patch || self.numstat || self.stat || self.shortstat || self.check
     }
 
     /// Any output at all.
@@ -177,6 +183,7 @@ impl Formats {
             || self.stat
             || self.shortstat
             || self.summary
+            || self.check
     }
 }
 
@@ -240,6 +247,7 @@ impl DiffOpts {
             "--summary" => self.format().summary = true,
             "--name-only" => self.name_only = true,
             "--name-status" => self.name_status = true,
+            "--check" => self.check = true,
             "-z" => self.nul = true,
             "-r" => self.recursive = true,
             "-t" => self.show_trees = true,
@@ -401,6 +409,10 @@ impl DiffOpts {
         {
             let re = ignore_regex(v).ok_or_else(|| usage_exit(msg::invalid_ignore_regex(v)))?;
             self.ignore_regex.push(re);
+        } else if let Some(v) = arg.strip_prefix("--ws-error-highlight=") {
+            let kinds = super::color::parse_highlight(v)
+                .ok_or_else(|| usage_exit(msg::BAD_WS_ERROR_HIGHLIGHT.to_string()))?;
+            self.ws_error_highlight = Some(kinds);
         } else if let Some(v) = arg.strip_prefix("--find-object=") {
             self.find_object.push(v.to_string());
         } else if let Some(v) = arg.strip_prefix("--ignore-submodules=") {
@@ -423,7 +435,7 @@ impl DiffOpts {
     /// The formats to produce; `default_patch` for `git diff`, raw
     /// otherwise. Fails when exclusive formats were combined.
     pub fn formats(&self, default_patch: bool) -> Result<Formats, Die> {
-        let exclusive = [self.name_only, self.name_status, self.no_output]
+        let exclusive = [self.name_only, self.name_status, self.check, self.no_output]
             .iter()
             .filter(|&&b| b)
             .count();
@@ -442,6 +454,12 @@ impl DiffOpts {
         if self.name_status {
             return Ok(Formats {
                 name_status: true,
+                ..Formats::default()
+            });
+        }
+        if self.check {
+            return Ok(Formats {
+                check: true,
                 ..Formats::default()
             });
         }
