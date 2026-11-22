@@ -776,6 +776,15 @@ name = "rgit-simcheck"
 version = "0.1.0"
 
 [[package]]
+name = "rgit-submodule"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-config",
+ "rgit-pathspec",
+]
+
+[[package]]
 name = "rgit-test-tool"
 version = "0.1.0"
 dependencies = [
