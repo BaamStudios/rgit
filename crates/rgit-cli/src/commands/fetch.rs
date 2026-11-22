@@ -167,6 +167,7 @@ pub fn run_with_reflog_action(
         reflog_action,
         no_progress: !show_progress,
         server_options: server_options.borrow().clone(),
+        keep: keep.get(),
     };
     let env = SystemEnv::default();
     let connect = ConnectSettings {

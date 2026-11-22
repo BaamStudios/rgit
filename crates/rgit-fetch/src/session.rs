@@ -217,11 +217,28 @@ impl Session {
             return Ok(None);
         }
         let indexed = indexed?;
+        let objects: HashSet<ObjectId> = indexed.objects().iter().map(|o| o.id).collect();
+        // Objects in the pack as sent (without bases appended for a thin
+        // pack): below the unpack limit they become loose objects.
+        let sent = indexed.objects().len() as u64 - indexed.local_objects();
+        if opts
+            .unpack_limit
+            .is_some_and(|limit| sent < u64::from(limit))
+        {
+            unpack_to_loose(repo, &tmp, &indexed)?;
+            drop(tmp);
+            return Ok(Some(ReceivedPack {
+                objects,
+                pack: None,
+                keep: None,
+                rounds: outcome.rounds,
+            }));
+        }
         let stored = store_pack(repo, tmp, &indexed)?;
         repo.rescan_packs();
         Ok(Some(ReceivedPack {
-            objects: indexed.objects().iter().map(|o| o.id).collect(),
-            pack: stored.0,
+            objects,
+            pack: Some(stored.0),
             keep: stored.1,
             rounds: outcome.rounds,
         }))
@@ -245,13 +262,17 @@ pub struct PackOptions {
     pub include_tag: bool,
     /// `server-option=` lines.
     pub server_options: Vec<String>,
+    /// Store packs with fewer objects than this as loose objects
+    /// (`fetch.unpackLimit`); `None` always keeps the pack.
+    pub unpack_limit: Option<u32>,
 }
 
 /// A pack stored by [`Session::fetch_pack`].
 #[derive(Debug, Clone)]
 pub struct ReceivedPack {
-    /// Path of the `.pack` file.
-    pub pack: PathBuf,
+    /// Path of the `.pack` file; `None` when the objects were stored as
+    /// loose objects.
+    pub pack: Option<PathBuf>,
     /// The `.keep` file protecting it until the refs are written.
     pub keep: Option<PathBuf>,
     /// Ids of every object in the pack.
@@ -286,6 +307,28 @@ fn index_pack_options(repo: &LocalRepo) -> Options {
         .or_else(|| cfg.int("core.compression").ok().flatten())
         .unwrap_or(1) as i32;
     o
+}
+
+/// Write the objects of the received pack (except bases appended to
+/// complete a thin pack) as loose objects, like `git unpack-objects`.
+fn unpack_to_loose(repo: &LocalRepo, tmp: &TempFile, indexed: &ip::IndexedPack) -> Result<()> {
+    let idx = indexed.index_bytes(IndexVersion::default())?;
+    let data = std::fs::read(tmp.path())?;
+    let pack = rgit_pack::Pack::from_bytes(idx, data, tmp.path(), repo.hash)
+        .map_err(|e| Error::fatal(e.to_string()))?;
+    let mut cache = rgit_pack::DeltaBaseCache::default();
+    let sent = indexed.objects().len() - indexed.local_objects() as usize;
+    for o in &indexed.objects()[..sent] {
+        // The empty tree is known without being stored; git writes it.
+        if o.id != repo.hash.empty_tree() && repo.has_object(&o.id) {
+            continue;
+        }
+        let obj = pack
+            .read_at(o.offset, &mut cache, &mut |_| None)
+            .map_err(|e| Error::fatal(e.to_string()))?;
+        repo.odb.write(obj.kind, &obj.data)?;
+    }
+    Ok(())
 }
 
 /// Move the received pack to `pack-<checksum>.pack` with `.keep`, `.rev`

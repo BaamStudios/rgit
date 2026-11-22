@@ -314,6 +314,15 @@ impl Repo {
         cur
     }
 
+    /// The alternate object directories in lookup order (without the
+    /// repository's own).
+    pub fn alternate_dirs(&self) -> Vec<PathBuf> {
+        self.dirs[1..]
+            .iter()
+            .map(|d| d.loose.objects_dir().to_path_buf())
+            .collect()
+    }
+
     /// Where the first copy of `oid` lives (loose before packed, local
     /// before alternates, as lookups go).
     pub fn locate(&self, oid: &ObjectId) -> Option<Location> {

@@ -240,6 +240,22 @@ pub fn index_differs(path: &Path) -> String {
     format!("sha1 file '{}' validation error", path.display())
 }
 
+/// `--verify-stat`: objects stored whole.
+pub fn stat_non_delta(n: u64) -> String {
+    format!(
+        "non delta: {n} {}",
+        if n == 1 { "object" } else { "objects" }
+    )
+}
+
+/// `--verify-stat`: objects at delta chain depth `depth`.
+pub fn stat_chain_length(depth: usize, n: u64) -> String {
+    format!(
+        "chain length = {depth}: {n} {}",
+        if n == 1 { "object" } else { "objects" }
+    )
+}
+
 /// `--fsck-objects` outside a repository with `.gitmodules` or
 /// `.gitattributes` blobs that are not in the pack.
 pub const QUEUED_OUTSIDE_REPO: &str = "cannot perform queued object checks outside of a repository";
