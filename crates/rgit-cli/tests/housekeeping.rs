@@ -846,3 +846,35 @@ fn commit_and_merge_run_auto_gc_like_git() {
         ])
         .run();
 }
+
+#[test]
+fn fetch_runs_auto_gc_like_git() {
+    let mut fx = gc_repo()
+        .git(["clone", "-q", "--no-local", ".", "../upstream"])
+        .write("../upstream/up.txt", "upstream\n")
+        .git(["-C", "../upstream", "add", "up.txt"])
+        .git(["-C", "../upstream", "commit", "-q", "-m", "upstream"])
+        .git(["remote", "add", "up", "../upstream"])
+        .git(["config", "gc.auto", "1"])
+        .git(["config", "gc.autoDetach", "false"])
+        .git(["config", "maintenance.strategy", "gc"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let state = [
+        Check::ExitCode,
+        Check::Stdout,
+        Check::Stderr,
+        Check::Refs,
+        Check::Objects,
+        Check::Fsck,
+    ];
+    sh(&fx, FILL_17);
+    fx.compare(["fetch", "-q", "--no-tags", "up"])
+        .checks(state)
+        .run();
+    sh(&fx, FILL_17);
+    fx.compare(["fetch", "-q", "--no-tags", "--no-auto-maintenance", "up"])
+        .checks(state)
+        .run();
+}
