@@ -186,7 +186,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let mode = cmd.get();
     if mode != 0 {
-        if !rest.is_empty() {
+        // An action (--continue, --abort, ...) takes no other argument.
+        if !rest.is_empty() || argv.len() != 2 {
             return Err(Die::Output(usage_error));
         }
         return match mode {

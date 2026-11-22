@@ -273,6 +273,20 @@ fn continue_skip_abort_quit() {
             "git rebase conf; git switch main",
         ],
     );
+    // A rebase of the apply back end, started by git: --abort and --quit.
+    let apply = |fx: Fixture| {
+        if !fx.is_skipped() {
+            let _ = fx.git_output(["rebase", "--apply", "conf"]);
+        }
+        fx
+    };
+    script_cases(
+        apply,
+        &[
+            "git rebase --abort; ls .git; git status --porcelain",
+            "git rebase --quit; ls .git; git status --porcelain",
+        ],
+    );
 }
 
 #[test]
@@ -293,8 +307,16 @@ fn errors() {
             &["rebase", "--root", "--fork-point"],
             &["rebase", "main", "topic", "extra"],
             &["rebase", "--continue", "main"],
+            &["rebase", "-v", "--abort"],
+            &["rebase", "--abort", "-q"],
+            &["rebase", "--no-verify", "--continue"],
             &["rebase"],
         ],
+    );
+    // A branch checked out in another worktree.
+    cases(
+        |fx| fx.git(["worktree", "add", "-q", "wt", "main"]),
+        &[&["rebase", "main", "main"], &["rebase", "topic~1", "main"]],
     );
     cases(
         |fx| fx.write("a", "dirty\n"),
@@ -400,6 +422,11 @@ fn hooks_and_reflog_action() {
     script_cases(
         hooks,
         &["git rebase conf; echo r >b; git add b; git rebase --continue"],
+    );
+    // Up to date: only the branch is checked out.
+    cases(
+        |fx| hooks(fx.git(["checkout", "-q", "main"])),
+        &[&["rebase", "main~1", "topic"]],
     );
     cases(
         |fx| {

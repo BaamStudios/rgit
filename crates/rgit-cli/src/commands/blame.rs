@@ -305,7 +305,7 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     if let Some(a) = rev.algorithm {
         diff.algorithm = a;
     }
-    diff.minimal |= rev.minimal;
+    diff.minimal = last_minimal(argv).unwrap_or(diff.minimal || rev.minimal);
     if let Some(h) = rev.indent_heuristic.or_else(|| cfg_bool("diff.indentheuristic")) {
         diff.indent_heuristic = h;
     }
@@ -489,7 +489,8 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
         match cli.abbrev.get() {
             None => repo.default_abbrev(),
             Some(0) => hex_len,
-            Some(n) => usize::try_from(n).unwrap_or(0).clamp(4, hex_len),
+            // One more than the full length marks "longer than a name".
+            Some(n) => usize::try_from(n).unwrap_or(0).clamp(4, hex_len + 1),
         }
     };
     let porcelain = cli.porcelain.get() || cli.line_porcelain.get();
@@ -588,6 +589,27 @@ fn coloring(
 const REPEATED_COLOR: &str = "\x1b[36m";
 /// `color.blame.highlightRecent` default (Documentation/config/color.adoc).
 const HIGHLIGHT_RECENT: [&str; 5] = ["blue", "12 month ago", "white", "1 month ago", "red"];
+
+/// Whether the diff is minimal according to the last of `--minimal` and
+/// `--diff-algorithm` on the command line (they are parsed apart, so their
+/// order is not known otherwise); `None` if neither is given.
+fn last_minimal(argv: &[String]) -> Option<bool> {
+    let mut out = None;
+    let mut it = argv.iter().skip(1);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--" => break,
+            "--minimal" => out = Some(true),
+            "--diff-algorithm" => out = it.next().map(|v| v == "minimal"),
+            _ => {
+                if let Some(v) = a.strip_prefix("--diff-algorithm=") {
+                    out = Some(v == "minimal");
+                }
+            }
+        }
+    }
+    out
+}
 
 fn score_error(e: score::Error) -> Die {
     match e {

@@ -344,7 +344,10 @@ impl Printer<'_, '_> {
         if boundary && !fmt.blank_boundary && !fmt.annotate {
             abbrev += 1;
         }
-        let abbrev = abbrev.min(hex_len);
+        // Asking for more digits than a full name has shows boundary
+        // commits in full after the caret; exactly full length drops one.
+        let abbrev = abbrev.min(if fmt.abbrev > hex_len { hex_len + 1 } else { hex_len });
+        let full = abbrev.min(hex_len);
         let show_name = fmt.show_name.unwrap_or(other_path);
         let lno_w = digits(max_lno);
         let slno_w = digits(max_slno);
@@ -365,7 +368,7 @@ impl Printer<'_, '_> {
                     let pad = " ".repeat(10usize.saturating_sub(who.len()));
                     let s = format!(
                         "{}\t({pad}{who}\t{}\t{})",
-                        &hex[..abbrev],
+                        &hex[..full],
                         self.date(info),
                         lno
                     );
@@ -396,7 +399,7 @@ impl Printer<'_, '_> {
                     s.push('^');
                     s.push_str(&hex[..abbrev - 1]);
                 } else {
-                    s.push_str(&hex[..abbrev]);
+                    s.push_str(&hex[..full]);
                 }
                 if show_name {
                     let p = String::from_utf8_lossy(&origin.path);
