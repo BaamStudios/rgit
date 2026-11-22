@@ -36,7 +36,7 @@ use rgit_index::Stage;
 use rgit_merge::MergeResult;
 use rgit_object::{Commit, Object, ObjectKind, Signature};
 use rgit_refs::{RefUpdate, Transaction};
-use rgit_unpack::{Identity, Merge, Porcelain, Worktree};
+use rgit_unpack::{Merge, Porcelain, Worktree};
 use rgit_worktree::stat::smudge_racy_entries;
 
 use crate::commands::read_tree::{lock_failed, path_options, unpack_failed};
@@ -468,6 +468,11 @@ impl<'c> Sequencer<'c> {
     }
 
     fn write_abort_safety(&self, head: Option<ObjectId>) -> Result<(), Die> {
+        // `git commit` (run for `--edit`) ends the sequence after its last
+        // pick and removes the state.
+        if !self.dir().is_dir() {
+            return Ok(());
+        }
         let data = head
             .map(|h| format!("{}\n", h.to_hex()))
             .unwrap_or_default();
@@ -1628,7 +1633,16 @@ pub(crate) fn two_way(
         }
         Err(e) => return Err(Fail::Die(unpack_failed(e))),
     };
-    let applied = plan.apply(repo.odb(), &wt, &Identity);
+    // Attributes (filters, eol) come from the new index, so that a
+    // `.gitattributes` the commit brings applies to its own files.
+    let conv = crate::convert::Converter::checkout(repo, plan.index())?;
+    let applied = plan.apply(repo.odb(), &wt, &conv);
+    if conv.skipped_filter() {
+        eprintln!(
+            "warning: {}",
+            crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED
+        );
+    }
     let mut index = applied.index;
     if let Some(result) = result {
         crate::commands::merge::add_conflicts(&mut index, result)?;

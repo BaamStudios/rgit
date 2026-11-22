@@ -6,7 +6,8 @@
 //! - ref names with git's lookup rules, `@` for `HEAD`,
 //! - `<rev>^`, `<rev>^<n>`, `<rev>~<n>`, `<rev>^{<type>}`, `<rev>^{}`,
 //!   `<rev>^{/<regex>}`, `<ref>@{<n>}`,
-//! - `<rev>:<path>`, `:<path>`, `:<n>:<path>`.
+//! - `<rev>:<path>`, `:<path>`, `:<n>:<path>`,
+//! - `:/<regex>` (youngest matching commit reachable from any ref).
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -102,6 +103,11 @@ impl<'a> Resolver<'a> {
 
     /// Resolve `name`.
     pub fn resolve(&mut self, name: &str) -> Res<Resolved> {
+        if let Some(pattern) = name.strip_prefix(":/") {
+            return self
+                .search_all_refs(pattern)
+                .map(|oid| Resolved { oid, mode: None });
+        }
         if let Some(rest) = name.strip_prefix(':') {
             return self.index_path(rest);
         }
@@ -231,6 +237,10 @@ impl<'a> Resolver<'a> {
 
     /// A revision without `:<path>`.
     pub fn rev(&mut self, s: &str) -> Res<ObjectId> {
+        // `:/<regex>`: the whole rest is the pattern, no suffixes.
+        if let Some(pattern) = s.strip_prefix(":/") {
+            return self.search_all_refs(pattern);
+        }
         if s.ends_with('}') {
             if let Some(open) = matching_brace(s) {
                 if open >= 1 {
@@ -361,9 +371,33 @@ impl<'a> Resolver<'a> {
         None
     }
 
+    /// `:/<regex>`: the youngest commit reachable from `HEAD` or any ref
+    /// whose message matches.
+    fn search_all_refs(&mut self, pattern: &str) -> Res<ObjectId> {
+        if pattern.is_empty() {
+            return Err(Failure::missing());
+        }
+        let mut tips: Vec<ObjectId> = self.repo.refs.resolve("HEAD").into_iter().collect();
+        tips.extend(self.repo.refs.list("refs/").into_iter().map(|(_, oid)| oid));
+        let starts: Vec<ObjectId> = tips
+            .into_iter()
+            .filter_map(|t| self.peel_to(t, ObjectKind::Commit, None))
+            .collect();
+        self.search_message_from(&starts, pattern)
+    }
+
     /// `^{/<regex>}`: the youngest commit reachable from `oid` whose
     /// message matches.
     fn search_message(&mut self, oid: ObjectId, pattern: &str) -> Res<ObjectId> {
+        let start = self
+            .peel_to(oid, ObjectKind::Commit, None)
+            .ok_or_else(Failure::missing)?;
+        self.search_message_from(&[start], pattern)
+    }
+
+    /// The youngest commit reachable from `starts` whose message matches
+    /// `pattern` (`!-` negates, `!!` stands for a literal `!`).
+    fn search_message_from(&mut self, starts: &[ObjectId], pattern: &str) -> Res<ObjectId> {
         let (negate, pattern) = match pattern.strip_prefix('!') {
             Some(p) if p.starts_with('-') => (true, &p[1..]),
             Some(p) if p.starts_with('!') => (false, p),
@@ -374,13 +408,9 @@ impl<'a> Resolver<'a> {
             .unicode(false)
             .build()
             .map_err(|_| Failure::missing())?;
-        let start = self
-            .peel_to(oid, ObjectKind::Commit, None)
-            .ok_or_else(Failure::missing)?;
         // Newest first by committer date.
         let mut queue: Vec<(i64, ObjectId)> = Vec::new();
         let mut seen = BTreeSet::new();
-        seen.insert(start);
         let push = |me: &mut Self, q: &mut Vec<(i64, ObjectId)>, id: ObjectId| -> Option<Commit> {
             let (_, data) = me.read(&id)?;
             let c = Commit::parse(me.repo.hash, &data).ok()?;
@@ -392,7 +422,11 @@ impl<'a> Resolver<'a> {
             q.push((t, id));
             Some(c)
         };
-        push(self, &mut queue, start);
+        for &start in starts {
+            if seen.insert(start) {
+                push(self, &mut queue, start);
+            }
+        }
         while !queue.is_empty() {
             queue.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
             let (_, id) = queue.pop().expect("not empty");

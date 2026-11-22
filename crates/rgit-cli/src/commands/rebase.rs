@@ -211,7 +211,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Not implemented yet: the interactive machinery (#155), the apply
     // back end (#136) and a few options.
     let unsupported = [
-        ("--update-refs", update_refs.get() == 1),
         ("--apply (#136)", apply.get()),
         ("-C (#136)", apply_c.borrow().is_some()),
         ("--whitespace (#136)", whitespace.borrow().is_some()),
@@ -302,6 +301,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             v => Some(v == 1),
         },
         gpg_sign: gpg_sign.borrow().clone(),
+        update_refs: match update_refs.get() {
+            -1 => None,
+            v => Some(v == 1),
+        },
     };
     rebase::start(ctx, &o)
 }

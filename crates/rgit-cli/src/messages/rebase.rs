@@ -415,10 +415,15 @@ pub fn stopped_at_edit(abbrev: &str, rest: &str) -> String {
     format!("Stopped at {abbrev}...  {rest}")
 }
 
-pub const EDIT_ADVICE: &str = "You can amend the commit now, with\n\
-\n  git commit --amend \n\
+/// `sign` is the quoted `-S` option of the rebase, or empty.
+pub fn edit_advice(sign: &str) -> String {
+    format!(
+        "You can amend the commit now, with\n\
+\n  git commit --amend {sign}\n\
 \nOnce you are satisfied with your changes, run\n\
-\n  git rebase --continue\n";
+\n  git rebase --continue\n"
+    )
+}
 
 /// `break`: the stop.
 pub fn stopped_at(abbrev: &str, subject: &str) -> String {
@@ -484,6 +489,46 @@ pub const OCTOPUS_NOT_SUPPORTED: &str = "rgit: rebase: octopus merges are not su
 pub fn invalid_label(label: &str) -> String {
     format!("'{label}' is not a valid label")
 }
+
+pub fn invalid_refname(name: &str) -> String {
+    format!("'{name}' is not a valid refname")
+}
+
+pub fn update_ref_needs_full_name(name: &str) -> String {
+    format!("update-ref requires a fully qualified refname e.g. refs/heads/{name}")
+}
+
+/// A todo command that does not take a merge commit.
+pub fn no_merge_commits(cmd: &str) -> String {
+    format!("'{cmd}' does not accept merge commits")
+}
+
+pub const PICK_MERGE_HINT: &str = "'pick' does not take a merge commit. If you wanted to
+replay the merge, use 'merge -C' on the commit.";
+
+pub const REWORD_MERGE_HINT: &str = "'reword' does not take a merge commit. If you wanted to
+replay the merge and reword the commit message, use
+'merge -c' on the commit";
+
+pub const EDIT_MERGE_HINT: &str = "'edit' does not take a merge commit. If you wanted to
+replay the merge, use 'merge -C' on the commit, and then
+'break' to give the control back to you so that you can
+do 'git commit --amend && git rebase --continue'.";
+
+pub const CANNOT_SQUASH_MERGE: &str = "cannot squash merge commit into another commit";
+
+/// `--update-refs`: a branch checked out in another worktree.
+pub fn ref_checked_out_at(name: &str, path: &str) -> String {
+    format!("Ref {name} checked out at '{path}'")
+}
+
+pub fn update_ref_failed(name: &str, why: &str) -> String {
+    format!("update_ref failed for ref '{name}': {why}")
+}
+
+pub const UPDATED_REFS: &str = "Updated the following refs with --update-refs:";
+pub const FAILED_REFS: &str = "Failed to update the following refs with --update-refs:";
+pub const REWRITTEN_DURING_REBASE: &str = "rewritten during rebase";
 
 pub fn could_not_merge(label: &str) -> String {
     format!("could not merge {label}")
