@@ -46,6 +46,23 @@ fn is_root_ref_syntax(name: &str) -> bool {
             .all(|b| b.is_ascii_uppercase() || b == b'_' || b == b'-')
 }
 
+/// Names the first rule (`%s`) takes as they are: `refs/...`, root refs,
+/// and the per-worktree references of other worktrees
+/// (`main-worktree/<ref>`, `worktrees/<id>/<ref>`, `git-worktree(1)`).
+fn full_name_syntax(name: &str) -> bool {
+    let local = |n: &str| n.starts_with("refs/") || is_root_ref_syntax(n);
+    if let Some(rest) = name.strip_prefix("main-worktree/") {
+        return local(rest);
+    }
+    if let Some((_, rest)) = name
+        .strip_prefix("worktrees/")
+        .and_then(|r| r.split_once('/'))
+    {
+        return local(rest);
+    }
+    local(name)
+}
+
 /// A cheap version of `check-ref-format` that rejects names no ref can have,
 /// so that revision syntax never reaches the ref store.
 pub(crate) fn plausible_refname(name: &str) -> bool {
@@ -79,7 +96,7 @@ impl Resolver<'_> {
             oid: None,
         };
         for (i, rule) in REF_RULES.iter().enumerate() {
-            if i == 0 && !(name.starts_with("refs/") || is_root_ref_syntax(name)) {
+            if i == 0 && !full_name_syntax(name) {
                 continue;
             }
             let full = apply_rule(rule, name);

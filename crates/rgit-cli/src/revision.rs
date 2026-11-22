@@ -480,12 +480,22 @@ impl<'a> Resolver<'a> {
 
     /// The full ref name `name` stands for (git's ref lookup rules).
     fn dwim_ref(&self, name: &str) -> Option<String> {
-        let pseudo = name.starts_with("refs/")
-            || (!name.is_empty()
-                && name
+        // Another worktree's references: `main-worktree/<ref>`,
+        // `worktrees/<id>/<ref>` (git-worktree(1), REFS).
+        let local = name
+            .strip_prefix("main-worktree/")
+            .or_else(|| {
+                name.strip_prefix("worktrees/")
+                    .and_then(|r| r.split_once('/'))
+                    .map(|(_, r)| r)
+            })
+            .unwrap_or(name);
+        let pseudo = local.starts_with("refs/")
+            || (!local.is_empty()
+                && local
                     .bytes()
                     .all(|c| c.is_ascii_uppercase() || c == b'_' || c == b'-')
-                && name.ends_with("HEAD"));
+                && local.ends_with("HEAD"));
         let candidates = [
             pseudo.then(|| name.to_string()),
             Some(format!("refs/{name}")),

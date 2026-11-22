@@ -153,3 +153,7 @@ pub fn branch_does_not_exist(name: &str) -> String {
 pub fn no_upstream_information(name: &str) -> String {
     format!("branch '{name}' has no upstream information")
 }
+
+pub fn being_rebased(refname: &str, path: &str) -> String {
+    format!("branch {refname} is being rebased at {path}")
+}

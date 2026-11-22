@@ -59,6 +59,7 @@ pub mod tracking;
 pub mod update_index;
 pub mod update_ref;
 pub mod var;
+pub mod worktree;
 pub mod write_tree;
 pub mod wt_status;
 
