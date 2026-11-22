@@ -288,3 +288,202 @@ pub const HINT_FIX_CONFLICTS: &str = "  (fix conflicts and then run \"git rebase
 pub const HINT_SKIP: &str = "  (use \"git rebase --skip\" to skip this patch)";
 pub const HINT_ABORT: &str = "  (use \"git rebase --abort\" to check out the original branch)";
 pub const HINT_ALL_FIXED: &str = "  (all conflicts fixed: run \"git rebase --continue\")";
+
+pub fn editing_a_commit(branch: Option<&str>, onto: &str) -> String {
+    match branch {
+        Some(b) => {
+            format!("You are currently editing a commit while rebasing branch '{b}' on '{onto}'.")
+        }
+        None => "You are currently editing a commit during a rebase.".to_owned(),
+    }
+}
+
+pub fn splitting_a_commit(branch: Option<&str>, onto: &str) -> String {
+    match branch {
+        Some(b) => {
+            format!("You are currently splitting a commit while rebasing branch '{b}' on '{onto}'.")
+        }
+        None => "You are currently splitting a commit during a rebase.".to_owned(),
+    }
+}
+
+pub const HINT_AMEND: &str = "  (use \"git commit --amend\" to amend the current commit)";
+pub const HINT_CONTINUE_SATISFIED: &str =
+    "  (use \"git rebase --continue\" once you are satisfied with your changes)";
+pub const HINT_CONTINUE_CLEAN: &str =
+    "  (Once your working directory is clean, run \"git rebase --continue\")";
+
+// Interactive rebase (#155).
+
+/// `--continue` after `edit` when the stopped commit was replaced.
+pub const UNCOMMITTED_AFTER_EDIT: &str = "\nYou have uncommitted changes in your working tree. Please, commit them\n\
+first and then run 'git rebase --continue' again.";
+
+/// `--continue` with staged changes after `break` or `exec`.
+pub const STAGED_CHANGES: &str = "you have staged changes in your working tree\n\
+If these changes are meant to be squashed into the previous commit, run:\n\
+\n  git commit --amend \n\
+\nIf they are meant to go into a new commit, run:\n\
+\n  git commit \n\
+\nIn both cases, once you're done, continue with:\n\
+\n  git rebase --continue\n";
+
+/// A `fixup`/`squash` first in the list.
+pub fn meld_first(cmd: &str) -> String {
+    format!("cannot '{cmd}' without a previous commit")
+}
+
+pub const EDIT_TODO_NOT_INTERACTIVE: &str =
+    "The --edit-todo action can only be used during interactive rebase.";
+
+pub const EMPTY_EXEC: &str = "empty exec command";
+pub const EXEC_NEWLINE: &str = "exec commands cannot contain newlines";
+
+pub fn does_not_accept_arguments(cmd: &str, rest: &str) -> String {
+    format!("{cmd} does not accept arguments: '{rest}'")
+}
+
+pub fn missing_arguments(cmd: &str) -> String {
+    format!("missing arguments for {cmd}")
+}
+
+pub const NOTHING_TO_DO: &str = "nothing to do";
+
+pub const FIX_WITH_EDIT_TODO: &str = "You can fix this with 'git rebase --edit-todo' and then run 'git rebase --continue'.\n\
+Or you can abort the rebase with 'git rebase --abort'.";
+
+pub const PLEASE_FIX_WITH_EDIT_TODO: &str = "please fix this using 'git rebase --edit-todo'.";
+
+/// The first line of the help below the generated todo list.
+pub fn todo_header(range: &str, onto: &str, n: usize) -> String {
+    let what = if n == 1 { "command" } else { "commands" };
+    format!("Rebase {range} onto {onto} ({n} {what})")
+}
+
+/// The help below the todo list, without the comment characters.
+pub const TODO_HELP: &str = "\n\
+Commands:\n\
+p, pick <commit> = use commit\n\
+r, reword <commit> = use commit, but edit the commit message\n\
+e, edit <commit> = use commit, but stop for amending\n\
+s, squash <commit> = use commit, but meld into previous commit\n\
+f, fixup [-C | -c] <commit> = like \"squash\" but keep only the previous\n                   \
+commit's log message, unless -C is used, in which case\n                   \
+keep only this commit's message; -c is same as -C but\n                   \
+opens the editor\n\
+x, exec <command> = run command (the rest of the line) using shell\n\
+b, break = stop here (continue rebase later with 'git rebase --continue')\n\
+d, drop <commit> = remove commit\n\
+l, label <label> = label current HEAD with a name\n\
+t, reset <label> = reset HEAD to a label\n\
+m, merge [-C <commit> | -c <commit>] <label> [# <oneline>]\n        \
+create a merge commit using the original merge commit's\n        \
+message (or the oneline, if no original merge commit was\n        \
+specified); use -c <commit> to reword the commit message\n\
+u, update-ref <ref> = track a placeholder for the <ref> to be updated\n                      \
+to this position in the new commits. The <ref> is\n                      \
+updated at the end of the rebase\n\
+\n\
+These lines can be re-ordered; they are executed from top to bottom.\n";
+
+pub const TODO_HELP_LOST: &str = "\nIf you remove a line here THAT COMMIT WILL BE LOST.\n";
+pub const TODO_HELP_DROP: &str =
+    "\nDo not remove any line. Use 'drop' explicitly to remove a commit.\n";
+pub const TODO_HELP_ABORT: &str =
+    "\nHowever, if you remove everything, the rebase will be aborted.\n\n";
+pub const TODO_HELP_EDIT_TODO: &str = "\nYou are editing the todo file of an ongoing interactive rebase.\n\
+To continue rebase after editing, run:\n    git rebase --continue\n\n";
+
+pub const DROPPED_WARNING: &str =
+    "Warning: some commits may have been dropped accidentally.\nDropped commits (newer to older):";
+pub const DROPPED_HINT: &str = "To avoid this message, use \"drop\" to explicitly remove a commit.\n\
+\n\
+Use 'git config rebase.missingCommitsCheck' to change the level of warnings.\n\
+The possible behaviours are: ignore, warn, error.\n";
+
+pub fn unrecognized_check_level(value: &str) -> String {
+    format!("unrecognized setting {value} for option rebase.missingCommitsCheck. Ignoring.")
+}
+
+/// `edit`: the stop.
+pub fn stopped_at_edit(abbrev: &str, rest: &str) -> String {
+    format!("Stopped at {abbrev}...  {rest}")
+}
+
+pub const EDIT_ADVICE: &str = "You can amend the commit now, with\n\
+\n  git commit --amend \n\
+\nOnce you are satisfied with your changes, run\n\
+\n  git rebase --continue\n";
+
+/// `break`: the stop.
+pub fn stopped_at(abbrev: &str, subject: &str) -> String {
+    format!("Stopped at {abbrev} ({subject})")
+}
+
+pub fn executing(cmd: &str) -> String {
+    format!("Executing: {cmd}")
+}
+
+pub fn execution_failed(cmd: &str) -> String {
+    format!("execution failed: {cmd}")
+}
+
+pub const EXEC_FAILED_ADVICE: &str = "You can fix the problem, and then run\n\
+\n  git rebase --continue\n\n";
+
+pub fn execution_left_changes(cmd: &str) -> String {
+    format!(
+        "execution succeeded: {cmd}\nbut left changes to the index and/or the working tree.\n\
+         Commit or stash your changes, and then run\n\
+         \n  git rebase --continue\n\n"
+    )
+}
+
+pub fn cannot_run(cmd: &str, reason: &str) -> String {
+    format!("cannot run {cmd}: {reason}")
+}
+
+// The message of a squash/fixup chain.
+
+pub fn combination(n: usize) -> String {
+    format!("This is a combination of {n} commits.")
+}
+
+pub const FIRST_MESSAGE: &str = "This is the 1st commit message:";
+pub const FIRST_SKIPPED: &str = "The 1st commit message will be skipped:";
+
+pub fn nth_message(n: usize) -> String {
+    format!("This is the commit message #{n}:")
+}
+
+pub fn nth_skipped(n: usize) -> String {
+    format!("The commit message #{n} will be skipped:")
+}
+
+// --rebase-merges.
+
+pub fn reset_label(label: &str) -> String {
+    format!("'{label}'")
+}
+
+pub fn could_not_resolve(name: &str) -> String {
+    format!("could not resolve '{name}'")
+}
+
+pub fn merge_branch(label: &str) -> String {
+    format!("Merge branch '{label}'")
+}
+
+pub const OCTOPUS_NOT_SUPPORTED: &str = "rgit: rebase: octopus merges are not supported yet";
+
+pub fn invalid_label(label: &str) -> String {
+    format!("'{label}' is not a valid label")
+}
+
+pub fn could_not_merge(label: &str) -> String {
+    format!("could not merge {label}")
+}
+
+pub fn invalid_rebase_merges(mode: &str) -> String {
+    format!("Unknown rebase-merges mode: {mode}")
+}

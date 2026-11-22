@@ -222,6 +222,8 @@ and try again.
 pub const AMEND_DURING_CHERRY_PICK: &str =
     "You are in the middle of a cherry-pick -- cannot amend.";
 pub const PARTIAL_DURING_CHERRY_PICK: &str = "cannot do a partial commit during a cherry-pick.";
+pub const AMEND_DURING_REBASE: &str = "You are in the middle of a rebase -- cannot amend.";
+pub const PARTIAL_DURING_REBASE: &str = "cannot do a partial commit during a rebase.";
 pub const CHERRY_PICK_NOTICE: &str = "
 It looks like you may be committing a cherry-pick.
 If this is not correct, please run

@@ -4,7 +4,7 @@
 
 use crate::messages::rebase as msg;
 use crate::prelude::*;
-use crate::rebase::{self, Empty, Options};
+use crate::rebase::{self, Empty, Options, RebaseMerges};
 
 const CONTINUE: i32 = 1;
 const SKIP: i32 = 2;
@@ -43,7 +43,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let gpg_sign = Cell::new(false);
     let autostash = Cell::new(-1);
     let exec: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    let rebase_merges = Cell::new(-1);
+    let rebase_merges: RefCell<Option<RebaseMerges>> = RefCell::new(None);
     let fork_point = Cell::new(-1);
     let strategy: RefCell<Option<String>> = RefCell::new(None);
     let xopts: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -161,8 +161,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             "rebase-merges",
             Some("mode"),
             msg::HELP_REBASE_MERGES,
-            |_, unset| {
-                rebase_merges.set(i32::from(!unset));
+            |v, unset| {
+                let mode = if unset {
+                    RebaseMerges::Off
+                } else {
+                    let v = v.unwrap_or_default();
+                    RebaseMerges::parse(v)
+                        .ok_or_else(|| CallbackError::Fatal(msg::invalid_rebase_merges(v)))?
+                };
+                *rebase_merges.borrow_mut() = Some(mode);
                 Ok(())
             },
         )
@@ -195,7 +202,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             SKIP => rebase::skip(ctx),
             ABORT => rebase::abort(ctx),
             QUIT => rebase::quit(ctx),
-            EDIT_TODO => Err(Die::Fatal(msg::not_supported("--edit-todo (#155)"))),
+            EDIT_TODO => rebase::edit_todo(ctx),
             _ => Err(Die::Fatal(msg::not_supported("--show-current-patch"))),
         };
     }
@@ -203,10 +210,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Not implemented yet: the interactive machinery (#155), the apply
     // back end (#136) and a few options.
     let unsupported = [
-        ("--interactive (#155)", interactive.get()),
-        ("--exec (#155)", !exec.borrow().is_empty()),
-        ("--rebase-merges (#155)", rebase_merges.get() == 1),
-        ("--autosquash (#155)", autosquash.get() == 1),
         ("--update-refs", update_refs.get() == 1),
         ("--apply (#136)", apply.get()),
         ("-C (#136)", apply_c.borrow().is_some()),
@@ -220,8 +223,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some((what, _)) = unsupported.iter().find(|(_, set)| *set) {
         return Err(Die::Fatal(msg::not_supported(what)));
     }
-    let _ = (merge.get(), allow_empty_message.get(), reschedule.get());
+    let _ = (merge.get(), allow_empty_message.get());
 
+    for x in exec.borrow().iter() {
+        if x.trim().is_empty() {
+            return Err(Die::Error(msg::EMPTY_EXEC.to_owned(), 1));
+        }
+        if x.contains('\n') {
+            return Err(Die::Error(msg::EXEC_NEWLINE.to_owned(), 1));
+        }
+    }
     if keep_base.get() == 1 && onto.borrow().is_some() {
         return Err(Die::Fatal(msg::incompatible("--keep-base", "--onto")));
     }
@@ -276,6 +287,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         strategy: strategy.borrow().clone(),
         xopts: xopts.borrow().clone(),
         autostash: match autostash.get() {
+            -1 => None,
+            v => Some(v == 1),
+        },
+        interactive: interactive.get(),
+        exec: exec.borrow().clone(),
+        autosquash: match autosquash.get() {
+            -1 => None,
+            v => Some(v == 1),
+        },
+        rebase_merges: *rebase_merges.borrow(),
+        reschedule_failed_exec: match reschedule.get() {
             -1 => None,
             v => Some(v == 1),
         },

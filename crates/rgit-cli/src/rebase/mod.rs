@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-//! `git rebase` with the merge back end, without the interactive todo
-//! editing (Documentation/git-rebase.adoc, config/rebase.adoc), part of
-//! #154. Interactive rebase (#155) builds on the same state and todo list.
+//! `git rebase` with the merge back end (Documentation/git-rebase.adoc,
+//! config/rebase.adoc, config/sequencer.adoc): #154, and the interactive
+//! rebase on the same state and todo list (#155).
 //!
 //! - Choosing the commits: `<upstream>..<branch>` without merges, oldest
 //!   first, dropping commits whose change is already upstream (patch
@@ -19,15 +19,26 @@
 //!   `REBASE_HEAD`, `MERGE_MSG`, `AUTO_MERGE`, `ORIG_HEAD` and the
 //!   reflog messages `rebase (start|pick|continue|finish|abort)`;
 //! - `--continue`, `--skip`, `--abort`, `--quit`, `--autostash`, the
-//!   `pre-rebase` and `post-rewrite` hooks.
+//!   `pre-rebase` and `post-rewrite` hooks;
+//! - the interactive machinery: the todo list ([`todo`]) with all its
+//!   commands, the sequence editor (`-i`, `--edit-todo`, the help below
+//!   the list, `git-rebase-todo.backup`, `rebase.abbreviateCommands`,
+//!   `rebase.instructionFormat`, `rebase.missingCommitsCheck`),
+//!   `--autosquash`, `--exec`, `--reschedule-failed-exec`, `reword`,
+//!   `edit`, `break`, `squash`/`fixup [-C|-c]` chains with their message
+//!   template, `label`/`reset`/`merge` written by hand. Not yet: the
+//!   todo list of `--rebase-merges` and `--update-refs`.
 //!
 //! The behaviour was derived from the documentation and differential
-//! tests against the `git` binary (`tests/rebase.rs`).
+//! tests against the `git` binary (`tests/rebase.rs`,
+//! `tests/rebase_interactive.rs`).
 //!
-//! [`start`], [`continue_rebase`], [`skip`], [`abort`] and [`quit`] are the
-//! entry points for `git rebase` and `git pull --rebase`.
+//! [`start`], [`continue_rebase`], [`skip`], [`abort`], [`quit`] and
+//! [`edit_todo`] are the entry points for `git rebase` and
+//! `git pull --rebase`.
 
 pub(crate) mod patch_id;
+pub(crate) mod todo;
 
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -89,19 +100,35 @@ pub struct Options {
     pub xopts: Vec<String>,
     /// `--[no-]autostash`; `None`: `rebase.autoStash`.
     pub autostash: Option<bool>,
+    /// `-i`: let the user edit the todo list (sequence editor).
+    pub interactive: bool,
+    /// `--exec <cmd>`, in order.
+    pub exec: Vec<String>,
+    /// `--[no-]autosquash`; `None`: `rebase.autoSquash` with `-i`.
+    pub autosquash: Option<bool>,
+    /// `--[no-]rebase-merges[=<mode>]`; `None`: `rebase.rebaseMerges`.
+    pub rebase_merges: Option<RebaseMerges>,
+    /// `--[no-]reschedule-failed-exec`; `None`: `rebase.rescheduleFailedExec`.
+    pub reschedule_failed_exec: Option<bool>,
 }
 
-/// One line of the todo list.
-#[derive(Debug, Clone)]
-pub(crate) struct Item {
-    pub commit: ObjectId,
-    /// The rest of the line after the commit (`# <subject>`).
-    pub rest: String,
+/// `--rebase-merges[=<mode>]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebaseMerges {
+    Off,
+    NoRebaseCousins,
+    RebaseCousins,
 }
 
-impl Item {
-    fn line(&self) -> String {
-        format!("pick {} {}", self.commit.to_hex(), self.rest)
+impl RebaseMerges {
+    /// The mode named by `value` (`--rebase-merges=<mode>`,
+    /// `rebase.rebaseMerges`).
+    pub fn parse(value: &str) -> Option<RebaseMerges> {
+        match value {
+            "" | "no-rebase-cousins" => Some(RebaseMerges::NoRebaseCousins),
+            "rebase-cousins" => Some(RebaseMerges::RebaseCousins),
+            _ => None,
+        }
     }
 }
 
@@ -123,6 +150,7 @@ struct State {
     autostash: Option<String>,
     squash_onto: Option<ObjectId>,
     force: bool,
+    reschedule_failed_exec: bool,
 }
 
 fn lossy(b: &[u8]) -> String {
@@ -669,23 +697,45 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         }
     }
 
+    // The interactive machinery.
+    let autosquash = o.autosquash.unwrap_or_else(|| {
+        o.interactive && config_bool(&repo, "rebase.autosquash").unwrap_or(false)
+    });
+    let configured = match repo.config.string("rebase.rebasemerges").ok().flatten() {
+        Some(v) => {
+            let v = v.to_string();
+            match v.to_ascii_lowercase().as_str() {
+                "true" | "yes" | "on" | "1" => RebaseMerges::NoRebaseCousins,
+                "false" | "no" | "off" | "0" => RebaseMerges::Off,
+                _ => RebaseMerges::parse(&v)
+                    .ok_or_else(|| Die::Fatal(msg::invalid_rebase_merges(&v)))?,
+            }
+        }
+        None => RebaseMerges::Off,
+    };
+    let rebase_merges = o.rebase_merges.unwrap_or(configured);
+    let rebase_merges = (rebase_merges != RebaseMerges::Off).then_some(rebase_merges);
+    let skip_up_to_date = o.interactive || !o.exec.is_empty() || o.autosquash == Some(true);
+
     // Up to date?
     let branch_short = head_name.strip_prefix("refs/heads/").map(str::to_owned);
     if let Some(r) = restrict
         && !o.root
+        && !skip_up_to_date
     {
         let bases = merge_bases(&repo, &r, &orig_head)?;
         let linear = bases.len() == 1
             && bases[0] == onto
-            && walk(
-                ctx,
-                &[
-                    "--merges".to_owned(),
-                    format!("^{}", r.to_hex()),
-                    orig_head.to_hex(),
-                ],
-            )?
-            .is_empty();
+            && (rebase_merges.is_some()
+                || walk(
+                    ctx,
+                    &[
+                        "--merges".to_owned(),
+                        format!("^{}", r.to_hex()),
+                        orig_head.to_hex(),
+                    ],
+                )?
+                .is_empty());
         if linear {
             if !o.force {
                 if let Some(b) = &switch_to {
@@ -757,7 +807,11 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
 
     // The todo list.
     let reapply = o.reapply_cherry_picks.unwrap_or(o.keep_base);
-    let items = todo_list(
+    let comment = crate::commands::commit::comment_string(&repo, b"")?;
+    if rebase_merges.is_some() {
+        return Err(Die::Fatal(msg::not_supported("--rebase-merges (#155)")));
+    }
+    let mut todo = todo::Todo::from_items(todo_list(
         ctx,
         &repo,
         restrict,
@@ -766,8 +820,27 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         reapply,
         !o.no_keep_empty,
         quiet,
-    )?;
+    )?);
+    instruction_format(ctx, &repo, &mut todo)?;
+    if autosquash {
+        todo::autosquash(&mut repo, &mut todo);
+    }
+    todo::add_exec(&mut todo, &o.exec);
+    if o.interactive && todo.count() == 0 {
+        todo.lines
+            .push(todo::Line::Cmd(todo::Item::new(todo::Cmd::Noop, "")));
+    }
 
+    let empty = o.empty.unwrap_or(if o.interactive {
+        Empty::Stop
+    } else if !o.exec.is_empty() {
+        Empty::Keep
+    } else {
+        Empty::Drop
+    });
+    let reschedule_failed_exec = o
+        .reschedule_failed_exec
+        .unwrap_or_else(|| config_bool(&repo, "rebase.reschedulefailedexec").unwrap_or(false));
     let state = State {
         head_name,
         onto,
@@ -777,44 +850,129 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         signoff: o.signoff,
         cdate_is_adate: o.committer_date_is_author_date,
         ignore_date: o.ignore_date,
-        empty: o.empty.unwrap_or_default(),
+        empty,
         strategy: o.strategy.clone(),
         xopts: o.xopts.clone(),
         autostash: stash,
         squash_onto,
         force: o.force || o.signoff || o.committer_date_is_author_date || o.ignore_date,
+        reschedule_failed_exec,
     };
-    write_state(&repo, &state, &items)?;
+    if o.interactive {
+        // git reads the setting once more before writing the list.
+        let _ = missing_commits_check(&repo);
+    }
+    let help = {
+        let len = repo.default_abbrev();
+        let from = if o.keep_base { Some(onto) } else { upstream };
+        let range = match from {
+            Some(f) => format!("{}..{}", repo.abbrev(&f, len), repo.abbrev(&orig_head, len)),
+            None => repo.abbrev(&orig_head, len),
+        };
+        let short_onto = repo.abbrev(&onto, len);
+        todo_help(
+            &repo,
+            &comment,
+            Some(&msg::todo_header(&range, &short_onto, todo.count())),
+        )
+    };
+    write_state(&repo, &state, &todo, &help, o.interactive)?;
+    let action = reflog_action();
+    let onto_name = onto_name.clone();
 
-    // Check out the new base.
-    let current = sequencer::head_commit(&mut repo);
-    let old_tree = match current {
-        Some(c) => sequencer::tree_of(&repo, &c).map_err(fail_die)?,
-        None => ObjectId::empty_tree(repo.hash),
-    };
-    let onto_tree = sequencer::tree_of(&repo, &onto).map_err(fail_die)?;
-    if let Err(e) = crate::switch_branch::move_index(&repo, old_tree, onto_tree, false) {
-        let _ = std::fs::remove_dir_all(state_dir(&repo));
-        if let Some(s) = &state.autostash {
-            apply_autostash(ctx, s)?;
-        }
-        if let Die::Exit(code) = e {
-            eprintln!("error: {}", msg::COULD_NOT_DETACH);
+    // Let the user edit the list.
+    if o.interactive {
+        let path = state_dir(&repo).join("git-rebase-todo");
+        let shown = render_for_edit(&repo, &todo) + &help;
+        write(&path, shown)?;
+        if let Err(code) = sequence_edit(ctx, &repo, &path) {
+            // The rebase does not start.
+            let _ = std::fs::remove_dir_all(state_dir(&repo));
+            drop(repo);
+            if let Some(s) = &state.autostash {
+                apply_autostash(ctx, s)?;
+            }
             return Ok(code);
         }
-        return Err(e);
+        let text = std::fs::read_to_string(&path).map_err(io_die)?;
+        let has_commands = text.lines().any(|l| {
+            let t = l.trim_start();
+            !t.is_empty() && !t.starts_with(comment.as_str())
+        });
+        if !has_commands {
+            eprintln!("error: {}", msg::NOTHING_TO_DO);
+            let _ = std::fs::remove_dir_all(state_dir(&repo));
+            drop(repo);
+            if let Some(s) = &state.autostash {
+                apply_autostash(ctx, s)?;
+            }
+            return Ok(1);
+        }
+        match validate(&mut repo, &text, &comment, None) {
+            Ok(t) => todo = t,
+            Err(()) => {
+                let autostash = state.autostash.as_deref();
+                checkout_onto(
+                    ctx,
+                    &mut repo,
+                    onto,
+                    orig_head,
+                    (&action, &onto_name),
+                    autostash,
+                )?;
+                return Ok(1);
+            }
+        }
+        write(&path, todo.text())?;
     }
-    // ORIG_HEAD only once the checkout worked (git leaves it alone when
-    // local changes are in the way).
-    write_orig_head(ctx, &repo, orig_head)?;
-    let action = reflog_action();
-    detach_head(
+
+    // Commits that need not be replayed: the new base moves on to them.
+    let mut start_at = onto;
+    let mut skipped = Vec::new();
+    if !state.force {
+        while let Some(first) = todo.peek() {
+            if first.cmd == todo::Cmd::Drop {
+                skipped.push(todo.pop().expect("peeked"));
+                continue;
+            }
+            if first.cmd != todo::Cmd::Pick {
+                break;
+            }
+            let Some(c) = first.commit else {
+                break;
+            };
+            if !matches!(repo.read_object(&c), Some(Object::Commit(cm))
+                if cm.parents().unwrap_or_default() == [start_at])
+            {
+                break;
+            }
+            skipped.push(todo.pop().expect("peeked"));
+            start_at = c;
+        }
+    }
+    if !skipped.is_empty() {
+        let dir = state_dir(&repo);
+        let mut done = String::new();
+        for i in &skipped {
+            done.push_str(&i.line());
+            done.push('\n');
+        }
+        write(&dir.join("done"), done)?;
+        write(&dir.join("git-rebase-todo"), todo.text())?;
+    }
+
+    // Check out the new base.
+    let autostash = state.autostash.as_deref();
+    if let Some(code) = checkout_onto(
         ctx,
-        &repo,
-        onto,
-        &msg::reflog(&action, "start", &msg::checkout(&onto_name)),
-    )?;
-    crate::hooks::post_checkout(&repo, Some(orig_head), Some(onto), true)?;
+        &mut repo,
+        start_at,
+        orig_head,
+        (&action, &onto_name),
+        autostash,
+    )? {
+        return Ok(code);
+    }
     drop(repo);
     let mut rb = Rebase {
         ctx,
@@ -822,7 +980,309 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         action,
         apply: false,
     };
-    rb.run(items)
+    if let (Some(last), Some(next)) = (skipped.last(), todo.peek())
+        && last.cmd == todo::Cmd::Pick
+        && next.cmd.melds()
+        && let Some(c) = last.commit
+    {
+        rb.record_rewritten(&c, &c, Some(next))?;
+    }
+    // A list of nothing but `noop` has nothing to run.
+    if todo.items().all(|i| i.cmd == todo::Cmd::Noop) {
+        return rb.finish();
+    }
+    rb.run(todo)
+}
+
+/// Detaches `HEAD` at `onto` to start replaying; `Some(code)` when the
+/// work tree could not be updated (the rebase is cancelled).
+fn checkout_onto(
+    ctx: &mut Context,
+    repo: &mut Repo,
+    onto: ObjectId,
+    orig_head: ObjectId,
+    (action, onto_name): (&str, &str),
+    autostash: Option<&str>,
+) -> Result<Option<i32>, Die> {
+    let current = sequencer::head_commit(repo);
+    let old_tree = match current {
+        Some(c) => sequencer::tree_of(repo, &c).map_err(fail_die)?,
+        None => ObjectId::empty_tree(repo.hash),
+    };
+    let onto_tree = sequencer::tree_of(repo, &onto).map_err(fail_die)?;
+    if let Err(e) = crate::switch_branch::move_index(repo, old_tree, onto_tree, false) {
+        let _ = std::fs::remove_dir_all(state_dir(repo));
+        if let Some(s) = autostash {
+            apply_autostash(ctx, s)?;
+        }
+        if let Die::Exit(code) = e {
+            eprintln!("error: {}", msg::COULD_NOT_DETACH);
+            return Ok(Some(code));
+        }
+        return Err(e);
+    }
+    // ORIG_HEAD only once the checkout worked (git leaves it alone when
+    // local changes are in the way).
+    write_orig_head(ctx, repo, orig_head)?;
+    detach_head(
+        ctx,
+        repo,
+        onto,
+        &msg::reflog(action, "start", &msg::checkout(onto_name)),
+    )?;
+    crate::hooks::post_checkout(repo, Some(orig_head), Some(onto), true)?;
+    Ok(None)
+}
+
+/// `rebase.instructionFormat`: the description after each picked
+/// commit.
+fn instruction_format(ctx: &Context, repo: &Repo, todo: &mut todo::Todo) -> Result<(), Die> {
+    let Some(fmt) = repo
+        .config
+        .string("rebase.instructionformat")
+        .ok()
+        .flatten()
+        .map(|f| f.to_string())
+        .filter(|f| !f.is_empty())
+    else {
+        return Ok(());
+    };
+    let ids: Vec<String> = todo
+        .items()
+        .filter(|i| i.cmd.picks())
+        .filter_map(|i| i.commit.map(|c| c.to_hex()))
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec![
+        "log".to_owned(),
+        "--no-walk=unsorted".to_owned(),
+        "--no-color".to_owned(),
+        "-z".to_owned(),
+        format!("--format=%H {fmt}"),
+    ];
+    args.extend(ids);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (_, out) = run_child(ctx, &refs, true)?;
+    let mut by_id = std::collections::HashMap::new();
+    for entry in out.split(|&b| b == 0) {
+        let text = lossy(entry);
+        if let Some((id, rest)) = text.split_once(' ') {
+            let line = rest.lines().next().unwrap_or_default().to_owned();
+            by_id.insert(id.to_owned(), line);
+        }
+    }
+    for l in &mut todo.lines {
+        if let todo::Line::Cmd(i) = l
+            && i.cmd.picks()
+            && let Some(c) = i.commit
+            && let Some(d) = by_id.get(&c.to_hex())
+        {
+            i.arg = format!("# {d}");
+        }
+    }
+    Ok(())
+}
+
+/// The help appended to the todo list the user edits; `header` is the
+/// "Rebase a..b onto c" line of a new rebase (`None` for `--edit-todo`).
+fn todo_help(repo: &Repo, comment: &str, header: Option<&str>) -> String {
+    let mut text = String::new();
+    if let Some(h) = header {
+        text.push('\n');
+        text.push_str(h);
+        text.push('\n');
+    }
+    text.push_str(msg::TODO_HELP);
+    if missing_commits_check(repo) != Check::Error {
+        text.push_str(msg::TODO_HELP_LOST);
+    } else {
+        text.push_str(msg::TODO_HELP_DROP);
+    }
+    text.push_str(if header.is_some() {
+        msg::TODO_HELP_ABORT
+    } else {
+        msg::TODO_HELP_EDIT_TODO
+    });
+    let mut out = String::new();
+    let mut first = true;
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches('\n');
+        if first && header.is_some() && body.is_empty() {
+            // The blank line between the list and the help.
+            out.push('\n');
+        } else if body.is_empty() {
+            out.push_str(comment);
+            out.push('\n');
+        } else {
+            out.push_str(comment);
+            out.push(' ');
+            out.push_str(body);
+            out.push('\n');
+        }
+        first = false;
+    }
+    out
+}
+
+/// The todo list as the user edits it: abbreviated object names, and
+/// one-letter commands with `rebase.abbreviateCommands`.
+fn render_for_edit(repo: &Repo, todo: &todo::Todo) -> String {
+    let abbrev_cmd = repo
+        .config
+        .bool("rebase.abbreviatecommands")
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    let len = repo.default_abbrev();
+    let mut t = todo.clone();
+    // Leading blank lines are not shown.
+    while matches!(t.lines.first(), Some(todo::Line::Comment(c)) if c.trim().is_empty()) {
+        t.lines.remove(0);
+    }
+    t.render(abbrev_cmd, &|id: &ObjectId| repo.abbrev(id, len))
+}
+
+/// Runs the sequence editor on `path`; `Err(code)` when it failed.
+fn sequence_edit(ctx: &Context, repo: &Repo, path: &Path) -> Result<(), i32> {
+    let env = rgit_config::SystemEnv::default();
+    let editor = match rgit_ident::editor::sequence_editor(&repo.config, &env) {
+        Ok(e) => e,
+        Err(p) => {
+            p.print();
+            return Err(rgit_options::EXIT_FATAL);
+        }
+    };
+    let hint = ctx
+        .advisor(&repo.config)
+        .ok()
+        .and_then(|a| a.enabled(Advice::WaitingForEditor).ok())
+        .unwrap_or(true);
+    let opts = rgit_ident::editor::LaunchOptions {
+        hint,
+        env: ctx.child_env(),
+        cwd: None,
+    };
+    let _ = std::io::stdout().flush();
+    if let Err(e) = rgit_ident::editor::launch(editor.as_deref(), path, &opts) {
+        e.print();
+        return Err(1);
+    }
+    Ok(())
+}
+
+/// `rebase.missingCommitsCheck`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Check {
+    Ignore,
+    Warn,
+    Error,
+}
+
+/// `rebase.missingCommitsCheck`; an unknown value is ignored with a
+/// warning.
+fn missing_commits_check(repo: &Repo) -> Check {
+    let Some(value) = repo
+        .config
+        .string("rebase.missingcommitscheck")
+        .ok()
+        .flatten()
+        .map(|v| v.to_string())
+    else {
+        return Check::Ignore;
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "warn" => Check::Warn,
+        "error" => Check::Error,
+        "ignore" => Check::Ignore,
+        _ => {
+            eprintln!("warning: {}", msg::unrecognized_check_level(&value));
+            Check::Ignore
+        }
+    }
+}
+
+/// Parses the edited todo list and checks it: unparsable lines and, with
+/// `rebase.missingCommitsCheck`, commits that disappeared from the list
+/// (compared with `git-rebase-todo.backup`, plus `done` lines given in
+/// `done`). Problems are printed; `Err` when the rebase cannot go on.
+fn validate(
+    repo: &mut Repo,
+    text: &str,
+    comment: &str,
+    extra: Option<&str>,
+) -> Result<todo::Todo, ()> {
+    let mut resolve = |name: &str| resolve_commit(repo, name);
+    let mut todo = match todo::parse(text, comment, &mut resolve) {
+        Ok(t) => t,
+        Err(bad) => {
+            for b in &bad {
+                b.print();
+            }
+            match extra {
+                Some(e) => eprintln!("error: {e}"),
+                None => eprintln!("{}", msg::FIX_WITH_EDIT_TODO),
+            }
+            return Err(());
+        }
+    };
+    todo.strip_comments(comment);
+    let dir = state_dir(repo);
+    let done_text = std::fs::read_to_string(dir.join("done")).unwrap_or_default();
+    if done_text.trim().is_empty()
+        && let Some(first) = todo.peek()
+        && first.cmd.melds()
+    {
+        eprintln!("error: {}", msg::meld_first(first.cmd.name()));
+        match extra {
+            Some(e) => eprintln!("error: {e}"),
+            None => eprintln!("{}", msg::FIX_WITH_EDIT_TODO),
+        }
+        return Err(());
+    }
+    let check = missing_commits_check(repo);
+    if check == Check::Ignore {
+        return Ok(todo);
+    }
+    let backup = std::fs::read_to_string(dir.join("git-rebase-todo.backup")).unwrap_or_default();
+    let done = done_text;
+    let mut resolve = |name: &str| resolve_commit(repo, name);
+    let original = todo::parse(&backup, comment, &mut resolve).unwrap_or_default();
+    let done = todo::parse(&done, comment, &mut resolve).unwrap_or_default();
+    let present: HashSet<ObjectId> = todo::commits(&todo)
+        .into_iter()
+        .chain(todo::commits(&done))
+        .collect();
+    let missing: Vec<&todo::Item> = original
+        .items()
+        .filter(|i| i.cmd.picks() || i.cmd == todo::Cmd::Drop)
+        .filter(|i| i.commit.is_some_and(|c| !present.contains(&c)))
+        .collect();
+    if missing.is_empty() {
+        let _ = std::fs::remove_file(dir.join("dropped"));
+        return Ok(todo);
+    }
+    let len = repo.default_abbrev();
+    let mut out = format!("{}\n", msg::DROPPED_WARNING);
+    for i in missing.iter().rev() {
+        let c = i.commit.expect("commit");
+        out.push_str(&format!(" - {} {}\n", repo.abbrev(&c, len), i.arg));
+    }
+    out.push_str(msg::DROPPED_HINT);
+    out.push('\n');
+    out.push_str(msg::FIX_WITH_EDIT_TODO);
+    eprintln!("{out}");
+    if check == Check::Error {
+        let mut list = String::new();
+        for i in &missing {
+            list.push_str(&i.commit.expect("commit").to_hex());
+            list.push('\n');
+        }
+        let _ = std::fs::write(dir.join("dropped"), list);
+        return Err(());
+    }
+    Ok(todo)
 }
 
 /// The full name of the ref `name` (for its reflog).
@@ -870,7 +1330,7 @@ fn todo_list(
     reapply: bool,
     keep_empty: bool,
     quiet: bool,
-) -> Result<Vec<Item>, Die> {
+) -> Result<Vec<todo::Item>, Die> {
     let mut args = vec!["--topo-order".to_owned(), "--no-merges".to_owned()];
     if let Some(r) = restrict {
         args.push(format!("^{}", r.to_hex()));
@@ -936,23 +1396,17 @@ fn todo_list(
         let Some(Object::Commit(commit)) = repo.read_object(&c) else {
             continue;
         };
-        if !keep_empty {
-            let tree = commit.tree().ok();
-            let parent_tree = match commit.parents().unwrap_or_default().first() {
-                Some(p) => crate::switch_branch::commit_tree(repo, p),
-                None => Some(ObjectId::empty_tree(repo.hash)),
-            };
-            if tree.is_some() && tree == parent_tree {
-                continue;
-            }
+        if !keep_empty && is_empty_commit(repo, &commit) {
+            continue;
         }
-        items.push(Item {
-            commit: c,
-            rest: format!(
-                "# {}",
-                lossy(&rgit_commit::message::subject(commit.message()))
-            ),
-        });
+        let mut arg = format!(
+            "# {}",
+            lossy(&rgit_commit::message::subject(commit.message()))
+        );
+        if is_empty_commit(repo, &commit) {
+            arg.push_str(" # empty");
+        }
+        items.push(todo::Item::pick(c, arg));
     }
     if warned {
         ctx.advisor(&repo.config)?
@@ -962,12 +1416,29 @@ fn todo_list(
     Ok(items)
 }
 
+/// Whether `commit` changes nothing against its first parent.
+fn is_empty_commit(repo: &Repo, commit: &Commit) -> bool {
+    let tree = commit.tree().ok();
+    let parent_tree = match commit.parents().unwrap_or_default().first() {
+        Some(p) => crate::switch_branch::commit_tree(repo, p),
+        None => Some(ObjectId::empty_tree(repo.hash)),
+    };
+    tree.is_some() && tree == parent_tree
+}
+
 fn write(path: &Path, data: impl AsRef<[u8]>) -> Result<(), Die> {
     std::fs::write(path, data).map_err(io_die)
 }
 
-/// Creates `.git/rebase-merge` for a new rebase.
-fn write_state(repo: &Repo, s: &State, items: &[Item]) -> Result<(), Die> {
+/// Creates `.git/rebase-merge` for a new rebase; `help` is appended to
+/// the todo list of an interactive rebase (the user edits it next).
+fn write_state(
+    repo: &Repo,
+    s: &State,
+    todo: &todo::Todo,
+    help: &str,
+    interactive: bool,
+) -> Result<(), Die> {
     let dir = state_dir(repo);
     std::fs::create_dir_all(&dir).map_err(io_die)?;
     let f = |name: &str| dir.join(name);
@@ -1012,16 +1483,21 @@ fn write_state(repo: &Repo, s: &State, items: &[Item]) -> Result<(), Die> {
     if let Some(sq) = &s.squash_onto {
         write(&f("squash-onto"), format!("{}\n", sq.to_hex()))?;
     }
-    write(&f("no-reschedule-failed-exec"), "")?;
-    let mut todo = String::new();
-    for i in items {
-        todo.push_str(&i.line());
-        todo.push('\n');
+    if s.reschedule_failed_exec {
+        write(&f("reschedule-failed-exec"), "")?;
+    } else {
+        write(&f("no-reschedule-failed-exec"), "")?;
     }
-    write(&f("git-rebase-todo"), &todo)?;
-    write(&f("done"), "")?;
-    write(&f("msgnum"), "0\n")?;
-    write(&f("end"), format!("{}\n", items.len()))?;
+    let text = todo.text();
+    write(&f("git-rebase-todo.backup"), text.clone() + help)?;
+    if interactive {
+        write(&f("git-rebase-todo"), text + help)?;
+    } else {
+        write(&f("git-rebase-todo"), &text)?;
+        write(&f("done"), "")?;
+        write(&f("msgnum"), "0\n")?;
+        write(&f("end"), format!("{}\n", todo.count()))?;
+    }
     Ok(())
 }
 
@@ -1070,6 +1546,7 @@ fn read_state(repo: &Repo, dir: &Path) -> Result<State, Die> {
         autostash: read("autostash").map(|s| s.trim().to_owned()),
         squash_onto: oid("squash-onto"),
         force: signoff || cdate_is_adate || ignore_date,
+        reschedule_failed_exec: exists("reschedule-failed-exec"),
     })
 }
 
@@ -1108,47 +1585,6 @@ fn parse_quoted_list(s: &str) -> Vec<String> {
     out
 }
 
-/// Parses a todo list (`git-rebase-todo`).
-fn parse_todo(repo: &mut Repo, text: &str) -> Result<Vec<Item>, Die> {
-    let mut items = Vec::new();
-    for (n, raw) in text.lines().enumerate() {
-        let line = raw.trim_start();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let end = line.find([' ', '\t']).unwrap_or(line.len());
-        let word = &line[..end];
-        match word {
-            "pick" | "p" => {}
-            "reword" | "r" | "edit" | "e" | "squash" | "s" | "fixup" | "f" | "exec" | "x"
-            | "break" | "b" | "drop" | "d" | "label" | "l" | "reset" | "t" | "merge" | "m"
-            | "update-ref" | "u" | "noop" => {
-                return Err(Die::Fatal(msg::not_supported(&format!(
-                    "the todo command '{word}' (#155)"
-                ))));
-            }
-            _ => {
-                eprintln!("error: {}", seqmsg::invalid_command(word));
-                eprintln!("error: {}", seqmsg::invalid_line(n + 1, raw));
-                return Err(Die::Exit(1));
-            }
-        }
-        let rest = line[end..].trim_start();
-        let id_end = rest.find([' ', '\t']).unwrap_or(rest.len());
-        let name = &rest[..id_end];
-        let Some(commit) = resolve_commit(repo, name).filter(|_| !name.is_empty()) else {
-            eprintln!("error: {}", seqmsg::could_not_parse(name));
-            eprintln!("error: {}", seqmsg::invalid_line(n + 1, raw));
-            return Err(Die::Exit(1));
-        };
-        items.push(Item {
-            commit,
-            rest: rest[id_end..].trim_start().to_owned(),
-        });
-    }
-    Ok(items)
-}
-
 // ----------------------------------------------------------------------
 // Replaying.
 
@@ -1156,11 +1592,18 @@ fn parse_todo(repo: &mut Repo, text: &str) -> Result<Vec<Item>, Die> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Done,
-    Stopped,
-    /// The commit could not be applied at all (local changes in the way):
-    /// it goes back to the front of the todo list.
+    /// The rebase stops; the command exits with this code.
+    Exit(i32),
+    /// The command could not run at all (local changes in the way): it
+    /// goes back to the front of the todo list.
     Rescheduled,
 }
+
+/// The files of a `squash`/`fixup` chain in progress.
+const CURRENT_FIXUPS: &str = "current-fixups";
+const MESSAGE_SQUASH: &str = "message-squash";
+const SQUASH_FIRST: &str = "message-squash-first";
+const REWRITTEN_PENDING: &str = "rewritten-pending";
 
 struct Rebase<'c> {
     ctx: &'c mut Context,
@@ -1225,12 +1668,27 @@ impl<'c> Rebase<'c> {
         Ok(())
     }
 
-    /// The remaining todo list.
-    fn read_todo(&self) -> Result<Vec<Item>, Die> {
+    /// The remaining todo list; unparsable lines are printed with
+    /// `extra`, and give `Err(())`.
+    fn read_todo(&self) -> Result<Result<todo::Todo, ()>, Die> {
         let mut repo = self.repo()?;
+        let comment = crate::commands::commit::comment_string(&repo, b"")?;
         let text =
             std::fs::read_to_string(state_dir(&repo).join("git-rebase-todo")).unwrap_or_default();
-        parse_todo(&mut repo, &text)
+        let mut resolve = |name: &str| resolve_commit(&mut repo, name);
+        Ok(match todo::parse(&text, &comment, &mut resolve) {
+            Ok(mut t) => {
+                t.strip_comments(&comment);
+                Ok(t)
+            }
+            Err(bad) => {
+                for b in &bad {
+                    b.print();
+                }
+                eprintln!("error: {}", msg::PLEASE_FIX_WITH_EDIT_TODO);
+                Err(())
+            }
+        })
     }
 
     fn count_done(&self) -> Result<usize, Die> {
@@ -1244,13 +1702,11 @@ impl<'c> Rebase<'c> {
             .count())
     }
 
-    /// Replays `todo`, then finishes the rebase.
-    fn run(&mut self, mut todo: Vec<Item>) -> CmdResult {
+    /// Runs the commands of `todo`, then finishes the rebase.
+    fn run(&mut self, mut todo: todo::Todo) -> CmdResult {
         let dir = self.dir()?;
         let mut done = self.count_done()?;
-        let total = done + todo.len();
-        while !todo.is_empty() {
-            let item = todo.remove(0);
+        while let Some(item) = todo.pop() {
             let mut done_file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -1258,24 +1714,54 @@ impl<'c> Rebase<'c> {
                 .map_err(io_die)?;
             writeln!(done_file, "{}", item.line()).map_err(io_die)?;
             drop(done_file);
-            let mut rest = String::new();
-            for i in &todo {
-                rest.push_str(&i.line());
-                rest.push('\n');
-            }
-            write(&dir.join("git-rebase-todo"), rest)?;
+            write(&dir.join("git-rebase-todo"), todo.text())?;
             done += 1;
+            let total = done + todo.count();
             write(&dir.join("msgnum"), format!("{done}\n"))?;
             write(&dir.join("end"), format!("{total}\n"))?;
             if !self.state.quiet {
                 let end = if self.state.verbose { "\n" } else { "\r" };
                 eprint!("{}{end}", msg::progress(done, total));
             }
-            match self.pick(&item).map_err(fail_die)? {
-                Step::Done => {}
-                Step::Stopped => return Ok(1),
+            use todo::Cmd;
+            self.remove_git_file("AUTO_MERGE")?;
+            let step = match item.cmd {
+                Cmd::Pick | Cmd::Reword | Cmd::Edit => self.pick(&item, &todo).map_err(fail_die)?,
+                Cmd::Squash | Cmd::Fixup => self.meld(&item, &todo).map_err(fail_die)?,
+                Cmd::Exec => self.exec(&item, &mut todo)?,
+                Cmd::Break => {
+                    let mut repo = self.repo()?;
+                    if let Some(h) = sequencer::head_commit(&mut repo) {
+                        let subject = match repo.read_object(&h) {
+                            Some(Object::Commit(c)) => lossy(sequencer::subject_line(c.message())),
+                            _ => String::new(),
+                        };
+                        let abbrev = repo.abbrev(&h, repo.default_abbrev());
+                        eprintln!("{}", msg::stopped_at(&abbrev, &subject));
+                    }
+                    Step::Exit(0)
+                }
+                Cmd::Drop | Cmd::Noop => Step::Done,
+                Cmd::Label => self.label(&item)?,
+                Cmd::Reset => self.reset(&item)?,
+                Cmd::Merge => self.merge(&item).map_err(fail_die)?,
+                Cmd::UpdateRef => self.update_ref(&item)?,
+            };
+            match step {
+                Step::Done => {
+                    // An editor or `exec` may have edited the list.
+                    let now =
+                        std::fs::read_to_string(dir.join("git-rebase-todo")).unwrap_or_default();
+                    if now != todo.text() {
+                        todo = match self.read_todo()? {
+                            Ok(t) => t,
+                            Err(()) => return Ok(1),
+                        };
+                    }
+                }
+                Step::Exit(code) => return Ok(code),
                 Step::Rescheduled => {
-                    todo.insert(0, item);
+                    todo.push_front(item);
                     return self.reschedule(&todo);
                 }
             }
@@ -1283,16 +1769,122 @@ impl<'c> Rebase<'c> {
         self.finish()
     }
 
-    /// Replays one commit onto `HEAD`.
-    fn pick(&mut self, item: &Item) -> Result<Step, Fail> {
+    /// Applies the change of `id` onto `head` (a cherry-pick without the
+    /// commit): `Ok(None)` when the work tree could not be updated.
+    fn apply(
+        &mut self,
+        repo: &Repo,
+        id: &ObjectId,
+        commit: &Commit,
+        head_tree: ObjectId,
+    ) -> Result<Option<rgit_merge::MergeResult>, Fail> {
+        let parent = commit.parents().unwrap_or_default().first().copied();
+        let empty_tree = ObjectId::empty_tree(repo.hash);
+        let abbrev = repo.abbrev(id, repo.default_abbrev());
+        let subject = lossy(sequencer::subject_line(commit.message()));
+        let label = format!("{abbrev} ({subject})");
+        let commit_tree = commit.tree().map_err(|e| Fail::Error(e.to_string()))?;
+        let parent_tree = match parent {
+            Some(p) => sequencer::tree_of(repo, &p)?,
+            None => empty_tree,
+        };
+        let parent_label = match parent {
+            Some(_) => seqmsg::parent_of(&label),
+            None => seqmsg::EMPTY_TREE_LABEL.to_owned(),
+        };
+        let result = sequencer::merge_with(
+            repo,
+            self.state.strategy.as_deref(),
+            &self.state.xopts,
+            &parent_tree,
+            &head_tree,
+            &commit_tree,
+            (&parent_label, &label),
+        )?;
+        if result.tree == empty_tree {
+            repo.odb()
+                .write(ObjectKind::Tree, b"")
+                .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))?;
+        }
+        match sequencer::two_way(repo, head_tree, result.tree, Some(&result), true) {
+            Err(Fail::Printed) => return Ok(None),
+            r => r?,
+        }
+        self.print_merge_messages(repo, &result)?;
+        Ok(Some(result))
+    }
+
+    fn print_merge_messages(
+        &mut self,
+        repo: &Repo,
+        result: &rgit_merge::MergeResult,
+    ) -> Result<(), Fail> {
+        let mut out = Vec::new();
+        for m in &result.messages {
+            out.extend_from_slice(&m.text);
+            out.push(b'\n');
+        }
+        {
+            let mut o = std::io::stdout().lock();
+            let _ = o.write_all(&out);
+            let _ = o.flush();
+        }
+        crate::commands::merge_tree::advise_submodules(self.ctx, repo, result)?;
+        write(
+            &git_dir(repo).join("AUTO_MERGE"),
+            format!("{}\n", result.tree.to_hex()),
+        )?;
+        Ok(())
+    }
+
+    /// Records a conflicted stop at `id` and prints the advice.
+    fn stop_conflicted(
+        &mut self,
+        repo: &Repo,
+        id: &ObjectId,
+        result: &rgit_merge::MergeResult,
+        message: &[u8],
+        author: &Signature,
+        rest: Option<&str>,
+    ) -> Result<Step, Fail> {
+        let comment = crate::commands::commit::comment_string(repo, b"")?;
+        let paths: Vec<Vec<u8>> = result.conflicts.iter().map(|c| c.path.clone()).collect();
+        let mut m = message.to_vec();
+        if rest.is_some() {
+            m.extend_from_slice(&sequencer::conflicts_block(
+                &comment,
+                &paths,
+                repo.quote_path(),
+            ));
+        }
+        self.write_stopped(repo, id, &m, author, false)?;
+        let abbrev = repo.abbrev(id, repo.default_abbrev());
+        let subject = match repo.read_object(id) {
+            Some(Object::Commit(c)) => lossy(sequencer::subject_line(c.message())),
+            _ => String::new(),
+        };
+        eprintln!("error: {}", seqmsg::could_not_apply(&abbrev, &subject));
+        self.ctx
+            .advisor(&repo.config)?
+            .advise(Advice::MergeConflict, msg::CONFLICT_ADVICE)
+            .map_err(Die::Fatal)?;
+        match rest {
+            Some(rest) => eprintln!("{}", msg::could_not_apply(&abbrev, rest)),
+            None => eprint!("{}", msg::EDIT_ADVICE),
+        }
+        Ok(Step::Exit(1))
+    }
+
+    /// `pick`, `reword` and `edit`: replays one commit onto `HEAD`.
+    fn pick(&mut self, item: &todo::Item, todo: &todo::Todo) -> Result<Step, Fail> {
+        self.remove_git_file("REBASE_HEAD")?;
         let mut repo = self.repo()?;
-        let id = item.commit;
+        let id = item.commit.expect("pick has a commit");
         let head = sequencer::head_commit(&mut repo)
             .ok_or_else(|| Fail::Error(seqmsg::could_not_read("HEAD")))?;
         let head_tree = sequencer::tree_of(&repo, &head)?;
         let commit = sequencer::read_commit(&repo, &id)?;
         let parent = commit.parents().unwrap_or_default().first().copied();
-        let empty_tree = ObjectId::empty_tree(repo.hash);
 
         let ff = !self.state.force
             && match parent {
@@ -1307,56 +1899,12 @@ impl<'c> Rebase<'c> {
             }
             let what = seqmsg::reflog("rebase", seqmsg::FAST_FORWARD);
             sequencer::update_head(self.ctx, &repo, id, Some(head), &what)?;
-            self.record_rewritten(&id, &id)?;
-            return Ok(Step::Done);
+            return self.after_pick(repo, item, id, todo, true);
         }
 
-        let abbrev = repo.abbrev(&id, repo.default_abbrev());
-        let subject = lossy(sequencer::subject_line(commit.message()));
-        let label = format!("{abbrev} ({subject})");
-        let commit_tree = commit.tree().map_err(|e| Fail::Error(e.to_string()))?;
-        let parent_tree = match parent {
-            Some(p) => sequencer::tree_of(&repo, &p)?,
-            None => empty_tree,
+        let Some(result) = self.apply(&repo, &id, &commit, head_tree)? else {
+            return Ok(Step::Rescheduled);
         };
-        let parent_label = match parent {
-            Some(_) => seqmsg::parent_of(&label),
-            None => seqmsg::EMPTY_TREE_LABEL.to_owned(),
-        };
-        let result = sequencer::merge_with(
-            &repo,
-            self.state.strategy.as_deref(),
-            &self.state.xopts,
-            &parent_tree,
-            &head_tree,
-            &commit_tree,
-            (&parent_label, &label),
-        )?;
-        if result.tree == empty_tree {
-            repo.odb()
-                .write(ObjectKind::Tree, b"")
-                .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))?;
-        }
-        match sequencer::two_way(&repo, head_tree, result.tree, Some(&result), true) {
-            Err(Fail::Printed) => return Ok(Step::Rescheduled),
-            r => r?,
-        }
-        {
-            let mut out = Vec::new();
-            for m in &result.messages {
-                out.extend_from_slice(&m.text);
-                out.push(b'\n');
-            }
-            let mut o = std::io::stdout().lock();
-            let _ = o.write_all(&out);
-            let _ = o.flush();
-        }
-        crate::commands::merge_tree::advise_submodules(self.ctx, &repo, &result)?;
-        write(
-            &git_dir(&repo).join("AUTO_MERGE"),
-            format!("{}\n", result.tree.to_hex()),
-        )?;
-
         let comment = crate::commands::commit::comment_string(&repo, b"")?;
         let mut message = commit.message().to_vec();
         if self.state.signoff {
@@ -1364,25 +1912,24 @@ impl<'c> Rebase<'c> {
         }
         let original_author = self.author_of(&commit, &id, false)?;
         let author = self.author_of(&commit, &id, self.state.ignore_date)?;
+        let subject = lossy(sequencer::subject_line(commit.message()));
 
         if !result.clean {
-            let paths: Vec<Vec<u8>> = result.conflicts.iter().map(|c| c.path.clone()).collect();
-            let mut m = message.clone();
-            m.extend_from_slice(&sequencer::conflicts_block(
-                &comment,
-                &paths,
-                repo.quote_path(),
-            ));
-            self.write_stopped(&repo, &id, &m, &original_author, false)?;
-            eprintln!("error: {}", seqmsg::could_not_apply(&abbrev, &subject));
-            self.ctx
-                .advisor(&repo.config)?
-                .advise(Advice::MergeConflict, msg::CONFLICT_ADVICE)
-                .map_err(Die::Fatal)?;
-            eprintln!("{}", msg::could_not_apply(&abbrev, &item.rest));
-            return Ok(Step::Stopped);
+            return self.stop_conflicted(
+                &repo,
+                &id,
+                &result,
+                &message,
+                &original_author,
+                Some(&item.arg),
+            );
         }
 
+        let commit_tree = commit.tree().map_err(|e| Fail::Error(e.to_string()))?;
+        let parent_tree = match parent {
+            Some(p) => sequencer::tree_of(&repo, &p)?,
+            None => ObjectId::empty_tree(repo.hash),
+        };
         if result.tree == head_tree && commit_tree != parent_tree {
             match self.state.empty {
                 Empty::Drop => {
@@ -1394,22 +1941,552 @@ impl<'c> Rebase<'c> {
                     self.write_stopped(&repo, &id, &message, &original_author, true)?;
                     drop(repo);
                     self.commit_child(&["-n".to_owned(), "--no-edit".to_owned()], &[], true)?;
-                    eprintln!("{}", msg::could_not_apply(&abbrev, &item.rest));
-                    return Ok(Step::Stopped);
+                    let abbrev = repo_abbrev(self, &id)?;
+                    eprintln!("{}", msg::could_not_apply(&abbrev, &item.arg));
+                    return Ok(Step::Exit(1));
                 }
             }
         }
 
+        // With --root, the empty placeholder commit is not a parent: the
+        // first commit becomes a root.
+        let parents: &[ObjectId] = if Some(head) == self.state.squash_onto {
+            &[]
+        } else {
+            std::slice::from_ref(&head)
+        };
         let new = self.commit(
             &mut repo,
-            head,
+            parents,
             result.tree,
-            &commit,
+            commit.encoding(),
             &author,
             message,
             &comment,
+            item.cmd.name(),
         )?;
-        self.record_rewritten(&id, &new)?;
+        let _ = new;
+        self.after_pick(repo, item, id, todo, false)
+    }
+
+    /// After `id` was replayed as `HEAD`: `reword` lets the user edit the
+    /// message, `edit` stops.
+    fn after_pick(
+        &mut self,
+        mut repo: Repo,
+        item: &todo::Item,
+        id: ObjectId,
+        todo: &todo::Todo,
+        fast_forward: bool,
+    ) -> Result<Step, Fail> {
+        let new = sequencer::head_commit(&mut repo)
+            .ok_or_else(|| Fail::Error(seqmsg::could_not_read("HEAD")))?;
+        match item.cmd {
+            todo::Cmd::Reword => {
+                drop(repo);
+                let env = vec![(
+                    "GIT_REFLOG_ACTION".to_owned(),
+                    format!("{} (reword)", self.action),
+                )];
+                let args = ["--amend", "--allow-empty", "-n", "-e"].map(str::to_owned);
+                let code = self.commit_child(&args, &env, false)?;
+                self.remove_git_file("AUTO_MERGE")?;
+                if code != 0 {
+                    return Ok(Step::Exit(1));
+                }
+                let mut repo = self.repo()?;
+                let new = sequencer::head_commit(&mut repo).unwrap_or(new);
+                self.record_rewritten(&id, &new, todo.peek())?;
+                Ok(Step::Done)
+            }
+            todo::Cmd::Edit => {
+                let commit = sequencer::read_commit(&repo, &id)?;
+                let author = self.author_of(&commit, &id, false)?;
+                write(
+                    &state_dir(&repo).join("amend"),
+                    format!("{}\n", new.to_hex()),
+                )?;
+                let mut message = commit.message().to_vec();
+                if fast_forward {
+                    message.push(b'\n');
+                }
+                self.write_stopped(&repo, &id, &message, &author, false)?;
+                let _ = std::fs::remove_file(git_dir(&repo).join("MERGE_MSG"));
+                let abbrev = repo.abbrev(&id, repo.default_abbrev());
+                eprintln!("{}", msg::stopped_at_edit(&abbrev, &item.arg));
+                eprint!("{}", msg::EDIT_ADVICE);
+                Ok(Step::Exit(0))
+            }
+            _ => {
+                self.record_rewritten(&id, &new, todo.peek())?;
+                Ok(Step::Done)
+            }
+        }
+    }
+
+    /// `squash` and `fixup`: melds a commit into `HEAD`.
+    fn meld(&mut self, item: &todo::Item, todo: &todo::Todo) -> Result<Step, Fail> {
+        self.remove_git_file("REBASE_HEAD")?;
+        let mut repo = self.repo()?;
+        let id = item.commit.expect("meld has a commit");
+        let head = sequencer::head_commit(&mut repo)
+            .ok_or_else(|| Fail::Error(seqmsg::could_not_read("HEAD")))?;
+        let head_commit = sequencer::read_commit(&repo, &head)?;
+        let head_tree = sequencer::tree_of(&repo, &head)?;
+        let commit = sequencer::read_commit(&repo, &id)?;
+        let dir = state_dir(&repo);
+
+        // The chain so far.
+        let mut chain = std::fs::read_to_string(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
+        if chain.is_empty() {
+            write(&dir.join(SQUASH_FIRST), head_commit.message())?;
+        }
+        let flag = item.flag.map(|f| format!(" -{f}")).unwrap_or_default();
+        chain.push_str(&format!("{}{flag} {}\n", item.cmd.name(), id.to_hex()));
+        write(&dir.join(CURRENT_FIXUPS), &chain)?;
+        let comment = crate::commands::commit::comment_string(&repo, b"")?;
+        let (template, wants_editor) = self.squash_message(&repo, &comment)?;
+        write(&dir.join(MESSAGE_SQUASH), &template)?;
+        let last = !todo.peek().is_some_and(|i| i.cmd.melds());
+
+        let Some(result) = self.apply(&repo, &id, &commit, head_tree)? else {
+            // Not applied: the chain is as before.
+            let before = chain.lines().count() - 1;
+            if before == 0 {
+                self.end_chain(&repo)?;
+            } else {
+                let kept: Vec<&str> = chain.lines().take(before).collect();
+                write(&dir.join(CURRENT_FIXUPS), kept.join("\n") + "\n")?;
+                let (t, _) = self.squash_message(&repo, &comment)?;
+                write(&dir.join(MESSAGE_SQUASH), &t)?;
+            }
+            return Ok(Step::Rescheduled);
+        };
+        let author = head_commit
+            .author()
+            .and_then(|a| a.to_owned())
+            .ok_or_else(|| Fail::Error(seqmsg::cannot_get_message(&head.to_hex())))?;
+        if !result.clean {
+            let original = self.author_of(&commit, &id, false)?;
+            write(&dir.join("amend"), format!("{}\n", head.to_hex()))?;
+            return self.stop_conflicted(&repo, &id, &result, &template, &original, None);
+        }
+
+        if last && wants_editor {
+            let gd = git_dir(&repo);
+            write(&gd.join("REBASE_HEAD"), format!("{}\n", id.to_hex()))?;
+            write(&gd.join("MERGE_MSG"), &template)?;
+            drop(repo);
+            let env = vec![(
+                "GIT_REFLOG_ACTION".to_owned(),
+                format!("{} ({})", self.action, item.cmd.name()),
+            )];
+            let args = vec![
+                "--amend".to_owned(),
+                "--allow-empty".to_owned(),
+                "-n".to_owned(),
+                "-e".to_owned(),
+                "-F".to_owned(),
+                dir.join(MESSAGE_SQUASH).to_string_lossy().into_owned(),
+            ];
+            let code = self.commit_child(&args, &env, false)?;
+            self.remove_git_file("AUTO_MERGE")?;
+            self.remove_git_file("MERGE_MSG")?;
+            if code != 0 {
+                return Ok(Step::Exit(1));
+            }
+            let mut repo = self.repo()?;
+            let new = sequencer::head_commit(&mut repo).unwrap_or(head);
+            self.end_chain(&repo)?;
+            self.record_rewritten(&id, &new, todo.peek())?;
+            return Ok(Step::Done);
+        }
+
+        let message = if last {
+            rgit_commit::message::cleanup(
+                &template,
+                rgit_commit::message::Cleanup::Strip.resolve(false),
+                &comment,
+            )
+        } else {
+            template
+        };
+        let parents = head_commit.parents().unwrap_or_default();
+        let new = self.commit(
+            &mut repo,
+            &parents,
+            result.tree,
+            head_commit.encoding(),
+            &author,
+            message,
+            &comment,
+            item.cmd.name(),
+        )?;
+        // The commit amended `HEAD`.
+        let hooks = crate::hooks::for_repo(self.ctx, &repo.setup, &repo.config)?;
+        if hooks.exists("post-rewrite") {
+            let data = format!("{} {}\n", head.to_hex(), new.to_hex());
+            let mut o = RunOptions::with_args(["amend"]);
+            o.stdin = Input::Data(data.as_bytes());
+            crate::hooks::run(&hooks, "post-rewrite", &o)?;
+        }
+        if last {
+            self.end_chain(&repo)?;
+        }
+        self.record_rewritten(&id, &new, todo.peek())?;
+        Ok(Step::Done)
+    }
+
+    /// A `squash`/`fixup` that stopped is not applied after all (`--skip`,
+    /// or `--continue` with nothing staged): it leaves the chain, and when
+    /// the chain ends here, the commit gets the message of the rest.
+    fn drop_from_chain(&mut self, todo: &todo::Todo, what: &str) -> Result<Option<i32>, Die> {
+        let repo = self.repo()?;
+        let dir = state_dir(&repo);
+        let chain = std::fs::read_to_string(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
+        if chain.is_empty() {
+            return Ok(None);
+        }
+        let all: Vec<&str> = chain.lines().collect();
+        let kept = &all[..all.len().saturating_sub(1)];
+        if kept.is_empty() {
+            self.end_chain(&repo)?;
+            return Ok(None);
+        }
+        write(&dir.join(CURRENT_FIXUPS), kept.join("\n") + "\n")?;
+        if todo.peek().is_some_and(|i| i.cmd.melds()) {
+            return Ok(None);
+        }
+        let comment = crate::commands::commit::comment_string(&repo, b"")?;
+        let (template, wants_editor) = self.squash_message(&repo, &comment).map_err(fail_die)?;
+        write(&dir.join(MESSAGE_SQUASH), &template)?;
+        let mut args = vec![
+            "--amend".to_owned(),
+            "--allow-empty".to_owned(),
+            "-n".to_owned(),
+        ];
+        if wants_editor {
+            args.push("-e".to_owned());
+        } else {
+            args.push("--cleanup=strip".to_owned());
+        }
+        args.push("-F".to_owned());
+        args.push(dir.join(MESSAGE_SQUASH).to_string_lossy().into_owned());
+        drop(repo);
+        let env = vec![(
+            "GIT_REFLOG_ACTION".to_owned(),
+            format!("{} ({what})", self.action),
+        )];
+        let code = self.commit_child(&args, &env, true)?;
+        if code != 0 {
+            return Ok(Some(code));
+        }
+        let repo = self.repo()?;
+        self.end_chain(&repo)?;
+        Ok(None)
+    }
+
+    /// Forgets the `squash`/`fixup` chain.
+    fn end_chain(&self, repo: &Repo) -> Result<(), Die> {
+        let dir = state_dir(repo);
+        for f in [CURRENT_FIXUPS, MESSAGE_SQUASH, SQUASH_FIRST] {
+            let _ = std::fs::remove_file(dir.join(f));
+        }
+        Ok(())
+    }
+
+    /// The message of the `squash`/`fixup` chain in progress, and whether
+    /// the user edits it at the end.
+    fn squash_message(&self, repo: &Repo, comment: &str) -> Result<(Vec<u8>, bool), Fail> {
+        let dir = state_dir(repo);
+        let first = std::fs::read(dir.join(SQUASH_FIRST)).unwrap_or_default();
+        let chain = std::fs::read_to_string(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
+        let mut members: Vec<(todo::Cmd, Option<char>, Vec<u8>)> = Vec::new();
+        for line in chain.lines() {
+            let mut words = line.split(' ');
+            let cmd = match words.next() {
+                Some("squash") => todo::Cmd::Squash,
+                _ => todo::Cmd::Fixup,
+            };
+            let mut next = words.next().unwrap_or_default();
+            let mut flag = None;
+            if let Some(f) = next.strip_prefix('-') {
+                flag = f.chars().next();
+                next = words.next().unwrap_or_default();
+            }
+            let Some(id) = parse_oid(repo, next) else {
+                continue;
+            };
+            let commit = sequencer::read_commit(repo, &id)?;
+            members.push((cmd, flag, commit.message().to_vec()));
+        }
+        // --signoff: the replaced messages carry the trailer.
+        if self.state.signoff {
+            let n = members.len();
+            for (k, m) in members.iter_mut().enumerate() {
+                if m.1.is_some() && k + 1 < n {
+                    m.2 = sequencer::signoff_message(repo, &m.2, comment)?;
+                }
+            }
+        }
+        Ok(squash_template(comment, &first, &members))
+    }
+
+    /// `exec`: runs a shell command; stops when it fails or leaves
+    /// changes behind.
+    fn exec(&mut self, item: &todo::Item, todo: &mut todo::Todo) -> Result<Step, Die> {
+        let cmd = item.arg.as_str();
+        eprintln!("{}", msg::executing(cmd));
+        let _ = std::io::stdout().flush();
+        let mut repo = self.repo()?;
+        let work_tree = repo.work_tree()?;
+        // A plain program runs directly, anything else through the shell.
+        let plain = !cmd.is_empty()
+            && cmd
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_./+,:@".contains(&b));
+        let mut command = if plain {
+            std::process::Command::new(cmd)
+        } else {
+            let mut c = std::process::Command::new(rgit_ident::editor::SHELL_PATH);
+            c.arg("-c").arg(cmd);
+            c
+        };
+        command.current_dir(&work_tree).envs(self.ctx.child_env());
+        let ok = match command.status() {
+            Ok(s) => s.success(),
+            Err(e) => {
+                let reason = e.to_string();
+                let reason = match reason.find(" (os error") {
+                    Some(i) => reason[..i].to_owned(),
+                    None => reason,
+                };
+                eprintln!("error: {}", msg::cannot_run(cmd, &reason));
+                false
+            }
+        };
+        if !ok {
+            eprintln!("warning: {}", msg::execution_failed(cmd));
+            eprintln!("{}", msg::EXEC_FAILED_ADVICE);
+            if self.state.reschedule_failed_exec {
+                todo.push_front(item.clone());
+                write(&state_dir(&repo).join("git-rebase-todo"), todo.text())?;
+                let advisor = self.ctx.advisor(&repo.config)?;
+                eprint!("{}", advisor.hint(&msg::rescheduled(&item.line())));
+            }
+            return Ok(Step::Exit(1));
+        }
+        let (unstaged, staged) = local_changes(&mut repo)?;
+        if unstaged || staged {
+            eprintln!(
+                "error: {}",
+                if unstaged {
+                    msg::UNSTAGED_CHANGES
+                } else {
+                    msg::UNCOMMITTED_CHANGES
+                }
+            );
+            eprintln!("warning: {}", msg::execution_left_changes(cmd));
+            return Ok(Step::Exit(1));
+        }
+        Ok(Step::Done)
+    }
+
+    /// `label <name>`: `refs/rewritten/<name>` at `HEAD`.
+    fn label(&mut self, item: &todo::Item) -> Result<Step, Die> {
+        let mut repo = self.repo()?;
+        let name = item.arg.split([' ', '\t']).next().unwrap_or_default();
+        let full = format!("refs/rewritten/{name}");
+        let Some(head) = sequencer::head_commit(&mut repo) else {
+            return Err(Die::Fatal(seqmsg::could_not_read("HEAD")));
+        };
+        if !rgit_refs::name::is_valid_refname(full.as_bytes(), Default::default()) {
+            eprintln!("error: {}", msg::invalid_label(name));
+            return Ok(Step::Rescheduled);
+        }
+        let old = repo.refs.resolve(&full);
+        let update = match old {
+            Some(o) => RefUpdate::update(full.as_str(), head, Some(o)),
+            None => RefUpdate::create(full.as_str(), head),
+        };
+        let what = msg::reflog(&self.action, "label", name);
+        ref_tx(self.ctx, &repo, update.message(what), false)?;
+        Ok(Step::Done)
+    }
+
+    /// The commit a `reset` or `merge` names: a label or a revision.
+    fn resolve_label(&self, repo: &mut Repo, name: &str) -> Option<ObjectId> {
+        if name == "[new root]" {
+            return self.state.squash_onto;
+        }
+        repo.refs
+            .resolve(&format!("refs/rewritten/{name}"))
+            .or_else(|| resolve_commit(repo, name))
+    }
+
+    /// `reset <label>`: moves `HEAD`, the index and the work tree.
+    fn reset(&mut self, item: &todo::Item) -> Result<Step, Die> {
+        let mut repo = self.repo()?;
+        let name = if item.arg.starts_with("[new root]") {
+            "[new root]"
+        } else {
+            item.arg.split([' ', '\t']).next().unwrap_or_default()
+        };
+        let Some(target) = self.resolve_label(&mut repo, name) else {
+            eprintln!("error: {}", msg::could_not_resolve(name));
+            return Ok(Step::Rescheduled);
+        };
+        let head = sequencer::head_commit(&mut repo);
+        let old_tree = match head {
+            Some(h) => sequencer::tree_of(&repo, &h).map_err(fail_die)?,
+            None => ObjectId::empty_tree(repo.hash),
+        };
+        let new_tree = sequencer::tree_of(&repo, &target).map_err(fail_die)?;
+        match sequencer::two_way(&repo, old_tree, new_tree, None, true) {
+            Err(Fail::Printed) => return Ok(Step::Rescheduled),
+            r => r.map_err(fail_die)?,
+        }
+        let what = msg::reflog(&self.action, "reset", &msg::reset_label(name));
+        detach_head(self.ctx, &repo, target, &what)?;
+        Ok(Step::Done)
+    }
+
+    /// `merge [-C <commit> | -c <commit>] <label> [# <oneline>]`.
+    fn merge(&mut self, item: &todo::Item) -> Result<Step, Fail> {
+        let mut repo = self.repo()?;
+        let (labels, oneline) = match item.arg.split_once('#') {
+            Some((l, o)) => (l.trim(), Some(o.trim())),
+            None => (item.arg.trim(), None),
+        };
+        let names: Vec<&str> = labels.split_whitespace().collect();
+        if names.len() != 1 {
+            return Err(Fail::Error(msg::OCTOPUS_NOT_SUPPORTED.to_owned()));
+        }
+        let name = names[0];
+        let Some(target) = self.resolve_label(&mut repo, name) else {
+            eprintln!("error: {}", msg::could_not_resolve(name));
+            return Ok(Step::Rescheduled);
+        };
+        let head = sequencer::head_commit(&mut repo)
+            .ok_or_else(|| Fail::Error(seqmsg::could_not_read("HEAD")))?;
+        let original = match item.commit {
+            Some(c) => Some(sequencer::read_commit(&repo, &c)?),
+            None => None,
+        };
+        // The original merge with the same parents is reused.
+        if let (Some(c), Some(orig)) = (item.commit, &original)
+            && !self.state.force
+            && orig.parents().unwrap_or_default() == [head, target]
+            && item.flag != Some('c')
+        {
+            let head_tree = sequencer::tree_of(&repo, &head)?;
+            let tree = sequencer::tree_of(&repo, &c)?;
+            match sequencer::two_way(&repo, head_tree, tree, None, true) {
+                Err(Fail::Printed) => return Ok(Step::Rescheduled),
+                r => r?,
+            }
+            let what = seqmsg::reflog("rebase", seqmsg::FAST_FORWARD);
+            sequencer::update_head(self.ctx, &repo, c, Some(head), &what)?;
+            self.record_rewritten(&c, &c, None)?;
+            return Ok(Step::Done);
+        }
+        let message: Vec<u8> = match &original {
+            Some(o) => o.message().to_vec(),
+            None => match oneline.filter(|o| !o.is_empty()) {
+                Some(o) => o.as_bytes().to_vec(),
+                None => msg::merge_branch(name).into_bytes(),
+            },
+        };
+        let author = match &original {
+            Some(o) => o.author().and_then(|a| a.to_owned()),
+            None => None,
+        };
+        let author = match author {
+            Some(a) => a,
+            None => sequencer::ident(&repo, Role::Author)?,
+        };
+        let head_tree = sequencer::tree_of(&repo, &head)?;
+        let mut opts = rgit_merge::Options {
+            branch1: b"HEAD".to_vec(),
+            branch2: name.as_bytes().to_vec(),
+            style: crate::commands::merge_file::config_style(&repo.config)?,
+            ..rgit_merge::Options::default()
+        };
+        for x in &self.state.xopts {
+            let _ = crate::commands::merge_tree::apply_strategy_option(&mut opts, x);
+        }
+        let result = {
+            let commits = commits_of(&repo);
+            rgit_merge::merge_commits(repo.odb(), &commits, &head, &target, &opts)
+                .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))?
+        };
+        match sequencer::two_way(&repo, head_tree, result.tree, Some(&result), true) {
+            Err(Fail::Printed) => return Ok(Step::Rescheduled),
+            r => r?,
+        }
+        self.print_merge_messages(&repo, &result)?;
+        let gd = git_dir(&repo);
+        if !result.clean {
+            write(&gd.join("MERGE_HEAD"), format!("{}\n", target.to_hex()))?;
+            write(&gd.join("MERGE_MSG"), &message)?;
+            let dir = state_dir(&repo);
+            write(&dir.join("message"), &message)?;
+            write(&dir.join("author-script"), author_script(&author))?;
+            if let Some(c) = item.commit {
+                write(&dir.join("stopped-sha"), format!("{}\n", c.to_hex()))?;
+            }
+            let label = match item.commit {
+                Some(c) => repo.abbrev(&c, repo.default_abbrev()),
+                None => name.to_owned(),
+            };
+            eprintln!("error: {}", msg::could_not_merge(&label));
+            eprintln!("{}", msg::could_not_apply(&label, &item.arg));
+            return Ok(Step::Exit(1));
+        }
+        let comment = crate::commands::commit::comment_string(&repo, b"")?;
+        let new = self.commit(
+            &mut repo,
+            &[head, target],
+            result.tree,
+            original.as_ref().and_then(|o| o.encoding()),
+            &author,
+            message,
+            &comment,
+            "merge",
+        )?;
+        let mut new = new;
+        if item.commit.is_none() || item.flag == Some('c') {
+            // A new merge, or `-c`: the user edits the message.
+            drop(repo);
+            let env = vec![(
+                "GIT_REFLOG_ACTION".to_owned(),
+                format!("{} (merge)", self.action),
+            )];
+            let args = ["--amend", "--allow-empty", "-n", "-e"].map(str::to_owned);
+            let code = self.commit_child(&args, &env, false)?;
+            self.remove_git_file("AUTO_MERGE")?;
+            if code != 0 {
+                return Ok(Step::Exit(1));
+            }
+            let mut repo = self.repo()?;
+            new = sequencer::head_commit(&mut repo).unwrap_or(new);
+        }
+        if let Some(c) = item.commit {
+            self.record_rewritten(&c, &new, None)?;
+        }
+        Ok(Step::Done)
+    }
+
+    /// `update-ref <ref>`: the ref is set to `HEAD` at the end.
+    fn update_ref(&mut self, item: &todo::Item) -> Result<Step, Die> {
+        let mut repo = self.repo()?;
+        let Some(head) = sequencer::head_commit(&mut repo) else {
+            return Err(Die::Fatal(seqmsg::could_not_read("HEAD")));
+        };
+        let path = state_dir(&repo).join("update-refs");
+        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+        text.push_str(&format!("{} {}\n", item.arg, head.to_hex()));
+        write(&path, text)?;
         Ok(Step::Done)
     }
 
@@ -1465,19 +2542,21 @@ impl<'c> Rebase<'c> {
         Ok(())
     }
 
-    /// Creates the replayed commit: hooks `prepare-commit-msg` and
-    /// `post-commit`, the reflog entry `rebase (pick): <subject>`.
+    /// Creates a commit and moves `HEAD` to it: hooks `prepare-commit-msg`
+    /// and `post-commit`, the reflog entry `rebase (<what>): <subject>`.
     #[allow(clippy::too_many_arguments)]
     fn commit(
         &mut self,
         repo: &mut Repo,
-        head: ObjectId,
+        parents: &[ObjectId],
         tree: ObjectId,
-        picked: &Commit,
+        encoding: Option<&[u8]>,
         author: &Signature,
         message: Vec<u8>,
         comment: &str,
+        what: &str,
     ) -> Result<ObjectId, Fail> {
+        let head = sequencer::head_commit(repo);
         let mut committer = sequencer::ident(repo, Role::Committer)?;
         if self.state.cdate_is_adate {
             committer.time = author.time;
@@ -1504,20 +2583,40 @@ impl<'c> Rebase<'c> {
         } else {
             message
         };
-        let parents = [head];
+        // `commit.cleanup` applies to the replayed messages.
+        let message = match repo
+            .config
+            .string("commit.cleanup")
+            .ok()
+            .flatten()
+            .map(|v| v.to_string())
+            .as_deref()
+        {
+            Some("strip") => rgit_commit::message::cleanup(
+                &message,
+                rgit_commit::message::Cleanup::Strip.resolve(false),
+                comment,
+            ),
+            Some("whitespace") => rgit_commit::message::cleanup(
+                &message,
+                rgit_commit::message::Cleanup::Whitespace.resolve(false),
+                comment,
+            ),
+            _ => message,
+        };
         let new = rgit_commit::NewCommit {
             tree,
-            parents: &parents,
+            parents,
             author,
             committer: &committer,
-            encoding: picked.encoding(),
+            encoding,
             message: &message,
         };
         let oid = rgit_commit::create_commit(repo.odb(), &new)
             .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))?;
         let subject = lossy(rgit_commit::message::first_line(&message));
-        let what = msg::reflog(&self.action, "pick", &subject);
-        sequencer::update_head(self.ctx, repo, oid, Some(head), &what)?;
+        let what = msg::reflog(&self.action, what, &subject);
+        sequencer::update_head(self.ctx, repo, oid, head, &what)?;
         let o = RunOptions::with_args(std::iter::empty::<&str>());
         crate::hooks::run(&hooks, "post-commit", &o)?;
         Ok(oid)
@@ -1553,37 +2652,58 @@ impl<'c> Rebase<'c> {
         Ok(status.code().unwrap_or(128))
     }
 
-    /// Puts the commit that could not be applied back on the todo list.
-    fn reschedule(&mut self, todo: &[Item]) -> CmdResult {
+    /// Puts the command that could not run back on the todo list.
+    fn reschedule(&mut self, todo: &todo::Todo) -> CmdResult {
         let repo = self.repo()?;
         let dir = state_dir(&repo);
-        let mut rest = String::new();
-        for i in todo {
-            rest.push_str(&i.line());
-            rest.push('\n');
-        }
-        write(&dir.join("git-rebase-todo"), rest)?;
-        let item = &todo[0];
-        write(
-            &git_dir(&repo).join("REBASE_HEAD"),
-            format!("{}\n", item.commit.to_hex()),
-        )?;
-        if let Some(Object::Commit(c)) = repo.read_object(&item.commit)
-            && let Some(a) = c.author().and_then(|a| a.to_owned())
+        write(&dir.join("git-rebase-todo"), todo.text())?;
+        let item = todo.peek().expect("rescheduled command").clone();
+        if let Some(c) = item.commit
+            && item.cmd.picks()
         {
-            write(&dir.join("author-script"), author_script(&a))?;
+            write(
+                &git_dir(&repo).join("REBASE_HEAD"),
+                format!("{}\n", c.to_hex()),
+            )?;
+            if let Some(Object::Commit(cm)) = repo.read_object(&c)
+                && let Some(a) = cm.author().and_then(|a| a.to_owned())
+            {
+                write(&dir.join("author-script"), author_script(&a))?;
+            }
         }
         let advisor = self.ctx.advisor(&repo.config)?;
         eprint!("{}", advisor.hint(&msg::rescheduled(&item.line())));
         Ok(1)
     }
 
-    fn record_rewritten(&self, old: &ObjectId, new: &ObjectId) -> Result<(), Die> {
+    /// Records that `old` became `new`; while a `squash`/`fixup` chain
+    /// goes on (`next` melds) the old commits wait for the final one.
+    fn record_rewritten(
+        &self,
+        old: &ObjectId,
+        new: &ObjectId,
+        next: Option<&todo::Item>,
+    ) -> Result<(), Die> {
+        let dir = self.dir()?;
+        let pending_path = dir.join(REWRITTEN_PENDING);
+        if next.is_some_and(|i| i.cmd.melds()) {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&pending_path)
+                .map_err(io_die)?;
+            return writeln!(f, "{}", old.to_hex()).map_err(io_die);
+        }
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.dir()?.join("rewritten-list"))
+            .open(dir.join("rewritten-list"))
             .map_err(io_die)?;
+        let pending = std::fs::read_to_string(&pending_path).unwrap_or_default();
+        for p in pending.lines().filter(|l| !l.is_empty()) {
+            writeln!(f, "{p} {}", new.to_hex()).map_err(io_die)?;
+        }
+        let _ = std::fs::remove_file(&pending_path);
         writeln!(f, "{} {}", old.to_hex(), new.to_hex()).map_err(io_die)
     }
 
@@ -1594,6 +2714,26 @@ impl<'c> Rebase<'c> {
         let head = sequencer::head_commit(&mut repo)
             .ok_or_else(|| Die::Fatal(seqmsg::could_not_read("HEAD")))?;
         let head_name = self.state.head_name.clone();
+        let dir = state_dir(&repo);
+        // `update-ref` commands.
+        let updates = std::fs::read_to_string(dir.join("update-refs")).unwrap_or_default();
+        for line in updates.lines() {
+            if let Some((name, hex)) = line.rsplit_once(' ')
+                && let Some(id) = parse_oid(&repo, hex)
+            {
+                let old = repo.refs.resolve(name);
+                let update = match old {
+                    Some(o) => RefUpdate::update(name, id, Some(o)),
+                    None => RefUpdate::create(name, id),
+                };
+                let what = msg::reflog(
+                    &self.action,
+                    "finish",
+                    &msg::finish_onto(name, &self.state.onto.to_hex()),
+                );
+                ref_tx(self.ctx, &repo, update.message(what), false)?;
+            }
+        }
         if head_name.starts_with("refs/") {
             let old = repo.refs.resolve(&head_name);
             let what = msg::reflog(
@@ -1613,7 +2753,6 @@ impl<'c> Rebase<'c> {
             let (from, to) = (self.state.orig_head.to_hex(), head.to_hex());
             run_child(self.ctx, &["diff", "--stat", &from, &to], false)?;
         }
-        let dir = state_dir(&repo);
         let rewritten = std::fs::read(dir.join("rewritten-list")).unwrap_or_default();
         if !rewritten.is_empty() {
             let hooks = crate::hooks::for_repo(self.ctx, &repo.setup, &repo.config)?;
@@ -1623,8 +2762,8 @@ impl<'c> Rebase<'c> {
                 crate::hooks::run(&hooks, "post-rewrite", &o)?;
             }
         }
+        delete_labels(self.ctx, &repo)?;
         let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_file(git_dir(&repo).join("REBASE_HEAD"));
         drop(repo);
         if let Some(s) = self.state.autostash.clone() {
             apply_autostash(self.ctx, &s)?;
@@ -1637,15 +2776,119 @@ impl<'c> Rebase<'c> {
 
     /// Forgets the stop: the pseudo-refs and the stopped commit's files.
     fn clear_stop(&self) -> Result<(), Die> {
-        for f in ["REBASE_HEAD", "MERGE_MSG", "CHERRY_PICK_HEAD"] {
+        for f in ["REBASE_HEAD", "MERGE_MSG", "CHERRY_PICK_HEAD", "MERGE_HEAD"] {
             self.remove_git_file(f)?;
         }
         let dir = self.dir()?;
-        for f in ["message", "author-script", "stopped-sha", "patch"] {
+        for f in ["message", "author-script", "stopped-sha", "patch", "amend"] {
             let _ = std::fs::remove_file(dir.join(f));
         }
         Ok(())
     }
+}
+
+/// The abbreviated name of `id`.
+fn repo_abbrev(rb: &Rebase<'_>, id: &ObjectId) -> Result<String, Die> {
+    let repo = rb.repo()?;
+    Ok(repo.abbrev(id, repo.default_abbrev()))
+}
+
+/// Removes the labels (`refs/rewritten/*`) of `--rebase-merges`.
+fn delete_labels(ctx: &Context, repo: &Repo) -> Result<(), Die> {
+    for (name, id) in repo.refs.list("refs/rewritten/") {
+        ref_tx(
+            ctx,
+            repo,
+            RefUpdate::delete(name.as_str(), repo.hash, Some(id)),
+            false,
+        )?;
+    }
+    Ok(())
+}
+
+/// The message of a `squash`/`fixup` chain: `first` is the message of
+/// the commit the others meld into; `members` the melded commits with
+/// their command, `-C`/`-c` flag and message. Also whether the user
+/// edits it (a `squash` or `fixup -c` took part).
+fn squash_template(
+    comment: &str,
+    first: &[u8],
+    members: &[(todo::Cmd, Option<char>, Vec<u8>)],
+) -> (Vec<u8>, bool) {
+    let n = members.len() + 1;
+    let mut shown = vec![true; n];
+    let mut squash_seen = false;
+    let mut edit = false;
+    for (k, (cmd, flag, _)) in members.iter().enumerate() {
+        let i = k + 1;
+        match (cmd, flag) {
+            (todo::Cmd::Squash, _) => {
+                squash_seen = true;
+                edit = true;
+            }
+            (_, None) => shown[i] = false,
+            (_, Some(f)) => {
+                if *f == 'c' {
+                    edit = true;
+                }
+                if !squash_seen {
+                    for s in shown.iter_mut().take(i) {
+                        *s = false;
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let line = |out: &mut Vec<u8>, text: &str| {
+        out.extend_from_slice(comment.as_bytes());
+        out.push(b' ');
+        out.extend_from_slice(text.as_bytes());
+        out.push(b'\n');
+    };
+    line(&mut out, &msg::combination(n));
+    for i in 0..n {
+        let message: &[u8] = if i == 0 { first } else { &members[i - 1].2 };
+        let header = match (i, shown[i]) {
+            (0, true) => msg::FIRST_MESSAGE.to_owned(),
+            (0, false) => msg::FIRST_SKIPPED.to_owned(),
+            (_, true) => msg::nth_message(i + 1),
+            (_, false) => msg::nth_skipped(i + 1),
+        };
+        if i > 0 {
+            out.push(b'\n');
+        }
+        line(&mut out, &header);
+        out.push(b'\n');
+        let mut body = message.to_vec();
+        if !body.ends_with(b"\n") {
+            body.push(b'\n');
+        }
+        if shown[i] {
+            let marked = i > 0
+                && [&b"squash! "[..], b"fixup! ", b"amend! "]
+                    .iter()
+                    .any(|p| body.starts_with(p));
+            if marked {
+                let end = body.iter().position(|&b| b == b'\n').unwrap_or(body.len());
+                out.extend_from_slice(comment.as_bytes());
+                out.push(b' ');
+                out.extend_from_slice(&body[..end]);
+                out.extend_from_slice(&body[end..]);
+            } else {
+                out.extend_from_slice(&body);
+            }
+        } else {
+            for l in body.split_inclusive(|&b| b == b'\n') {
+                out.extend_from_slice(comment.as_bytes());
+                if l != b"\n" {
+                    out.push(b' ');
+                }
+                out.extend_from_slice(l);
+            }
+        }
+    }
+    (out, edit)
 }
 
 /// Resets the index and work tree from `old` to the tree `new`, throwing
@@ -1696,6 +2939,32 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
     let mut rb = Rebase::load(ctx)?;
     rb.refuse_apply("--continue")?;
     let mut repo = rb.repo()?;
+    let dir = state_dir(&repo);
+
+    // The edited todo list was rejected: check it again and start.
+    if !dir.join("msgnum").exists() {
+        let comment = crate::commands::commit::comment_string(&repo, b"")?;
+        let text = std::fs::read_to_string(dir.join("git-rebase-todo")).unwrap_or_default();
+        {
+            let mut resolve = |name: &str| resolve_commit(&mut repo, name);
+            if let Ok(t) = todo::parse(&text, &comment, &mut resolve) {
+                write(&dir.join("end"), format!("{}\n", t.count()))?;
+            }
+        }
+        let todo = match validate(
+            &mut repo,
+            &text,
+            &comment,
+            Some(msg::PLEASE_FIX_WITH_EDIT_TODO),
+        ) {
+            Ok(t) => t,
+            Err(()) => return Ok(1),
+        };
+        write(&dir.join("git-rebase-todo"), todo.text())?;
+        drop(repo);
+        return rb.run(todo);
+    }
+
     let (index, mtime) = repo.read_index()?;
     let mut unmerged: Vec<Vec<u8>> = Vec::new();
     for e in index.entries() {
@@ -1726,46 +2995,115 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
     let head_tree = sequencer::tree_of(&repo, &head).map_err(fail_die)?;
     let staged = !sequencer::index_matches_tree(&repo, &index, &head_tree)?;
     drop(index);
-    let dir = state_dir(&repo);
     let stopped = std::fs::read_to_string(dir.join("stopped-sha"))
         .ok()
         .and_then(|s| parse_oid(&repo, &s));
+    let amend = std::fs::read_to_string(dir.join("amend"))
+        .ok()
+        .and_then(|s| parse_oid(&repo, &s));
+    let in_chain = dir.join(CURRENT_FIXUPS).exists();
+    let next = match rb.read_todo()? {
+        Ok(t) => t,
+        Err(()) => return Ok(1),
+    };
+    let next_item = next.peek().cloned();
+    let chain_ends = !next_item.as_ref().is_some_and(|i| i.cmd.melds());
+    let continue_env = || {
+        vec![(
+            "GIT_REFLOG_ACTION".to_owned(),
+            format!("{} (continue)", reflog_action()),
+        )]
+    };
+    if staged && !in_chain {
+        if amend.is_some_and(|a| a != head) {
+            eprintln!("error: {}", msg::UNCOMMITTED_AFTER_EDIT);
+            return Ok(1);
+        }
+        if amend.is_none() && stopped.is_none() {
+            eprintln!("error: {}", msg::STAGED_CHANGES);
+            return Ok(1);
+        }
+    }
     if staged {
         let _ = std::fs::remove_file(git_dir(&repo).join("CHERRY_PICK_HEAD"));
-        let mut env: Vec<(String, String)> = read_author_script(&dir.join("author-script"));
-        if rb.state.ignore_date {
-            env.retain(|(k, _)| k != "GIT_AUTHOR_DATE");
-            env.push(("GIT_AUTHOR_DATE".to_owned(), format!("@{}", now())));
-        }
-        if rb.state.cdate_is_adate
-            && let Some((_, d)) = env.iter().find(|(k, _)| k == "GIT_AUTHOR_DATE")
-        {
-            env.push(("GIT_COMMITTER_DATE".to_owned(), d.clone()));
-        }
-        env.push((
-            "GIT_REFLOG_ACTION".to_owned(),
-            format!("{} (continue)", rb.action),
-        ));
-        let message = dir.join("message");
-        // git lets the user edit the message (when an editor is set up).
-        let mut args = vec!["-n".to_owned(), "-e".to_owned()];
-        if message.exists() {
-            args.push("-F".to_owned());
-            args.push(message.to_string_lossy().into_owned());
-        }
-        drop(repo);
-        let code = rb.commit_child(&args, &env, false)?;
-        if code != 0 {
-            return Ok(code);
+        if in_chain {
+            // A conflicted `squash`/`fixup`: the user edits the message.
+            let comment = crate::commands::commit::comment_string(&repo, b"")?;
+            let (template, _) = rb.squash_message(&repo, &comment).map_err(fail_die)?;
+            write(&dir.join(MESSAGE_SQUASH), &template)?;
+            let args = vec![
+                "--amend".to_owned(),
+                "--allow-empty".to_owned(),
+                "-n".to_owned(),
+                "-e".to_owned(),
+                "-F".to_owned(),
+                dir.join(MESSAGE_SQUASH).to_string_lossy().into_owned(),
+            ];
+            drop(repo);
+            let code = rb.commit_child(&args, &continue_env(), false)?;
+            if code != 0 {
+                return Ok(code);
+            }
+        } else if amend.is_some() {
+            // `edit`: the changes amend the stopped commit.
+            drop(repo);
+            let args = ["--amend", "-n", "-e"].map(str::to_owned);
+            let code = rb.commit_child(&args, &continue_env(), false)?;
+            if code != 0 {
+                return Ok(code);
+            }
+        } else {
+            let mut env: Vec<(String, String)> = read_author_script(&dir.join("author-script"));
+            if rb.state.ignore_date {
+                env.retain(|(k, _)| k != "GIT_AUTHOR_DATE");
+                env.push(("GIT_AUTHOR_DATE".to_owned(), format!("@{}", now())));
+            }
+            if rb.state.cdate_is_adate
+                && let Some((_, d)) = env.iter().find(|(k, _)| k == "GIT_AUTHOR_DATE")
+            {
+                env.push(("GIT_COMMITTER_DATE".to_owned(), d.clone()));
+            }
+            env.extend(continue_env());
+            let message = dir.join("message");
+            // git lets the user edit the message (when an editor is set up).
+            let mut args = vec!["-n".to_owned(), "-e".to_owned()];
+            if message.exists() {
+                args.push("-F".to_owned());
+                args.push(message.to_string_lossy().into_owned());
+            }
+            drop(repo);
+            let code = rb.commit_child(&args, &env, false)?;
+            if code != 0 {
+                return Ok(code);
+            }
         }
         let mut repo = rb.repo()?;
         if let (Some(old), Some(new)) = (stopped, sequencer::head_commit(&mut repo)) {
-            rb.record_rewritten(&old, &new)?;
+            rb.record_rewritten(&old, &new, next_item.as_ref())?;
+        }
+        if in_chain && chain_ends {
+            rb.end_chain(&repo)?;
+        } else if in_chain && let Some(h) = sequencer::head_commit(&mut repo) {
+            // The edited message starts the rest of the chain.
+            let commit = sequencer::read_commit(&repo, &h).map_err(fail_die)?;
+            write(&dir.join(SQUASH_FIRST), commit.message())?;
+            let _ = std::fs::remove_file(dir.join(CURRENT_FIXUPS));
+        }
+    } else if in_chain {
+        rb.clear_stop()?;
+        if let Some(code) = rb.drop_from_chain(&next, "continue")? {
+            return Ok(code);
+        }
+    } else if amend.is_some()
+        && let Some(old) = stopped
+    {
+        let mut repo = rb.repo()?;
+        if let Some(new) = sequencer::head_commit(&mut repo) {
+            rb.record_rewritten(&old, &new, next_item.as_ref())?;
         }
     }
     rb.clear_stop()?;
-    let todo = rb.read_todo()?;
-    rb.run(todo)
+    rb.run(next)
 }
 
 /// `git rebase --skip`.
@@ -1779,7 +3117,13 @@ pub fn skip(ctx: &mut Context) -> CmdResult {
     }
     drop(repo);
     rb.clear_stop()?;
-    let todo = rb.read_todo()?;
+    let todo = match rb.read_todo()? {
+        Ok(t) => t,
+        Err(()) => return Ok(1),
+    };
+    if let Some(code) = rb.drop_from_chain(&todo, "skip")? {
+        return Ok(code);
+    }
     rb.run(todo)
 }
 
@@ -1810,6 +3154,7 @@ pub fn abort(ctx: &mut Context) -> CmdResult {
         detach_head(rb.ctx, &repo, orig, &what)?;
     }
     rb.clear_stop()?;
+    delete_labels(rb.ctx, &repo)?;
     let _ = std::fs::remove_file(git_dir(&repo).join("AUTO_MERGE"));
     let _ = std::fs::remove_dir_all(dir);
     drop(repo);
@@ -1831,6 +3176,54 @@ pub fn quit(ctx: &mut Context) -> CmdResult {
         )?;
         eprint!("{}", msg::AUTOSTASH_KEPT);
     }
+    let repo = rb.repo()?;
+    delete_labels(rb.ctx, &repo)?;
     let _ = std::fs::remove_dir_all(dir);
     Ok(0)
+}
+
+/// `git rebase --edit-todo`.
+pub fn edit_todo(ctx: &mut Context) -> CmdResult {
+    let rb = Rebase::load(ctx)?;
+    if rb.apply {
+        return Err(Die::Fatal(msg::EDIT_TODO_NOT_INTERACTIVE.to_owned()));
+    }
+    let mut repo = rb.repo()?;
+    let dir = state_dir(&repo);
+    let path = dir.join("git-rebase-todo");
+    let comment = crate::commands::commit::comment_string(&repo, b"")?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let parsed = {
+        let mut resolve = |name: &str| resolve_commit(&mut repo, name);
+        todo::parse(&text, &comment, &mut resolve)
+    };
+    let help = todo_help(&repo, &comment, None);
+    let mut shown = match parsed {
+        Ok(t) => {
+            // Once the rebase runs, missing commits are those removed now.
+            if dir.join("msgnum").exists() {
+                write(&dir.join("git-rebase-todo.backup"), t.text() + &help)?;
+            }
+            render_for_edit(&repo, &t)
+        }
+        Err(bad) => {
+            for b in &bad {
+                b.print();
+            }
+            text.clone()
+        }
+    };
+    shown.push_str(&help);
+    write(&path, shown)?;
+    if let Err(code) = sequence_edit(rb.ctx, &repo, &path) {
+        return Ok(code);
+    }
+    let edited = std::fs::read_to_string(&path).map_err(io_die)?;
+    match validate(&mut repo, &edited, &comment, None) {
+        Ok(t) => {
+            write(&path, t.text())?;
+            Ok(0)
+        }
+        Err(()) => Ok(1),
+    }
 }

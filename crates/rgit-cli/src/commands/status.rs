@@ -880,7 +880,8 @@ fn long(
         p.text("\n");
     }
     if let Some(rb) = &ctx.rebasing {
-        for l in crate::wt_status::rebasing_lines(rb, !unmerged.is_empty(), ctx.hints) {
+        let split = !changed.is_empty();
+        for l in crate::wt_status::rebasing_lines(rb, !unmerged.is_empty(), split, ctx.hints) {
             p.text(&l);
             p.text("\n");
         }
