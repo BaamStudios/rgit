@@ -25,6 +25,7 @@ use rgit_pack::index_pack::{self as ip, IndexVersion, Input, ObjectDb, Options};
 use rgit_protocol::v0::{self, Advertisement};
 use rgit_protocol::v2::{
     Client, ConsecutiveNegotiator, FetchArgs, FetchOutcome, LsRefsArgs, Negotiator, RemoteRef,
+    ShallowInfo,
 };
 use rgit_protocol::{Capabilities, Packet, Progress, ProgressStyle, ProtocolVersion, Reader};
 use rgit_transport::{ConnectOptions, Connection, IpVersion, Service, Settings, Transport};
@@ -109,6 +110,7 @@ pub struct Session {
     transport: Box<dyn Transport>,
     options: ConnectOptions,
     program: &'static str,
+    shallow_info: Option<ShallowInfo>,
 }
 
 /// Open a connection and read up to the version line of the response.
@@ -209,7 +211,13 @@ impl Session {
             transport,
             options,
             program,
+            shallow_info: None,
         })
+    }
+
+    /// The `shallow-info` sections received so far (merged), taken out.
+    pub fn take_shallow_info(&mut self) -> Option<ShallowInfo> {
+        self.shallow_info.take()
     }
 
     /// The URL this session talks to.
@@ -285,6 +293,11 @@ impl Session {
             include_tag: opts.include_tag,
             ofs_delta: true,
             local_format: Some(repo.hash),
+            shallow: repo.shallow(),
+            deepen: opts.deepen,
+            deepen_relative: opts.deepen_relative,
+            deepen_since: opts.deepen_since,
+            deepen_not: opts.deepen_not.clone(),
             ..FetchArgs::default()
         };
         args.server_options.clone_from(&opts.server_options);
@@ -299,7 +312,15 @@ impl Session {
         }
 
         let odb = &repo.odb;
-        let mut source = |id: &ObjectId| graph::commit_info(odb, id);
+        // Shallow commits have no parents here.
+        let shallow: HashSet<ObjectId> = args.shallow.iter().copied().collect();
+        let mut source = |id: &ObjectId| {
+            let mut info = graph::commit_info(odb, id)?;
+            if shallow.contains(id) {
+                info.parents.clear();
+            }
+            Some(info)
+        };
         let mut consecutive;
         let mut noop = rgit_protocol::v2::NoopNegotiator;
         let negotiator: &mut dyn Negotiator = match haves {
@@ -376,6 +397,11 @@ impl Session {
             (outcome, indexed)
         });
         let outcome = outcome?;
+        if let Some(info) = &outcome.shallow_info {
+            let merged = self.shallow_info.get_or_insert_with(ShallowInfo::default);
+            merged.shallow.extend(info.shallow.iter().copied());
+            merged.unshallow.extend(info.unshallow.iter().copied());
+        }
         // A stateful v0/v1 connection is used up after the pack.
         if let Proto::V0 { client, .. } = &mut self.proto {
             let stateless = client.as_ref().is_some_and(|c| c.is_stateless());
@@ -389,6 +415,10 @@ impl Session {
             return Ok(None);
         }
         let indexed = indexed?;
+        // An empty pack (e.g. deepening to the current depth) is not kept.
+        if indexed.objects().is_empty() {
+            return Ok(None);
+        }
         let objects: HashSet<ObjectId> = indexed.objects().iter().map(|o| o.id).collect();
         // Objects in the pack as sent (without bases appended for a thin
         // pack): below the unpack limit they become loose objects.
@@ -449,6 +479,21 @@ pub struct PackOptions {
     /// Store packs with fewer objects than this as loose objects
     /// (`fetch.unpackLimit`); `None` always keeps the pack.
     pub unpack_limit: Option<u32>,
+    /// `deepen <depth>` (`--depth`, `--deepen`, `--unshallow`).
+    pub deepen: Option<u32>,
+    /// `deepen-relative` (`--deepen`).
+    pub deepen_relative: bool,
+    /// `deepen-since <time>` (`--shallow-since`).
+    pub deepen_since: Option<i64>,
+    /// `deepen-not <rev>` (`--shallow-exclude`).
+    pub deepen_not: Vec<String>,
+}
+
+impl PackOptions {
+    /// Whether the history is to be deepened or cut.
+    pub fn deepens(&self) -> bool {
+        self.deepen.is_some() || self.deepen_since.is_some() || !self.deepen_not.is_empty()
+    }
 }
 
 /// A pack stored by [`Session::fetch_pack`].

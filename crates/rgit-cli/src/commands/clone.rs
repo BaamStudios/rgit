@@ -52,6 +52,12 @@ struct Options {
     branch: Option<String>,
     upload_pack: Option<String>,
     depth: Option<String>,
+    /// `--shallow-since`.
+    shallow_since: Option<String>,
+    /// `--shallow-exclude`.
+    shallow_exclude: Vec<String>,
+    /// `--[no-]reject-shallow`.
+    reject_shallow: Option<bool>,
     /// `-s` / `--shared`.
     shared: bool,
     /// `--reference`.
@@ -212,13 +218,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
 
     // Options rgit does not implement yet.
-    let unsupported: [(&str, bool); 13] = [
-        ("--reject-shallow", reject_shallow.get() > 0),
+    let unsupported: [(&str, bool); 10] = [
         ("--no-hardlinks", no_hardlinks.get()),
         ("--recurse-submodules", !recurse.borrow().is_empty()),
         ("--revision", revision.borrow().is_some()),
-        ("--shallow-since", shallow_since.borrow().is_some()),
-        ("--shallow-exclude", !shallow_exclude.borrow().is_empty()),
         ("--shallow-submodules", shallow_submodules.get()),
         ("--separate-git-dir", separate_git_dir.borrow().is_some()),
         ("--ref-format", ref_format.borrow().is_some()),
@@ -245,6 +248,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         branch: branch.into_inner(),
         upload_pack: upload_pack.into_inner(),
         depth: depth.into_inner(),
+        shallow_since: shallow_since.into_inner(),
+        shallow_exclude: shallow_exclude.into_inner(),
+        reject_shallow: (reject_shallow.get() >= 0).then(|| reject_shallow.get() > 0),
         shared: shared.get(),
         reference: reference.into_inner(),
         reference_if_able: reference_if_able.into_inner(),
@@ -281,7 +287,7 @@ struct Source {
 fn local_repository(repo: &str, cwd: &Path) -> Option<PathBuf> {
     for (suffix, keep) in [("/.git", ""), ("", ""), (".git/.git", ".git"), (".git", ".git")] {
         let candidate = cwd.join(format!("{repo}{suffix}"));
-        if candidate.is_dir() && is_git_directory(&candidate) {
+        if is_git_directory(&candidate) || gitfile_repository(&candidate) {
             let base = cwd.join(format!("{repo}{keep}"));
             let real = std::fs::canonicalize(&base).unwrap_or(base);
             return Some(real);
@@ -290,9 +296,20 @@ fn local_repository(repo: &str, cwd: &Path) -> Option<PathBuf> {
     None
 }
 
-/// A directory that has `HEAD`, `objects/` and `refs/` (or a gitfile).
+/// A directory that has `HEAD`, `objects/` and `refs/`; for a linked work
+/// tree's git directory `objects/` and `refs/` are in its common
+/// directory.
 fn is_git_directory(dir: &Path) -> bool {
-    dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir()
+    let common = common_dir_of(dir);
+    dir.is_dir()
+        && dir.join("HEAD").is_file()
+        && common.join("objects").is_dir()
+        && common.join("refs").is_dir()
+}
+
+/// A gitfile (`gitdir: <path>`) pointing to a git directory.
+fn gitfile_repository(file: &Path) -> bool {
+    file.is_file() && is_git_directory(&repository_git_dir(file))
 }
 
 /// git's `transport_anonymize_url`: the password (and user) of a URL are
@@ -423,12 +440,26 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         return Err(Die::Fatal(msg::destination_exists(&dir)));
     }
     let local_mode = source.local_dir;
-    if opts.depth.is_some() {
-        if local_mode {
-            eprintln!("warning: {}", msg::DEPTH_IGNORED_LOCAL);
-        } else {
-            return Err(Die::Fatal(msg::unsupported("--depth")));
-        }
+    // Shallow options; a local clone ignores them (it copies everything).
+    let mut ignored_local: Vec<&str> = Vec::new();
+    let mut deepen = PackOptions::default();
+    if let Some(d) = &opts.depth {
+        ignored_local.push("--depth");
+        deepen.deepen = d.parse::<u32>().ok();
+    }
+    if let Some(t) = &opts.shallow_since {
+        ignored_local.push("--shallow-since");
+        let dctx = rgit_date::DateContext::from_env();
+        deepen.deepen_since = Some(rgit_date::approxidate(t, &dctx) as i64);
+    }
+    if !opts.shallow_exclude.is_empty() {
+        ignored_local.push("--shallow-exclude");
+        deepen.deepen_not = opts.shallow_exclude.clone();
+    }
+    // Implies --single-branch, also when ignored.
+    let shallow_clone = !ignored_local.is_empty();
+    if local_mode {
+        deepen = PackOptions::default();
     }
 
     let mut junk = Junk {
@@ -495,6 +526,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             eprintln!("{}", msg::cloning_into(&dir));
         }
     }
+    if local_mode {
+        for o in &ignored_local {
+            eprintln!("warning: {}", msg::ignored_in_local_clones(o));
+        }
+    }
 
     let refname = format!("refs/remotes/{origin}/test");
     if origin.is_empty()
@@ -534,7 +570,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         }
     }
     if opts.shared && local_mode {
-        let dir = repository_git_dir(Path::new(&source.url)).join("objects");
+        let dir = common_dir_of(&repository_git_dir(Path::new(&source.url))).join("objects");
         let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
         if !alternates.contains(&dir) {
             alternates.push(dir);
@@ -563,6 +599,23 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let repo = LocalRepo::open(&setup, config).map_err(|e| fatal(&e))?;
     for w in &repo.warnings {
         eprintln!("warning: {w}");
+    }
+    // --reject-shallow (clone.rejectShallow): a local source is checked
+    // here, a remote one when its shallow-info arrives.
+    let reject_shallow = opts.reject_shallow.unwrap_or_else(|| {
+        repo.config
+            .bool("clone.rejectshallow")
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    });
+    if reject_shallow
+        && local_mode
+        && repository_git_dir(Path::new(&source.url))
+            .join("shallow")
+            .is_file()
+    {
+        return Err(Die::Fatal(msg::SOURCE_SHALLOW.into()));
     }
 
     // Talk to the remote.
@@ -624,7 +677,8 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
 
     // The refspec, now that the branch for --single-branch is known.
-    let single_ref = match (&our, opts.single_branch.unwrap_or(false)) {
+    // A shallow clone is a single-branch clone unless told otherwise.
+    let single_ref = match (&our, opts.single_branch.unwrap_or(shallow_clone)) {
         (Some(Our::Branch(r, _) | Our::Tag(r, _)), true) => Some(r.clone()),
         _ => None,
     };
@@ -690,7 +744,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 wants.push(*oid);
             }
         }
-        if let Some(Our::Tag(_, oid)) = &our {
+        if let Some(Our::Tag(_, oid) | Our::Detached(oid)) = &our {
             if seen.insert(*oid) && !repo.has_object(oid) {
                 wants.push(*oid);
             }
@@ -712,6 +766,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             server_options: opts.server_options.clone(),
             // A clone always keeps the pack.
             unpack_limit: None,
+            ..deepen.clone()
         };
         packs.extend(
             session
@@ -719,6 +774,13 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 .map_err(|e| fatal(&e))?,
         );
 
+        let tag_opts = PackOptions {
+            deepen: None,
+            deepen_relative: false,
+            deepen_since: None,
+            deepen_not: Vec::new(),
+            ..pack_opts.clone()
+        };
         // --single-branch: the tags pointing into the fetched history; tag
         // objects the server did not include come in a second round.
         if follow_tags && !all_tags {
@@ -739,11 +801,20 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             }
             packs.extend(
                 session
-                    .fetch_pack(&repo, &more, Some(&advertised), &pack_opts)
+                    .fetch_pack(&repo, &more, Some(&advertised), &tag_opts)
                     .map_err(|e| fatal(&e))?,
             );
         }
+        // The new shallow boundary: what the server cut (also when the
+        // source itself is shallow).
+        let info = session.take_shallow_info();
         session.close().map_err(|e| fatal(&e))?;
+        let shallow: HashSet<ObjectId> = info
+            .map(|i| rgit_fetch::shallow::apply(&[], &i).into_iter().collect())
+            .unwrap_or_default();
+        if reject_shallow && !shallow_clone && !shallow.is_empty() {
+            return Err(Die::Fatal(msg::SOURCE_SHALLOW.into()));
+        }
 
         let received: HashSet<ObjectId> = packs
             .iter()
@@ -754,8 +825,12 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         if let Some(Our::Tag(_, oid) | Our::Branch(_, oid) | Our::Detached(oid)) = &our {
             all_tips.push(*oid);
         }
-        if graph::check_connected(&repo.odb, &tips, &received).is_err() {
+        if graph::check_connected(&repo.odb, &tips, &received, &shallow).is_err() {
             return Err(Die::Fatal(msg::REMOTE_DID_NOT_SEND_ALL.into()));
+        }
+        if !shallow.is_empty() {
+            let set: std::collections::BTreeSet<ObjectId> = shallow.iter().copied().collect();
+            rgit_fetch::shallow::write(&repo.shallow_file(), &set).map_err(|e| fatal(&e))?;
         }
 
         // The initial reference transaction: one new `packed-refs` file,
@@ -1063,6 +1138,15 @@ fn write_packed_refs(setup: &Setup, config: &ConfigSet, refs: &[PackedRef]) -> R
         .map_err(|e| Die::Fatal(e.to_string()))
 }
 
+
+/// The common directory of the git directory `git_dir` (its `commondir`
+/// file for a linked work tree), else `git_dir`.
+fn common_dir_of(git_dir: &Path) -> PathBuf {
+    match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) => git_dir.join(text.trim_end()),
+        Err(_) => git_dir.to_path_buf(),
+    }
+}
 
 /// The git directory of the local repository at `path`: `<path>/.git`
 /// (a directory or a gitfile), else `path` itself.

@@ -120,7 +120,12 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
                 .map_or(0, |t| t.seconds);
             let parsed = ParsedCommit {
                 tree: c.tree().map_err(|_| corrupt())?,
-                parents: c.parents().map_err(|_| corrupt())?,
+                // A shallow commit has no parents here.
+                parents: if self.source.is_shallow(id) {
+                    Vec::new()
+                } else {
+                    c.parents().map_err(|_| corrupt())?
+                },
                 time,
             };
             self.commits.insert(*id, parsed);
@@ -283,7 +288,13 @@ pub fn enumerate<S: ObjectSource + ?Sized>(
                 mark_excluded(&w, *id, &mut excluded, &in_queue, &mut included_in_queue);
             }
             if seen.insert(*id) {
-                let time = w.commit(id)?.time;
+                // Missing objects on the excluded side are ignored (the
+                // other side has them; we may have only part of them).
+                let time = match w.commit(id) {
+                    Ok(c) => c.time,
+                    Err(_) if exclude => continue,
+                    Err(e) => return Err(e),
+                };
                 queue.push(Queued { time, seq, id: *id });
                 seq += 1;
                 in_queue.insert(*id);
@@ -308,7 +319,11 @@ pub fn enumerate<S: ObjectSource + ?Sized>(
                 mark_excluded(&w, p, &mut excluded, &in_queue, &mut included_in_queue);
             }
             if seen.insert(p) {
-                let time = w.commit(&p)?.time;
+                let time = match w.commit(&p) {
+                    Ok(c) => c.time,
+                    Err(_) if excluded.contains(&p) => continue,
+                    Err(e) => return Err(e),
+                };
                 queue.push(Queued { time, seq, id: p });
                 seq += 1;
                 in_queue.insert(p);
@@ -346,8 +361,10 @@ pub fn enumerate<S: ObjectSource + ?Sized>(
     for id in &commits {
         for p in w.commit(id)?.parents.clone() {
             if excluded.contains(&p) && edges.insert(p) {
-                let tree = w.commit(&p)?.tree;
-                w.walk_tree(tree, &mut seen, None)?;
+                if let Ok(c) = w.commit(&p) {
+                    let tree = c.tree;
+                    let _ = w.walk_tree(tree, &mut seen, None);
+                }
             }
         }
     }

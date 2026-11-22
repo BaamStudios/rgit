@@ -80,12 +80,14 @@ pub fn is_ancestor(odb: &ObjectDatabase, old: &ObjectId, new: &ObjectId) -> bool
 ///
 /// Objects of the received pack (`received`) are opened and their links
 /// followed; objects that existed before the transfer are taken to be
-/// complete, as the repository's own invariant guarantees. Returns the
-/// first missing object.
+/// complete, as the repository's own invariant guarantees. The parents
+/// of `shallow` commits are not followed. Returns the first missing
+/// object.
 pub fn check_connected(
     odb: &ObjectDatabase,
     tips: &[ObjectId],
     received: &HashSet<ObjectId>,
+    shallow: &HashSet<ObjectId>,
 ) -> Result<(), ObjectId> {
     let hash = odb.hash_kind();
     let mut seen: HashSet<ObjectId> = HashSet::new();
@@ -109,8 +111,10 @@ pub fn check_connected(
                     if let Ok(t) = c.tree() {
                         stack.push((t, false));
                     }
-                    for p in c.parents().unwrap_or_default() {
-                        stack.push((p, false));
+                    if !shallow.contains(&id) {
+                        for p in c.parents().unwrap_or_default() {
+                            stack.push((p, false));
+                        }
                     }
                 }
             }
@@ -145,4 +149,46 @@ pub fn peel(odb: &ObjectDatabase, id: &ObjectId) -> Option<ObjectId> {
         cur = Tag::parse(odb.hash_kind(), &raw.data).ok()?.object().ok()?;
     }
     None
+}
+
+/// Whether the history of `tip` that arrived with the transfer
+/// (`received`) reaches one of `targets` (commits the server made
+/// shallow). Commits that existed before are not walked.
+pub fn reaches_any(
+    odb: &ObjectDatabase,
+    tip: &ObjectId,
+    received: &HashSet<ObjectId>,
+    targets: &HashSet<ObjectId>,
+) -> bool {
+    let hash = odb.hash_kind();
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut stack = vec![*tip];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if targets.contains(&id) {
+            return true;
+        }
+        if !received.contains(&id) {
+            continue;
+        }
+        let Ok(Some(raw)) = odb.read(&id) else {
+            continue;
+        };
+        match raw.kind {
+            ObjectKind::Commit => {
+                if let Ok(c) = Commit::parse(hash, &raw.data) {
+                    stack.extend(c.parents().unwrap_or_default());
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(o) = Tag::parse(hash, &raw.data).and_then(|t| t.object()) {
+                    stack.push(o);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }

@@ -34,5 +34,5 @@ mod walk;
 pub use error::{SourceError, WriteError};
 pub use output::PackStream;
 pub use pack::{MAX_DEPTH, PackSummary, WriteOptions, WrittenEntry, write_pack};
-pub use source::{ObjectSource, PackSetSource};
+pub use source::{ObjectSource, PackSetSource, ShallowSource};
 pub use walk::{ListedObject, Tip, describe, enumerate, pack_order};

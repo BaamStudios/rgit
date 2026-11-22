@@ -541,6 +541,10 @@ impl Push<'_> {
                 odb: self.odb,
                 hash,
                 objects: Vec::new(),
+                shallow: rgit_fetch::shallow::read(
+                    &rgit_fetch::shallow::file_for(&self.setup.common_dir),
+                    hash,
+                ),
             };
             out.objects = match send::pack_objects(&out, &session.adv) {
                 Ok(o) => o,

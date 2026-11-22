@@ -13,7 +13,7 @@ use crate::refmap::{self, Entry, Origin};
 use crate::repo::LocalRepo;
 use crate::session::{ConnectSettings, PackOptions, ReceivedPack, Session};
 use crate::update::{self, RefLine, Status};
-use crate::{Error, Result, graph, messages};
+use crate::{Error, Result, graph, messages, shallow};
 
 /// What to fetch and how (the command-line options of `git fetch`).
 #[derive(Debug, Clone, Default)]
@@ -43,6 +43,24 @@ pub struct FetchOptions {
     pub server_options: Vec<String>,
     /// `-k` / `--keep`: always keep the received pack.
     pub keep: bool,
+    /// `--depth` (`deepen <n>`), `--deepen` (with
+    /// [`deepen_relative`](Self::deepen_relative)) or `--unshallow`
+    /// (`deepen 2147483647`).
+    pub deepen: Option<u32>,
+    /// `--deepen`: the depth counts from the current shallow boundary.
+    pub deepen_relative: bool,
+    /// `--shallow-since` as a timestamp.
+    pub deepen_since: Option<i64>,
+    /// `--shallow-exclude` revisions.
+    pub deepen_not: Vec<String>,
+    /// `--update-shallow`: accept refs whose history the server cut.
+    pub update_shallow: bool,
+}
+
+impl FetchOptions {
+    fn deepens(&self) -> bool {
+        self.deepen.is_some() || self.deepen_since.is_some() || !self.deepen_not.is_empty()
+    }
 }
 
 /// `fetch.unpackLimit`, else `transfer.unpackLimit`, else 100; 0 or less
@@ -66,6 +84,8 @@ pub struct FetchResult {
     pub lines: Vec<RefLine>,
     /// Messages to print with `error: ` before the summary.
     pub errors: Vec<String>,
+    /// Messages to print with `warning: ` before the errors.
+    pub warnings: Vec<String>,
     /// The final ref map (what `FETCH_HEAD` lists).
     pub entries: Vec<Entry>,
 }
@@ -235,10 +255,11 @@ pub fn fetch(
     }
 
     // One `want` per ref whose object is missing, duplicates included
-    // (as git sends them).
+    // (as git sends them); deepening asks for every ref.
+    let deepens = opts.deepens();
     let mut wants: Vec<ObjectId> = Vec::new();
     for e in &entries {
-        if !repo.has_object(&e.oid) {
+        if deepens || !repo.has_object(&e.oid) {
             wants.push(e.oid);
         }
     }
@@ -265,6 +286,10 @@ pub fn fetch(
         include_tag: follow_tags,
         server_options: opts.server_options.clone(),
         unpack_limit: (!opts.keep).then(|| unpack_limit(&repo.config)),
+        deepen: opts.deepen,
+        deepen_relative: opts.deepen_relative,
+        deepen_since: opts.deepen_since,
+        deepen_not: opts.deepen_not.clone(),
     };
     let mut packs: Vec<ReceivedPack> = Vec::new();
     if let Some(p) = session.fetch_pack(repo, &wants, Some(&advertised), &pack_opts)? {
@@ -280,22 +305,80 @@ pub fn fetch(
         let seen: &[Entry] = if opts.dry_run { &[] } else { &entries };
         add_followed_tags(repo, &refs, seen, &mut tags, &mut more, true);
         entries.extend(tags);
-        if let Some(p) = session.fetch_pack(repo, &more, Some(&advertised), &pack_opts)? {
+        let tag_opts = PackOptions {
+            deepen: None,
+            deepen_relative: false,
+            deepen_since: None,
+            deepen_not: Vec::new(),
+            ..pack_opts.clone()
+        };
+        if let Some(p) = session.fetch_pack(repo, &more, Some(&advertised), &tag_opts)? {
             packs.push(p);
         }
     }
+    let shallow_info = session.take_shallow_info();
     session.close()?;
 
     let received: std::collections::HashSet<ObjectId> = packs
         .iter()
         .flat_map(|p| p.objects.iter().copied())
         .collect();
-    let tips: Vec<ObjectId> = entries.iter().map(|e| e.oid).collect();
-    if graph::check_connected(&repo.odb, &tips, &received).is_err() {
+    // The shallow boundary: deepening (and --update-shallow) takes the
+    // server's word; otherwise refs whose new history the server cut are
+    // left out and the boundary stays.
+    let current = repo.shallow();
+    let mut new_shallow = None;
+    if let Some(info) = &shallow_info {
+        if deepens || opts.update_shallow {
+            new_shallow = Some(shallow::apply(&current, info));
+        } else {
+            let cut: std::collections::HashSet<ObjectId> = info
+                .shallow
+                .iter()
+                .filter(|id| !current.contains(id))
+                .copied()
+                .collect();
+            if !cut.is_empty() {
+                let mut kept = Vec::new();
+                for e in entries {
+                    if graph::reaches_any(&repo.odb, &e.oid, &received, &cut) {
+                        let name = e.local.as_ref().unwrap_or(&e.remote);
+                        result
+                            .warnings
+                            .push(messages::rejected_shallow_root(&name.to_str_lossy()));
+                    } else {
+                        kept.push(e);
+                    }
+                }
+                entries = kept;
+            }
+        }
+    }
+    let boundary: std::collections::HashSet<ObjectId> = match &new_shallow {
+        Some(set) => set.iter().copied().collect(),
+        None => current.iter().copied().collect(),
+    };
+    let mut tips: Vec<ObjectId> = entries.iter().map(|e| e.oid).collect();
+    // Commits that stop being shallow need their parents now.
+    let unshallowed: Vec<ObjectId> = match (&new_shallow, &shallow_info) {
+        (Some(_), Some(info)) => info.unshallow.clone(),
+        _ => Vec::new(),
+    };
+    for id in &unshallowed {
+        tips.extend(
+            graph::commit_info(&repo.odb, id)
+                .map(|c| c.parents)
+                .unwrap_or_default(),
+        );
+    }
+    if graph::check_connected(&repo.odb, &tips, &received, &boundary).is_err() {
         for p in &packs {
             p.release();
         }
         return Err(Error::fatal(messages::did_not_send_all(&result.url)));
+    }
+    if let (Some(set), false) = (&new_shallow, opts.dry_run) {
+        shallow::write(&repo.shallow_file(), set)?;
     }
 
     // Prune first, as git lists deletions first.

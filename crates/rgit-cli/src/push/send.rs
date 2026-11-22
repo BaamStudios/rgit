@@ -41,6 +41,9 @@ pub struct Outgoing<'a> {
     pub hash: HashKind,
     /// From [`pack_objects`].
     pub objects: Vec<ListedObject>,
+    /// The shallow commits of the local repository: sent as `shallow`
+    /// lines, and their parents are not walked.
+    pub shallow: Vec<rgit_hash::ObjectId>,
 }
 
 /// The objects reachable from the new values, minus everything reachable
@@ -71,7 +74,11 @@ pub fn pack_objects(out: &Outgoing<'_>, adv: &Advertisement) -> Result<Vec<Liste
             tips.push(Tip { id, exclude: true });
         }
     }
-    let listed = pw::enumerate(out.odb, out.hash, &tips).map_err(|e| e.to_string())?;
+    let source = pw::ShallowSource {
+        inner: out.odb,
+        shallow: out.shallow.iter().copied().collect(),
+    };
+    let listed = pw::enumerate(&source, out.hash, &tips).map_err(|e| e.to_string())?;
     Ok(pw::pack_order(&listed))
 }
 
@@ -101,6 +108,11 @@ fn write_request(w: &mut dyn Write, out: &Outgoing<'_>, adv: &Advertisement) -> 
         .then_some(out.request.push_options.as_slice());
     {
         let mut writer = Writer::new(&mut *w, "push");
+        for id in &out.shallow {
+            writer
+                .write_data(format!("shallow {id}").as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
         push::write_commands(&mut writer, &out.commands, &caps, opts).map_err(|e| e.to_string())?;
     }
     if out.commands.iter().any(|c| !c.new.is_null()) {

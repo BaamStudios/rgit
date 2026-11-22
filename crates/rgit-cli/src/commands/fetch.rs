@@ -60,6 +60,12 @@ pub fn run_with_reflog_action(
     let ignored_i = Cell::new(0);
     let upload_pack: RefCell<Option<String>> = RefCell::new(None);
     let server_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let depth: RefCell<Option<String>> = RefCell::new(None);
+    let shallow_since: RefCell<Option<String>> = RefCell::new(None);
+    let shallow_exclude: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let deepen: RefCell<Option<String>> = RefCell::new(None);
+    let unshallow = Cell::new(false);
+    let update_shallow = Cell::new(false);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -76,6 +82,18 @@ pub fn run_with_reflog_action(
             Opt::flag('k', "keep", &keep, msg::HELP_KEEP),
             Opt::flag('u', "update-head-ok", &update_head_ok, msg::HELP_UPDATE_HEAD_OK),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
+            Opt::string(None, "depth", &depth, "depth", msg::HELP_DEPTH),
+            Opt::string(None, "shallow-since", &shallow_since, "time", msg::HELP_SHALLOW_SINCE),
+            Opt::string_list(
+                None,
+                "shallow-exclude",
+                &shallow_exclude,
+                "ref",
+                msg::HELP_SHALLOW_EXCLUDE,
+            ),
+            Opt::string(None, "deepen", &deepen, "n", msg::HELP_DEEPEN),
+            Opt::flag(None, "unshallow", &unshallow, msg::HELP_UNSHALLOW).noneg(),
+            Opt::flag(None, "update-shallow", &update_shallow, msg::HELP_UPDATE_SHALLOW),
             Opt::string_list(
                 'o',
                 "server-option",
@@ -93,9 +111,50 @@ pub fn run_with_reflog_action(
     );
     let args = parser.parse(argv)?.args;
 
+    // Shallow options (fetch-options.adoc).
+    let mut deepen_n: Option<u32> = None;
+    let mut deepen_relative = false;
+    if let Some(d) = depth.borrow().as_deref() {
+        match d.parse::<i64>() {
+            Ok(n) if n > 0 => deepen_n = Some(n.min(i64::from(i32::MAX)) as u32),
+            _ => return Err(Die::Fatal(msg::depth_not_positive(d))),
+        }
+    }
+    if let Some(d) = deepen.borrow().as_deref() {
+        if depth.borrow().is_some() {
+            return Err(Die::Fatal(msg::options_together("--deepen", "--depth")));
+        }
+        let n: i64 = d
+            .parse()
+            .map_err(|_| Die::Fatal(msg::depth_not_positive(d)))?;
+        if n < 0 {
+            return Err(Die::Fatal(msg::NEGATIVE_DEEPEN.into()));
+        }
+        if n > 0 {
+            deepen_n = Some(n.min(i64::from(i32::MAX)) as u32);
+            deepen_relative = true;
+        }
+    }
+    if unshallow.get() && deepen_n.is_some() {
+        return Err(Die::Fatal(msg::options_together("--depth", "--unshallow")));
+    }
+    let deepen_since = match shallow_since.borrow().as_deref() {
+        Some(t) => {
+            let dctx = rgit_date::DateContext::from_env();
+            Some(rgit_date::approxidate(t, &dctx) as i64)
+        }
+        None => None,
+    };
+
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::config(ctx, &setup);
     let repo = LocalRepo::open(&setup, config).map_err(|e| Die::Fatal(e.to_string()))?;
+    if unshallow.get() {
+        if repo.shallow().is_empty() {
+            return Err(Die::Fatal(msg::UNSHALLOW_COMPLETE.into()));
+        }
+        deepen_n = Some(i32::MAX as u32);
+    }
     for w in &repo.warnings {
         eprintln!("warning: {w}");
     }
@@ -169,6 +228,11 @@ pub fn run_with_reflog_action(
         no_progress: !show_progress,
         server_options: server_options.borrow().clone(),
         keep: keep.get(),
+        deepen: deepen_n,
+        deepen_relative,
+        deepen_since,
+        deepen_not: shallow_exclude.borrow().clone(),
+        update_shallow: update_shallow.get(),
     };
     let env = SystemEnv::default();
     let connect = ConnectSettings {
@@ -191,6 +255,9 @@ pub fn run_with_reflog_action(
         rgit_fetch::fetch(&repo, &remote, &opts, &connect).map_err(|e| Die::Fatal(e.to_string()))?;
 
     let mut err = std::io::stderr().lock();
+    for w in &result.warnings {
+        let _ = writeln!(err, "warning: {w}");
+    }
     for e in &result.errors {
         let _ = writeln!(err, "error: {e}");
     }

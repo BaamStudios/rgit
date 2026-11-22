@@ -32,7 +32,6 @@ const NOT_YET: &[&str] = &[
     "--local-env-vars",
     "--show-superproject-working-tree",
     "--shared-index-path",
-    "--is-shallow-repository",
     "--show-object-format",
     "--show-ref-format",
     "--exclude-hidden",
@@ -487,6 +486,11 @@ impl State<'_, '_> {
             "--is-bare-repository" => setup.is_bare().to_string(),
             "--is-inside-work-tree" => setup.is_inside_work_tree().to_string(),
             "--is-inside-git-dir" => setup.is_inside_git_dir().to_string(),
+            "--is-shallow-repository" => {
+                let file = rgit_fetch::shallow::file_for(&setup.common_dir);
+                let shallow = std::fs::metadata(file).is_ok_and(|m| m.len() > 0);
+                shallow.to_string()
+            }
             _ => return None,
         };
         let _ = writeln!(self.out, "{line}");
