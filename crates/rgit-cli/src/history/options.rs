@@ -43,6 +43,12 @@ pub enum RefSet {
     },
     /// `--glob=<pattern>` (already starting with `refs/`).
     Glob(String),
+    /// `--reflog`: every object the reflogs mention.
+    Reflog,
+    /// `--indexed-objects`: the trees and blobs of the index.
+    Indexed,
+    /// `--alternate-refs`: the ref tips of the alternate repositories.
+    AlternateRefs,
 }
 
 /// A starting point as given on the command line or on standard input.
@@ -56,6 +62,8 @@ pub enum Tip {
         set: RefSet,
         negative: bool,
         exclude: Vec<String>,
+        /// `--exclude-hidden=<section>` given before it.
+        hidden: Option<String>,
     },
 }
 
@@ -176,6 +184,20 @@ pub struct Options {
     pub full_diff: bool,
     /// `--follow` / `--no-follow` (log); `None`: `log.follow`.
     pub follow: Option<bool>,
+    /// State while parsing: `--exclude-hidden=<section>` for the next
+    /// `--all` or `--glob`.
+    hidden: Option<String>,
+    /// `--single-worktree`: `--all`, `--reflog` and `--indexed-objects`
+    /// look at the current work tree only.
+    pub single_worktree: bool,
+    /// `--ignore-missing`: revisions that name nothing are left out.
+    pub ignore_missing: bool,
+    /// `--unpacked`: leave out objects (and commits) found in packs.
+    pub unpacked: bool,
+    /// `--disk-usage[=human]`: `Some(human)`.
+    pub disk_usage: Option<bool>,
+    /// `--maximal-only`.
+    pub maximal_only: bool,
 }
 
 fn parse_count(s: &str) -> Result<usize, Die> {
@@ -301,15 +323,34 @@ impl Options {
             simplify_by_decoration: false,
             full_diff: false,
             follow: None,
+            hidden: None,
+            single_worktree: false,
+            ignore_missing: false,
+            unpacked: false,
+            disk_usage: None,
+            maximal_only: false,
         }
     }
 
     fn push_refs(&mut self, set: RefSet) {
-        let exclude = std::mem::take(&mut self.exclude);
+        // `--exclude` patterns apply to the ref sets, hidden refs only to
+        // `--all` and `--glob`.
+        let (exclude, hidden) = match set {
+            RefSet::Reflog | RefSet::Indexed | RefSet::AlternateRefs => (Vec::new(), None),
+            _ => (
+                std::mem::take(&mut self.exclude),
+                if matches!(set, RefSet::All | RefSet::Glob(_)) {
+                    self.hidden.take()
+                } else {
+                    None
+                },
+            ),
+        };
         self.tips.push(Tip::Refs {
             set,
             negative: self.negate,
             exclude,
+            hidden,
         });
     }
 
@@ -327,7 +368,11 @@ impl Options {
         let pattern = |rest: Option<&str>| rest.map(str::to_string);
         match a {
             "--all" => self.push_refs(RefSet::All),
+            "--reflog" => self.push_refs(RefSet::Reflog),
+            "--indexed-objects" => self.push_refs(RefSet::Indexed),
+            "--alternate-refs" => self.push_refs(RefSet::AlternateRefs),
             "--branches" | "--tags" | "--remotes" => {
+                self.check_hidden(a)?;
                 let prefix = ref_prefix(a);
                 self.push_refs(RefSet::Prefix {
                     prefix,
@@ -347,6 +392,16 @@ impl Options {
                 self.push_refs(RefSet::Glob(full));
                 return Ok(Pseudo::Done(used));
             }
+            _ if a.starts_with("--exclude-hidden=") => {
+                let section = &a["--exclude-hidden=".len()..];
+                if !matches!(section, "fetch" | "receive" | "uploadpack") {
+                    return Err(Die::Fatal(msg::unsupported_hidden_section(section)));
+                }
+                if self.hidden.is_some() {
+                    return Err(Die::Fatal(msg::EXCLUDE_HIDDEN_TWICE.to_string()));
+                }
+                self.hidden = Some(section.to_string());
+            }
             _ if a == "--exclude" || a.starts_with("--exclude=") => {
                 let (v, used) = value("--exclude")?;
                 self.exclude.push(v);
@@ -355,6 +410,7 @@ impl Options {
             _ => {
                 for name in ["--branches", "--tags", "--remotes"] {
                     if let Some(p) = a.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
+                        self.check_hidden(name)?;
                         self.push_refs(RefSet::Prefix {
                             prefix: ref_prefix(name),
                             pattern: pattern(Some(p)),
@@ -377,6 +433,21 @@ impl Options {
             }
         }
         Ok(Pseudo::Done(0))
+    }
+
+    /// `--exclude-hidden` does not combine with `--branches`, `--tags`
+    /// and `--remotes`.
+    fn check_hidden(&self, option: &str) -> Result<(), Die> {
+        if self.hidden.is_some() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "error: {}",
+                msg::cannot_be_used_together("--exclude-hidden", option)
+            );
+            let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
+            return Err(Die::Exit(rgit_options::EXIT_USAGE));
+        }
+        Ok(())
     }
 
     /// Parse `argv` (without the command name).
@@ -459,6 +530,11 @@ impl Options {
                     o.set_objects(true);
                 }
                 "--in-commit-order" if cmd == Command::RevList => o.in_commit_order = true,
+                "--single-worktree" => o.single_worktree = true,
+                "--ignore-missing" => o.ignore_missing = true,
+                "--unpacked" => o.unpacked = true,
+                "--maximal-only" => o.maximal_only = true,
+                "--disk-usage" if cmd == Command::RevList => o.disk_usage = Some(false),
                 "--bisect" => o.bisect = true,
                 "--bisect-vars" if cmd == Command::RevList => o.bisect_vars = true,
                 "--bisect-all" if cmd == Command::RevList => o.bisect_all = true,
@@ -575,7 +651,7 @@ impl Options {
                     o.decorate_filter.exclude.clear();
                     o.decorate_filter.clear = true;
                 }
-                "-z" if cmd == Command::Log => o.zero = true,
+                "-z" => o.zero = true,
                 "--no-commit-header" if cmd == Command::RevList => o.commit_header = false,
                 "--commit-header" if cmd == Command::RevList => o.commit_header = true,
                 "--mailmap" | "--use-mailmap" => o.mailmap = Some(true),
@@ -617,6 +693,14 @@ impl Options {
                         o.grep.committer.push(v);
                     } else if let Some(v) = long(a, "--grep", &mut i)? {
                         o.grep.message.push(v);
+                    } else if let Some(v) = a
+                        .strip_prefix("--disk-usage=")
+                        .filter(|_| cmd == Command::RevList)
+                    {
+                        if v != "human" {
+                            return Err(Die::Fatal(msg::invalid_disk_usage(v)));
+                        }
+                        o.disk_usage = Some(true);
                     } else if let Some(v) = a.strip_prefix("--ancestry-path=") {
                         o.walk.ancestry_path = true;
                         o.ancestry.push(v.to_string());
@@ -674,7 +758,7 @@ impl Options {
             }
             i += 1;
         }
-        o.check()?;
+        o.check(cmd)?;
         Ok(o)
     }
 
@@ -687,9 +771,29 @@ impl Options {
     }
 
     /// Options that cannot be combined.
-    fn check(&mut self) -> Result<(), Die> {
+    fn check(&mut self, cmd: Command) -> Result<(), Die> {
+        if cmd == Command::RevList
+            && self.zero
+            && (self.left_right
+                || self.walk.cherry_mark
+                || self.timestamp
+                || self.header
+                || self.pretty_arg.is_some()
+                || self.objects.is_some_and(|m| m.edge)
+                || self.disk_usage.is_some()
+                || self.bisect_vars
+                || self.bisect_all)
+        {
+            return Err(Die::Fatal(msg::Z_UNSUPPORTED.to_string()));
+        }
         if let Some(m) = &mut self.objects {
             m.in_commit_order = self.in_commit_order;
+        }
+        if self.walk.boundary && self.maximal_only {
+            return Err(Die::Fatal(msg::cannot_be_used_together(
+                "--boundary",
+                "--maximal-only",
+            )));
         }
         // `--simplify-merges` asks for parent rewriting like `--parents`.
         if (self.parents || self.walk.simplify_merges) && self.children {
@@ -792,6 +896,20 @@ impl Options {
         self.tips.is_empty()
     }
 
+    /// Only `--alternate-refs` (which may find nothing) gave revisions.
+    pub fn only_alternate_refs(&self) -> bool {
+        !self.tips.is_empty()
+            && self.tips.iter().all(|t| {
+                matches!(
+                    t,
+                    Tip::Refs {
+                        set: RefSet::AlternateRefs,
+                        ..
+                    }
+                )
+            })
+    }
+
     /// Settle the options that depend on the configuration: the format
     /// (`--pretty`, aliases, `format.pretty` for `log`) and `log.date`.
     pub fn apply_config(&mut self, cmd: Command, config: &ConfigSet) -> Result<(), Die> {
@@ -852,6 +970,7 @@ impl Options {
                     set: RefSet::Glob(format!("refs/bisect/{term}*")),
                     negative,
                     exclude: Vec::new(),
+                    hidden: None,
                 });
             }
         }

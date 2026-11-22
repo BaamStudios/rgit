@@ -206,12 +206,123 @@ fn full_pattern(pattern: &str) -> String {
     }
 }
 
+/// `--exclude-hidden=<section>`: the refs `transfer.hideRefs` and
+/// `<section>.hideRefs` hide (git-config(1)): a ref is hidden by the last
+/// matching pattern unless that starts with `!`; patterns match a ref name
+/// or the directory it is in, after the `GIT_NAMESPACE` prefix was
+/// removed, or the full name with `^`.
+struct Hidden {
+    patterns: Vec<String>,
+    namespace: Option<String>,
+}
+
+impl Hidden {
+    fn new(repo: &Repo<'_>, section: &str) -> Hidden {
+        let own = format!("{section}.hiderefs");
+        let patterns = repo
+            .config
+            .entries()
+            .iter()
+            .filter(|e| e.name == "transfer.hiderefs" || e.name == own)
+            .filter_map(|e| e.value.as_ref().map(|v| v.to_string()))
+            .collect();
+        let namespace = std::env::var("GIT_NAMESPACE")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .map(|n| {
+                n.split('/')
+                    .filter(|c| !c.is_empty())
+                    .map(|c| format!("refs/namespaces/{c}/"))
+                    .collect::<String>()
+            });
+        Hidden {
+            patterns,
+            namespace,
+        }
+    }
+
+    fn hides(&self, name: &str) -> bool {
+        let stripped = self
+            .namespace
+            .as_deref()
+            .and_then(|ns| name.strip_prefix(ns))
+            .unwrap_or(name);
+        for p in self.patterns.iter().rev() {
+            let (neg, p) = match p.strip_prefix('!') {
+                Some(rest) => (true, rest),
+                None => (false, p.as_str()),
+            };
+            let (subject, p) = match p.strip_prefix('^') {
+                Some(rest) => (name, rest),
+                None => (stripped, p),
+            };
+            let p = p.trim_end_matches('/');
+            let hit = subject
+                .strip_prefix(p)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+            if hit {
+                return !neg;
+            }
+        }
+        false
+    }
+}
+
+/// Object ids named in the reflog files below `dir` (recursively), in
+/// file order: each entry's old value, then its new value.
+fn reflog_ids(dir: &std::path::Path, kind: rgit_hash::HashKind, out: &mut Vec<ObjectId>) {
+    let Ok(meta) = std::fs::metadata(dir) else {
+        return;
+    };
+    if meta.is_dir() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        paths.sort();
+        for p in paths {
+            reflog_ids(&p, kind, out);
+        }
+        return;
+    }
+    let Ok(text) = std::fs::read(dir) else {
+        return;
+    };
+    let hex = kind.hex_len();
+    for line in text.split(|&b| b == b'\n') {
+        for range in [0..hex, hex + 1..2 * hex + 1] {
+            if let Some(h) = line.get(range)
+                && let Ok(id) = ObjectId::from_hex(kind, h)
+                && !id.is_null()
+            {
+                out.push(id);
+            }
+        }
+    }
+}
+
+/// The git directories of the other work trees.
+fn other_worktree_dirs(repo: &Repo<'_>) -> Vec<std::path::PathBuf> {
+    let own = std::path::absolute(&repo.setup.git_dir).ok();
+    let mut dirs = vec![repo.setup.common_dir.clone()];
+    if let Ok(entries) = std::fs::read_dir(repo.setup.common_dir.join("worktrees")) {
+        let mut wt: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        wt.sort();
+        dirs.extend(wt);
+    }
+    dirs.retain(|d| std::path::absolute(d).ok() != own);
+    dirs
+}
+
 /// The refs of a ref set, in order.
 fn ref_set(
     repo: &Repo<'_>,
+    opts: &Options,
     set: &RefSet,
     exclude: &[String],
+    hidden: Option<&Hidden>,
 ) -> Result<Vec<(String, ObjectId)>, Die> {
+    let is_hidden = |name: &str| hidden.is_some_and(|h| h.hides(name));
     let mut ids = Vec::new();
     let each = |prefix: &str, f: &mut dyn FnMut(&str, &ObjectId)| {
         repo.refs
@@ -221,7 +332,7 @@ fn ref_set(
     match set {
         RefSet::All => {
             each("refs/", &mut |name, id| {
-                if !excluded(exclude, name) {
+                if !excluded(exclude, name) && !is_hidden(name) {
                     ids.push((name.to_string(), *id));
                 }
             })?;
@@ -231,11 +342,13 @@ fn ref_set(
             {
                 ids.push(("HEAD".to_string(), id));
             }
-            ids.extend(
-                repo.other_worktree_heads()
-                    .into_iter()
-                    .map(|id| ("HEAD".to_string(), id)),
-            );
+            if !opts.single_worktree {
+                ids.extend(
+                    repo.other_worktree_heads()
+                        .into_iter()
+                        .map(|id| ("HEAD".to_string(), id)),
+                );
+            }
         }
         RefSet::Prefix { prefix, pattern } => {
             let pat = pattern
@@ -256,11 +369,31 @@ fn ref_set(
             each("refs/", &mut |name, id| {
                 if wildmatch(pat.as_bytes(), name.as_bytes(), WildmatchFlags::NONE)
                     && !excluded(exclude, name)
+                    && !is_hidden(name)
                 {
                     ids.push((name.to_string(), *id));
                 }
             })?;
         }
+        RefSet::Reflog => {
+            let kind = repo.objects.hash_kind();
+            let mut found = Vec::new();
+            reflog_ids(&repo.setup.git_dir.join("logs/HEAD"), kind, &mut found);
+            reflog_ids(&repo.setup.common_dir.join("logs/refs"), kind, &mut found);
+            if !opts.single_worktree {
+                for dir in other_worktree_dirs(repo) {
+                    reflog_ids(&dir.join("logs/HEAD"), kind, &mut found);
+                }
+            }
+            // Entries whose objects are gone are left out.
+            ids.extend(
+                found
+                    .into_iter()
+                    .filter(|id| matches!(repo.objects.read(id), Ok(Some(_))))
+                    .map(|id| (String::new(), id)),
+            );
+        }
+        RefSet::Indexed | RefSet::AlternateRefs => {}
     }
     Ok(ids)
 }
@@ -329,6 +462,80 @@ fn also_a_file(repo: &Repo<'_>, arg: &str) -> bool {
     !rest.is_empty() && file_exists(repo, top, rest)
 }
 
+/// The valid trees of a cache tree, with their paths.
+fn cache_trees(node: &rgit_index::TreeNode, path: &[u8], out: &mut Vec<(Vec<u8>, ObjectId)>) {
+    if let Some(id) = node.id() {
+        out.push((path.to_vec(), *id));
+    }
+    for child in &node.children {
+        let mut p = path.to_vec();
+        if !p.is_empty() {
+            p.push(b'/');
+        }
+        p.extend_from_slice(&child.name);
+        cache_trees(child, &p, out);
+    }
+}
+
+/// `--indexed-objects`: the valid trees of the cache tree and the blobs
+/// of the index, with their paths.
+fn indexed_objects(repo: &Repo<'_>) -> Vec<(Vec<u8>, ObjectId)> {
+    let kind = repo.objects.hash_kind();
+    let path = std::env::var_os("GIT_INDEX_FILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| repo.setup.git_dir.join("index"));
+    let Ok(index) = rgit_index::Index::read_file(&path, kind, &rgit_index::ReadOptions::default())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(tree) = index.cache_tree() {
+        cache_trees(&tree.root, b"", &mut out);
+    }
+    out.extend(
+        index
+            .entries()
+            .iter()
+            .filter(|e| !e.mode.is_gitlink())
+            .map(|e| (e.path().to_vec(), e.id)),
+    );
+    out
+}
+
+/// `--alternate-refs`: the ref tips of the repositories whose object
+/// directories are alternates of ours.
+fn alternate_refs(repo: &Repo<'_>) -> Vec<ObjectId> {
+    let kind = repo.objects.hash_kind();
+    let objects = crate::revisions::objects_dir(repo.setup);
+    let Ok(text) = std::fs::read_to_string(objects.join("info/alternates")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let dir = objects.join(line);
+        let Some(git_dir) = dir.parent() else {
+            continue;
+        };
+        let store = rgit_refs::files::FilesStore::new(git_dir, kind);
+        let Ok(items) = rgit_refs::RefStore::iter(&store, &rgit_refs::IterOptions::prefix("refs/"))
+        else {
+            continue;
+        };
+        for item in items {
+            if let rgit_refs::IterItem::Ref(r) = item
+                && let Some(id) = r.oid
+            {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
 /// Resolve the starting points in command-line order. Without `--`, an
 /// argument that is not a revision but a file in the work tree (or looks
 /// like a pathspec) starts the paths when `paths` allows it.
@@ -347,6 +554,7 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
             Tip::Rev { arg, negate } => {
                 let found = rev_items(repo, arg);
                 let mut items = match found {
+                    Err(_) if opts.ignore_missing => continue,
                     Err(e) if paths && !opts.dashdash && !arg.starts_with('^') => {
                         if names_path(repo, arg) {
                             in_paths = true;
@@ -382,6 +590,9 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
                     };
                     let name = path_name(item.name.as_deref());
                     let source = item.name.as_deref().unwrap_or(arg);
+                    if opts.ignore_missing && !matches!(repo.objects.read(&item.oid), Ok(Some(_))) {
+                        continue;
+                    }
                     out.add(repo, item.oid, item.negated != *negate, side, name, source)?;
                 }
             }
@@ -389,11 +600,28 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
                 set,
                 negative,
                 exclude,
+                hidden,
             } => {
                 revisions = true;
                 out.no_revisions = false;
-                for (refname, id) in ref_set(repo, set, exclude)? {
+                let hidden = hidden.as_deref().map(|s| Hidden::new(repo, s));
+                for (refname, id) in ref_set(repo, opts, set, exclude, hidden.as_ref())? {
                     out.add(repo, id, *negative, None, Vec::new(), &refname)?;
+                }
+                match set {
+                    RefSet::Indexed => {
+                        for (path, id) in indexed_objects(repo) {
+                            out.add(repo, id, *negative, None, path, "")?;
+                        }
+                    }
+                    RefSet::AlternateRefs => {
+                        for id in alternate_refs(repo) {
+                            if matches!(repo.objects.read(&id), Ok(Some(_))) {
+                                out.add(repo, id, *negative, None, Vec::new(), "")?;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

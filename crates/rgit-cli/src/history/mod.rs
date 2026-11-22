@@ -717,6 +717,8 @@ pub fn walk_formatted(
         child_shown: std::collections::HashSet::new(),
         next: None,
         diff: None,
+        store: None,
+        usage: None,
     };
     let mut items = Vec::new();
     while let Some(s) = walk.next_shown().map_err(walk_error)? {
@@ -796,6 +798,10 @@ struct Printer<'r, 'a> {
     /// `--boundary`: parents of the commits shown so far (boundary
     /// commits are drawn with those of their parents).
     child_shown: std::collections::HashSet<ObjectId>,
+    /// The object store, for `--unpacked` and `--disk-usage`.
+    store: Option<crate::repo_objects::Repo>,
+    /// `--disk-usage`: the bytes of the objects selected so far.
+    usage: Option<u64>,
 }
 
 /// The `reference` format.
@@ -890,6 +896,41 @@ impl Printer<'_, '_> {
         }
     }
 
+    /// `--unpacked` leaves out `id`, or `--disk-usage` counts it instead
+    /// of showing it.
+    fn diverted(&mut self, id: &ObjectId) -> bool {
+        let Some(store) = &self.store else {
+            return false;
+        };
+        if self.opts.unpacked
+            && matches!(
+                store.locate(id),
+                Some(crate::repo_objects::Location::Packed(..))
+            )
+        {
+            return true;
+        }
+        if let Some(total) = &mut self.usage {
+            *total += store.disk_size(id);
+            return true;
+        }
+        false
+    }
+
+    /// `--disk-usage`: the total, in bytes or (`=human`) larger units.
+    fn finish_usage(&mut self) {
+        let Some(total) = self.usage else {
+            return;
+        };
+        let text = if self.opts.disk_usage == Some(true) {
+            human_size(total)
+        } else {
+            total.to_string()
+        };
+        self.out.extend_from_slice(text.as_bytes());
+        self.out.push(b'\n');
+    }
+
     fn commit<S: CommitSource<Error = ObjectId>>(
         &mut self,
         walk: &Walk<S>,
@@ -897,6 +938,9 @@ impl Printer<'_, '_> {
     ) -> Result<(), Die> {
         let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
         let id = s.id;
+        if !s.boundary && self.diverted(&id) {
+            return Ok(());
+        }
         let opts = self.opts;
         let was_first = self.first;
         let start = self.out.len();
@@ -924,6 +968,20 @@ impl Printer<'_, '_> {
             Vec::new()
         };
         match opts.pretty {
+            None if self.cmd == Command::RevList && opts.zero => {
+                // `-z`: NUL-terminated fields; the boundary mark is a field
+                // of its own after the name (the parents follow it).
+                line.extend_from_slice(self.name(&id, opts.abbrev_commit).as_bytes());
+                if s.boundary {
+                    line.extend_from_slice(b"\0boundary=yes");
+                }
+                for p in &related {
+                    line.push(b' ');
+                    line.extend_from_slice(p.to_hex().as_bytes());
+                }
+                line.push(0);
+                self.out.extend_from_slice(&line);
+            }
             None => {
                 line.extend_from_slice(mark.as_bytes());
                 line.extend_from_slice(self.name(&id, opts.abbrev_commit).as_bytes());
@@ -1398,7 +1456,20 @@ impl Printer<'_, '_> {
     }
 
     fn object(&mut self, id: &ObjectId, name: &[u8]) {
+        if self.diverted(id) {
+            return;
+        }
         self.out.extend_from_slice(id.to_hex().as_bytes());
+        if self.cmd == Command::RevList && self.opts.zero {
+            self.out.push(0);
+            if self.opts.object_names && !name.is_empty() {
+                self.out.extend_from_slice(b"path=");
+                self.out.extend_from_slice(name);
+                self.out.push(0);
+            }
+            self.flush_if_full();
+            return;
+        }
         if self.opts.object_names {
             self.out.push(b' ');
             // Names are cut at a newline.
@@ -1768,6 +1839,14 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             }
         }
     }
+    if cmd == Command::RevList
+        && opts.only_alternate_refs()
+        && resolved.commits.is_empty()
+        && resolved.pending.is_empty()
+    {
+        let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
+        return Err(Die::Exit(rgit_options::EXIT_USAGE));
+    }
     let commit_color = match cmd {
         Command::Log => {
             let pager = if opts.show { "show" } else { "log" };
@@ -1941,6 +2020,8 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             }
             d => d,
         },
+        store: None,
+        usage: opts.disk_usage.map(|_| 0),
     };
     if opts.graph {
         let palette = p
@@ -1958,6 +2039,10 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         });
         g.set_indent(indent);
         p.graph = Some(g);
+    }
+    if opts.unpacked || opts.disk_usage.is_some() {
+        let setup = repo.setup.clone();
+        p.store = Some(crate::repo_objects::Repo::open(ctx, setup)?);
     }
     if is_user && cmd == Command::Log {
         let mut map = HashMap::new();
@@ -2023,6 +2108,13 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         p.flush();
         return Ok(0);
     }
+    if opts.maximal_only {
+        let mut all = Vec::new();
+        while let Some(s) = next_shown(&mut walk, &mut kept)? {
+            all.push(s);
+        }
+        kept = Some(maximal(&walk, all).into());
+    }
     let (mut left, mut right, mut same) = (0usize, 0usize, 0usize);
     let mut shown = 0usize;
     while let Some(s) = next_shown(&mut walk, &mut kept)? {
@@ -2060,6 +2152,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         };
         p.out.extend_from_slice(text.as_bytes());
     }
+    p.finish_usage();
     p.flush();
     Ok(0)
 }
@@ -2113,6 +2206,43 @@ fn keep_oldest(
         out.make_contiguous().reverse();
     }
     Ok(out)
+}
+
+/// `--maximal-only`: the commits of `shown` no other one of them reaches.
+fn maximal<S: CommitSource>(walk: &Walk<S>, shown: Vec<Shown>) -> Vec<Shown> {
+    let mut reached = std::collections::HashSet::new();
+    let mut stack: Vec<ObjectId> = shown
+        .iter()
+        .flat_map(|s| walk.parents(&s.id).unwrap_or_default().to_vec())
+        .collect();
+    while let Some(id) = stack.pop() {
+        if reached.insert(id) {
+            stack.extend(walk.parents(&id).unwrap_or_default().iter().copied());
+        }
+    }
+    shown
+        .into_iter()
+        .filter(|s| !reached.contains(&s.id))
+        .collect()
+}
+
+/// A byte count in the largest binary unit it reaches, with two
+/// decimals (`--disk-usage=human`).
+fn human_size(n: u64) -> String {
+    const UNITS: [(u32, &str); 3] = [(30, "GiB"), (20, "MiB"), (10, "KiB")];
+    for (shift, unit) in UNITS {
+        if n >= 1 << shift {
+            // Hundredths, rounded.
+            let unit_size = 1u128 << shift;
+            let h = (u128::from(n) * 100 + unit_size / 2) / unit_size;
+            return format!("{}.{:02} {unit}", h / 100, h % 100);
+        }
+    }
+    if n == 1 {
+        "1 byte".to_string()
+    } else {
+        format!("{n} bytes")
+    }
 }
 
 /// `--objects`: the commits, then the tags, trees and blobs they need.
@@ -2328,6 +2458,7 @@ fn run_objects(
     if counting {
         p.out.extend_from_slice(format!("{count}\n").as_bytes());
     }
+    p.finish_usage();
     p.flush();
     Ok(0)
 }
