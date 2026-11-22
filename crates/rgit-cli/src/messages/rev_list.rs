@@ -158,3 +158,7 @@ pub const UNABLE_TO_PARSE_PRETTY: &str = "unable to parse --pretty format";
 pub fn invalid_graph_color(color: &str) -> String {
     format!("ignoring invalid color '{color}' in log.graphColors")
 }
+
+pub fn unknown_diff_merges(value: &str) -> String {
+    format!("invalid value for '--diff-merges': '{value}'")
+}

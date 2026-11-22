@@ -205,6 +205,18 @@ fn date(sig: Option<&SignatureRef<'_>>, mode: &DateMode, ctx: &DateContext) -> S
     rgit_date::show_date(secs, tz_hhmm(t.offset_minutes), mode, ctx).unwrap_or_default()
 }
 
+/// `Name <email>`, through the mailmap.
+pub fn ident(sig: &SignatureRef<'_>, mailmap: Option<&Mailmap>) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_ident(&mut out, Some(sig), mailmap);
+    out
+}
+
+/// The date of `sig` in `mode`.
+pub fn date_of(sig: &SignatureRef<'_>, mode: &DateMode, ctx: &DateContext) -> String {
+    date(Some(sig), mode, ctx)
+}
+
 /// What to print for one commit.
 pub struct Entry<'a> {
     /// The commit name as shown (full or abbreviated).

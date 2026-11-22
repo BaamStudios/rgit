@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: MIT
+//! Differential tests of `rgit show` and of `rgit log` with diffs.
+
+use rgit_difftest::{Check, Fixture};
+
+/// Two commits with changes, a side branch merged in, an annotated and a
+/// lightweight tag.
+fn history() -> Fixture {
+    Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .write("f", "a\n")
+        .git(["add", "f"])
+        .git(["commit", "-q", "-m", "first"])
+        .tick()
+        .write("f", "a\nb\n")
+        .write("dir/g", "x\n")
+        .git(["add", "f", "dir/g"])
+        .git(["commit", "-q", "-m", "second\n\nbody line"])
+        .tick()
+        .git(["checkout", "-q", "-b", "side", "HEAD~1"])
+        .write("s", "s\n")
+        .git(["add", "s"])
+        .git(["commit", "-q", "-m", "side"])
+        .tick()
+        .git(["checkout", "-q", "main"])
+        .git(["merge", "-q", "--no-edit", "side"])
+        .tick()
+        .git(["tag", "-a", "-m", "tag message", "v1", "HEAD~1"])
+        .git(["tag", "light", "HEAD"])
+}
+
+fn same(fx: &mut Fixture, args: &[&str]) {
+    fx.compare(args).checks(Check::OUTPUT).run();
+}
+
+#[test]
+fn show_objects() {
+    let mut fx = history();
+    for args in [
+        &["show"][..],
+        &["show", "HEAD~1"],
+        &["show", "v1", "HEAD:f", "HEAD^{tree}", "light"],
+        &["show", "HEAD:f", "HEAD~1", "-s"],
+        &["show", "HEAD^{tree}", "HEAD:f", "HEAD~1:dir"],
+        &["show", "-s", "--format=%s", "HEAD", "HEAD~1", "v1"],
+        &["show", "--oneline", "HEAD"],
+        &["show", "--oneline", "-s", "v1"],
+        &["show", "--pretty=fuller", "-s", "v1"],
+        &["show", "--stat", "HEAD~1"],
+        &["show", "--name-status", "HEAD~2"],
+        &["show", "HEAD~2..HEAD", "--oneline"],
+        &["show", "-2", "--format=%s", "HEAD~1"],
+        &["show", "--graph", "HEAD"],
+        &["show", "no-such-rev"],
+    ] {
+        same(&mut fx, args);
+    }
+}
+
+#[test]
+fn log_with_diffs() {
+    let mut fx = history();
+    for args in [
+        &["log", "-p"][..],
+        &["log", "--stat"],
+        &["log", "-p", "--stat"],
+        &["log", "--oneline", "-p", "--stat"],
+        &["log", "--format=%s", "--raw"],
+        &["log", "--name-only"],
+        &["log", "--numstat", "--shortstat", "--summary"],
+        &["log", "-p", "--first-parent"],
+        &["log", "--cc", "--format=%s"],
+        &["log", "-p", "--color=always"],
+        &["log", "--graph", "-p", "--format=%s"],
+        &["log", "--graph", "--stat"],
+        &["log", "--diff-merges=bogus"],
+    ] {
+        same(&mut fx, args);
+    }
+}
