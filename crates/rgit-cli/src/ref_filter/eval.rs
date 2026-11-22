@@ -54,7 +54,7 @@ pub(crate) struct Value {
 }
 
 impl Value {
-    fn text(b: impl Into<Vec<u8>>) -> Value {
+    pub(crate) fn text(b: impl Into<Vec<u8>>) -> Value {
         Value {
             bytes: b.into(),
             num: None,

@@ -13,8 +13,11 @@
 //! again when a step before the checkout fails; a failed checkout leaves
 //! the repository (git's "Clone succeeded, but checkout failed.").
 //!
-//! A local path is cloned through the normal transport, like
-//! `--no-local`; git's messages for a local clone (`done.`) are kept.
+//! A local path (without `--no-local`) gets a copy of the source's object
+//! store, hard-linked where possible ([`LocalCopy`]); the references still
+//! come through the transport. `--revision` clones one revision without
+//! refs or refspec; a detached remote `HEAD` is attached to the branch at
+//! the same commit when there is one.
 
 use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
@@ -58,6 +61,14 @@ struct Options {
     shallow_exclude: Vec<String>,
     /// `--[no-]reject-shallow`.
     reject_shallow: Option<bool>,
+    /// `--no-hardlinks`.
+    no_hardlinks: bool,
+    /// `--ref-format`.
+    ref_format: Option<rgit_repo::format::RefStorage>,
+    /// `--revision`.
+    revision: Option<String>,
+    /// `--separate-git-dir`.
+    separate_git_dir: Option<String>,
     /// `-s` / `--shared`.
     shared: bool,
     /// `--reference`.
@@ -220,13 +231,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
 
     // Options rgit does not implement yet.
-    let unsupported: [(&str, bool); 10] = [
-        ("--no-hardlinks", no_hardlinks.get()),
+    let unsupported: [(&str, bool); 6] = [
         ("--recurse-submodules", !recurse.borrow().is_empty()),
-        ("--revision", revision.borrow().is_some()),
         ("--shallow-submodules", shallow_submodules.get()),
-        ("--separate-git-dir", separate_git_dir.borrow().is_some()),
-        ("--ref-format", ref_format.borrow().is_some()),
         ("--filter", filter.borrow().is_some()),
         ("--also-filter-submodules", also_filter_submodules.get()),
         ("--sparse", sparse.get()),
@@ -237,8 +244,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     // -j and --remote-submodules change nothing without submodules.
     let _ = (jobs.get(), remote_submodules.get());
+    let ref_format = match ref_format.into_inner() {
+        Some(f) => Some(repo_init::parse_ref_format(&f).map_err(|e| init_failed(&e))?),
+        None => None,
+    };
+    let separate_git_dir = separate_git_dir.into_inner();
+    if separate_git_dir.is_some() && (bare.get() || mirror.get()) {
+        let first = if bare.get() { "--bare" } else { "--mirror" };
+        return Err(Die::Fatal(msg::incompatible(first, "--separate-git-dir")));
+    }
 
     let mut opts = Options {
+        revision: revision.into_inner(),
+        ref_format,
+        separate_git_dir,
         quiet: quiet.get() > 0,
         progress: (progress.get() >= 0).then(|| progress.get() > 0),
         no_checkout: no_checkout.get(),
@@ -252,6 +271,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         shallow_since: shallow_since.into_inner(),
         shallow_exclude: shallow_exclude.into_inner(),
         reject_shallow: (reject_shallow.get() >= 0).then(|| reject_shallow.get() > 0),
+        no_hardlinks: no_hardlinks.get(),
         shared: shared.get(),
         reference: reference.into_inner(),
         reference_if_able: reference_if_able.into_inner(),
@@ -290,9 +310,8 @@ fn local_repository(repo: &str, cwd: &Path) -> Option<PathBuf> {
     for (suffix, keep) in [("/.git", ""), ("", ""), (".git/.git", ".git"), (".git", ".git")] {
         let candidate = cwd.join(format!("{repo}{suffix}"));
         if is_git_directory(&candidate) || gitfile_repository(&candidate) {
-            let base = cwd.join(format!("{repo}{keep}"));
-            let real = std::fs::canonicalize(&base).unwrap_or(base);
-            return Some(real);
+            // As given, made absolute (`.`, `..` and symbolic links stay).
+            return Some(cwd.join(format!("{repo}{keep}")));
         }
     }
     None
@@ -464,6 +483,23 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         deepen = PackOptions::default();
     }
 
+    // `--separate-git-dir`: the repository lives there, the work tree
+    // gets a `.git` file.
+    let separate = opts
+        .separate_git_dir
+        .as_ref()
+        .map(|s| (s, rgit_repo::path::real_path_lossy(Path::new(s), &cwd)));
+    if let Some((shown, path)) = &separate {
+        if std::fs::symlink_metadata(path).is_ok() && !(path.is_dir() && is_empty_dir(path)) {
+            return Err(Die::Fatal(msg::repository_path_exists(shown)));
+        }
+    }
+    // `GIT_WORK_TREE`: `<dir>` becomes the git directory of a non-bare
+    // repository whose work tree is elsewhere (`core.worktree`).
+    let env_work_tree = std::env::var_os("GIT_WORK_TREE")
+        .filter(|w| !w.is_empty() && !opts.bare && separate.is_none())
+        .map(|w| cwd.join(w));
+
     let mut junk = Junk {
         work_tree: None,
         work_tree_existed: existed,
@@ -471,27 +507,51 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         git_dir_existed: existed,
         armed: true,
     };
+    let mut init_git_dir = None;
+    let mut init_work_tree = None;
     let (git_dir, work_tree) = if opts.bare {
         junk.git_dir = Some(target.clone());
         if !existed {
             create_dir(&target, &dir)?;
         }
         (target.clone(), None)
+    } else if let Some(wt) = &env_work_tree {
+        junk.git_dir = Some(target.clone());
+        if !existed {
+            create_dir(&target, &dir)?;
+        }
+        let wt_shown = wt.to_string_lossy().into_owned();
+        junk.work_tree_existed = wt.exists();
+        junk.work_tree = Some(wt.clone());
+        create_dir(wt, &wt_shown)?;
+        let wt = std::fs::canonicalize(wt).unwrap_or_else(|_| wt.clone());
+        init_work_tree = Some(wt.clone());
+        (target.clone(), Some(wt))
     } else {
         junk.work_tree = Some(target.clone());
         if !existed {
             create_dir(&target, &dir)?;
         }
-        junk.git_dir_existed = false;
-        (target.join(".git"), Some(target.clone()))
+        match &separate {
+            Some((_, path)) => {
+                junk.git_dir_existed = path.exists();
+                junk.git_dir = Some(path.clone());
+                init_git_dir = Some(target.join(".git"));
+                (path.clone(), Some(target.clone()))
+            }
+            None => {
+                junk.git_dir_existed = false;
+                (target.join(".git"), Some(target.clone()))
+            }
+        }
     };
 
     // Create the repository.
     let init_opts = InitOptions {
-        git_dir: git_dir.clone(),
-        separate_git_dir: None,
+        git_dir: init_git_dir.unwrap_or_else(|| git_dir.clone()),
+        separate_git_dir: separate.as_ref().map(|(_, p)| p.clone()),
         bare: opts.bare,
-        work_tree: None,
+        work_tree: init_work_tree,
         object_dir: None,
         template: opts.template.as_ref().map(|t| {
             if t.is_empty() {
@@ -502,7 +562,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         }),
         shared: None,
         object_format: None,
-        ref_format: None,
+        ref_format: opts.ref_format,
         initial_branch: None,
     };
     repo_init::init(&init_opts, &env, &cl, early, &mut |n| {
@@ -510,16 +570,13 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             eprintln!("warning: {w}");
         }
     })
-    .map_err(|e| {
-        let mut err = std::io::stderr().lock();
-        for (level, line) in e.report() {
-            let _ = match level {
-                Some(l) => writeln!(err, "{} {line}", l.prefix()),
-                None => writeln!(err, "{line}"),
-            };
-        }
-        Die::Exit(e.exit_code())
-    })?;
+    .map_err(|e| init_failed(&e))?;
+    // The separate git directory with symbolic links resolved.
+    let git_dir = if separate.is_some() {
+        std::fs::canonicalize(&git_dir).unwrap_or(git_dir)
+    } else {
+        git_dir
+    };
 
     if !opts.quiet {
         if opts.bare {
@@ -531,6 +588,17 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     if local_mode {
         for o in &ignored_local {
             eprintln!("warning: {}", msg::ignored_in_local_clones(o));
+        }
+    }
+    if let Some(rev) = &opts.revision {
+        if opts.branch.is_some() {
+            return Err(Die::Fatal(msg::incompatible("--revision", "--branch")));
+        }
+        if opts.mirror {
+            return Err(Die::Fatal(msg::incompatible("--revision", "--mirror")));
+        }
+        if RefspecSet::parse([rev.as_str()], Direction::Fetch).is_err() {
+            return Err(Die::Fatal(msg::invalid_refspec(rev)));
         }
     }
 
@@ -545,11 +613,15 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
 
     let config_path = git_dir.join("config");
+    // `-c <key>[=<value>]`: added as given (without a value: `true`).
     for kv in &opts.config {
-        let Some((k, v)) = kv.split_once('=') else {
-            return Err(Die::Fatal(msg::invalid_config_pair(kv)));
-        };
-        config_add(&config_path, k, v)?;
+        let (k, v) = kv.split_once('=').unwrap_or((kv, "true"));
+        if let Err(e) = config_add(&config_path, k, v) {
+            if let Die::Fatal(m) = e {
+                eprintln!("error: {m}");
+            }
+            return Err(Die::Fatal(msg::CONFIG_WRITE_FAILED.into()));
+        }
     }
 
     // Borrow objects: --reference repositories, then the source itself
@@ -577,6 +649,15 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         if !alternates.contains(&dir) {
             alternates.push(dir);
         }
+    } else if local_mode {
+        // A local clone copies the source's object store (hard links
+        // where possible) and borrows what the source borrows.
+        let src = common_dir_of(&repository_git_dir(Path::new(&source.url))).join("objects");
+        let mut copy = LocalCopy {
+            hardlink: !opts.no_hardlinks,
+            alternates: &mut alternates,
+        };
+        copy.objects(&src, &git_dir.join("objects"))?;
     }
     let alternates_file = git_dir.join("objects").join("info").join("alternates");
     if !alternates.is_empty() {
@@ -631,13 +712,31 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     };
     let mut session = Session::connect(&source.url, &connect, "clone").map_err(|e| fatal(&e))?;
 
+    // Fetch refspecs given with `-c remote.<name>.fetch=...` are used in
+    // addition to the default one.
+    let fetch_key = format!("remote.{origin}.fetch");
+    let extra_fetch: Vec<String> = repo
+        .config
+        .entries()
+        .iter()
+        .filter(|e| e.name == fetch_key.as_bytes())
+        .filter_map(|e| e.value.as_ref().map(|v| v.to_str_lossy().into_owned()))
+        .collect();
     let mut ls = LsRefsArgs::standard();
     ls.server_options = opts.server_options.clone();
-    if !opts.mirror {
+    if !opts.mirror && opts.revision.is_none() {
         ls.ref_prefixes.push("HEAD".into());
         ls.ref_prefixes.push("refs/heads/".into());
-        if opts.tags {
+        if opts.tags || opts.branch.is_some() {
             ls.ref_prefixes.push("refs/tags/".into());
+        }
+        for spec in &extra_fetch {
+            let src = spec.trim_start_matches('+');
+            let src = src.split(':').next().unwrap_or(src);
+            let prefix = src.split('*').next().unwrap_or(src);
+            if !prefix.is_empty() && !src.starts_with('^') {
+                ls.ref_prefixes.push(prefix.to_owned());
+            }
         }
     }
     let mut refs: Vec<RemoteRef> = session.list_refs(&ls).map_err(|e| fatal(&e))?;
@@ -651,14 +750,44 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
 
     let remote_head = refs.iter().find(|r| r.name == b"HEAD");
-    let head_target: Option<String> = remote_head
+    let mut head_target: Option<String> = remote_head
         .and_then(|h| h.symref_target.as_ref())
         .map(|t| String::from_utf8_lossy(t).into_owned());
+    // A detached remote HEAD: the branch at the same commit, preferring
+    // the default branch name, else the first one.
+    if head_target.is_none() {
+        if let Some(oid) = remote_head.and_then(|h| h.oid) {
+            let default = std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .or_else(|| {
+                    repo.config
+                        .string("init.defaultbranch")
+                        .ok()
+                        .flatten()
+                        .map(|v| v.to_string())
+                })
+                .unwrap_or_else(|| "master".to_owned());
+            let preferred = format!("refs/heads/{default}");
+            let branches = || {
+                refs.iter()
+                    .filter(|r| r.oid == Some(oid) && r.name.starts_with(b"refs/heads/"))
+            };
+            head_target = branches()
+                .find(|r| r.name == preferred.as_bytes())
+                .or_else(|| branches().next())
+                .map(|r| String::from_utf8_lossy(&r.name).into_owned());
+        }
+    }
     let empty = refs.iter().all(|r| r.oid.is_none());
 
     // The branch to check out: --branch, else the remote's HEAD.
     let mut our: Option<Our> = None;
-    if let Some(b) = &opts.branch {
+    if let Some(rev) = &opts.revision {
+        let found = resolve_revision(rev, &refs, hash)
+            .ok_or_else(|| Die::Fatal(msg::remote_revision_not_found(rev, &origin)))?;
+        our = Some(Our::Tag(found.0, found.1));
+    } else if let Some(b) = &opts.branch {
         let head = format!("refs/heads/{b}");
         let tag = format!("refs/tags/{b}");
         let found = |name: &str| {
@@ -669,7 +798,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         our = found(&head)
             .map(|oid| Our::Branch(head.clone(), oid))
             .or_else(|| found(&tag).map(|oid| Our::Tag(tag.clone(), oid)));
-        if our.is_none() && !empty {
+        if our.is_none() {
             return Err(Die::Fatal(msg::remote_branch_not_found(b, &origin)));
         }
     } else if let Some(oid) = remote_head.and_then(|h| h.oid) {
@@ -685,6 +814,13 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         (Some(Our::Branch(r, _) | Our::Tag(r, _)), true) => Some(r.clone()),
         _ => None,
     };
+    // `--single-branch` without a branch to follow (a detached HEAD):
+    // nothing but the commit HEAD is at.
+    // `--revision`: the same, and no refspec at all.
+    let detached_single = opts.revision.is_some()
+        || (opts.single_branch == Some(true)
+            && !opts.mirror
+            && matches!(our, Some(Our::Detached(_))));
     let spec = clone_refspec(
         &origin,
         &CloneOptions {
@@ -697,14 +833,18 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     if opts.mirror || !opts.tags {
         cfg.push((format!("remote.{origin}.tagOpt"), "--no-tags".to_owned()));
     }
-    if let Some(f) = &spec.configured {
+    if let (Some(f), false) = (&spec.configured, detached_single) {
         cfg.push((format!("remote.{origin}.fetch"), f.clone()));
     }
     if opts.mirror {
         cfg.push((format!("remote.{origin}.mirror"), "true".to_owned()));
     }
     for (k, v) in &cfg {
-        config_set(&config_path, k, v)?;
+        if *k == fetch_key {
+            config_add(&config_path, k, v)?;
+        } else {
+            config_set(&config_path, k, v)?;
+        }
     }
 
     let reflog_msg = msg::reflog_clone(&anonymize(&source.url));
@@ -715,9 +855,14 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     if empty {
         session.close().map_err(|e| fatal(&e))?;
         eprintln!("warning: {}", msg::EMPTY_REPOSITORY);
+        if local_mode && !opts.quiet {
+            eprintln!("{}", msg::DONE);
+        }
     } else {
-        let specs = RefspecSet::parse([spec.fetch.as_str()], Direction::Fetch).map_err(|e| fatal(&e))?;
-        let follow_tags = opts.tags && !opts.mirror;
+        let default_spec = (!detached_single).then_some(spec.fetch.as_str());
+        let all_specs = extra_fetch.iter().map(String::as_str).chain(default_spec);
+        let specs = RefspecSet::parse(all_specs, Direction::Fetch).map_err(|e| fatal(&e))?;
+        let follow_tags = opts.tags && !opts.mirror && opts.revision.is_none();
         let mut errors = Vec::new();
         let mut mapped: Vec<(String, ObjectId)> = refmap::map_refspecs(&specs, &refs, hash, &mut errors)
             .map_err(|e| fatal(&e))?
@@ -727,9 +872,17 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         for e in errors {
             eprintln!("error: {e}");
         }
+        // The initial refs are one transaction: a ref named twice fails it.
+        let duplicate = {
+            let mut names = HashSet::new();
+            mapped
+                .iter()
+                .find(|(n, _)| !names.insert(n.as_str()))
+                .map(|(n, _)| n.clone())
+        };
         // Without --single-branch every tag is fetched; with it, the tags
         // pointing into the fetched history follow (below).
-        let all_tags = follow_tags && single_ref.is_none();
+        let all_tags = follow_tags && single_ref.is_none() && !detached_single;
         let is_tag = |r: &RemoteRef| r.name.starts_with(b"refs/tags/") && r.oid.is_some();
         if all_tags {
             for r in refs.iter().filter(|r| is_tag(r)) {
@@ -817,6 +970,12 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             .unwrap_or_default();
         if reject_shallow && !shallow_clone && !shallow.is_empty() {
             return Err(Die::Fatal(msg::SOURCE_SHALLOW.into()));
+        }
+        if local_mode && !opts.quiet {
+            eprintln!("{}", msg::DONE);
+        }
+        if let Some(dup) = duplicate {
+            return Err(Die::Fatal(rgit_refs::messages::duplicate(&dup)));
         }
 
         let received: HashSet<ObjectId> = packs
@@ -906,7 +1065,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 Some(String::from_utf8_lossy(target).into_owned())
             });
             if let (Some(b), false) = (branch, opts.bare) {
-                write_branch_config(&config_path, &origin, &b)?;
+                write_branch_config(&config_path, config, &origin, &b)?;
             }
         }
         Some(Our::Branch(name, oid)) => {
@@ -916,12 +1075,19 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                     RefUpdate::update("HEAD", *oid, None).message(reflog_msg.as_str()),
                     &mut hooks,
                 )?;
-                write_branch_config(&config_path, &origin, name)?;
+                write_branch_config(&config_path, config, &origin, name)?;
             }
             checkout_oid = Some(*oid);
         }
         Some(Our::Tag(_, oid) | Our::Detached(oid)) => {
             let commit_id = objects.peel(oid).unwrap_or(*oid);
+            let kind = objects.kind(&commit_id);
+            if opts.revision.is_some() && kind != Some(ObjectKind::Commit) {
+                let hex = commit_id.to_hex();
+                let kind = kind.map_or("object", ObjectKind::name);
+                eprintln!("error: {}", msg::object_not_a_commit(&hex, kind));
+                return Err(Die::Fatal(msg::could_not_parse(&hex)));
+            }
             if let Some(Our::Tag(name, _)) = &our {
                 if objects.kind(oid) != Some(ObjectKind::Commit) {
                     not_a_commit = Some(msg::not_a_commit(name, &oid.to_hex()));
@@ -937,7 +1103,13 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             detached_name = Some(commit_id.to_hex());
         }
         None => {
-            if head_target.is_some() {
+            // The remote's HEAD names an unborn branch: so does ours.
+            // Without one (v0/v1 do not advertise an unborn HEAD) the
+            // initial branch stays.
+            if let Some(t) = &head_target {
+                set_head_symref(&git_dir, t)?;
+            }
+            if !opts.bare {
                 eprintln!("warning: {}", msg::REMOTE_HEAD_NONEXISTENT);
             }
         }
@@ -947,9 +1119,6 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         p.release();
     }
 
-    if local_mode && !opts.quiet {
-        eprintln!("{}", msg::DONE);
-    }
     if let Some(w) = not_a_commit {
         eprintln!("warning: {w}");
     }
@@ -1059,6 +1228,47 @@ fn initial_checkout(
 }
 
 
+/// `--revision`: a full object name, or a ref the remote advertises
+/// (full name, or the usual `refs/`, `refs/tags/`, `refs/heads/`,
+/// `refs/remotes/` abbreviations). Returns the name and the object.
+fn resolve_revision(
+    rev: &str,
+    refs: &[RemoteRef],
+    hash: rgit_hash::HashKind,
+) -> Option<(String, ObjectId)> {
+    if rev.len() == hash.hex_len() {
+        if let Ok(oid) = ObjectId::from_hex(hash, rev.as_bytes()) {
+            return Some((rev.to_owned(), oid));
+        }
+    }
+    let candidates = [
+        rev.to_owned(),
+        format!("refs/{rev}"),
+        format!("refs/tags/{rev}"),
+        format!("refs/heads/{rev}"),
+        format!("refs/remotes/{rev}"),
+        format!("refs/remotes/{rev}/HEAD"),
+    ];
+    candidates.iter().find_map(|name| {
+        refs.iter()
+            .find(|r| r.name == name.as_bytes())
+            .and_then(|r| r.oid)
+            .map(|oid| (name.clone(), oid))
+    })
+}
+
+/// Reports a failed `init` step (git's messages) and the exit code.
+fn init_failed(e: &repo_init::InitError) -> Die {
+    let mut err = std::io::stderr().lock();
+    for (level, line) in e.report() {
+        let _ = match level {
+            Some(l) => writeln!(err, "{} {line}", l.prefix()),
+            None => writeln!(err, "{line}"),
+        };
+    }
+    Die::Exit(e.exit_code())
+}
+
 /// What `HEAD` of the new repository becomes.
 enum Our {
     /// A branch (full name) and its tip.
@@ -1088,7 +1298,7 @@ fn open_new_repository(
 fn config_write(path: &Path, key: &str, value: &str, add: bool) -> Result<(), Die> {
     use rgit_config::edit::{SetRequest, ValuePattern};
     let pattern = if add {
-        ValuePattern::regex(b"^$").map_err(|e| Die::Fatal(e.to_string()))?
+        ValuePattern::Never
     } else {
         ValuePattern::Any
     };
@@ -1112,10 +1322,29 @@ fn config_add(path: &Path, key: &str, value: &str) -> Result<(), Die> {
     config_write(path, key, value, true)
 }
 
-fn write_branch_config(path: &Path, origin: &str, full: &str) -> Result<(), Die> {
+/// The upstream of the new branch; `branch.autoSetupRebase` `always` or
+/// `remote` adds `branch.<name>.rebase` (config/branch.adoc).
+fn write_branch_config(
+    path: &Path,
+    config: &ConfigSet,
+    origin: &str,
+    full: &str,
+) -> Result<(), Die> {
     let short = full.strip_prefix("refs/heads/").unwrap_or(full);
     config_set(path, &format!("branch.{short}.remote"), origin)?;
-    config_set(path, &format!("branch.{short}.merge"), full)
+    config_set(path, &format!("branch.{short}.merge"), full)?;
+    let rebase = config
+        .string("branch.autosetuprebase")
+        .ok()
+        .flatten()
+        .is_some_and(|v| {
+            let v = v.to_string();
+            v == "always" || v == "remote"
+        });
+    if rebase {
+        config_set(path, &format!("branch.{short}.rebase"), "true")?;
+    }
+    Ok(())
 }
 
 fn set_head_symref(git_dir: &Path, target: &str) -> Result<(), Die> {
@@ -1148,6 +1377,89 @@ fn common_dir_of(git_dir: &Path) -> PathBuf {
     match std::fs::read_to_string(git_dir.join("commondir")) {
         Ok(text) => git_dir.join(text.trim_end()),
         Err(_) => git_dir.to_path_buf(),
+    }
+}
+
+/// The object store copy of a local clone (git-clone.adoc, `--local`):
+/// every file under `objects/` is hard-linked (or copied), symbolic links
+/// are refused, and `info/alternates` is not copied but its entries are
+/// borrowed with absolute paths.
+struct LocalCopy<'a> {
+    hardlink: bool,
+    alternates: &'a mut Vec<PathBuf>,
+}
+
+impl LocalCopy<'_> {
+    fn objects(&mut self, src: &Path, dst: &Path) -> Result<(), Die> {
+        if std::fs::symlink_metadata(src).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(Die::Fatal(msg::objects_is_symlink(&src.to_string_lossy())));
+        }
+        self.dir(src, dst, Path::new(""))
+    }
+
+    fn dir(&mut self, src_root: &Path, dst_root: &Path, rel: &Path) -> Result<(), Die> {
+        let src = src_root.join(rel);
+        let dst = dst_root.join(rel);
+        if !dst.is_dir() && std::fs::create_dir_all(&dst).is_err() {
+            return Err(Die::Fatal(msg::failed_to_create_directory(
+                &dst.to_string_lossy(),
+            )));
+        }
+        let mut entries: Vec<_> = std::fs::read_dir(&src)
+            .map_err(|e| Die::Fatal(e.to_string()))?
+            .flatten()
+            .collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for e in entries {
+            let rel = rel.join(e.file_name());
+            let ty = e.file_type().map_err(|e| Die::Fatal(e.to_string()))?;
+            if ty.is_symlink() {
+                return Err(Die::Fatal(msg::symlink_in_objects(&rel.to_string_lossy())));
+            }
+            if ty.is_dir() {
+                self.dir(src_root, dst_root, &rel)?;
+            } else if rel == Path::new("info/alternates") {
+                self.borrow_alternates(src_root, &e.path());
+            } else {
+                self.file(&e.path(), &dst_root.join(&rel))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn borrow_alternates(&mut self, objects: &Path, file: &Path) {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            return;
+        };
+        for line in text.lines() {
+            let line = line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let path = objects.join(line);
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
+            if !self.alternates.contains(&path) {
+                self.alternates.push(path);
+            }
+        }
+    }
+
+    fn file(&self, src: &Path, dst: &Path) -> Result<(), Die> {
+        let _ = std::fs::remove_file(dst);
+        if self.hardlink && std::fs::hard_link(src, dst).is_ok() {
+            return Ok(());
+        }
+        // A copy gets the default permissions, like a new file.
+        let copied = std::fs::File::open(src).and_then(|mut from| {
+            let mut to = std::fs::File::create(dst)?;
+            std::io::copy(&mut from, &mut to).map(|_| ())
+        });
+        copied.map_err(|e| {
+            Die::Fatal(msg::failed_to_copy(
+                &dst.to_string_lossy(),
+                &crate::global::strerror(&e),
+            ))
+        })
     }
 }
 

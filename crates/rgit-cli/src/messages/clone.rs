@@ -84,9 +84,7 @@ pub const REMOTE_HEAD_NONEXISTENT: &str =
 pub fn reflog_clone(url: &str) -> String {
     format!("clone: from {url}")
 }
-pub fn invalid_config_pair(arg: &str) -> String {
-    format!("error: invalid config pair '{arg}'")
-}
+pub const CONFIG_WRITE_FAILED: &str = "unable to write parameters to config file";
 
 /// The advice printed when the clone ends on a detached HEAD.
 pub fn detached_head_advice(name: &str) -> String {
@@ -148,4 +146,39 @@ pub const SOURCE_SHALLOW: &str = "source repository is shallow, reject to clone.
 /// `--depth`, `--shallow-since`, `--shallow-exclude` with a local path.
 pub fn ignored_in_local_clones(option: &str) -> String {
     format!("{option} is ignored in local clones; use file:// instead.")
+}
+pub fn invalid_refspec(spec: &str) -> String {
+    format!("invalid refspec '{spec}'")
+}
+/// `--revision` names nothing the remote has.
+pub fn remote_revision_not_found(rev: &str, remote: &str) -> String {
+    format!("Remote revision {rev} not found in upstream {remote}")
+}
+/// `--revision` resolves to an object that is not a commit.
+pub fn object_not_a_commit(oid: &str, kind: &str) -> String {
+    format!("object {oid} is a {kind}, not a commit")
+}
+pub fn could_not_parse(oid: &str) -> String {
+    format!("could not parse {oid}")
+}
+pub fn incompatible(a: &str, b: &str) -> String {
+    format!("options '{a}' and '{b}' cannot be used together")
+}
+/// `--separate-git-dir` names a directory that is in use.
+pub fn repository_path_exists(path: &str) -> String {
+    format!("repository path '{path}' already exists and is not an empty directory.")
+}
+/// A local clone found a symbolic link inside the source's object store.
+pub fn symlink_in_objects(rel: &str) -> String {
+    format!("symlink '{rel}' exists, refusing to clone with --local")
+}
+/// A local clone's source object directory is a symbolic link.
+pub fn objects_is_symlink(path: &str) -> String {
+    format!("'{path}' is a symlink, refusing to clone with --local")
+}
+pub fn failed_to_copy(path: &str, reason: &str) -> String {
+    format!("failed to copy file to '{path}': {reason}")
+}
+pub fn failed_to_create_directory(path: &str) -> String {
+    format!("failed to create directory '{path}'")
 }

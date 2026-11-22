@@ -381,7 +381,11 @@ impl Session {
                 )
             });
             let mut progress = Progress::new(io::stderr(), ProgressStyle::detect());
+            let trace = std::cell::RefCell::new(trace_packfile());
             let sink = |data: &[u8]| {
+                if let Some(f) = trace.borrow_mut().as_mut() {
+                    let _ = f.write_all(data);
+                }
                 tx.send(data.to_vec())
                     .map_err(|_| io::Error::other("index-pack stopped"))
             };
@@ -525,6 +529,20 @@ impl ReceivedPack {
 
 /// Index the pack read from `reader` and store it in `repo` like a
 /// fetched pack (`objects/pack`, with a `.keep` file the caller releases).
+/// `GIT_TRACE_PACKFILE` (Documentation/git.adoc): the received pack is
+/// written verbatim to the named file (an absolute path; appended to).
+fn trace_packfile() -> Option<std::fs::File> {
+    let path = std::env::var_os("GIT_TRACE_PACKFILE")?;
+    if !std::path::Path::new(&path).is_absolute() {
+        return None;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
 pub fn store_pack_stream(repo: &LocalRepo, reader: &mut dyn Read) -> Result<ReceivedPack> {
     let pack_dir = repo.objects_dir().join("pack");
     std::fs::create_dir_all(&pack_dir)?;

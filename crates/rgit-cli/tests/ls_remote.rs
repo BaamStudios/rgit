@@ -181,3 +181,56 @@ fn ls_remote_canned_v0_advertisements() {
             .run();
     }
 }
+
+#[test]
+fn ls_remote_sort_same_as_git() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main", "r"])
+        .git(["-C", "r", "commit", "-q", "--allow-empty", "-m", "a"])
+        .git(["-C", "r", "tag", "-a", "v1.10", "-m", "t"])
+        .git(["-C", "r", "tag", "v1.2"])
+        .git(["-C", "r", "tag", "v1.1"])
+        .tick()
+        .git(["-C", "r", "commit", "-q", "--allow-empty", "-m", "b"])
+        .git(["-C", "r", "tag", "v2"])
+        .git(["clone", "-q", "r", "c"])
+        .git(["init", "-q", "-b", "main", "empty"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let keys: &[&[&str]] = &[
+        &["--sort=refname"],
+        &["--sort=-refname"],
+        &["--sort=version:refname", "--tags"],
+        &["--sort=-v:refname", "--tags"],
+        &["--sort=objectname"],
+        &["--sort=-refname", "--sort=objecttype"],
+        &["--sort=committerdate", "--symref"],
+        &["--sort=bogus"],
+    ];
+    for k in keys {
+        let mut argv = vec!["ls-remote"];
+        argv.extend_from_slice(k);
+        argv.push("../r");
+        fx.compare(&argv).in_dir("c").checks(Check::OUTPUT).run();
+        // Without the objects only `refname` and `objectname` work (which
+        // missing object git names depends on its sort order).
+        let comparison = fx.compare(&argv).in_dir("empty");
+        if k.iter().any(|k| k.contains("type") || k.contains("date")) {
+            comparison.only_exit_code().run();
+        } else {
+            comparison.checks(Check::OUTPUT).run();
+        }
+    }
+    // Outside a repository only `refname` keys work.
+    for k in [
+        "--sort=-version:refname",
+        "--sort=authordate",
+        "--sort=-v:objectname",
+    ] {
+        fx.compare(["ls-remote", k, "r"])
+            .checks(Check::OUTPUT)
+            .run();
+    }
+}
