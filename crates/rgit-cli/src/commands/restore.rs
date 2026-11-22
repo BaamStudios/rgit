@@ -598,14 +598,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string(None, "recurse-submodules", &recurse, "checkout", smsg::HELP_RECURSE)
                 .optional(Some("")),
             Opt::bool(None, "progress", &progress, smsg::HELP_PROGRESS),
-            Opt::flag('m', "merge", &merge, smsg::HELP_MERGE),
-            // `--conflict` implies `--merge` (a later `--no-merge` undoes it;
-            // `--no-conflict` only forgets the style).
+            // `--conflict` implies `--merge`; `--no-merge` undoes both,
+            // `--no-conflict` only the implied merge (t7201 41-44).
+            Opt::callback('m', "merge", None, smsg::HELP_MERGE, |_, unset| {
+                merge.set(!unset);
+                if unset {
+                    *conflict.borrow_mut() = None;
+                }
+                Ok(())
+            })
+            .noarg(),
             Opt::callback(None, "conflict", Some("style"), smsg::HELP_CONFLICT, |v, unset| {
                 *conflict.borrow_mut() = (!unset).then(|| v.unwrap_or_default().to_owned());
-                if !unset {
-                    merge.set(true);
-                }
                 Ok(())
             }),
             Opt::set_int('2', "ours", &stage, smsg::HELP_OURS, 2).noneg(),
@@ -627,7 +631,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
     check_conflict_style(conflict.borrow().as_deref())?;
     let from_file = from_file.borrow().clone();
-    let merge = merge.get();
+    let merge = merge.get() || conflict.borrow().is_some();
     let stage = Stage::new(stage.get() as u8).filter(|s| s.is_conflict());
 
     if from_file.is_some() && !args.is_empty() {

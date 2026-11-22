@@ -158,14 +158,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string(None, "recurse-submodules", &recurse, "checkout", msg::HELP_RECURSE)
                 .optional(Some("")),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
-            Opt::flag('m', "merge", &merge, msg::HELP_MERGE),
-            // `--conflict` implies `--merge` (a later `--no-merge` undoes it;
-            // `--no-conflict` only forgets the style).
+            // `--conflict` implies `--merge`; `--no-merge` undoes both,
+            // `--no-conflict` only the implied merge (t7201 41-44).
+            Opt::callback('m', "merge", None, msg::HELP_MERGE, |_, unset| {
+                merge.set(!unset);
+                if unset {
+                    *conflict.borrow_mut() = None;
+                }
+                Ok(())
+            })
+            .noarg(),
             Opt::callback(None, "conflict", Some("style"), msg::HELP_CONFLICT, |v, unset| {
                 *conflict.borrow_mut() = (!unset).then(|| v.unwrap_or_default().to_owned());
-                if !unset {
-                    merge.set(true);
-                }
                 Ok(())
             }),
             Opt::flag('d', "detach", &detach, msg::HELP_DETACH),
@@ -231,14 +235,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let modes = Modes {
         stage: Stage::new(stage.get() as u8).filter(|s| s.is_conflict()),
         overlay: (overlay.get() >= 0).then_some(overlay.get() == 1),
-        merge: merge.get(),
+        merge: merge.get() || conflict.borrow().is_some(),
         conflict: conflict.borrow().clone(),
         force,
         quiet,
         ignore_skip_worktree: skip_worktree_bits.get(),
         globals: repository::pathspec_globals(ctx),
     };
-    let implied = track.is_given() && new_b.is_none() && new_bb.is_none() && orphan_name.is_none();
+    let implied =track.is_given() && new_b.is_none() && new_bb.is_none() && orphan_name.is_none();
     let creating = implied || new_b.is_some() || new_bb.is_some() || orphan_name.is_some();
     if detach.get() && creating {
         return Err(Die::Fatal(msg::DETACH_WITH_CREATE.to_owned()));
