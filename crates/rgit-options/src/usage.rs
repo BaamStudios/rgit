@@ -188,6 +188,11 @@ pub(crate) fn usage_text(usage: &[&str], opts: &[Opt<'_>], all: bool, after_pars
 fn push_entry(out: &mut String, label: &str, help: &str) {
     let width = label.chars().count();
     out.push_str(label);
+    if help.is_empty() {
+        // No help text: no padding either (git's `--or`, `(` in grep).
+        out.push('\n');
+        return;
+    }
     if width < OPTS_WIDTH {
         out.extend(std::iter::repeat_n(' ', OPTS_WIDTH - width));
     } else {

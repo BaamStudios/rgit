@@ -227,6 +227,16 @@ pub fn translate(pattern: &str, extended: bool) -> Result<String, &'static str> 
                 out.push(c);
                 at_start = true;
             }
+            // `.` matches neither a newline nor a NUL byte (`git grep .fi`
+            // does not match `\0file`).
+            '.' => out.push_str(r"[^\n\x00]"),
+            // `{,n}` is `{0,n}` (GNU extension).
+            '{' if extended
+                && chars.get(i + 1) == Some(&',')
+                && chars.get(i + 2).is_some_and(char::is_ascii_digit) =>
+            {
+                out.push_str("{0");
+            }
             '{' if extended && !chars.get(i + 1).is_some_and(char::is_ascii_digit) => {
                 push_literal(&mut out, '{');
             }
@@ -323,6 +333,7 @@ mod tests {
         assert_eq!(t(r"\<w\>", false), r"\bw\b");
         assert_eq!(t("[]a-z[:digit:]]", false), r"[\]a-z[:digit:]]");
         assert_eq!(t("(a|b)+x{2}y{", true), r"(a|b)+x{2}y\{");
+        assert_eq!(t("z{,2}", true), "z{0,2}");
         assert_eq!(translate("[a", false), Err(msg::REGEX_INVALID));
     }
 
