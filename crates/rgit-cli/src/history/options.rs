@@ -118,6 +118,18 @@ pub struct Options {
     pub color: Option<ColorBool>,
     /// `--in-commit-order` (takes effect with `--objects`).
     in_commit_order: bool,
+    /// `--graph`.
+    pub graph: bool,
+    /// `--[no-]graph-indent`; `None`: `log.graphIndent`.
+    pub graph_indent: Option<bool>,
+    /// `--graph-lane-limit=<n>` (0: no limit).
+    pub graph_lane_limit: usize,
+    /// An ordering option was given (`--graph` implies `--topo-order`).
+    order_given: bool,
+    /// `--max-count-oldest`: the count limits the last commits.
+    pub max_count_oldest: bool,
+    /// `--max-count` was given (it conflicts with `--max-count-oldest`).
+    max_count_given: bool,
     /// `--bisect`: add `refs/bisect/bad` and `^refs/bisect/good-*` (and,
     /// for rev-list, show only the midpoint).
     pub bisect: bool,
@@ -233,6 +245,12 @@ impl Options {
             mailmap: None,
             color: None,
             in_commit_order: false,
+            graph: false,
+            graph_indent: None,
+            graph_lane_limit: 0,
+            order_given: false,
+            max_count_oldest: false,
+            max_count_given: false,
             bisect: false,
             bisect_vars: false,
             bisect_all: false,
@@ -366,9 +384,22 @@ impl Options {
                 Pseudo::No => {}
             }
             match a {
-                "--topo-order" => o.walk.order = Order::Topo,
-                "--date-order" => o.walk.order = Order::Date,
-                "--author-date-order" => o.walk.order = Order::AuthorDate,
+                "--topo-order" => {
+                    o.walk.order = Order::Topo;
+                    o.order_given = true;
+                }
+                "--date-order" => {
+                    o.walk.order = Order::Date;
+                    o.order_given = true;
+                }
+                "--author-date-order" => {
+                    o.walk.order = Order::AuthorDate;
+                    o.order_given = true;
+                }
+                "--graph" => o.graph = true,
+                "--no-graph" => o.graph = false,
+                "--graph-indent" => o.graph_indent = Some(true),
+                "--no-graph-indent" => o.graph_indent = Some(false),
                 "--reverse" => o.walk.reverse = true,
                 "--first-parent" => o.walk.first_parent = true,
                 "--parents" => o.parents = true,
@@ -491,6 +522,7 @@ impl Options {
                 "--no-mailmap" | "--no-use-mailmap" => o.mailmap = Some(false),
                 "-n" | "--max-count" => {
                     o.walk.max_count = Some(parse_count(&value(&mut i, a)?)?);
+                    o.max_count_given |= a == "--max-count";
                 }
                 "--skip" => o.walk.skip = parse_count(&value(&mut i, a)?)?,
                 _ if crate::color::parse_arg(a).is_some() => {
@@ -528,14 +560,23 @@ impl Options {
                     } else if let Some(v) = a.strip_prefix("--ancestry-path=") {
                         o.walk.ancestry_path = true;
                         o.ancestry.push(v.to_string());
+                    } else if let Some(v) = a.strip_prefix("--max-count-oldest=") {
+                        o.walk.max_count = Some(parse_count(v)?);
+                        o.max_count_oldest = true;
                     } else if let Some(v) = a.strip_prefix("--max-count=") {
                         o.walk.max_count = Some(parse_count(v)?);
+                        o.max_count_given = true;
                     } else if let Some(v) = a.strip_prefix("--skip=") {
                         o.walk.skip = parse_count(v)?;
                     } else if let Some(v) = a.strip_prefix("-n") {
                         o.walk.max_count = Some(parse_count(v)?);
                     } else if a.len() > 1 && a[1..].bytes().all(|b| b.is_ascii_digit()) {
                         o.walk.max_count = Some(parse_count(&a[1..])?);
+                    } else if let Some(v) = a.strip_prefix("--graph-lane-limit=") {
+                        o.graph_lane_limit = v
+                            .parse::<i64>()
+                            .map_err(|_| Die::Fatal(msg::not_an_integer(v)))?
+                            .max(0) as usize;
                     } else if let Some(v) = a.strip_prefix("--abbrev=") {
                         let n = parse_count(v)?;
                         o.abbrev = Abbrev::Digits(n.max(MIN_ABBREV));
@@ -594,6 +635,37 @@ impl Options {
             return Err(Die::Fatal(msg::MARKED_COUNT_OBJECTS.to_string()));
         }
         self.walk.children = self.children;
+        if self.max_count_oldest {
+            if self.max_count_given {
+                return Err(Die::Fatal(msg::cannot_be_used_together(
+                    "--max-count",
+                    "--max-count-oldest",
+                )));
+            }
+            if self.walk.skip > 0 {
+                return Err(Die::Fatal(msg::cannot_be_used_together(
+                    "--skip",
+                    "--max-count-oldest",
+                )));
+            }
+        }
+        if self.graph {
+            if self.walk.reverse {
+                return Err(Die::Fatal(msg::cannot_be_used_together(
+                    "--graph",
+                    "--reverse",
+                )));
+            }
+            if self.walk.no_walk == Some(NoWalk::Sorted) {
+                return Err(Die::Fatal(msg::cannot_be_used_together(
+                    "--no-walk",
+                    "--graph",
+                )));
+            }
+            if !self.order_given {
+                self.walk.order = Order::Topo;
+            }
+        }
         Ok(())
     }
 

@@ -7,6 +7,7 @@
 //! `rgit_revwalk::walk`; this module wires it to the repository and prints.
 
 mod decorate;
+pub mod graph;
 pub mod layout;
 pub mod mailmap;
 mod options;
@@ -516,6 +517,16 @@ struct Printer<'r, 'a> {
     first: bool,
     /// `--bisect-all`: the distance shown with the decorations.
     dist: Option<usize>,
+    /// `--graph`.
+    graph: Option<graph::Graph>,
+    /// The last entry ended with a newline (then the separator before the
+    /// next one gets a line of the graph).
+    ended_line: bool,
+    /// The commit shown after the current one (for the graph).
+    next: Option<graph::Next>,
+    /// `--boundary`: parents of the commits shown so far (boundary
+    /// commits are drawn with those of their parents).
+    child_shown: std::collections::HashSet<ObjectId>,
 }
 
 /// The `reference` format.
@@ -618,7 +629,20 @@ impl Printer<'_, '_> {
         let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
         let id = s.id;
         let opts = self.opts;
-        let mark = self.mark(s);
+        let was_first = self.first;
+        let start = self.out.len();
+        if self.graph.is_some() {
+            let parents = self.graph_parents(walk, &id);
+            let mark = self.graph_mark(s);
+            if let Some(g) = &mut self.graph {
+                g.update(id, parents, mark.as_bytes(), self.next);
+            }
+        }
+        let mark = if self.graph.is_some() {
+            ""
+        } else {
+            self.mark(s)
+        };
         let mut line = Vec::new();
         if opts.timestamp {
             line.extend_from_slice(format!("{} ", walk.time(&id).unwrap_or(0)).as_bytes());
@@ -694,13 +718,149 @@ impl Printer<'_, '_> {
                         self.out.push(b'\n');
                     }
                 } else {
-                    pretty::write_entry(&mut self.out, &self.style, &entry, self.first);
+                    let first = self.first || self.graph.is_some();
+                    pretty::write_entry(&mut self.out, &self.style, &entry, first);
                 }
                 self.first = false;
             }
         }
+        if self.graph.is_some() {
+            let mut text = self.out.split_off(start);
+            // Entries are separated (multi-line formats, `format:`) or
+            // terminated (one-line formats, `tformat:`); the terminator is
+            // written after the graph.
+            let (separated, terminated) = match &self.style.pretty {
+                _ if self.cmd == Command::RevList || opts.pretty.is_none() => {
+                    text.pop();
+                    (false, true)
+                }
+                Pretty::Oneline => {
+                    text.pop();
+                    (false, true)
+                }
+                Pretty::Reference => (false, true),
+                Pretty::User { terminator, .. } => (!terminator, *terminator),
+                _ => (true, false),
+            };
+            self.emit_graph(&text, separated && !was_first, terminated);
+        }
         self.flush_if_full();
         Ok(())
+    }
+
+    /// The parents of `id` that the graph draws: those that are shown
+    /// (all of them with `--boundary`, only the first with
+    /// `--first-parent`).
+    fn graph_parents<S: CommitSource<Error = ObjectId>>(
+        &self,
+        walk: &Walk<S>,
+        id: &ObjectId,
+    ) -> Vec<ObjectId> {
+        let all = match walk.parents(id) {
+            Some(p) => p.to_vec(),
+            None => Vec::new(),
+        };
+        // With `--boundary` the excluded parents of a shown commit are
+        // shown as boundary commits. The parents of an excluded (boundary)
+        // commit are excluded too; they are drawn when they are shown as
+        // boundary commits.
+        let excluded = walk.is_uninteresting(id);
+        let boundary = walk.options().boundary;
+        let shown = |p: &ObjectId| {
+            if excluded {
+                boundary && self.child_shown.contains(p)
+            } else {
+                boundary || !walk.is_uninteresting(p)
+            }
+        };
+        let mut out: Vec<ObjectId> = Vec::new();
+        for p in all {
+            if shown(&p) && !out.contains(&p) && self.graph_shows(&p) {
+                out.push(p);
+            }
+            if self.opts.walk.first_parent {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Commit `id` passes the filters of the walk (`--grep`, `--author`,
+    /// `--merges`, ...), so it is shown when it is reached.
+    fn graph_shows(&self, id: &ObjectId) -> bool {
+        let w = &self.opts.walk;
+        let filtered =
+            !self.opts.grep.is_empty() || w.min_parents.is_some() || w.max_parents.is_some();
+        if !filtered {
+            return true;
+        }
+        let Some((commit, raw)) = self.repo.read_commit(id) else {
+            return true;
+        };
+        let n = self.repo.parents(id, &commit).len();
+        if w.min_parents.is_some_and(|m| n < m) || w.max_parents.is_some_and(|m| n > m) {
+            return false;
+        }
+        if self.opts.grep.is_empty() {
+            return true;
+        }
+        CommitGrep::new(&self.opts.grep).is_ok_and(|g| g.matches(&raw))
+    }
+
+    /// The character of a commit in the graph.
+    fn graph_mark(&self, s: &Shown) -> &'static str {
+        match self.mark(s) {
+            "-" => "o",
+            "" => "*",
+            m => m,
+        }
+    }
+
+    /// Write the text of one commit with the graph to its left: the lines
+    /// of the drawing up to the commit's line, then every text line after
+    /// the next line of the drawing, then the rest of the drawing.
+    /// `separated`: entries are separated (not terminated), and this is
+    /// not the first.
+    fn emit_graph(&mut self, text: &[u8], separated: bool, terminated: bool) {
+        let Some(g) = self.graph.as_mut() else {
+            return;
+        };
+        let end = if self.opts.zero { 0 } else { b'\n' };
+        if separated {
+            if self.ended_line && end == b'\n' {
+                self.out.extend_from_slice(&g.padding_line());
+            }
+            self.out.push(end);
+        }
+        let (before, commit_line) = g.lines_to_commit();
+        for l in before {
+            self.out.extend_from_slice(&l);
+            self.out.push(b'\n');
+        }
+        self.out.extend_from_slice(&commit_line);
+        for (i, seg) in text.split_inclusive(|&b| b == b'\n').enumerate() {
+            if i > 0 {
+                self.out.extend_from_slice(&g.next_line());
+            }
+            self.out.extend_from_slice(seg);
+        }
+        let ended = text.is_empty() || text.ends_with(b"\n");
+        while !g.finished() {
+            if ended {
+                self.out.extend_from_slice(&g.next_line());
+                self.out.push(b'\n');
+            } else {
+                self.out.push(b'\n');
+                self.out.extend_from_slice(&g.next_line());
+            }
+        }
+        if terminated {
+            if ended && end == b'\n' {
+                self.out.extend_from_slice(&g.padding_line());
+            }
+            self.out.push(end);
+        }
+        self.ended_line = ended;
     }
 
     /// `--bisect-all`: the decorations of `id` followed by its distance,
@@ -817,12 +977,12 @@ impl Printer<'_, '_> {
                     return Ok(());
                 }
                 let end = if self.opts.zero { 0 } else { b'\n' };
-                if !terminator && !self.first {
+                if !terminator && !self.first && self.graph.is_none() {
                     self.out.push(end);
                 }
                 self.out.extend_from_slice(&prefix);
                 self.out.extend_from_slice(&expanded);
-                if terminator {
+                if terminator && self.graph.is_none() {
                     self.out.push(end);
                 }
             }
@@ -901,6 +1061,33 @@ fn want_decorate(config: &ConfigSet, opt: Option<Decorate>) -> bool {
     }
 }
 
+/// The lane colours of `--graph` (`log.graphColors`, comma-separated
+/// colours; invalid ones are skipped with a warning).
+fn graph_colors(config: &ConfigSet) -> Vec<String> {
+    let Ok(Some(value)) = config.string("log.graphColors") else {
+        return graph::default_colors();
+    };
+    let value = value.to_string();
+    let mut out = Vec::new();
+    for part in value.split(',') {
+        let part = part.trim();
+        match rgit_config::color::parse_color(part) {
+            Some(c) => out.push(c),
+            None => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "warning: {}",
+                    msg::invalid_graph_color(part)
+                );
+            }
+        }
+    }
+    if out.is_empty() {
+        return graph::default_colors();
+    }
+    out
+}
+
 /// The settings of a user format.
 fn user_settings(
     repo: &Repo<'_>,
@@ -976,6 +1163,16 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         // The whole selection counts, whatever `-n` or `--reverse` say.
         walk_opts.max_count = None;
         walk_opts.skip = 0;
+        walk_opts.reverse = false;
+    }
+    // `--max-count-oldest`: the last commits of the whole walk.
+    let oldest = opts
+        .max_count_oldest
+        .then_some(walk_opts.max_count)
+        .flatten();
+    let reverse = walk_opts.reverse;
+    if opts.max_count_oldest {
+        walk_opts.max_count = None;
         walk_opts.reverse = false;
     }
     let cherry_repo = if walk_opts.cherry_pick || walk_opts.cherry_mark {
@@ -1069,7 +1266,28 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         out: Vec::with_capacity(1 << 16),
         first: true,
         dist: None,
+        graph: None,
+        ended_line: true,
+        child_shown: std::collections::HashSet::new(),
+        next: None,
     };
+    if opts.graph {
+        let palette = p
+            .style
+            .commit_color
+            .as_ref()
+            .map(|_| graph_colors(repo.config));
+        let mut g = graph::Graph::new(palette);
+        let indent = opts.graph_indent.unwrap_or_else(|| {
+            repo.config
+                .bool("log.graphIndent")
+                .ok()
+                .flatten()
+                .unwrap_or(true)
+        });
+        g.set_indent(indent);
+        p.graph = Some(g);
+    }
     if is_user && cmd == Command::Log {
         let mut map = HashMap::new();
         for ((id, _, _), name) in resolved.commits.iter().zip(&resolved.sources) {
@@ -1083,8 +1301,40 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     if bisecting {
         return run_bisect(&mut p, &mut walk);
     }
+    let mut kept = match oldest {
+        Some(n) => Some(keep_oldest(&mut walk, n, reverse)?),
+        None => None,
+    };
+    if p.graph.is_some() && !opts.count {
+        // The graph looks two commits ahead.
+        let mut queue = std::collections::VecDeque::new();
+        let mut done = false;
+        loop {
+            while !done && queue.len() < 3 {
+                match next_shown(&mut walk, &mut kept)? {
+                    Some(s) => queue.push_back(s),
+                    None => done = true,
+                }
+            }
+            let Some(s) = queue.pop_front() else {
+                break;
+            };
+            if opts.walk.boundary && !s.boundary {
+                let parents = walk.parents(&s.id).map(<[ObjectId]>::to_vec);
+                p.child_shown.extend(parents.unwrap_or_default());
+            }
+            p.next = queue.front().map(|n: &Shown| graph::Next {
+                id: n.id,
+                root: !n.boundary && p.graph_parents(&walk, &n.id).is_empty(),
+                last: done && queue.len() == 1,
+            });
+            p.commit(&walk, &s)?;
+        }
+        p.flush();
+        return Ok(0);
+    }
     let (mut left, mut right, mut same) = (0usize, 0usize, 0usize);
-    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+    while let Some(s) = next_shown(&mut walk, &mut kept)? {
         if opts.count {
             if opts.walk.cherry_mark && s.same {
                 same += 1;
@@ -1108,6 +1358,57 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     }
     p.flush();
     Ok(0)
+}
+
+/// The next commit of the walk, or of the list `kept` when there is one.
+fn next_shown(
+    walk: &mut Walk<Commits<'_, '_>>,
+    kept: &mut Option<std::collections::VecDeque<Shown>>,
+) -> Result<Option<Shown>, Die> {
+    match kept {
+        Some(list) => Ok(list.pop_front()),
+        None => walk
+            .next_shown()
+            .map_err(|id| Die::Fatal(msg::bad_object(&id.to_hex()))),
+    }
+}
+
+/// `--max-count-oldest=<n>`: the last `n` commits of the walk (boundary
+/// commits do not count), turned around for `--reverse`.
+fn keep_oldest(
+    walk: &mut Walk<Commits<'_, '_>>,
+    n: usize,
+    reverse: bool,
+) -> Result<std::collections::VecDeque<Shown>, Die> {
+    let mut all = Vec::new();
+    while let Some(s) = walk
+        .next_shown()
+        .map_err(|id| Die::Fatal(msg::bad_object(&id.to_hex())))?
+    {
+        all.push(s);
+    }
+    let shown = all.iter().filter(|s| !s.boundary).count();
+    let mut skip = shown.saturating_sub(n);
+    let mut out: std::collections::VecDeque<Shown> = all
+        .into_iter()
+        .filter(|s| {
+            if s.boundary || skip == 0 {
+                return true;
+            }
+            skip -= 1;
+            false
+        })
+        .collect();
+    // Boundary commits only for the commits that are left.
+    let mut parents = std::collections::HashSet::new();
+    for s in out.iter().filter(|s| !s.boundary) {
+        parents.extend(walk.parents(&s.id).unwrap_or_default().iter().copied());
+    }
+    out.retain(|s| !s.boundary || parents.contains(&s.id));
+    if reverse {
+        out.make_contiguous().reverse();
+    }
+    Ok(out)
 }
 
 /// `--objects`: the commits, then the tags, trees and blobs they need.
