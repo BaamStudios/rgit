@@ -1571,6 +1571,49 @@ impl<'c> Rebase<'c> {
     }
 }
 
+/// Resets the index and work tree from `old` to the tree `new`, throwing
+/// away local changes to tracked files but refusing to overwrite
+/// untracked ones (`--abort`, `--skip`); `fatal` is the message then.
+fn reset_protecting_untracked(
+    repo: &Repo,
+    old: ObjectId,
+    new: ObjectId,
+    fatal: String,
+) -> Result<(), Die> {
+    let (index, _) = repo.read_index()?;
+    let tracked: HashSet<&[u8]> = index.entries().iter().map(|e| e.path()).collect();
+    let mut flat = crate::tree_changes::Flat::new();
+    crate::tree_changes::flatten_tree(repo, &new, &mut flat)?;
+    let work_tree = repo.work_tree()?;
+    let mut in_the_way = Vec::new();
+    for path in flat.keys() {
+        if tracked.contains(path.as_slice()) {
+            continue;
+        }
+        let p = work_tree.join(lossy(path));
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| !m.is_dir()) {
+            in_the_way.push(path.clone());
+        }
+    }
+    drop(index);
+    if !in_the_way.is_empty() {
+        let mut text = format!("error: {}\n", msg::UNTRACKED_OVERWRITTEN_BY_RESET);
+        for p in &in_the_way {
+            let mut q = Vec::new();
+            crate::quote::write_quoted(&mut q, p, repo.quote_path());
+            text.push('\t');
+            text.push_str(&lossy(&q));
+            text.push('\n');
+        }
+        text.push_str(msg::MOVE_OR_REMOVE_BEFORE_RESET);
+        eprintln!("{text}");
+        eprintln!("{}", rgit_unpack::messages::ABORTING);
+        return Err(Die::Fatal(fatal));
+    }
+    crate::switch_branch::move_index(repo, old, new, true)?;
+    Ok(())
+}
+
 /// `git rebase --continue`.
 pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
     let mut rb = Rebase::load(ctx)?;
@@ -1653,7 +1696,7 @@ pub fn skip(ctx: &mut Context) -> CmdResult {
     let mut repo = rb.repo()?;
     if let Some(h) = sequencer::head_commit(&mut repo) {
         let tree = sequencer::tree_of(&repo, &h).map_err(fail_die)?;
-        crate::switch_branch::move_index(&repo, tree, tree, true)?;
+        reset_protecting_untracked(&repo, tree, tree, msg::COULD_NOT_DISCARD.to_owned())?;
     }
     drop(repo);
     rb.clear_stop()?;
@@ -1672,7 +1715,12 @@ pub fn abort(ctx: &mut Context) -> CmdResult {
     };
     let orig = rb.state.orig_head;
     let orig_tree = sequencer::tree_of(&repo, &orig).map_err(fail_die)?;
-    crate::switch_branch::move_index(&repo, head_tree, orig_tree, true)?;
+    reset_protecting_untracked(
+        &repo,
+        head_tree,
+        orig_tree,
+        msg::could_not_move_back(&orig.to_hex()),
+    )?;
     let head_name = rb.state.head_name.clone();
     if head_name.starts_with("refs/") {
         let what = msg::reflog(&rb.action, "abort", &msg::returning_to(&head_name));

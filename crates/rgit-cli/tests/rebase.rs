@@ -258,6 +258,8 @@ fn continue_skip_abort_quit() {
             "git rebase conf; git rebase --skip",
             "git rebase conf; git rebase --abort",
             "git rebase conf; git rebase --quit",
+            "git rebase conf; git rm -q a; echo precious >a; git rebase --abort",
+            "git rebase conf; git rm -q a; echo precious >a; git rebase --skip",
             "git rebase --signoff conf; echo r >b; git add b; git rebase --continue",
             "git rebase --empty=stop part; git rebase --continue",
             "git rebase --empty=stop part; git rebase --skip",

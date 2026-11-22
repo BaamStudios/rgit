@@ -121,6 +121,16 @@ pub fn need_one_merge_base_with_branch(name: &str) -> String {
 
 pub const COULD_NOT_DETACH: &str = "could not detach HEAD";
 
+pub const UNTRACKED_OVERWRITTEN_BY_RESET: &str =
+    "The following untracked working tree files would be overwritten by reset:";
+pub const MOVE_OR_REMOVE_BEFORE_RESET: &str = "Please move or remove them before you reset.";
+
+pub fn could_not_move_back(to: &str) -> String {
+    format!("could not move back to {to}")
+}
+
+pub const COULD_NOT_DISCARD: &str = "could not discard worktree changes";
+
 pub const HOOK_REFUSED: &str = "The pre-rebase hook refused to rebase.";
 
 pub fn up_to_date(branch: Option<&str>, forced: bool) -> String {
