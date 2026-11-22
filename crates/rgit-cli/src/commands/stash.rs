@@ -604,13 +604,9 @@ fn list(ctx: &mut Context, args: &[String]) -> CmdResult {
             patch = true;
         } else if a == "--" {
             break;
-        } else if matches!(
-            a.as_str(),
-            "--cc" | "-c" | "-m" | "--stat" | "--numstat" | "--name-only" | "--name-status"
-        ) || a.starts_with("--diff-merges")
-        {
-            return Err(Die::Fatal(msg::not_supported(&format!("list {a}"))));
         } else if a.starts_with('-') {
+            // Diff options (`--stat`, `--cc`, ...) go to `log` with the
+            // rest.
             extra.push(a.clone());
         } else {
             return Err(Die::Fatal(msg::unrecognized_argument(a)));
@@ -635,12 +631,15 @@ fn list(ctx: &mut Context, args: &[String]) -> CmdResult {
         } else {
             // `log` expands the rest of the format; the reflog parts are
             // literal text by now.
-            let mut fmt = b"--format=".to_vec();
+            let mut fmt = b"--format=tformat:".to_vec();
             fmt.extend_from_slice(&line);
             let mut argv: Vec<std::ffi::OsString> = vec![
                 "log".into(),
                 "--no-walk".into(),
                 "--first-parent".into(),
+                // Diffs against the first parent, like git's `log -g
+                // --first-parent -m`.
+                "--diff-merges=first-parent".into(),
                 os_from_bytes(fmt),
             ];
             argv.extend(extra.iter().map(Into::into));
