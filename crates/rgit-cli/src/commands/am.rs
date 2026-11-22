@@ -957,7 +957,35 @@ impl<'c> Am<'c> {
 
     /// Resets index and work tree to `HEAD` (to the empty tree on an
     /// unborn branch).
+    /// Refuses to reset when a path of the index is now a directory with
+    /// files in it (they would be lost). Prints the error; false then.
+    fn safe_to_reset(&self) -> Result<bool, Die> {
+        let repo = self.repo()?;
+        let (index, _) = repo.read_index()?;
+        let mut ok = true;
+        let mut last: Option<&[u8]> = None;
+        for e in index.entries() {
+            if last == Some(e.path()) {
+                continue;
+            }
+            last = Some(e.path());
+            let p = self.work_tree.join(lossy(e.path()));
+            let is_dir = std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir());
+            if is_dir && std::fs::read_dir(&p).is_ok_and(|mut d| d.next().is_some()) {
+                eprintln!(
+                    "error: {}",
+                    rgit_unpack::messages::not_uptodate_dir(&lossy(e.path()))
+                );
+                ok = false;
+            }
+        }
+        Ok(ok)
+    }
+
     fn reset_to_head(&mut self) -> Result<i32, Die> {
+        if !self.safe_to_reset()? {
+            return Ok(128);
+        }
         match self.head()? {
             Some(h) => {
                 // `reset` records ORIG_HEAD, which `--abort` still needs.
@@ -1052,6 +1080,9 @@ impl<'c> Am<'c> {
             .ok()
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty());
+        if !self.safe_to_reset()? {
+            return Ok(128);
+        }
         match orig {
             Some(o) => {
                 let code = seq::reset_merge(self.ctx, &o)?;
