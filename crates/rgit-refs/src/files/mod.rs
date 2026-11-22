@@ -2,8 +2,13 @@
 //! The files backend: loose reference files below `$GIT_DIR` plus
 //! `$GIT_DIR/packed-refs` (`gitrepository-layout`).
 //!
-//! Per-worktree references (#104) and case-insensitive file systems (#183)
-//! are not handled yet: `$GIT_DIR` is also the common directory.
+//! In a linked worktree ([`FilesStore::with_worktree`]) the per-worktree
+//! references (`HEAD`, other root refs, `refs/bisect/`, `refs/worktree/`,
+//! `refs/rewritten/`) live in the worktree's own git directory and all
+//! others in the common directory; `main-worktree/<ref>` and
+//! `worktrees/<id>/<ref>` name another worktree's per-worktree references
+//! (`git-worktree(1)`, REFS). Case-insensitive file systems (#183) are not
+//! handled yet.
 
 mod pack;
 mod transaction;
@@ -59,6 +64,8 @@ impl Default for FilesOptions {
 #[derive(Clone, Debug)]
 pub struct FilesStore {
     git_dir: PathBuf,
+    /// The git directory of a linked worktree (per-worktree references).
+    worktree_dir: Option<PathBuf>,
     kind: HashKind,
     options: FilesOptions,
 }
@@ -86,14 +93,59 @@ impl FilesStore {
     ) -> Self {
         Self {
             git_dir: git_dir.into(),
+            worktree_dir: None,
             kind,
             options,
         }
     }
 
-    /// The repository directory.
+    /// Per-worktree references of a linked worktree live in `dir` (its git
+    /// directory); the store's own directory is the common directory. A
+    /// `dir` equal to the common directory changes nothing.
+    pub fn with_worktree(mut self, dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        let same = dir == self.git_dir
+            || matches!(
+                (dir.canonicalize(), self.git_dir.canonicalize()),
+                (Ok(a), Ok(b)) if a == b
+            );
+        self.worktree_dir = (!same).then_some(dir);
+        self
+    }
+
+    /// The repository (common) directory.
     pub fn git_dir(&self) -> &Path {
         &self.git_dir
+    }
+
+    /// Whether the store belongs to a linked worktree.
+    fn linked(&self) -> bool {
+        self.worktree_dir.is_some()
+    }
+
+    /// The directory holding the loose file of `name` and the name relative
+    /// to it.
+    pub(crate) fn locate<'n>(&self, name: &'n str) -> (PathBuf, &'n str) {
+        if let Some(rest) = name.strip_prefix("main-worktree/") {
+            return (self.git_dir.clone(), rest);
+        }
+        if let Some(rest) = name.strip_prefix("worktrees/") {
+            if let Some((id, r)) = rest.split_once('/') {
+                return (self.git_dir.join("worktrees").join(id), r);
+            }
+        }
+        match &self.worktree_dir {
+            Some(wt) if crate::name::is_per_worktree(name) => (wt.clone(), name),
+            _ => (self.git_dir.clone(), name),
+        }
+    }
+
+    /// Names whose loose files are in another directory than the common
+    /// one, which `packed-refs` does not hold for them.
+    fn outside_common(&self, name: &str) -> bool {
+        name.starts_with("main-worktree/")
+            || name.starts_with("worktrees/")
+            || (self.linked() && crate::name::is_per_worktree(name))
     }
 
     /// The options.
@@ -103,7 +155,8 @@ impl FilesStore {
 
     /// Path of the loose file for `name`.
     pub fn ref_path(&self, name: &str) -> PathBuf {
-        self.git_dir.join(name)
+        let (dir, rel) = self.locate(name);
+        dir.join(rel)
     }
 
     /// Path of `packed-refs`.
@@ -140,6 +193,7 @@ impl FilesStore {
         match self.read_loose(name)? {
             LooseRead::Value(t) => Ok(Some(t)),
             LooseRead::Broken => Err(Error::Broken(name.to_owned())),
+            LooseRead::Missing | LooseRead::NotAFile if self.outside_common(name) => Ok(None),
             LooseRead::Missing | LooseRead::NotAFile => {
                 Ok(packed.find(name).map(|r| Target::Object(r.oid)))
             }
@@ -177,10 +231,11 @@ impl FilesStore {
 
     fn collect_loose(
         &self,
+        base: &Path,
         dir_rel: &str,
         out: &mut BTreeMap<String, LooseRead>,
     ) -> Result<(), Error> {
-        let dir = self.git_dir.join(dir_rel.trim_end_matches('/'));
+        let dir = base.join(dir_rel.trim_end_matches('/'));
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e)
@@ -211,7 +266,7 @@ impl FilesStore {
                 file_type.is_dir()
             };
             if is_dir {
-                self.collect_loose(&rel, out)?;
+                self.collect_loose(base, &rel, out)?;
             } else if !file_name.ends_with(".lock") {
                 let value = read_loose_path(&entry.path(), self.kind)?;
                 if !matches!(value, LooseRead::Missing | LooseRead::NotAFile) {
@@ -308,7 +363,7 @@ impl RefStore for FilesStore {
             LooseRead::Value(t) => Ok(Some(t)),
             LooseRead::Broken => Err(Error::Broken(name.to_owned())),
             LooseRead::Missing | LooseRead::NotAFile => {
-                if !name.starts_with("refs/") {
+                if !name.starts_with("refs/") || self.outside_common(name) {
                     return Ok(None);
                 }
                 Ok(self
@@ -332,11 +387,29 @@ impl RefStore for FilesStore {
         } else {
             "refs"
         };
-        self.collect_loose(walk_root, &mut loose)?;
+        self.collect_loose(&self.git_dir, walk_root, &mut loose)?;
+        if let Some(wt) = &self.worktree_dir {
+            // The common directory's per-worktree references belong to the
+            // main worktree; this worktree's own are in its git directory.
+            loose.retain(|name, _| !crate::name::is_per_worktree(name));
+            for dir in ["refs/bisect", "refs/worktree", "refs/rewritten"] {
+                if dir.starts_with(walk_root) || walk_root.starts_with(dir) {
+                    let root = if walk_root.len() > dir.len() {
+                        walk_root
+                    } else {
+                        dir
+                    };
+                    self.collect_loose(wt, root, &mut loose)?;
+                }
+            }
+        }
 
         let mut items: BTreeMap<Vec<u8>, IterItem> = BTreeMap::new();
         for entry in packed.refs() {
-            if !entry.name.starts_with(prefix) || !entry.name.starts_with("refs/") {
+            if !entry.name.starts_with(prefix)
+                || !entry.name.starts_with("refs/")
+                || self.outside_common(&entry.name)
+            {
                 continue;
             }
             let item = if is_valid_refname(entry.name.as_bytes(), RefNameFlags::STRICT) {
@@ -368,8 +441,9 @@ impl RefStore for FilesStore {
             items.insert(name.into_bytes(), item);
         }
         if options.include_root_refs {
-            let entries = std::fs::read_dir(&self.git_dir).map_err(|source| Error::Io {
-                path: self.git_dir.clone(),
+            let root = self.worktree_dir.as_ref().unwrap_or(&self.git_dir);
+            let entries = std::fs::read_dir(root).map_err(|source| Error::Io {
+                path: root.clone(),
                 source,
             })?;
             for entry in entries.flatten() {

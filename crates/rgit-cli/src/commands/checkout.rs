@@ -180,6 +180,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     });
     let args = parser.parse(argv)?.args;
     drop(parser);
+    crate::switch_branch::set_ignore_other_worktrees(ignore_other.get());
     rs::check_conflict_style(conflict.borrow().as_deref())?;
     let quiet = quiet.get() > 0;
     let force = force.get();

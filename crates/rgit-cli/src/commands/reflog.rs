@@ -14,7 +14,7 @@ use rgit_date::{DateContext, DateMode, show_date};
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::ObjectKind;
 use rgit_refs::files::FilesStore;
-use rgit_refs::name::{RefNameFlags, is_per_worktree, is_root_ref_syntax, is_valid_refname};
+use rgit_refs::name::{RefNameFlags, is_root_ref_syntax, is_valid_refname};
 use rgit_refs::reflog::lookup::Target as LookupTarget;
 use rgit_refs::reflog::{FilesReflog, Selector, nth_prior_checkout, resolve};
 use rgit_refs::{MAX_SYMREF_DEPTH, RefStore, Target};
@@ -62,12 +62,8 @@ impl Refs {
     }
 
     fn read_raw(&self, name: &str) -> Option<Target> {
-        let dir = if is_per_worktree(name) {
-            &self.git_dir
-        } else {
-            &self.common_dir
-        };
-        FilesStore::new(dir, self.kind)
+        FilesStore::new(&self.common_dir, self.kind)
+            .with_worktree(&self.git_dir)
             .read_raw(name)
             .ok()
             .flatten()
@@ -92,7 +88,17 @@ impl Refs {
     /// (`gitrevisions(7)` order) and its value.
     fn dwim(&self, name: &str) -> Option<(String, ObjectId)> {
         let mut candidates = Vec::new();
-        if name.starts_with("refs/") || is_root_ref_syntax(name) {
+        // `main-worktree/<ref>` and `worktrees/<id>/<ref>` name another
+        // worktree's references.
+        let local = name
+            .strip_prefix("main-worktree/")
+            .or_else(|| {
+                name.strip_prefix("worktrees/")
+                    .and_then(|r| r.split_once('/'))
+                    .map(|(_, r)| r)
+            })
+            .unwrap_or(name);
+        if local.starts_with("refs/") || is_root_ref_syntax(local) {
             candidates.push(name.to_string());
         }
         for pattern in ["refs/", "refs/tags/", "refs/heads/", "refs/remotes/"] {

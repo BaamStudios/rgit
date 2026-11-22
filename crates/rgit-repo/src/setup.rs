@@ -370,9 +370,24 @@ fn read_format(opts: &SetupOptions, cand: &Candidate) -> Result<RepositoryFormat
     format.check_support(&opts.support)?;
     // A linked work tree (its git directory has a separate common
     // directory) does not take core.worktree / core.bare from the common
-    // configuration (t1501 "$GIT_DIR/common overrides core.worktree").
-    let own_config = path::real_path_lossy(&cand.abs, &opts.cwd).join("config");
-    if path::real_path_lossy(&file, &opts.cwd) != own_config {
+    // configuration (t1501 "$GIT_DIR/common overrides core.worktree"),
+    // unless `extensions.worktreeConfig` is on: then they apply to every
+    // worktree and its own `config.worktree` can override them
+    // (git-worktree(1), CONFIGURATION FILE).
+    let own_dir = path::real_path_lossy(&cand.abs, &opts.cwd);
+    if format.worktree_config {
+        let file = own_dir.join("config.worktree");
+        if let Ok(data) = std::fs::read(&file) {
+            let set = rgit_config::parse_bytes(&data, Origin::File(file), Scope::Worktree)?;
+            let own = RepositoryFormat::from_config(&set)?;
+            if own.bare.is_some() {
+                format.bare = own.bare;
+            }
+            if own.worktree.is_some() {
+                format.worktree = own.worktree;
+            }
+        }
+    } else if path::real_path_lossy(&file, &opts.cwd) != own_dir.join("config") {
         format.worktree = None;
         format.bare = None;
     }

@@ -1782,61 +1782,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let store = refs_support::ref_store(setup, &config);
     let objects = Objects::open(setup);
     let mut hooks = UpdateHooks::new(setup, &config, &objects);
-    let linked = setup.git_dir != setup.common_dir;
-    let head_target = repo.refs.head_target();
-    // In a linked worktree HEAD lives in the worktree's git directory,
-    // which the reference store does not know about yet (#104): update
-    // the branch (or the detached HEAD) directly and log HEAD by hand.
-    let (name, wt_store) = match (&head_target, linked) {
-        (Some(t), true) => (t.clone(), None),
-        (None, true) => (
-            "HEAD".to_owned(),
-            Some(rgit_refs::files::FilesStore::new(
-                setup.git_dir.clone(),
-                setup.format.object_format,
-            )),
-        ),
-        _ => ("HEAD".to_owned(), None),
-    };
     let update = match head {
-        Some(h) => RefUpdate::update(name.clone(), oid, Some(h)),
-        None => RefUpdate::create(name.clone(), oid),
+        Some(h) => RefUpdate::update("HEAD", oid, Some(h)),
+        None => RefUpdate::create("HEAD", oid),
     }
     .message(reflog.clone());
-    let update = if wt_store.is_some() {
-        update.no_deref(true)
-    } else {
-        update
-    };
-    let mut tx = match &wt_store {
-        Some(w) => Transaction::new(w),
-        None => Transaction::new(&store),
-    };
+    let mut tx = Transaction::new(&store);
     tx.push(update)
         .and_then(|()| tx.commit(&mut hooks))
         .map_err(|e| fatal(e.to_string()))?;
-    if linked && head_target.is_some() {
-        let logs = rgit_refs::reflog::FilesReflog::new(
-            setup.git_dir.clone(),
-            setup.common_dir.clone(),
-            setup.format.object_format,
-        )
-        .with_shared(refs_support::shared_repository(&config));
-        let mut ident = committer_ident.name.to_vec();
-        ident.extend_from_slice(b" <");
-        ident.extend_from_slice(&committer_ident.email);
-        ident.push(b'>');
-        let entry = rgit_refs::reflog::Entry {
-            old: head.unwrap_or_else(|| ObjectId::null(repo.hash)),
-            new: oid,
-            ident,
-            time: committer_ident.time,
-            tz: committer_ident.tz,
-            message: rgit_refs::reflog::normalize_message(reflog.as_bytes()),
-        };
-        logs.append("HEAD", &entry, true)
-            .map_err(|e| fatal(e.to_string()))?;
-    }
 
     if merging {
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {

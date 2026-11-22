@@ -38,6 +38,7 @@ mod switch_branch;
 mod tracking;
 mod tree_changes;
 mod untracked;
+mod worktrees;
 mod wt_status;
 
 use std::io::Write;

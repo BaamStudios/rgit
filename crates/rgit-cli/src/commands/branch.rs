@@ -90,6 +90,22 @@ impl Ctx<'_> {
             .to_string()
     }
 
+    /// The worktree (other than this one) that has branch `name` checked
+    /// out, as git shows it.
+    fn used_elsewhere(&self, name: &str) -> Option<String> {
+        crate::worktrees::checked_out_elsewhere(self.setup, self.config, &format!("refs/heads/{name}"))
+            .map(|p| p.display().to_string())
+    }
+
+    /// The worktree that has branch `name` checked out: this one or
+    /// another.
+    fn used_by(&self, name: &str) -> Option<String> {
+        if self.current.as_deref() == Some(name) && self.head_attached() {
+            return Some(self.worktree_path());
+        }
+        self.used_elsewhere(name)
+    }
+
     fn abbrev(&self, oid: &ObjectId) -> String {
         self.objects.abbrev(oid, 7)
     }
@@ -318,11 +334,10 @@ fn create(c: &Ctx<'_>, args: &[String], parser: &Parser<'_>, track: Track, force
         Ok(Some(_)) => c.store.resolve_oid(&refname).ok().flatten(),
         _ => None,
     };
-    if existing.is_some() && c.current.as_deref() == Some(name.as_str()) && c.head_attached() {
-        return Err(Die::Fatal(msg::cannot_force_update_checked_out(
-            name,
-            &c.worktree_path(),
-        )));
+    if existing.is_some() {
+        if let Some(path) = c.used_by(name) {
+            return Err(Die::Fatal(msg::cannot_force_update_checked_out(name, &path)));
+        }
     }
     let start = match args.get(1) {
         Some(s) => s.clone(),
@@ -375,6 +390,11 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
                 continue;
             }
         };
+        if let Some(path) = (!remote).then(|| c.used_elsewhere(name)).flatten() {
+            eprintln!("error: {}", msg::cannot_delete_checked_out(name, &path));
+            code = 1;
+            continue;
+        }
         if !force && !remote && !merged_enough(c, name, &oid, head_oid.as_ref()) {
             eprintln!("error: {}", msg::not_fully_merged(name));
             c.advisor
@@ -448,6 +468,11 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
     };
     let old_ref = format!("refs/heads/{old}");
     let new_ref = format!("refs/heads/{new}");
+    if !is_copy {
+        if let Some(path) = crate::worktrees::rebasing(c.setup, &old_ref) {
+            return Err(Die::Fatal(msg::being_rebased(&old_ref, &path.display().to_string())));
+        }
+    }
     let is_current = c.current.as_deref() == Some(old.as_str());
     let oid = c.branch_oid(&old);
     if oid.is_none() {
@@ -466,11 +491,13 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
         if !force {
             return Err(Die::Fatal(msg::already_exists(&new)));
         }
-        if c.current.as_deref() == Some(new.as_str()) {
-            return Err(Die::Fatal(msg::cannot_force_update_checked_out(
-                &new,
-                &c.worktree_path(),
-            )));
+        let used = if c.current.as_deref() == Some(new.as_str()) {
+            Some(c.worktree_path())
+        } else {
+            c.used_elsewhere(&new)
+        };
+        if let Some(path) = used {
+            return Err(Die::Fatal(msg::cannot_force_update_checked_out(&new, &path)));
         }
     }
 
@@ -552,6 +579,21 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
         )?;
         if old != new {
             hooks.log("HEAD", ObjectId::null(hash), oid, &message, false);
+        }
+    }
+
+    if !is_copy && old != new {
+        // Other worktrees on the renamed branch follow it.
+        let all = crate::worktrees::list(c.setup, false);
+        for w in all.iter().filter(|w| !w.current) {
+            if w.head_ref.as_deref() == Some(old_ref.as_str()) {
+                let _ = std::fs::write(w.git_dir.join("HEAD"), format!("ref: {new_ref}\n"));
+                let head = match &w.id {
+                    Some(id) => format!("worktrees/{id}/HEAD"),
+                    None => "main-worktree/HEAD".to_owned(),
+                };
+                hooks.log(&head, ObjectId::null(hash), oid, &message, false);
+            }
         }
     }
 
@@ -758,6 +800,8 @@ enum Line {
         /// Below `refs/remotes/`.
         remote: bool,
         current: bool,
+        /// Checked out in another worktree (at this path).
+        other: Option<String>,
         branch: Option<String>,
         target: Target,
     },
@@ -769,6 +813,7 @@ struct Colors {
     local: String,
     remote: String,
     upstream: String,
+    worktree: String,
 }
 
 impl Colors {
@@ -783,6 +828,7 @@ impl Colors {
             local: slot("local", "")?,
             remote: slot("remote", "\x1b[31m")?,
             upstream: slot("upstream", "\x1b[34m")?,
+            worktree: slot("worktree", "\x1b[36m")?,
         })
     }
 }
@@ -815,6 +861,14 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
     if let (true, Some(Target::Object(oid))) = (local, head) {
         lines.push(Line::Detached(*oid));
     }
+    // Branches checked out in other worktrees (git counts the `HEAD` of
+    // a bare main repository too).
+    let others: std::collections::HashMap<String, String> =
+        crate::worktrees::list(c.setup, crate::worktrees::main_is_bare(c.setup, c.config))
+            .into_iter()
+            .filter(|w| !w.current)
+            .filter_map(|w| Some((w.head_ref?, w.path.display().to_string())))
+            .collect();
     let mut prefixes = Vec::new();
     if local {
         prefixes.push("refs/heads/");
@@ -843,9 +897,13 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
                 continue;
             }
             let is_local = prefix == "refs/heads/";
+            let current = is_local && c.current.as_deref() == Some(short);
             lines.push(Line::Ref {
                 remote: !is_local,
-                current: is_local && c.current.as_deref() == Some(short),
+                other: (is_local && !current)
+                    .then(|| others.get(&r.name).cloned())
+                    .flatten(),
+                current,
                 branch: is_local.then(|| short.to_owned()),
                 shown,
                 target: r.target.clone(),
@@ -889,12 +947,21 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
                 shown,
                 remote,
                 current,
+                other,
                 branch,
                 target,
             } => {
-                let marker = if *current { '*' } else { ' ' };
+                let marker = if *current {
+                    '*'
+                } else if other.is_some() {
+                    '+'
+                } else {
+                    ' '
+                };
                 let pick: fn(&Colors) -> &str = if *current {
                     |cs| &cs.current
+                } else if other.is_some() {
+                    |cs| &cs.worktree
                 } else if *remote {
                     |cs| &cs.remote
                 } else {
@@ -914,8 +981,14 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
                             .as_deref()
                             .map(|b| tracking(c, b, oid, verbose, list.colors.as_ref()))
                             .unwrap_or_default();
+                        let path = match other {
+                            Some(p) if verbose > 1 => {
+                                format!("({}) ", paint(|cs| &cs.worktree, p))
+                            }
+                            _ => String::new(),
+                        };
                         format!(
-                            "{marker} {name} {} {track}{}",
+                            "{marker} {name} {} {path}{track}{}",
                             full_hex(oid),
                             subject(c.objects, oid)
                         )
