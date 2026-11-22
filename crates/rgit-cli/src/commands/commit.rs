@@ -1949,7 +1949,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             &RunOptions::with_args(["amend"]).stdin(rgit_hook::Input::Data(input.as_bytes())),
         )?;
     }
-    crate::maintenance::run_auto(ctx);
+    crate::maintenance::run_auto_quiet(ctx, args.quiet);
     if args.quiet {
         super::merge::apply_merge_autostash(ctx, &git_dir)?;
         return Ok(0);

@@ -11,7 +11,8 @@
 //! `maintenance.auto=false`, without that setting by `gc.auto` of 0 or
 //! less, and by `fetch --no-auto-maintenance`.
 //!
-//! Of the tasks of the default strategy (`geometric`: `commit-graph`,
+//! The `gc` task (strategy `gc` or `maintenance.gc.enabled`) runs
+//! `gc --auto`. Of the tasks of the default strategy (`geometric`: `commit-graph`,
 //! `geometric-repack`, `reflog-expire`) only `reflog-expire` is done:
 //! `reflog expire --all` once the `HEAD` reflog has
 //! `maintenance.reflog-expire.auto` (100) entries old enough to go.
@@ -30,9 +31,50 @@ use crate::repository::Repo;
 /// reported like a failing `git maintenance` child; they never change the
 /// outcome of the calling command.
 pub fn run_auto(ctx: &Context) {
-    if let Err(e) = auto(ctx) {
+    run_auto_quiet(ctx, false);
+}
+
+/// [`run_auto`] for a command run with `--quiet`, which git passes on to
+/// `maintenance run --auto --quiet` (and from there to `gc --auto`).
+pub fn run_auto_quiet(ctx: &Context, quiet: bool) {
+    if let Err(e) = auto(ctx, quiet) {
         let _ = e.emit();
     }
+}
+
+/// Whether the `gc` task belongs to the configured strategy
+/// (`maintenance.gc.enabled`, else strategy `gc`).
+fn gc_enabled(config: &ConfigSet) -> Result<bool, Die> {
+    if let Some(on) = config_bool(config, "maintenance.gc.enabled")? {
+        return Ok(on);
+    }
+    let strategy = config
+        .get("maintenance.strategy")
+        .and_then(|e| e.value.as_ref())
+        .map(|v| v.to_str_lossy().into_owned());
+    Ok(strategy.as_deref() == Some("gc"))
+}
+
+/// The `gc` task: `gc --auto`, in the background unless
+/// `maintenance.autoDetach` (else `gc.autoDetach`) is false.
+fn run_gc_task(ctx: &Context, config: &ConfigSet, quiet: bool) -> Result<(), Die> {
+    let detach = match config_bool(config, "maintenance.autodetach")? {
+        Some(v) => v,
+        None => config_bool(config, "gc.autodetach")?.unwrap_or(true),
+    };
+    let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args([
+        "gc",
+        "--auto",
+        if quiet { "--quiet" } else { "--no-quiet" },
+        if detach { "--detach" } else { "--no-detach" },
+    ]);
+    for (k, v) in ctx.child_env() {
+        cmd.env(k, v);
+    }
+    let _ = cmd.stdin(std::process::Stdio::null()).status();
+    Ok(())
 }
 
 fn config_bool(config: &ConfigSet, key: &str) -> Result<Option<bool>, Die> {
@@ -55,7 +97,7 @@ fn reflog_expire_enabled(config: &ConfigSet) -> Result<bool, Die> {
     }
 }
 
-fn auto(ctx: &Context) -> Result<(), Die> {
+fn auto(ctx: &Context, quiet: bool) -> Result<(), Die> {
     let Some(repo) = Repo::open_gently(ctx)? else {
         return Ok(());
     };
@@ -70,6 +112,9 @@ fn auto(ctx: &Context) -> Result<(), Die> {
     };
     if !enabled {
         return Ok(());
+    }
+    if gc_enabled(&repo.config)? {
+        run_gc_task(ctx, &repo.config, quiet)?;
     }
     if !reflog_expire_enabled(&repo.config)? {
         return Ok(());

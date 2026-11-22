@@ -284,7 +284,7 @@ pub fn run_with_reflog_action(
     drop(err);
     drop(cli_repo);
     if code == 0 && auto_maintenance.get() {
-        crate::maintenance::run_auto(ctx);
+        crate::maintenance::run_auto_quiet(ctx, quiet_mode);
     }
     Ok(code)
 }

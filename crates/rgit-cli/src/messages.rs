@@ -28,6 +28,7 @@ pub mod grep;
 pub mod hash_object;
 pub mod help;
 pub mod hook;
+pub mod housekeeping;
 pub mod init;
 pub mod interactive;
 pub mod interpret_trailers;
