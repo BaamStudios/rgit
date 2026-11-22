@@ -39,6 +39,7 @@ const TOOLS: &[Tool] = &[
     ("sha1", cmd::sha::sha1),
     ("sha1-is-sha1dc", cmd::sha::sha1_is_sha1dc),
     ("sha256", cmd::sha::sha256),
+    ("submodule", cmd::submodule::submodule),
     ("wildmatch", cmd::wildmatch::wildmatch),
 ];
 

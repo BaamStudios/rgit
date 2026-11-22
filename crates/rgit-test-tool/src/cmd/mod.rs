@@ -8,4 +8,5 @@ pub mod date;
 pub mod parse_options;
 pub mod ref_store;
 pub mod sha;
+pub mod submodule;
 pub mod wildmatch;

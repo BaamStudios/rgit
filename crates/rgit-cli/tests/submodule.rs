@@ -8,6 +8,8 @@ use rgit_difftest::{Check, Fixture};
 /// A superproject `super` with the submodules `clean`, `dirty` (modified
 /// file), `untr` (untracked file), `adv` (new commits) and `both` (all
 /// three), plus an untracked nested repository.
+const SUBS: [&str; 5] = ["clean", "dirty", "untr", "adv", "both"];
+
 fn superproject() -> Fixture {
     let fx = Fixture::new()
         .rgit(env!("CARGO_BIN_EXE_rgit"))
@@ -24,20 +26,26 @@ fn superproject() -> Fixture {
         .write("super/top", "top\n")
         .git(["-C", "super", "add", "top"])
         .git(["-C", "super", "commit", "-qm", "init"]);
+    // Without `git submodule add` (the pinned reference git of CI has no
+    // scripted commands): clone, describe in .gitmodules, add.
     let mut fx = fx;
-    for s in ["clean", "dirty", "untr", "adv", "both"] {
-        fx = fx.git([
-            "-C",
-            "super",
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            "../up",
-            s,
-        ]);
+    let mut gitmodules = String::new();
+    for s in SUBS {
+        fx = fx.git(["clone", "-q", "up", &format!("super/{s}")]);
+        gitmodules.push_str(&format!(
+            "[submodule \"{s}\"]\n\tpath = {s}\n\turl = ../up\n"
+        ));
     }
+    let mut add = vec![
+        "-C",
+        "super",
+        "-c",
+        "advice.addEmbeddedRepo=false",
+        "add",
+        ".gitmodules",
+    ];
+    add.extend(SUBS);
+    let fx = fx.write("super/.gitmodules", gitmodules).git(add);
     fx.git(["-C", "super/adv", "checkout", "-q", "HEAD~1"])
         .git(["-C", "super/both", "checkout", "-q", "HEAD~2"])
         .git(["-C", "super", "add", "adv", "both"])

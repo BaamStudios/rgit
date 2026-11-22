@@ -250,3 +250,18 @@ pub const BUG_TRAILING_SLASH: &str = "BUG: ref pattern must end in a trailing sl
 
 /// `advise` called without exactly one argument (printed as `fatal: `).
 pub const ADVISE_USAGE: &str = "usage: advise <advice>";
+
+// ----- submodule ---------------------------------------------------------
+
+/// Usage lines of `submodule`, one per action.
+pub const SUBMODULE_USAGE: &[&str] = &[
+    "test-tool submodule check-name",
+    "test-tool submodule check-url",
+    "test-tool submodule is-active <name>",
+    "test-tool submodule resolve-relative-url <up_path> <remoteurl> <url>",
+];
+
+/// An action `submodule` does not know.
+pub fn unknown_subcommand(name: &str) -> String {
+    format!("fatal: unknown subcommand '{name}'")
+}

@@ -802,6 +802,7 @@ dependencies = [
  "rgit-pathspec",
  "rgit-refs",
  "rgit-repo",
+ "rgit-submodule",
 ]
 
 [[package]]

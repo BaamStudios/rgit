@@ -145,7 +145,11 @@ fn check_strict(url: &[u8]) -> bool {
         None => authority,
     };
     let (host, port) = split_port(host_port);
-    if host.is_empty() || !decodes_cleanly(host) || !decodes_cleanly(path) {
+    if host.is_empty()
+        || host.iter().any(u8::is_ascii_whitespace)
+        || !decodes_cleanly(host)
+        || !decodes_cleanly(path)
+    {
         return false;
     }
     match port {
