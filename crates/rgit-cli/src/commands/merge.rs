@@ -39,8 +39,7 @@
 //! The behaviour was checked against the `git` binary with differential
 //! tests (`tests/merge.rs`).
 //!
-//! Not yet: rename detection (#151; merges run as with `-X no-renames`),
-//! the strategies `resolve` and `subtree` and trying several strategies
+//! Not yet: the strategies `resolve` and `subtree` and trying several strategies
 //! (#153), `--verify-signatures` and `-S` (#51), rerere
 //! (#156). The octopus messages are rgit's own approximation.
 
@@ -1002,6 +1001,7 @@ impl Session<'_> {
             allow_unrelated_histories: self.args.allow_unrelated,
             ..rgit_merge::Options::default()
         };
+        super::merge_tree::apply_rename_config(&self.repo.config, &mut opts);
         for x in &self.args.xopts {
             use super::merge_tree::StrategyOptionError as E;
             match super::merge_tree::apply_strategy_option(&mut opts, x) {
@@ -1042,6 +1042,7 @@ impl Session<'_> {
                 clean: true,
                 conflicts: Vec::new(),
                 messages: Vec::new(),
+                rename_limit_needed: None,
             }
         } else {
             let opts = self.engine_options(theirs)?;
@@ -1191,6 +1192,7 @@ impl Session<'_> {
                 clean: true,
                 conflicts: Vec::new(),
                 messages: Vec::new(),
+                rename_limit_needed: None,
             };
             return self.finish(head, parents, &heads, result);
         }
@@ -1242,7 +1244,9 @@ impl Session<'_> {
                 None => ObjectId::empty_tree(self.repo.hash),
             };
             let their_tree = self.tree_of(&h.commit)?;
-            let opts = self.engine_options(h)?;
+            let mut opts = self.engine_options(h)?;
+            // The octopus strategy merges file by file, without renames.
+            opts.renames = false;
             let r = rgit_merge::merge_trees(self.repo.odb(), &base_tree, &tree, &their_tree, &opts)
                 .map_err(|e| fatal(e.to_string()))?;
             for m in &r.messages {
@@ -1278,6 +1282,7 @@ impl Session<'_> {
                 clean: true,
                 conflicts: Vec::new(),
                 messages: Vec::new(),
+                rename_limit_needed: None,
             },
         };
         if merged.len() == 1 {

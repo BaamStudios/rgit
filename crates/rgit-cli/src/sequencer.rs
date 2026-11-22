@@ -1323,6 +1323,7 @@ pub(crate) fn merge_with(
         style: crate::commands::merge_file::config_style(&repo.config)?,
         ..rgit_merge::Options::default()
     };
+    crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);
     for x in xopts {
         use crate::commands::merge_tree::StrategyOptionError as E;
         match crate::commands::merge_tree::apply_strategy_option(&mut opts, x) {

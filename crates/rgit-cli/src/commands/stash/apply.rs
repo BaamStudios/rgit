@@ -193,13 +193,14 @@ fn merge(
     theirs: ObjectId,
     labels: &Labels,
 ) -> Result<MergeResult, Die> {
-    let opts = MergeOptions {
+    let mut opts = MergeOptions {
         branch1: labels.ours.as_bytes().to_vec(),
         branch2: labels.theirs.as_bytes().to_vec(),
         ancestor: labels.base.as_bytes().to_vec(),
         style: crate::commands::merge_file::config_style(&repo.config)?,
         ..MergeOptions::default()
     };
+    crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);
     rgit_merge::merge_trees(repo.odb(), &base, &ours, &theirs, &opts)
         .map_err(|e| Die::Fatal(e.to_string()))
 }

@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, HashMap};
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::{EntryMode, ObjectKind, RawObject, Tree, TreeEntry};
 
+mod renames;
+
 use crate::{
     CommitInfo, Commits, Error, MergeResult, MessageKind, Objects, Options, Version, merge_bases,
     merge_commits, merge_trees,
@@ -177,6 +179,7 @@ fn opts() -> Options {
         branch1: b"main".to_vec(),
         branch2: b"side".to_vec(),
         ancestor: b"base".to_vec(),
+        renames: false,
         ..Options::default()
     }
 }
