@@ -19,6 +19,7 @@ pub mod diff;
 pub mod diff_tree;
 pub mod fetch;
 pub mod for_each_ref;
+pub mod format_patch;
 pub mod hash_object;
 pub mod help;
 pub mod hook;

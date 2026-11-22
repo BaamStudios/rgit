@@ -30,6 +30,7 @@ rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-hook = { path = "../rgit-hook" }
 rgit-index = { path = "../rgit-index" }
+rgit-mail = { path = "../rgit-mail" }
 rgit-merge = { path = "../rgit-merge" }
 rgit-messages = { path = "../rgit-messages" }
 rgit-object = { path = "../rgit-object" }

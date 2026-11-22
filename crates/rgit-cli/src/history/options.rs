@@ -99,6 +99,9 @@ pub struct Options {
     pub date_mode: DateMode,
     /// `--date` was given.
     pub date_given: bool,
+    /// `-E`, `-F`, `-P` or `--basic-regexp` was given (else
+    /// `grep.patternType` decides).
+    pub syntax_given: bool,
     /// `--decorate[=<how>]` / `--no-decorate`.
     pub decorate: Option<Decorate>,
     /// `--decorate-refs*` and `--clear-decorations`.
@@ -214,6 +217,7 @@ impl Options {
             pretty: None,
             date_mode: DateMode::default(),
             date_given: false,
+            syntax_given: false,
             decorate: None,
             decorate_filter: Filter::default(),
             zero: false,
@@ -384,10 +388,22 @@ impl Options {
                 "--no-min-parents" => o.walk.min_parents = None,
                 "--no-max-parents" => o.walk.max_parents = None,
                 "-i" | "--regexp-ignore-case" => o.grep.ignore_case = true,
-                "-E" | "--extended-regexp" => o.grep.syntax = Syntax::Extended,
-                "-F" | "--fixed-strings" => o.grep.syntax = Syntax::Fixed,
-                "-P" | "--perl-regexp" => o.grep.syntax = Syntax::Perl,
-                "--basic-regexp" => o.grep.syntax = Syntax::Basic,
+                "-E" | "--extended-regexp" => {
+                    o.grep.syntax = Syntax::Extended;
+                    o.syntax_given = true;
+                }
+                "-F" | "--fixed-strings" => {
+                    o.grep.syntax = Syntax::Fixed;
+                    o.syntax_given = true;
+                }
+                "-P" | "--perl-regexp" => {
+                    o.grep.syntax = Syntax::Perl;
+                    o.syntax_given = true;
+                }
+                "--basic-regexp" => {
+                    o.grep.syntax = Syntax::Basic;
+                    o.syntax_given = true;
+                }
                 "--all-match" => o.grep.all_match = true,
                 "--invert-grep" => o.grep.invert = true,
                 "--cherry-mark" | "--cherry-pick" | "--cherry" => {
@@ -579,6 +595,7 @@ impl Options {
     /// Settle the options that depend on the configuration: the format
     /// (`--pretty`, aliases, `format.pretty` for `log`) and `log.date`.
     pub fn apply_config(&mut self, cmd: Command, config: &ConfigSet) -> Result<(), Die> {
+        self.apply_grep_config(config);
         let arg = match (&self.pretty_arg, cmd) {
             (Some(a), _) => Some(a.clone()),
             (None, Command::Log) => Some(
@@ -599,6 +616,30 @@ impl Options {
                 .map_err(|e| Die::Fatal(e.to_string()))?;
         }
         Ok(())
+    }
+
+    /// The pattern syntax of `--grep` and friends from `grep.patternType`
+    /// (`basic`, `extended`, `fixed`, `perl`; `default` defers to
+    /// `grep.extendedRegexp`), unless the command line chose one.
+    pub fn apply_grep_config(&mut self, config: &ConfigSet) {
+        if self.syntax_given {
+            return;
+        }
+        let pattern_type = config
+            .string("grep.patterntype")
+            .ok()
+            .flatten()
+            .map(|v| v.to_string().to_ascii_lowercase());
+        self.grep.syntax = match pattern_type.as_deref() {
+            Some("basic") => Syntax::Basic,
+            Some("extended") => Syntax::Extended,
+            Some("fixed") => Syntax::Fixed,
+            Some("perl") => Syntax::Perl,
+            _ if config.bool("grep.extendedregexp").ok().flatten() == Some(true) => {
+                Syntax::Extended
+            }
+            _ => Syntax::Basic,
+        };
     }
 
     /// Start at `HEAD` (log without revisions).
