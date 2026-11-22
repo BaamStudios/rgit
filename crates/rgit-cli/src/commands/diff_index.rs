@@ -65,8 +65,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .peel_to(id, ObjectKind::Tree)
         .ok_or_else(|| Die::Fatal(msg::bad_tree_object(&spec)))?;
     opts.resolve_objects(&mut repo)?;
-    let repo = repo;
     let pathspec = diff::pathspec(ctx, &repo, &args)?;
+    let (pathspec, attr_filter) = diff::attr_split(ctx, &mut repo, pathspec)?;
+    let repo = repo;
     let (index, mtime) = repo.read_index()?;
     let pairs = if cached {
         collect::index(&repo, &tree, &index, &pathspec, None, false)?
@@ -90,6 +91,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         pairs
     };
     crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, false)?;
+    diff::attr_retain(&repo, &mut pairs, attr_filter)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     let (bytes, changed) = out.render(pairs)?;
