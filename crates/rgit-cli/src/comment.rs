@@ -89,6 +89,11 @@ pub fn gentle_config(ctx: &Context) -> Result<ConfigSet, Die> {
     if let Some(setup) = crate::repo::setup_gently(ctx)? {
         return crate::repo::load_config(ctx, &setup);
     }
+    config_without_repo(ctx)
+}
+
+/// The configuration outside a repository (system, global, command line).
+pub fn config_without_repo(ctx: &Context) -> Result<ConfigSet, Die> {
     let env = SystemEnv::default();
     let opts = rgit_config::LoadOptions {
         env: &env,

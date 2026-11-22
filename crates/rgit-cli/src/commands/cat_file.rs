@@ -7,14 +7,19 @@
 //! With `--batch`, `--filters` takes the path from the rest of the input
 //! line; the size in the header stays that of the blob.
 //!
-//! Not implemented yet: `--textconv` (#147), `--use-mailmap` (#127) and
-//! `--filter=` (#24); they are parsed and checked like git, then refused.
+//! Not implemented yet: `--textconv` (#147) and `--filter=` (#24); they are
+//! parsed and checked like git, then refused.
+//!
+//! `--use-mailmap` (and `mailmap <bool>` of `--batch-command`) maps the
+//! identities in the headers of commits and tags; sizes are those of the
+//! rewritten objects.
 
 use std::io::{BufRead, BufWriter, Write};
 
 use rgit_hash::ObjectId;
 use rgit_object::{ObjectKind, TreeIter};
 
+use crate::history::mailmap::Mailmap;
 use crate::messages::cat_file as msg;
 use crate::repo_objects::Repo;
 use crate::prelude::*;
@@ -204,9 +209,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let mut repo = Repo::open(ctx, setup)?;
-    if use_mailmap && mailmap_present(&mut repo) {
-        return Err(Die::Fatal(msg::cat_file_not_supported("--use-mailmap")));
-    }
+    let command_mode = matches!(&batch, Some((Batch::Command, _)));
+    let mailmap = if use_mailmap || command_mode {
+        Some(Mailmap::load_for(ctx)?)
+    } else {
+        None
+    };
 
     if let Some((kind, format)) = batch {
         let fmt = Format::parse(format.as_deref().unwrap_or(DEFAULT_FORMAT))?;
@@ -214,6 +222,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let opts = BatchOptions {
             kind,
             fmt,
+            mailmap,
+            use_mailmap: Cell::new(use_mailmap),
             input_nul: nul_in.get() || nul_out,
             output_nul: nul_out,
             buffer: buffer.get(),
@@ -228,13 +238,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         };
     }
 
+    let mailmap = mailmap.filter(|_| use_mailmap);
     if opt == 0 {
-        return show_typed(&mut repo, &args[0], &args[1]);
+        return show_typed(&mut repo, &args[0], &args[1], mailmap.as_ref());
     }
     if opt == MODE_FILTERS {
         return filters(&mut repo, &args[0], path.as_deref());
     }
-    single(&mut repo, opt, &args[0])
+    single(&mut repo, opt, &args[0], mailmap.as_ref())
 }
 
 /// `--filters`: the object named `name` (`<rev>:<path>`, or any object
@@ -273,18 +284,9 @@ fn filters(repo: &mut Repo, name: &str, path: Option<&str>) -> CmdResult {
     Ok(0)
 }
 
-/// Whether a mailmap would change anything: `mailmap.file`,
-/// `mailmap.blob`, `.mailmap` in the work tree, or `HEAD:.mailmap` in a
-/// bare repository.
-fn mailmap_present(repo: &mut Repo) -> bool {
-    let configured = |k: &str| repo.config.get(k).is_some();
-    if configured("mailmap.file") || configured("mailmap.blob") {
-        return true;
-    }
-    match repo.setup.work_tree.clone() {
-        Some(wt) => wt.join(".mailmap").exists(),
-        None => Resolver::new(repo).resolve("HEAD:.mailmap").is_ok(),
-    }
+/// A commit or tag (whose identities a mailmap rewrites).
+fn has_idents(kind: ObjectKind) -> bool {
+    matches!(kind, ObjectKind::Commit | ObjectKind::Tag)
 }
 
 /// Print the lines of a store error as git does.
@@ -311,7 +313,7 @@ fn resolve_arg(repo: &mut Repo, name: &str) -> Result<Resolved, Die> {
 }
 
 /// `-e`, `-p`, `-t`, `-s`.
-fn single(repo: &mut Repo, opt: i32, name: &str) -> CmdResult {
+fn single(repo: &mut Repo, opt: i32, name: &str, mailmap: Option<&Mailmap>) -> CmdResult {
     let r = resolve_arg(repo, name)?;
     let oid = repo.replaced(&r.oid);
     if opt == MODE_E {
@@ -336,11 +338,20 @@ fn single(repo: &mut Repo, opt: i32, name: &str) -> CmdResult {
         MODE_T => {
             let _ = writeln!(out, "{}", header.kind);
         }
-        MODE_S => {
-            let _ = writeln!(out, "{}", header.size);
-        }
+        MODE_S => match mailmap {
+            Some(mm) if has_idents(header.kind) => {
+                let data = read_data(repo, &oid, name)?;
+                let _ = writeln!(out, "{}", mm.rewrite_object(header.kind, &data).len());
+            }
+            _ => {
+                let _ = writeln!(out, "{}", header.size);
+            }
+        },
         _ => {
-            let data = read_data(repo, &oid, name)?;
+            let mut data = read_data(repo, &oid, name)?;
+            if let Some(mm) = mailmap {
+                data = mm.rewrite_object(header.kind, &data);
+            }
             if header.kind == ObjectKind::Tree {
                 pretty_tree(repo, &data, &mut out);
             } else {
@@ -379,7 +390,12 @@ fn pretty_tree(repo: &Repo, data: &[u8], out: &mut impl Write) {
 }
 
 /// `git cat-file <type> <object>`: the object, peeled to `<type>`.
-fn show_typed(repo: &mut Repo, type_name: &str, name: &str) -> CmdResult {
+fn show_typed(
+    repo: &mut Repo,
+    type_name: &str,
+    name: &str,
+    mailmap: Option<&Mailmap>,
+) -> CmdResult {
     let want = ObjectKind::from_name(type_name.as_bytes())
         .ok_or_else(|| Die::Fatal(msg::invalid_object_type(type_name)))?;
     let r = resolve_arg(repo, name)?;
@@ -407,7 +423,11 @@ fn show_typed(repo: &mut Repo, type_name: &str, name: &str) -> CmdResult {
             }
         };
         if raw.kind == want {
-            let _ = std::io::stdout().lock().write_all(&raw.data);
+            let data = match mailmap {
+                Some(mm) => mm.rewrite_object(raw.kind, &raw.data),
+                None => raw.data,
+            };
+            let _ = std::io::stdout().lock().write_all(&data);
             return Ok(0);
         }
         let next = match raw.kind {
@@ -492,6 +512,10 @@ impl Format {
 struct BatchOptions {
     kind: Batch,
     fmt: Format,
+    /// The mailmap, loaded for `--use-mailmap` and `--batch-command`.
+    mailmap: Option<Mailmap>,
+    /// Identities are mapped now (`--use-mailmap`, `mailmap <bool>`).
+    use_mailmap: Cell<bool>,
     input_nul: bool,
     output_nul: bool,
     buffer: bool,
@@ -680,6 +704,19 @@ fn command(repo: &mut Repo, opts: &BatchOptions, line: &[u8], out: &mut Out) -> 
             one(repo, opts, &req, out)?;
             out.done()?;
         }
+        b"mailmap" => {
+            let Some(arg) = arg else {
+                return Err(Die::Fatal(msg::requires_arguments("mailmap")));
+            };
+            match rgit_config::value::parse_bool(Some(arg)) {
+                Some(on) => opts.use_mailmap.set(on),
+                None => {
+                    return Err(Die::Fatal(msg::invalid_mailmap_bool(
+                        &String::from_utf8_lossy(arg),
+                    )));
+                }
+            }
+        }
         b"flush" => {
             if arg.is_some() {
                 return Err(Die::Fatal(msg::takes_no_arguments("flush")));
@@ -773,13 +810,37 @@ fn show_object(
             return Ok(());
         }
     };
+    // Mapped identities change the contents and so the size.
+    let mailmap = opts
+        .mailmap
+        .as_ref()
+        .filter(|_| opts.use_mailmap.get() && has_idents(header.kind));
+    let mut data = None;
+    if req.contents || mailmap.is_some() {
+        let raw = match repo.odb.read(real) {
+            Ok(Some(raw)) => raw.data,
+            Ok(None) => return Err(Die::Fatal(msg::bad_file(&oid.to_hex()))),
+            Err(e) => {
+                report(&e);
+                return Err(Die::Fatal(msg::bad_file(&oid.to_hex())));
+            }
+        };
+        data = Some(match mailmap {
+            Some(mm) => mm.rewrite_object(header.kind, &raw),
+            None => raw,
+        });
+    }
+    let size = match (&data, mailmap) {
+        (Some(d), Some(_)) => d.len() as u64,
+        _ => header.size as u64,
+    };
     let mut line = Vec::new();
     for atom in &opts.fmt.atoms {
         match atom {
             Atom::Literal(l) => line.extend_from_slice(l),
             Atom::Name => line.extend_from_slice(oid.to_hex().as_bytes()),
             Atom::Type => line.extend_from_slice(header.kind.name().as_bytes()),
-            Atom::Size => line.extend_from_slice(header.size.to_string().as_bytes()),
+            Atom::Size => line.extend_from_slice(size.to_string().as_bytes()),
             Atom::DiskSize => line.extend_from_slice(repo.disk_size(real).to_string().as_bytes()),
             Atom::DeltaBase => line.extend_from_slice(repo.delta_base(real).to_hex().as_bytes()),
             Atom::Rest => line.extend_from_slice(req.rest),
@@ -798,25 +859,16 @@ fn show_object(
         let _ = out.flush();
         return Err(Die::Fatal(msg::missing_path(&oid.to_hex())));
     }
-    let data = if req.contents {
-        match repo.odb.read(real) {
-            // The header keeps the size of the blob (as git prints it).
-            Ok(Some(raw)) if filter_path => {
-                if opts.conv.get().is_none() {
-                    let _ = opts.conv.set(crate::convert::Converter::worktree(repo)?);
-                }
-                let conv = opts.conv.get().expect("set above");
-                Some(conv.to_worktree(req.rest, real, raw.data))
+    let data = match data.filter(|_| req.contents) {
+        // The header keeps the size of the blob (as git prints it).
+        Some(raw) if filter_path => {
+            if opts.conv.get().is_none() {
+                let _ = opts.conv.set(crate::convert::Converter::worktree(repo)?);
             }
-            Ok(Some(raw)) => Some(raw.data),
-            Ok(None) => return Err(Die::Fatal(msg::bad_file(&oid.to_hex()))),
-            Err(e) => {
-                report(&e);
-                return Err(Die::Fatal(msg::bad_file(&oid.to_hex())));
-            }
+            let conv = opts.conv.get().expect("set above");
+            Some(conv.to_worktree(req.rest, real, raw))
         }
-    } else {
-        None
+        d => d,
     };
     out.put(&line);
     out.end();
