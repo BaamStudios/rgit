@@ -3,7 +3,7 @@
 //!
 //! Runs, as separate commands like git: `pack-refs --all --prune`
 //! (`gc.packRefs`), `reflog expire --all` (unless both reflog expiries
-//! are `never`; skipped while rgit's `reflog expire` (#101) is missing),
+//! are `never`),
 //! `worktree prune --expire <gc.worktreePruneExpire>`, `rerere gc` (once
 //! rgit has `rerere`), `repack -d -l` with `-A --unpack-unreachable=<date>`
 //! (`-a` for `--prune=now`), and `prune --expire <date>`. `gc.pid` keeps
