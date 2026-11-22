@@ -32,7 +32,13 @@ fn help_outside_a_repository() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             // `init-db` is a synonym and prints the usage of `init`, like git
             // (a known breakage in t1517).
-            let shown = if cmd == "init-db" { "init" } else { cmd };
+            // `show` shares the usage of `log` (`usage: git log ...`, `or:
+            // git show ...`), like git.
+            let shown = match cmd {
+                "init-db" => "init",
+                "show" => "log",
+                _ => cmd,
+            };
             let usage = format!("usage: git {shown}");
             if out.status.code() != Some(0)
                 || !stdout

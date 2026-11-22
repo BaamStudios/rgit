@@ -36,7 +36,7 @@ use crate::revisions::{self, Config, IndexFile, Objects, Refs, WorkTree};
 use crate::{Context, Die};
 use decorate::{Colors, Decorations, Parts};
 pub use options::Options;
-use options::{Abbrev, Decorate, ObjectsMode};
+use options::{Abbrev, Decorate, MergeDiff, ObjectsMode};
 use pretty::{Entry, Pretty, Style};
 use userformat::{BadColor, Item, Lookup, Settings};
 
@@ -226,8 +226,18 @@ impl TreeSource for Trees<'_, '_> {
     }
 }
 
+/// `git show` (Documentation/git-show.adoc): `argv` without the command
+/// name.
+pub fn show_main(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
+    run_main(ctx, Command::Log, argv, true)
+}
+
 /// Set up the repository, parse `argv` and run `cmd`.
 pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
+    run_main(ctx, cmd, argv, false)
+}
+
+fn run_main(ctx: &Context, cmd: Command, argv: &[String], show: bool) -> Result<i32, Die> {
     // `-h` and `--help-all` work outside a repository and print to stdout.
     if let Some(first @ ("-h" | "--help-all")) = argv.first().map(String::as_str) {
         let text = match (cmd, first) {
@@ -239,6 +249,7 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
         return Ok(0);
     }
     let mut opts = Options::parse(cmd, argv)?;
+    opts.show = show;
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
@@ -524,6 +535,8 @@ struct Printer<'r, 'a> {
     ended_line: bool,
     /// The commit shown after the current one (for the graph).
     next: Option<graph::Next>,
+    /// Diff output after every commit (`-p`, `--stat`, ...).
+    diff: Option<LogDiff>,
     /// `--boundary`: parents of the commits shown so far (boundary
     /// commits are drawn with those of their parents).
     child_shown: std::collections::HashSet<ObjectId>,
@@ -724,6 +737,7 @@ impl Printer<'_, '_> {
                 self.first = false;
             }
         }
+        let diff = self.commit_diff(&id)?;
         if self.graph.is_some() {
             let mut text = self.out.split_off(start);
             // Entries are separated (multi-line formats, `format:`) or
@@ -742,7 +756,9 @@ impl Printer<'_, '_> {
                 Pretty::User { terminator, .. } => (!terminator, *terminator),
                 _ => (true, false),
             };
-            self.emit_graph(&text, separated && !was_first, terminated);
+            self.emit_graph(&text, separated && !was_first, terminated, &diff);
+        } else {
+            self.out.extend_from_slice(&diff);
         }
         self.flush_if_full();
         Ok(())
@@ -807,6 +823,62 @@ impl Printer<'_, '_> {
         CommitGrep::new(&self.opts.grep).is_ok_and(|g| g.matches(&raw))
     }
 
+    /// The diff output after commit `id`, with the line that separates it
+    /// from the message (`---` when a stat comes before the patch).
+    fn commit_diff(&self, id: &ObjectId) -> Result<Vec<u8>, Die> {
+        let Some(d) = &self.diff else {
+            return Ok(Vec::new());
+        };
+        let walk_error = || Die::Fatal(msg::bad_object(&id.to_hex()));
+        let (commit, _) = self.repo.read_commit(id).ok_or_else(walk_error)?;
+        let parents = self.repo.parents(id, &commit);
+        let tree = commit.tree().map_err(|_| walk_error())?;
+        let old = match parents.len() {
+            0 if !d.show_root => return Ok(Vec::new()),
+            0 => None,
+            1 => Some(parents[0]),
+            _ => match d.merges {
+                MergeDiff::Off => return Ok(Vec::new()),
+                MergeDiff::FirstParent => Some(parents[0]),
+                // Combined diffs need #148; a clean merge has none.
+                MergeDiff::Combined | MergeDiff::Dense => return Ok(b"\n".to_vec()),
+                MergeDiff::Separate => {
+                    return Err(Die::Fatal(msg::not_supported("-m")));
+                }
+            },
+        };
+        let old_tree = match old {
+            Some(p) => Some(self.repo.tree_of(&p).ok_or_else(walk_error)?),
+            None => None,
+        };
+        let pathspec = rgit_pathspec::Pathspec::default();
+        let mut w = crate::diff::collect::TreeDiff {
+            repo: &d.repo,
+            pathspec: &pathspec,
+            recursive: true,
+            show_trees: false,
+            pairs: Vec::new(),
+        };
+        w.walk(old_tree.as_ref(), Some(&tree), b"")?;
+        let mut out =
+            crate::diff::output::Output::new(Some(&d.repo), d.repo.hash, &d.opts, d.formats, true)?;
+        out.set_color(&d.opts)?;
+        let (bytes, _) = out.render(std::mem::take(&mut w.pairs))?;
+        if bytes.is_empty() {
+            return Ok(bytes);
+        }
+        let mut text = Vec::new();
+        if self.style.pretty == Pretty::Oneline && self.cmd != Command::RevList {
+            // Right after the one-line entry.
+        } else if d.formats.stat && d.formats.patch {
+            text.extend_from_slice(b"---\n");
+        } else {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(&bytes);
+        Ok(text)
+    }
+
     /// The character of a commit in the graph.
     fn graph_mark(&self, s: &Shown) -> &'static str {
         match self.mark(s) {
@@ -821,7 +893,7 @@ impl Printer<'_, '_> {
     /// the next line of the drawing, then the rest of the drawing.
     /// `separated`: entries are separated (not terminated), and this is
     /// not the first.
-    fn emit_graph(&mut self, text: &[u8], separated: bool, terminated: bool) {
+    fn emit_graph(&mut self, text: &[u8], separated: bool, terminated: bool, diff: &[u8]) {
         let Some(g) = self.graph.as_mut() else {
             return;
         };
@@ -859,6 +931,14 @@ impl Printer<'_, '_> {
                 self.out.extend_from_slice(&g.padding_line());
             }
             self.out.push(end);
+        }
+        for line in diff.split_inclusive(|&b| b == b'\n') {
+            self.out.extend_from_slice(&g.next_line());
+            self.out.extend_from_slice(line);
+        }
+        if !diff.is_empty() {
+            self.ended_line = diff.ends_with(b"\n");
+            return;
         }
         self.ended_line = ended;
     }
@@ -1061,6 +1141,215 @@ fn want_decorate(config: &ConfigSet, opt: Option<Decorate>) -> bool {
     }
 }
 
+/// `git show` of single objects, in command-line order: commits as in
+/// `log` (each at most once), annotated tags with their header and
+/// message followed by the tagged object, trees as `tree <name>` and the
+/// names of their entries, blobs as they are.
+fn show_objects(p: &mut Printer<'_, '_>) -> Result<i32, Die> {
+    let repo = p.repo;
+    let opts = p.opts;
+    let mut shown = std::collections::HashSet::new();
+    let args: Vec<String> = opts
+        .tips
+        .iter()
+        .filter_map(|t| match t {
+            options::Tip::Rev { arg, .. } => Some(arg.clone()),
+            options::Tip::Refs { .. } => None,
+        })
+        .collect();
+    for arg in &args {
+        let mut id = repo
+            .resolver
+            .resolve(arg)
+            .map_err(|_| Die::Fatal(msg::bad_revision(arg)))?;
+        let mut name = arg.clone();
+        loop {
+            let bad = || Die::Fatal(msg::bad_object(&id.to_hex()));
+            let (kind, data) = repo.objects.read(&id).ok().flatten().ok_or_else(bad)?;
+            match kind {
+                ObjectKind::Commit => {
+                    if shown.insert(id) {
+                        show_commit(p, &id)?;
+                    }
+                }
+                ObjectKind::Tag => {
+                    let tag = rgit_object::Tag::parse(repo.objects.hash_kind(), &data)
+                        .map_err(|_| bad())?;
+                    if !p.first {
+                        p.out.push(b'\n');
+                    }
+                    p.first = false;
+                    show_tag_header(p, &tag);
+                    let target = tag.object().map_err(|_| bad())?;
+                    name = target.to_hex();
+                    id = target;
+                    continue;
+                }
+                ObjectKind::Tree => {
+                    if !p.first {
+                        p.out.push(b'\n');
+                    }
+                    p.first = false;
+                    p.out
+                        .extend_from_slice(format!("tree {name}\n\n").as_bytes());
+                    for entry in TreeIter::new(repo.objects.hash_kind(), &data) {
+                        let entry = entry.map_err(|_| bad())?;
+                        p.out.extend_from_slice(entry.name);
+                        if entry.mode_bits & 0o170000 == 0o040000 {
+                            p.out.push(b'/');
+                        }
+                        p.out.push(b'\n');
+                    }
+                }
+                ObjectKind::Blob => p.out.extend_from_slice(&data),
+            }
+            break;
+        }
+        p.flush_if_full();
+    }
+    p.flush();
+    Ok(0)
+}
+
+/// One commit of `show`.
+fn show_commit(p: &mut Printer<'_, '_>, id: &ObjectId) -> Result<(), Die> {
+    let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+    let opts = rgit_revwalk::walk::WalkOptions {
+        no_walk: Some(rgit_revwalk::walk::NoWalk::Unsorted),
+        ..Default::default()
+    };
+    let commits = Commits {
+        repo: p.repo,
+        grep: None,
+        patch_ids: None,
+    };
+    let mut walk = Walk::new(commits, opts);
+    walk.push(id, false).map_err(walk_error)?;
+    if let Some(s) = walk.next_shown().map_err(walk_error)? {
+        p.commit(&walk, &s)?;
+    }
+    Ok(())
+}
+
+/// `tag <name>`, the tagger (and date) as the format shows them, an empty
+/// line and the message.
+fn show_tag_header(p: &mut Printer<'_, '_>, tag: &rgit_object::Tag) {
+    let out = &mut p.out;
+    out.extend_from_slice(b"tag ");
+    out.extend_from_slice(tag.name().unwrap_or_default());
+    out.push(b'\n');
+    let pretty = &p.style.pretty;
+    if *pretty != Pretty::Oneline
+        && let Some(tagger) = tag.tagger()
+    {
+        let fuller = *pretty == Pretty::Fuller;
+        out.extend_from_slice(if fuller { b"Tagger:     " } else { b"Tagger: " });
+        out.extend_from_slice(&pretty::ident(&tagger, p.style.mailmap.as_ref()));
+        out.push(b'\n');
+        let date = || pretty::date_of(&tagger, &p.style.date_mode, &p.style.date_ctx);
+        match pretty {
+            Pretty::Medium => {
+                out.extend_from_slice(b"Date:   ");
+                out.extend_from_slice(date().as_bytes());
+                out.push(b'\n');
+            }
+            Pretty::Fuller => {
+                out.extend_from_slice(b"TaggerDate: ");
+                out.extend_from_slice(date().as_bytes());
+                out.push(b'\n');
+            }
+            _ => {}
+        }
+    }
+    out.push(b'\n');
+    out.extend_from_slice(tag.message());
+}
+
+/// The diff settings of `log` and `show`.
+struct LogDiff {
+    repo: crate::repository::Repo,
+    opts: crate::diff::options::DiffOpts,
+    formats: crate::diff::options::Formats,
+    merges: MergeDiff,
+    /// Root commits get a diff against the empty tree.
+    show_root: bool,
+}
+
+/// The diff `log` shows after every commit: only when a diff format was
+/// asked for; merges get none unless `--diff-merges` (or `--first-parent`)
+/// says so.
+fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDiff>, Die> {
+    if cmd != Command::Log {
+        return Ok(None);
+    }
+    if let Some((regex, _)) = &opts.diff.pickaxe {
+        // Limiting the commits by their diff is not there yet.
+        return Err(Die::Fatal(msg::not_supported(if *regex {
+            "-G"
+        } else {
+            "-S"
+        })));
+    }
+    let mut d = opts.diff.clone();
+    // `-c` and `--cc` imply `-p`.
+    let combined = matches!(opts.merges, Some(MergeDiff::Combined | MergeDiff::Dense));
+    if (opts.show || combined) && !d.no_output {
+        // `show` defaults to a patch.
+        let none = !(d.raw
+            || d.patch
+            || d.name_only
+            || d.name_status
+            || d.numstat
+            || d.stat
+            || d.shortstat
+            || d.summary);
+        d.patch |= none;
+    }
+    let d = &d;
+    let asked = d.raw
+        || d.patch
+        || d.name_only
+        || d.name_status
+        || d.numstat
+        || d.stat
+        || d.shortstat
+        || d.summary;
+    if !asked {
+        return Ok(None);
+    }
+    let formats = d.formats(false)?;
+    if !formats.any() {
+        return Ok(None);
+    }
+    let mut diff_opts = d.clone();
+    if diff_opts.color.is_none() {
+        diff_opts.color = opts.color;
+    }
+    let mut repo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    diff_opts.resolve_objects(&mut repo)?;
+    let merges = opts.merges.unwrap_or(if opts.walk.first_parent {
+        MergeDiff::FirstParent
+    } else if opts.show {
+        MergeDiff::Dense
+    } else {
+        MergeDiff::Off
+    });
+    let show_root = opts.root
+        || repo
+            .config
+            .bool("log.showRoot")
+            .ok()
+            .flatten()
+            .unwrap_or(true);
+    Ok(Some(LogDiff {
+        repo,
+        opts: diff_opts,
+        formats,
+        merges,
+        show_root,
+    }))
+}
+
 /// The lane colours of `--graph` (`log.graphColors`, comma-separated
 /// colours; invalid ones are skipped with a warning).
 fn graph_colors(config: &ConfigSet) -> Vec<String> {
@@ -1133,7 +1422,8 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     let resolved = tips::resolve(repo, opts)?;
     let commit_color = match cmd {
         Command::Log => {
-            crate::pager::setup_for(ctx, repo.config, "log", true)?;
+            let pager = if opts.show { "show" } else { "log" };
+            crate::pager::setup_for(ctx, repo.config, pager, true)?;
             let on = crate::color::want(repo.config, Some("color.diff"), opts.color)?;
             if on {
                 Some(crate::color::slot(
@@ -1270,6 +1560,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
         next: None,
+        diff: log_diff(ctx, opts, cmd)?,
     };
     if opts.graph {
         let palette = p
@@ -1297,6 +1588,20 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     }
     if let Some(mode) = opts.objects {
         return run_objects(&mut p, &mut walk, &resolved, mode);
+    }
+    // `show` walks only for ranges, exclusions and `-<n>`.
+    let single = |t: &options::Tip| {
+        matches!(t, options::Tip::Rev { arg, negate: false }
+            if !arg.contains("..") && !arg.starts_with('^'))
+    };
+    if opts.show && opts.walk.max_count.is_none() && opts.tips.iter().all(single) {
+        if opts.graph {
+            return Err(Die::Fatal(msg::cannot_be_used_together(
+                "--no-walk",
+                "--graph",
+            )));
+        }
+        return show_objects(&mut p);
     }
     if bisecting {
         return run_bisect(&mut p, &mut walk);

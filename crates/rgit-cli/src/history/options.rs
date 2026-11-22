@@ -68,6 +68,21 @@ pub struct ObjectsMode {
     pub in_commit_order: bool,
 }
 
+/// How merges get a diff (`--diff-merges`, `-m`, `-c`, `--cc`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeDiff {
+    /// No diff (the default of `log`).
+    Off,
+    /// Against the first parent.
+    FirstParent,
+    /// Against every parent (`-m`).
+    Separate,
+    /// Combined (`-c`).
+    Combined,
+    /// Dense combined (`--cc`, the default of `show`).
+    Dense,
+}
+
 /// Parsed options.
 #[derive(Debug)]
 pub struct Options {
@@ -126,6 +141,14 @@ pub struct Options {
     pub graph_lane_limit: usize,
     /// An ordering option was given (`--graph` implies `--topo-order`).
     order_given: bool,
+    /// Diff options (`log -p`, `--stat`, ...).
+    pub diff: crate::diff::options::DiffOpts,
+    /// `--diff-merges` and friends, when given.
+    pub merges: Option<MergeDiff>,
+    /// `git show`: objects one by one, with diffs by default.
+    pub show: bool,
+    /// `--root`: root commits get a diff (else `log.showRoot`).
+    pub root: bool,
     /// `--max-count-oldest`: the count limits the last commits.
     pub max_count_oldest: bool,
     /// `--max-count` was given (it conflicts with `--max-count-oldest`).
@@ -249,6 +272,10 @@ impl Options {
             graph_indent: None,
             graph_lane_limit: 0,
             order_given: false,
+            diff: crate::diff::options::DiffOpts::default(),
+            merges: None,
+            show: false,
+            root: false,
             max_count_oldest: false,
             max_count_given: false,
             bisect: false,
@@ -397,6 +424,7 @@ impl Options {
                     o.order_given = true;
                 }
                 "--graph" => o.graph = true,
+                "--root" if cmd == Command::Log => o.root = true,
                 "--no-graph" => o.graph = false,
                 "--graph-indent" => o.graph_indent = Some(true),
                 "--no-graph-indent" => o.graph_indent = Some(false),
@@ -601,7 +629,11 @@ impl Options {
                         o.decorate_filter.exclude.push(v);
                     } else if let Some(v) = long(a, "--decorate-refs", &mut i)? {
                         o.decorate_filter.include.push(v);
-                    } else {
+                    } else if cmd == Command::RevList {
+                        return Err(usage(cmd, a));
+                    } else if let Some(m) = merge_option(a)? {
+                        o.merges = Some(m);
+                    } else if !o.diff.parse_arg(a)? {
                         return Err(usage(cmd, a));
                     }
                 }
@@ -793,6 +825,28 @@ impl Options {
             negate: false,
         });
     }
+}
+
+/// `-m`, `-c`, `--cc`, `--diff-merges=<mode>`, `--no-diff-merges`.
+fn merge_option(arg: &str) -> Result<Option<MergeDiff>, Die> {
+    let mode = match arg {
+        "-m" => "separate",
+        "-c" => "combined",
+        "--cc" => "dense-combined",
+        "--no-diff-merges" => "off",
+        _ => match arg.strip_prefix("--diff-merges=") {
+            Some(v) => v,
+            None => return Ok(None),
+        },
+    };
+    Ok(Some(match mode {
+        "off" | "none" => MergeDiff::Off,
+        "first-parent" | "1" => MergeDiff::FirstParent,
+        "separate" | "m" | "on" => MergeDiff::Separate,
+        "combined" | "c" => MergeDiff::Combined,
+        "dense-combined" | "cc" => MergeDiff::Dense,
+        _ => return Err(Die::Fatal(msg::unknown_diff_merges(mode))),
+    }))
 }
 
 fn ref_prefix(option: &str) -> &'static str {
