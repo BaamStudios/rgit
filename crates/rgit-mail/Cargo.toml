@@ -1,0 +1,14 @@
+[package]
+name = "rgit-mail"
+description = "E-mail helpers for rgit: RFC 2047 encoded words, RFC 5322 quoting and header folding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+unicode-width = { version = "0.2", default-features = false }

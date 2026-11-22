@@ -7,7 +7,7 @@
 //! `rgit_revwalk::walk`; this module wires it to the repository and prints.
 
 mod decorate;
-mod layout;
+pub mod layout;
 pub mod mailmap;
 mod options;
 pub mod pretty;
@@ -304,7 +304,37 @@ pub fn sequencer_commits(
         args.push("--no-walk=unsorted".to_owned());
     }
     args.extend(argv.iter().cloned());
-    let mut opts = Options::parse(Command::Log, &args)?;
+    let walked = walk_args(ctx, &args)?;
+    let mut commits = walked.commits;
+    if oldest_first && (walked.limited || !walked.unsorted) {
+        commits.reverse();
+    }
+    Ok(SequencerCommits {
+        commits,
+        other: walked.other,
+    })
+}
+
+/// The commits the `rev-list` arguments `args` select, in the order of
+/// the walk (newest first unless the arguments say otherwise).
+pub fn walk_commits(ctx: &Context, args: &[String]) -> Result<Vec<ObjectId>, Die> {
+    Ok(walk_args(ctx, args)?.commits)
+}
+
+/// The result of [`walk_args`].
+struct Walked {
+    commits: Vec<ObjectId>,
+    other: Vec<(Vec<u8>, ObjectKind)>,
+    /// A negative commit limited the walk.
+    limited: bool,
+    /// `--no-walk=unsorted`.
+    unsorted: bool,
+}
+
+/// Walk the commits `args` select; an argument that names nothing is a
+/// "bad revision".
+fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
+    let mut opts = Options::parse(Command::Log, args)?;
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
@@ -378,10 +408,12 @@ pub fn sequencer_commits(
     while let Some(s) = walk.next_shown().map_err(walk_error)? {
         commits.push(s.id);
     }
-    if oldest_first && (limited || !unsorted) {
-        commits.reverse();
-    }
-    Ok(SequencerCommits { commits, other })
+    Ok(Walked {
+        commits,
+        other,
+        limited,
+        unsorted,
+    })
 }
 
 /// See [`sequencer_commits`].
