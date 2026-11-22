@@ -8,8 +8,10 @@
 //! go where, messages) were observed with git 2.56 and recording helper
 //! scripts; they are noted at the code that implements them.
 
+pub mod cache;
 mod pattern;
 mod prompt;
+pub mod store;
 
 pub use pattern::Pattern;
 pub use prompt::{Prompter, SystemPrompter, askpass_program};
@@ -39,8 +41,7 @@ pub struct Capability {
 /// Who receives a written credential.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Audience {
-    /// A helper: gets everything the caller's capabilities allow, plus
-    /// `wwwauth[]`.
+    /// A helper: gets everything the caller's capabilities allow.
     Helper,
     /// The caller (`git credential fill` output): capability-dependent
     /// attributes only when both the caller and a helper support them.
@@ -192,6 +193,21 @@ pub struct UrlParts {
     pub path: Option<BString>,
 }
 
+/// Percent-decode one URL component the way git 2.56 does for
+/// credentials: whatever comes before the component's first `:` is kept
+/// as it is, only the rest is decoded (`c%41d:x%41` gives `c%41d:xA`,
+/// `c:%41` gives `c:A`).
+fn decode_component(v: &[u8]) -> BString {
+    match v.find_byte(b':') {
+        Some(i) if i > 0 => {
+            let mut out = BString::from(&v[..i]);
+            out.extend_from_slice(&percent_decode(&v[i..]));
+            out
+        }
+        _ => percent_decode(v),
+    }
+}
+
 /// Split the part after `://` into user, password, host and path, decoded.
 fn split_authority(rest: &[u8]) -> UrlParts {
     let end = rest.find_byteset(b"/?#").unwrap_or(rest.len());
@@ -203,10 +219,10 @@ fn split_authority(rest: &[u8]) -> UrlParts {
     let (username, password) = match userinfo {
         Some(ui) => match ui.find_byte(b':') {
             Some(c) => (
-                Some(percent_decode(&ui[..c])),
-                Some(percent_decode(&ui[c + 1..])),
+                Some(decode_component(&ui[..c])),
+                Some(decode_component(&ui[c + 1..])),
             ),
-            None => (Some(percent_decode(ui)), None),
+            None => (Some(decode_component(ui)), None),
         },
         None => (None, None),
     };
@@ -219,10 +235,10 @@ fn split_authority(rest: &[u8]) -> UrlParts {
     }
     UrlParts {
         protocol: BString::default(),
-        host: percent_decode(host),
+        host: decode_component(host),
         username,
         password,
-        path: (!path.is_empty()).then(|| percent_decode(path)),
+        path: (!path.is_empty()).then(|| decode_component(path)),
     }
 }
 
@@ -410,10 +426,10 @@ impl Credential {
                 self.password_expiry_utc.to_string().as_bytes(),
             )?;
         }
-        if audience == Audience::Helper {
-            for v in &self.wwwauth {
-                put("wwwauth[]", v)?;
-            }
+        // Both audiences get `wwwauth[]`; [`Credential::fill`] drops it
+        // when a helper completed the credential (git 2.56).
+        for v in &self.wwwauth {
+            put("wwwauth[]", v)?;
         }
         if state {
             if self.multistage {
@@ -501,6 +517,25 @@ impl Credential {
         Ok(())
     }
 
+    /// Whether a stored credential `have` matches this request: every one
+    /// of protocol, host, path and user name (and, with `match_password`,
+    /// password) that the request has must be present in `have` with the
+    /// same bytes. What the request leaves out matches anything. This is
+    /// how `credential-store` and `credential-cache` look up, replace and
+    /// erase entries (observed with git 2.56: no case folding, no default
+    /// ports, no path prefixes).
+    pub fn matches(&self, have: &Credential, match_password: bool) -> bool {
+        let same = |want: &Option<BString>, have: &Option<BString>| match want {
+            None => true,
+            Some(w) => have.as_ref() == Some(w),
+        };
+        same(&self.protocol, &have.protocol)
+            && same(&self.host, &have.host)
+            && same(&self.path, &have.path)
+            && same(&self.username, &have.username)
+            && (!match_password || same(&self.password, &have.password))
+    }
+
     /// `username` and `password`, or a pre-encoded `credential`.
     pub fn is_complete(&self) -> bool {
         (self.username.is_some() && self.password.is_some()) || self.credential.is_some()
@@ -546,6 +581,7 @@ impl Credential {
             }
             self.drop_expired_password();
             if self.is_complete() {
+                self.wwwauth.clear();
                 return Ok(());
             }
         }
@@ -735,6 +771,39 @@ pub fn read_caller_credential(input: &mut dyn Read) -> Result<Credential> {
     match cred.read_from(&mut reader, Source::Caller) {
         Ok(()) => Ok(cred),
         Err(ReadError::InvalidLine) => Err(fatal(messages::UNABLE_TO_READ_CREDENTIAL)),
+        Err(ReadError::Fatal(e)) => Err(e),
+    }
+}
+
+/// Drop a carriage return before each line feed (and at the very end):
+/// the helpers read their input line by line like that.
+pub(crate) fn strip_cr(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    for line in data.split_inclusive(|&b| b == b'\n') {
+        let (body, nl) = match line.strip_suffix(b"\n") {
+            Some(b) => (b, true),
+            None => (line, false),
+        };
+        out.extend_from_slice(body.strip_suffix(b"\r").unwrap_or(body));
+        if nl {
+            out.push(b'\n');
+        }
+    }
+    out
+}
+
+/// Read the request of a credential helper (`git credential-store get`
+/// etc.) from `input`: like [`read_caller_credential`], but carriage
+/// returns before line ends are ignored and a bad line gives the helpers'
+/// message.
+pub fn read_helper_request(input: &mut dyn Read) -> Result<Credential> {
+    let mut data = Vec::new();
+    input.read_to_end(&mut data)?;
+    let data = strip_cr(&data);
+    let mut cred = Credential::new();
+    match cred.read_from(&mut data.as_slice(), Source::Caller) {
+        Ok(()) => Ok(cred),
+        Err(ReadError::InvalidLine) => Err(fatal(messages::UNABLE_TO_READ_HELPER_CREDENTIAL)),
         Err(ReadError::Fatal(e)) => Err(e),
     }
 }

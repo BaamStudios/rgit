@@ -32,6 +32,10 @@ fn main() {
 
     let mut out = String::new();
     for (stem, path) in &files {
+        if stem.contains("__") {
+            // `credential_cache__daemon` for `credential-cache--daemon`.
+            out.push_str("#[allow(non_snake_case)]\n");
+        }
         writeln!(out, "#[path = {path:?}]\npub mod {stem};").unwrap();
     }
     out.push_str(

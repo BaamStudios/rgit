@@ -51,6 +51,100 @@ pub fn invalid_credential_line(line: &str) -> String {
 /// `fatal:` when standard input of `git credential` cannot be parsed.
 pub const UNABLE_TO_READ_CREDENTIAL: &str = "unable to read credential from stdin";
 
+/// `fatal:` when a credential helper cannot parse its standard input.
+pub const UNABLE_TO_READ_HELPER_CREDENTIAL: &str = "unable to read credential";
+
+/// `usage:` of `git credential-store`.
+pub const CREDENTIAL_STORE_USAGE: &str = "git credential-store [<options>] <action>";
+
+/// `--file` help of `git credential-store`.
+pub const CREDENTIAL_STORE_HELP_FILE: &str = "fetch and store credentials in <path>";
+
+/// `fatal:` when the credential file's lock cannot be taken.
+pub fn store_lock_failed(ms: u64, reason: &str) -> String {
+    format!("unable to get credential storage lock in {ms} ms: {reason}")
+}
+
+/// `fatal:` when a credential file cannot be read.
+pub fn store_unable_to_open(path: &str, reason: &str) -> String {
+    format!("unable to open {path}: {reason}")
+}
+
+/// `fatal:` when a credential file cannot be written.
+pub fn store_unable_to_write(path: &str, reason: &str) -> String {
+    format!("unable to write credential store: {path}: {reason}")
+}
+
+/// `usage:` of `git credential-cache`.
+pub const CREDENTIAL_CACHE_USAGE: &str = "git credential-cache [<options>] <action>";
+
+/// `--timeout` help of `git credential-cache`.
+pub const CREDENTIAL_CACHE_HELP_TIMEOUT: &str = "number of seconds to cache credentials";
+
+/// `--socket` help of `git credential-cache`.
+pub const CREDENTIAL_CACHE_HELP_SOCKET: &str = "path of cache-daemon socket";
+
+/// `fatal:` when the spawned daemon did not report `ok`; `output` is what
+/// it printed instead.
+pub fn cache_daemon_did_not_start(output: &str) -> String {
+    format!("cache daemon did not start: {output}")
+}
+
+/// `fatal:` when the daemon was started but cannot be reached.
+pub fn cache_unable_to_connect(reason: &str) -> String {
+    format!("unable to connect to cache daemon: {reason}")
+}
+
+/// `fatal:` where the platform has no unix domain sockets.
+pub const CACHE_NO_UNIX_SOCKETS: &str = "credential-cache unavailable; no unix socket support";
+
+/// `usage:` of `git credential-cache--daemon`.
+pub const CREDENTIAL_CACHE_DAEMON_USAGE: &str =
+    "git credential-cache--daemon [--debug] <socket-path>";
+
+/// `--debug` help of `git credential-cache--daemon`.
+pub const CREDENTIAL_CACHE_DAEMON_HELP_DEBUG: &str = "print debugging messages to stderr";
+
+/// `fatal:` for a relative socket path.
+pub const CACHE_SOCKET_NOT_ABSOLUTE: &str = "socket directory must be an absolute path";
+
+/// `fatal:` (several lines) for a socket directory others can access.
+pub fn cache_socket_dir_too_loose(dir: &str) -> String {
+    format!(
+        "The permissions on your socket directory are too loose; other\n\
+         users may be able to read your cached credentials. Consider running:\n\
+         \n\
+         \tchmod 0700 {dir}"
+    )
+}
+
+/// `error:` (daemon, `--debug`) for a request whose first line is not
+/// `action=`.
+pub fn cache_bogus_action(line: &str) -> String {
+    format!("client sent bogus action line: {line}")
+}
+
+/// `error:` (daemon, `--debug`) for a request whose second line is not
+/// `timeout=`.
+pub fn cache_bogus_timeout(line: &str) -> String {
+    format!("client sent bogus timeout line: {line}")
+}
+
+/// `error:` (daemon, `--debug`) for an unknown action.
+pub fn cache_unknown_action(action: &str) -> String {
+    format!("cache daemon got an unknown action: {action}")
+}
+
+/// `fatal:` when the daemon cannot listen on its socket.
+pub fn cache_unable_to_bind(path: &str, reason: &str) -> String {
+    format!("unable to bind to '{path}': {reason}")
+}
+
+/// `fatal:` when the socket directory cannot be created.
+pub fn cache_unable_to_mkdir(dir: &str, reason: &str) -> String {
+    format!("unable to create directories for '{dir}': {reason}")
+}
+
 /// `warning:` for a credential URL without `<scheme>://`.
 pub fn url_has_no_scheme(url: &str) -> String {
     format!("url has no scheme: {url}")
