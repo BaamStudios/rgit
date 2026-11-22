@@ -14,13 +14,14 @@
 
 use std::time::Duration;
 
-use chrono::{Local, NaiveTime, Timelike};
+use jiff::Zoned;
+use jiff::civil::Time;
 
 use crate::key::Location;
 
 /// Header for the given local time of day and location.
-pub fn header(time: NaiveTime, loc: Location) -> String {
-    let micros = time.nanosecond() % 1_000_000_000 / 1_000;
+pub fn header(time: Time, loc: Location) -> String {
+    let micros = time.subsec_nanosecond() / 1_000;
     format!(
         "{:02}:{:02}:{:02}.{:06} {:<23} ",
         time.hour(),
@@ -35,7 +36,7 @@ pub fn header(time: NaiveTime, loc: Location) -> String {
 pub fn line(bare: bool, loc: Location, msg: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(msg.len() + 48);
     if !bare {
-        out.extend_from_slice(header(Local::now().time(), loc).as_bytes());
+        out.extend_from_slice(header(Zoned::now().time(), loc).as_bytes());
     }
     out.extend_from_slice(msg);
     if out.last() != Some(&b'\n') {
@@ -55,7 +56,7 @@ mod tests {
 
     #[test]
     fn header_layout() {
-        let t = NaiveTime::from_hms_micro_opt(9, 5, 7, 42).unwrap();
+        let t = Time::new(9, 5, 7, 42_000).unwrap();
         let loc = Location {
             file: "crates/rgit-trace/src/setup.rs",
             line: 31,
