@@ -73,7 +73,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         match piece {
             Piece::Message(m) => {
-                message.extend_from_slice(m.as_bytes());
+                message.extend_from_slice(&crate::argv::bytes(&m));
                 if !message.is_empty() && message.last() != Some(&b'\n') {
                     message.push(b'\n');
                 }
@@ -114,6 +114,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         encoding: encoding.as_deref(),
         message: &message,
     };
+    if new.message.contains(&0) {
+        eprintln!("error: {}", rgit_commit::messages::NUL_IN_MESSAGE);
+        return Ok(1);
+    }
+    if !new.conforms() {
+        eprintln!("{}", rgit_commit::messages::NOT_UTF8_WARNING);
+    }
     let oid = rgit_commit::create_commit(repo.odb(), &new)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     println!("{oid}");

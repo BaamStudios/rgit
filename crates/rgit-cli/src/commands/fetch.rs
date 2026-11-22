@@ -252,6 +252,7 @@ pub fn run_with_reflog_action(
         },
         verbose: verbose.get() > 0 && !quiet_mode,
     };
+    rgit_protocol::sideband::set_remote_colors(crate::color::remote_colors(&repo.config));
     let result =
         rgit_fetch::fetch(&repo, &remote, &opts, &connect).map_err(|e| Die::Fatal(e.to_string()))?;
 

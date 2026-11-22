@@ -36,7 +36,7 @@ impl DateContext {
     /// Current time from `GIT_TEST_DATE_NOW` or the system clock, local zone
     /// from `TZ` / the system configuration.
     pub fn from_env() -> Self {
-        DateContext::new(now_from_env(), TimeZone::system())
+        DateContext::new(now_from_env(), local_zone())
     }
 
     /// Offset of local time from UTC in seconds at instant `t`.
@@ -173,4 +173,81 @@ pub fn tz_to_minutes(tz: i32) -> i64 {
     let a = (tz as i64).abs();
     let m = a / 100 * 60 + a % 100;
     if tz < 0 { -m } else { m }
+}
+
+/// The days of the rules glibc applies to a POSIX `TZ` value that names a
+/// summer time zone without rules (`TZ=CET-1CEST`): those of its
+/// `posixrules` file, the US rules (second Sunday in March to first Sunday
+/// in November) on current systems.
+const DEFAULT_RULES: &str = ",M3.2.0,M11.1.0";
+
+/// The local time zone from `TZ` / the system configuration, like the C
+/// library git uses: a POSIX `TZ` value with a summer time name but no
+/// rules gets [`DEFAULT_RULES`] instead of being ignored.
+pub fn local_zone() -> TimeZone {
+    if let Some(z) = std::env::var("TZ").ok().as_deref().and_then(ruleless_posix) {
+        return z;
+    }
+    TimeZone::system()
+}
+
+/// `TZ=CET-1CEST`-style values with [`DEFAULT_RULES`] added; `None` for
+/// anything else (zone names, complete POSIX strings).
+fn ruleless_posix(tz: &str) -> Option<TimeZone> {
+    let spec = tz.strip_prefix(':').unwrap_or(tz);
+    if spec.is_empty() || spec.contains(',') || spec.contains('/') {
+        return None;
+    }
+    if TimeZone::get(spec).is_ok() || TimeZone::posix(spec).is_ok() {
+        return None;
+    }
+    let us = TimeZone::posix(&format!("{spec}{DEFAULT_RULES}")).ok()?;
+    // glibc moves the US transition instants by the zone's offsets: summer
+    // time starts at 12:00 + 2 * std and ends at 06:00 + 2 * dst (local
+    // hours; observed with glibc 2.4x for CET, EET and JST).
+    let hours = |t: i64| {
+        JTimestamp::from_second(t)
+            .map(|ts| i64::from(us.to_offset(ts).seconds()) / 3600)
+            .unwrap_or(0)
+    };
+    let std = hours(1_704_067_200); // 2024-01-01
+    let dst = hours(1_719_792_000); // 2024-07-01
+    TimeZone::posix(&format!(
+        "{spec},M3.2.0/{},M11.1.0/{}",
+        12 + 2 * std,
+        6 + 2 * dst
+    ))
+    .ok()
+    .or(Some(us))
+}
+
+#[cfg(test)]
+mod ruleless_tests {
+    use super::*;
+
+    fn offset(z: &TimeZone, t: i64) -> i32 {
+        z.to_offset(JTimestamp::from_second(t).unwrap()).seconds()
+    }
+
+    #[test]
+    fn cet_without_rules() {
+        let z = ruleless_posix("CET-1CEST").expect("rule-less POSIX zone");
+        // 2024-03-09 16:00 UTC: before the second Sunday in March.
+        assert_eq!(offset(&z, 1_710_000_000), 3600);
+        // 2024-03-11 22:33 UTC: summer time.
+        assert_eq!(offset(&z, 1_710_200_000), 7200);
+        assert_eq!(offset(&z, 1_730_800_000), 3600);
+        // The transitions where glibc has them.
+        assert_eq!(offset(&z, 1_710_075_599), 3600);
+        assert_eq!(offset(&z, 1_710_075_600), 7200);
+        assert_eq!(offset(&z, 1_730_620_799), 7200);
+        assert_eq!(offset(&z, 1_730_620_800), 3600);
+        let jst = ruleless_posix("JST-9JDT").unwrap();
+        assert_eq!(offset(&jst, 1_710_104_399), 9 * 3600);
+        assert_eq!(offset(&jst, 1_710_104_400), 10 * 3600);
+        assert_eq!(offset(&jst, 1_730_649_600), 9 * 3600);
+        assert!(ruleless_posix("UTC").is_none());
+        assert!(ruleless_posix("Europe/Berlin").is_none());
+        assert!(ruleless_posix("CET-1CEST,M3.5.0,M10.5.0/3").is_none());
+    }
 }

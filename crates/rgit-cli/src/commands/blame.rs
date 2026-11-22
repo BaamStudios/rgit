@@ -80,6 +80,8 @@ struct RevOpts {
     minimal: bool,
     algorithm: Option<Algorithm>,
     indent_heuristic: Option<bool>,
+    /// `--encoding=<encoding>` (`none`: as stored).
+    encoding: Option<String>,
 }
 
 pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdResult {
@@ -214,7 +216,9 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             rev.indent_heuristic = Some(true);
         } else if a == "--no-indent-heuristic" {
             rev.indent_heuristic = Some(false);
-        } else if value(&["--encoding="]).is_some() || a == "--no-progress" {
+        } else if let Some(v) = value(&["--encoding="]) {
+            rev.encoding = Some(v.to_owned());
+        } else if a == "--no-progress" {
         } else {
             return Err(parser.error_with_usage(&msg::unknown_option(&a)).into());
         }
@@ -464,12 +468,21 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     if let Some((n, info)) = fake {
         infos.insert(n, info);
     }
+    // Names and summaries in the log output encoding.
+    let encoding = match &rev.encoding {
+        Some(e) => e.as_bytes().to_vec(),
+        None => crate::history::recode::output_encoding(&repo.config),
+    };
+    let convert = rev.encoding.as_deref() != Some("none");
     for e in &entries {
         let n = sb.origins[e.suspect].commit;
         if !infos.contains_key(&n)
             && let Some(c) = &sb.nodes[n].commit
         {
-            infos.insert(n, Info::of_commit(c, &mailmap));
+            let shown = convert
+                .then(|| crate::history::recode::for_output(c, &encoding, repo.hash))
+                .flatten();
+            infos.insert(n, Info::of_commit(shown.as_ref().unwrap_or(c), &mailmap));
         }
     }
 

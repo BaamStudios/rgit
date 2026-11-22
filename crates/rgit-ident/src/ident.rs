@@ -420,7 +420,7 @@ pub fn now() -> (u64, i32) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let zone = jiff::tz::TimeZone::system();
+    let zone = rgit_date::local_zone();
     let offset = jiff::Timestamp::from_second(secs as i64)
         .map(|ts| zone.to_offset(ts).seconds())
         .unwrap_or(0);

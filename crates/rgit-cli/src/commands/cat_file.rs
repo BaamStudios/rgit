@@ -4,9 +4,11 @@
 //! `--filters` converts a blob as a checkout of its path would (smudge
 //! filters, line endings); other objects are printed unchanged.
 //!
-//! Not implemented yet: `--textconv` (#147), `--filters` with `--batch`
-//! (#403), `--use-mailmap` (#127) and `--filter=` (#24); they are parsed
-//! and checked like git, then refused.
+//! With `--batch`, `--filters` takes the path from the rest of the input
+//! line; the size in the header stays that of the blob.
+//!
+//! Not implemented yet: `--textconv` (#147), `--use-mailmap` (#127) and
+//! `--filter=` (#24); they are parsed and checked like git, then refused.
 
 use std::io::{BufRead, BufWriter, Write};
 
@@ -192,7 +194,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     drop(parser);
 
-    if opt == MODE_TEXTCONV || (opt == MODE_FILTERS && batch.is_some()) {
+    if opt == MODE_TEXTCONV {
         return Err(Die::Fatal(msg::cat_file_not_supported(mode_name(opt))));
     }
     let use_mailmap = mailmap.get();
@@ -216,6 +218,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             output_nul: nul_out,
             buffer: buffer.get(),
             follow: follow.get(),
+            filters: opt == MODE_FILTERS,
+            conv: std::cell::OnceCell::new(),
         };
         return if all {
             batch_all(&mut repo, &opts)
@@ -492,6 +496,10 @@ struct BatchOptions {
     output_nul: bool,
     buffer: bool,
     follow: bool,
+    /// `--filters`: blob contents converted for the path after the name.
+    filters: bool,
+    /// The conversion for `--filters`, made on first use.
+    conv: std::cell::OnceCell<crate::convert::Converter>,
 }
 
 /// What one request asks for.
@@ -606,7 +614,7 @@ fn batch_stdin(repo: &mut Repo, opts: &BatchOptions) -> CmdResult {
             }
             continue;
         }
-        let (name, rest) = if opts.fmt.uses_rest {
+        let (name, rest) = if opts.fmt.uses_rest || opts.filters {
             split_rest(&line)
         } else {
             (&line[..], &b""[..])
@@ -782,8 +790,24 @@ fn show_object(
             }
         }
     }
+    let filter_path = opts.filters && req.contents && header.kind == ObjectKind::Blob;
+    if filter_path && req.rest.is_empty() {
+        // The header is out before git notices.
+        out.put(&line);
+        out.end();
+        let _ = out.flush();
+        return Err(Die::Fatal(msg::missing_path(&oid.to_hex())));
+    }
     let data = if req.contents {
         match repo.odb.read(real) {
+            // The header keeps the size of the blob (as git prints it).
+            Ok(Some(raw)) if filter_path => {
+                if opts.conv.get().is_none() {
+                    let _ = opts.conv.set(crate::convert::Converter::worktree(repo)?);
+                }
+                let conv = opts.conv.get().expect("set above");
+                Some(conv.to_worktree(req.rest, real, raw.data))
+            }
             Ok(Some(raw)) => Some(raw.data),
             Ok(None) => return Err(Die::Fatal(msg::bad_file(&oid.to_hex()))),
             Err(e) => {

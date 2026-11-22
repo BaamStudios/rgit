@@ -23,13 +23,80 @@
 //!   unknown channel `protocol error: bad band #<n>`, end of input
 //!   `unexpected disconnect while reading sideband packet` (git prefixes
 //!   these with the program name, e.g. `fetch-pack: `).
+//!
+//! With [`set_remote_colors`] (`color.remote`), a line that starts with
+//! `error`, `warning`, `hint` or `success` (in any case, after spaces, as
+//! a whole word) gets that word coloured.
 
 use std::ffi::OsStr;
 use std::io::{self, IsTerminal, Read, Write};
+use std::sync::Mutex;
 
 use crate::error::{Error, Result};
 use crate::messages::{ANSI_CLEAR_LINE, REMOTE_PREFIX, SPACES_SUFFIX};
 use crate::pktline::{Packet, Reader, Writer};
+
+/// The escape sequences for the keywords of remote messages
+/// (`color.remote.<slot>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteColors {
+    /// `color.remote.error`.
+    pub error: Vec<u8>,
+    /// `color.remote.warning`.
+    pub warning: Vec<u8>,
+    /// `color.remote.hint`.
+    pub hint: Vec<u8>,
+    /// `color.remote.success`.
+    pub success: Vec<u8>,
+}
+
+impl Default for RemoteColors {
+    /// git's defaults: bold red, bold yellow, yellow, bold green.
+    fn default() -> Self {
+        RemoteColors {
+            error: b"\x1b[1;31m".to_vec(),
+            warning: b"\x1b[1;33m".to_vec(),
+            hint: b"\x1b[33m".to_vec(),
+            success: b"\x1b[1;32m".to_vec(),
+        }
+    }
+}
+
+static REMOTE_COLORS: Mutex<Option<RemoteColors>> = Mutex::new(None);
+
+/// Colours remote messages from now on (`None`: no colours).
+pub fn set_remote_colors(colors: Option<RemoteColors>) {
+    *REMOTE_COLORS.lock().unwrap_or_else(|e| e.into_inner()) = colors;
+}
+
+/// `text` with a leading keyword coloured, if there is one.
+fn colorize(text: &[u8], colors: &RemoteColors) -> Option<Vec<u8>> {
+    let start = text.iter().position(|b| !b.is_ascii_whitespace())?;
+    let rest = &text[start..];
+    for (word, color) in [
+        (&b"error"[..], &colors.error),
+        (b"warning", &colors.warning),
+        (b"hint", &colors.hint),
+        (b"success", &colors.success),
+    ] {
+        let Some(head) = rest.get(..word.len()) else {
+            continue;
+        };
+        if !head.eq_ignore_ascii_case(word)
+            || rest.get(word.len()).is_some_and(u8::is_ascii_alphanumeric)
+        {
+            continue;
+        }
+        let mut out = Vec::with_capacity(text.len() + 16);
+        out.extend_from_slice(&text[..start]);
+        out.extend_from_slice(color);
+        out.extend_from_slice(head);
+        out.extend_from_slice(b"\x1b[m");
+        out.extend_from_slice(&rest[word.len()..]);
+        return Some(out);
+    }
+    None
+}
 
 /// Channel number of pack data.
 pub const BAND_DATA: u8 = 1;
@@ -106,7 +173,12 @@ impl<W: Write> Progress<W> {
             out.extend_from_slice(ANSI_CLEAR_LINE);
         }
         out.extend_from_slice(REMOTE_PREFIX);
-        out.extend_from_slice(text);
+        let colored = REMOTE_COLORS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|c| colorize(text, c));
+        out.extend_from_slice(colored.as_deref().unwrap_or(text));
         if self.style == ProgressStyle::Spaces && term.is_some() && !text.is_empty() {
             out.extend_from_slice(SPACES_SUFFIX);
         }
@@ -350,17 +422,16 @@ mod tests {
 
     #[test]
     fn style_detection() {
-        let t = Some(OsStr::new("xterm"));
-        assert_eq!(ProgressStyle::for_terminal(true, t), ProgressStyle::Ansi);
-        assert_eq!(ProgressStyle::for_terminal(false, t), ProgressStyle::Spaces);
-        assert_eq!(
-            ProgressStyle::for_terminal(true, Some(OsStr::new("dumb"))),
-            ProgressStyle::Spaces
-        );
-        assert_eq!(
-            ProgressStyle::for_terminal(true, None),
-            ProgressStyle::Spaces
-        );
+        let cases = [
+            (true, Some("xterm"), ProgressStyle::Ansi),
+            (false, Some("xterm"), ProgressStyle::Spaces),
+            (true, Some("dumb"), ProgressStyle::Spaces),
+            (true, None, ProgressStyle::Spaces),
+        ];
+        for (tty, term, want) in cases {
+            let got = ProgressStyle::for_terminal(tty, term.map(OsStr::new));
+            assert_eq!(got, want, "tty {tty}, TERM {term:?}");
+        }
     }
 
     // Expected bytes observed from git 2.56.0 (non-terminal stderr).
@@ -502,5 +573,22 @@ mod tests {
             lens.push(p.data().unwrap().len());
         }
         assert_eq!(lens, vec![996, 996, 11, 4]);
+    }
+
+    #[test]
+    fn keywords() {
+        let c = RemoteColors::default();
+        assert_eq!(
+            colorize(b"  ERROR: x", &c).unwrap(),
+            b"  \x1b[1;31mERROR\x1b[m: x".to_vec()
+        );
+        assert_eq!(
+            colorize(b"SUCCESS", &c).unwrap(),
+            b"\x1b[1;32mSUCCESS\x1b[m".to_vec()
+        );
+        assert!(colorize(b"hinting: no", &c).is_none());
+        assert!(colorize(b"prefixerror: no", &c).is_none());
+        assert!(colorize(b"Err", &c).is_none());
+        assert!(colorize(b"    ", &c).is_none());
     }
 }

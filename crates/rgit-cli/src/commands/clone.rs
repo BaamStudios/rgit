@@ -677,6 +677,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     // Open the new repository like any command would.
     let setup = open_new_repository(ctx, &git_dir, work_tree.as_deref())?;
     let config = refs_support::load_config(ctx, &setup)?;
+    rgit_protocol::sideband::set_remote_colors(crate::color::remote_colors(&config));
     let hash = setup.format.object_format;
     let fatal = |e: &dyn std::fmt::Display| Die::Fatal(e.to_string());
     let repo = LocalRepo::open(&setup, config).map_err(|e| fatal(&e))?;

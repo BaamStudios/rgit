@@ -69,6 +69,9 @@ pub struct Item<'a> {
     pub mark: u8,
     /// `%S`: the revision the commit was reached from.
     pub source: Option<&'a str>,
+    /// The column the output starts at (after the `--graph` lines), for
+    /// `%<|(...)` and `%>|(...)`.
+    pub column: usize,
 }
 
 /// The largest width, indent or column a placeholder accepts (larger
@@ -342,7 +345,15 @@ impl<L: Lookup> Expander<'_, L> {
         let w = layout::width(&out[start..]);
         let mut n = match pad.size {
             Size::Width(n) => n,
-            Size::Column(c) => c.saturating_sub(layout::column(&out[..start])),
+            Size::Column(c) => {
+                let before = &out[..start];
+                let base = if before.contains(&b'\n') {
+                    0
+                } else {
+                    self.item.column
+                };
+                c.saturating_sub(base + layout::column(before))
+            }
         };
         if n == 0 {
             return;
@@ -713,6 +724,7 @@ impl<L: Lookup> Expander<'_, L> {
         let ok = match name {
             b"trailers" => self.trailers(opts.unwrap_or(b""), out),
             b"decorate" => self.decorate(opts.unwrap_or(b""), out),
+            b"describe" => describe(self.item.id, opts.unwrap_or(b""), out),
             _ => false,
         };
         if ok { used } else { 0 }
@@ -852,6 +864,49 @@ impl<L: Lookup> Expander<'_, L> {
         }
         true
     }
+}
+
+/// `%(describe[:<options>])`: the output of `git describe` for `id`, as
+/// git runs it (a child process; empty when it fails, its errors are not
+/// shown).
+fn describe(id: &ObjectId, opts: &[u8], out: &mut Vec<u8>) -> bool {
+    let mut args: Vec<String> = vec!["describe".into()];
+    for opt in opts.split(|&b| b == b',').filter(|o| !o.is_empty()) {
+        let opt = String::from_utf8_lossy(opt);
+        let (key, value) = match opt.split_once('=') {
+            Some((k, v)) => (k, Some(v)),
+            None => (opt.as_ref(), None),
+        };
+        match (key, value) {
+            ("tags", None) => args.push("--tags".into()),
+            ("tags", Some(v)) => match rgit_config::value::parse_bool(Some(v.as_bytes())) {
+                Some(true) => args.push("--tags".into()),
+                Some(false) => args.push("--no-tags".into()),
+                None => return false,
+            },
+            ("abbrev", Some(v)) if v.bytes().all(|b| b.is_ascii_digit()) && !v.is_empty() => {
+                args.push(format!("--abbrev={v}"));
+            }
+            ("match", Some(v)) => args.push(format!("--match={v}")),
+            ("exclude", Some(v)) => args.push(format!("--exclude={v}")),
+            _ => return false,
+        }
+    }
+    args.push(id.to_hex());
+    let Ok(exe) = std::env::current_exe() else {
+        return true;
+    };
+    let output = std::process::Command::new(exe)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    if let Ok(o) = output {
+        if o.status.success() {
+            out.extend_from_slice(o.stdout.trim_ascii_end());
+        }
+    }
+    true
 }
 
 #[cfg(test)]

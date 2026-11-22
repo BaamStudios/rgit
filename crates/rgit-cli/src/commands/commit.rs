@@ -911,7 +911,11 @@ fn lookup_commit(repo: &mut Repo, name: &str) -> Result<(ObjectId, rgit_object::
         .and_then(|i| repo.peel_to(i, ObjectKind::Commit))
         .ok_or_else(|| fatal(msg::could_not_lookup(name)))?;
     match repo.read_object(&id) {
-        Some(Object::Commit(c)) => Ok((id, c)),
+        // Its message is reused in the commit encoding.
+        Some(Object::Commit(c)) => Ok((
+            id,
+            crate::history::recode::for_new_commit(&repo.config, repo.hash, c),
+        )),
         _ => Err(fatal(msg::could_not_lookup(name))),
     }
 }
@@ -966,8 +970,12 @@ fn without_first_line(text: &[u8]) -> &[u8] {
 
 /// The `Signed-off-by` line of the committer.
 fn signoff_line(committer: &Signature) -> Vec<u8> {
+    // Bytes as they are (the name may be in the commit encoding).
     let mut v = b"Signed-off-by: ".to_vec();
-    v.extend_from_slice(name_email(committer).as_bytes());
+    v.extend_from_slice(&committer.name);
+    v.extend_from_slice(b" <");
+    v.extend_from_slice(&committer.email);
+    v.push(b'>');
     v
 }
 
@@ -1264,13 +1272,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     };
     if let Some(a) = &args.author {
-        let parsed = a
-            .find('<')
-            .and_then(|lt| a[lt..].find('>').map(|gt| (lt, lt + gt)))
+        let raw = crate::argv::bytes(a);
+        let parsed = raw
+            .iter()
+            .position(|&b| b == b'<')
+            .and_then(|lt| raw[lt..].iter().position(|&b| b == b'>').map(|gt| (lt, lt + gt)))
             .map(|(lt, gt)| {
                 (
-                    rgit_ident::ident::sanitize(&a.as_bytes()[..lt]).to_vec(),
-                    rgit_ident::ident::sanitize(&a.as_bytes()[lt + 1..gt]).to_vec(),
+                    rgit_ident::ident::sanitize(&raw[..lt]).to_vec(),
+                    rgit_ident::ident::sanitize(&raw[lt + 1..gt]).to_vec(),
                 )
             });
         let (n, e) = match parsed {
@@ -1560,7 +1570,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 if !given.is_empty() {
                     given.push(b'\n');
                 }
-                given.extend_from_slice(m.as_bytes());
+                given.extend_from_slice(&crate::argv::bytes(m));
                 if !given.is_empty() && !given.ends_with(b"\n") {
                     given.push(b'\n');
                 }
@@ -1944,6 +1954,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         encoding: encoding.as_deref(),
         message: &cleaned,
     };
+    if new.message.contains(&0) {
+        eprintln!("error: {}", rgit_commit::messages::NUL_IN_MESSAGE);
+        return Err(fatal(crate::messages::signing::FAILED_TO_WRITE_COMMIT));
+    }
+    if !new.conforms() {
+        eprintln!("{}", rgit_commit::messages::NOT_UTF8_WARNING);
+    }
     let mut object = new.to_commit();
     if let Some(sign) = &sign {
         match signing::sign_commit(&repo.config, repo.hash, &mut object, sign, &committer) {

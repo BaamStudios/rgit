@@ -476,12 +476,13 @@ pub(crate) fn autosquash(repo: &mut Repo, todo: &mut Todo) {
                 return None;
             }
             let c = i.commit?;
-            match repo.read_object(&c) {
-                Some(rgit_object::Object::Commit(cm)) => Some(
+            // Subjects are compared in the commit encoding.
+            match crate::sequencer::read_commit(repo, &c) {
+                Ok(cm) => Some(
                     String::from_utf8_lossy(&rgit_commit::message::subject(cm.message()))
                         .into_owned(),
                 ),
-                _ => None,
+                Err(_) => None,
             }
         })
         .collect();

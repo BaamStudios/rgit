@@ -14,7 +14,7 @@ pub mod mailmap;
 mod options;
 mod paths;
 pub mod pretty;
-mod recode;
+pub(crate) mod recode;
 mod tips;
 mod userformat;
 
@@ -1061,7 +1061,13 @@ impl Printer<'_, '_> {
     /// Read commit `id` for showing, converted to the output encoding.
     fn read_shown(&self, id: &ObjectId) -> Option<(Commit, Vec<u8>)> {
         let (commit, raw) = self.repo.read_commit(id)?;
-        match recode::reencode(&raw, commit.encoding(), &self.encoding) {
+        let user_format = matches!(self.style.pretty, Pretty::User { .. });
+        let converted = if user_format {
+            recode::reencode_for_format(&raw, commit.encoding(), &self.encoding)
+        } else {
+            recode::reencode(&raw, commit.encoding(), &self.encoding)
+        };
+        match converted {
             Some(data) => {
                 let converted = Commit::parse(self.repo.objects.hash_kind(), &data).ok()?;
                 Some((converted, raw))
@@ -1115,6 +1121,12 @@ impl Printer<'_, '_> {
             parents: &parents,
             mark,
             source: source.as_deref(),
+            // The graph's part of the commit line counts for `%>|(...)`.
+            column: layout::width(&prefix)
+                + self
+                    .graph
+                    .as_ref()
+                    .map_or(0, |g| layout::width(&g.clone().lines_to_commit().1)),
         };
         let settings = self.user.as_ref().expect("user format settings");
         let expanded = userformat::expand(&fmt, settings, &item, &FormatLookup { p: self })
@@ -1687,7 +1699,11 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         deco_colors,
         notes,
         sources: None,
-        encoding: recode::output_encoding(repo.config),
+        encoding: opts
+            .encoding
+            .as_ref()
+            .map(|e| e.as_bytes().to_vec())
+            .unwrap_or_else(|| recode::output_encoding(repo.config)),
         out: Vec::with_capacity(1 << 16),
         first: true,
         dist: None,

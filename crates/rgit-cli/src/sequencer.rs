@@ -976,10 +976,10 @@ impl<'c> Sequencer<'c> {
             return Err(Fail::Printed);
         }
         let parents: Vec<ObjectId> = head.into_iter().collect();
-        let encoding = picked
-            .encoding()
-            .filter(|_| self.opts.action == Action::Pick)
-            .map(|e| e.to_vec());
+        // Messages are reused in the commit encoding (see `read_commit`).
+        let encoding = Some(crate::history::recode::commit_encoding(&repo.config))
+            .filter(|e| !rgit_convert::encoding::same_encoding(e, "UTF-8"))
+            .map(String::into_bytes);
         let new = rgit_commit::NewCommit {
             tree,
             parents: &parents,
@@ -1414,7 +1414,12 @@ pub(crate) fn head_commit(repo: &mut Repo) -> Option<ObjectId> {
 
 pub(crate) fn read_commit(repo: &Repo, id: &ObjectId) -> Result<Commit, Fail> {
     match repo.read_object(id) {
-        Some(Object::Commit(c)) => Ok(c),
+        // The message is reused in the commit encoding.
+        Some(Object::Commit(c)) => Ok(crate::history::recode::for_new_commit(
+            &repo.config,
+            repo.hash,
+            c,
+        )),
         _ => Err(Fail::Error(rgit_merge::messages::not_a_commit(
             &id.to_hex(),
         ))),
