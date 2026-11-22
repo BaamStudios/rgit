@@ -18,6 +18,7 @@ mod diff;
 mod external;
 mod format;
 mod global;
+mod grep;
 mod history;
 mod hooks;
 mod messages;

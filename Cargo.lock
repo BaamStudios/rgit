@@ -547,6 +547,7 @@ dependencies = [
  "bstr",
  "libc",
  "regex",
+ "regex-automata",
  "rgit-apply",
  "rgit-attr",
  "rgit-commit",
