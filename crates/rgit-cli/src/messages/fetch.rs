@@ -124,3 +124,7 @@ pub fn upstream_detached(branch: &str, remote: &str) -> String {
         "could not set upstream of HEAD to '{branch}' from '{remote}' when it does not point to any branch."
     )
 }
+pub const HELP_RECURSE_SUBMODULES: &str = "control recursive fetching of submodules";
+pub fn recurse_submodules_unsupported(value: &str) -> String {
+    format!("rgit: fetch --recurse-submodules={value} is not supported yet")
+}

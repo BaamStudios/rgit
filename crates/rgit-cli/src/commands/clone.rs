@@ -86,6 +86,11 @@ struct Options {
     ip: IpVersion,
     /// `-v` (connection steps of `git://`).
     verbose: bool,
+    /// `--recurse-submodules` pathspecs (`.` for all).
+    recurse: Vec<String>,
+    shallow_submodules: bool,
+    remote_submodules: bool,
+    jobs: i32,
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
@@ -231,9 +236,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
 
     // Options rgit does not implement yet.
-    let unsupported: [(&str, bool); 6] = [
-        ("--recurse-submodules", !recurse.borrow().is_empty()),
-        ("--shallow-submodules", shallow_submodules.get()),
+    let unsupported: [(&str, bool); 4] = [
         ("--filter", filter.borrow().is_some()),
         ("--also-filter-submodules", also_filter_submodules.get()),
         ("--sparse", sparse.get()),
@@ -242,8 +245,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some((name, _)) = unsupported.iter().find(|(_, used)| *used) {
         return Err(Die::Fatal(msg::unsupported(name)));
     }
-    // -j and --remote-submodules change nothing without submodules.
-    let _ = (jobs.get(), remote_submodules.get());
     let ref_format = match ref_format.into_inner() {
         Some(f) => Some(repo_init::parse_ref_format(&f).map_err(|e| init_failed(&e))?),
         None => None,
@@ -287,6 +288,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             _ => IpVersion::Any,
         },
         verbose: verbose.get() > 0 && quiet.get() == 0,
+        recurse: recurse.into_inner(),
+        shallow_submodules: shallow_submodules.get(),
+        remote_submodules: remote_submodules.get(),
+        jobs: jobs.get(),
     };
     if opts.bare {
         opts.no_checkout = true;
@@ -300,18 +305,27 @@ struct Source {
     url: String,
     /// The repository is a local directory.
     local_dir: bool,
+    /// Where the transport connects: the URL, or the git directory a
+    /// gitfile at the source points to.
+    connect_url: String,
 }
 
 /// git's lookup of a local repository: `<repo>/.git`, `<repo>`,
 /// `<repo>.git/.git`, `<repo>.git`; the first directory that is a git
 /// repository wins. The recorded path is absolute, without a trailing
 /// `/.git` that was added here.
-fn local_repository(repo: &str, cwd: &Path) -> Option<PathBuf> {
+fn local_repository(repo: &str, cwd: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
     for (suffix, keep) in [("/.git", ""), ("", ""), (".git/.git", ".git"), (".git", ".git")] {
         let candidate = cwd.join(format!("{repo}{suffix}"));
         if is_git_directory(&candidate) || gitfile_repository(&candidate) {
+            // A gitfile (`gitdir: <path>`), e.g. a submodule's work tree:
+            // the transport connects to the git directory it names.
+            let via_gitfile = candidate
+                .is_file()
+                .then(|| repository_git_dir(&candidate))
+                .and_then(|g| std::fs::canonicalize(g).ok());
             // As given, made absolute (`.`, `..` and symbolic links stay).
-            return Some(cwd.join(format!("{repo}{keep}")));
+            return Some((cwd.join(format!("{repo}{keep}")), via_gitfile));
         }
     }
     None
@@ -348,9 +362,11 @@ fn anonymize(url: &str) -> String {
 }
 
 fn resolve_source(repo: &str, cwd: &Path, local: Option<bool>) -> Result<Source, Die> {
-    if let Some(path) = local_repository(repo, cwd) {
+    if let Some((path, git_dir)) = local_repository(repo, cwd) {
+        let url = path.to_string_lossy().into_owned();
         return Ok(Source {
-            url: path.to_string_lossy().into_owned(),
+            connect_url: git_dir.map_or_else(|| url.clone(), |g| g.to_string_lossy().into_owned()),
+            url,
             local_dir: local != Some(false),
         });
     }
@@ -358,6 +374,7 @@ fn resolve_source(repo: &str, cwd: &Path, local: Option<bool>) -> Result<Source,
     if rgit_remote::url::is_url(bytes) || !rgit_remote::url::is_local_path(bytes) {
         return Ok(Source {
             url: repo.to_owned(),
+            connect_url: repo.to_owned(),
             local_dir: false,
         });
     }
@@ -713,7 +730,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         ip: opts.ip,
         verbose: opts.verbose,
     };
-    let mut session = Session::connect(&source.url, &connect, "clone").map_err(|e| fatal(&e))?;
+    let mut session = Session::connect(&source.connect_url, &connect, "clone").map_err(|e| fatal(&e))?;
 
     // Fetch refspecs given with `-c remote.<name>.fetch=...` are used in
     // addition to the default one.
@@ -1131,6 +1148,13 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
 
     // From here on the repository stays, even when the checkout fails.
     junk.armed = false;
+    // `--recurse-submodules`: the submodules to initialise are the active
+    // ones.
+    if work_tree.is_some() && !opts.no_checkout {
+        for spec in &opts.recurse {
+            config_add(&git_dir.join("config"), "submodule.active", spec)?;
+        }
+    }
     if let (Some(oid), false, Some(_)) = (checkout_oid, opts.no_checkout, &work_tree) {
         // An invalid GIT_ADVICE fails the checkout step (observed).
         let advice = match ctx
@@ -1165,11 +1189,58 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         // directory, and its exit code becomes clone's.
         let hooks = crate::hooks::of(&checked_out)?;
         let null = ObjectId::null(checked_out.hash);
-        let opts = rgit_hook::RunOptions::with_args([null.to_hex(), oid.to_hex(), "1".into()])
-            .env("GIT_DIR", checked_out.setup.absolute_git_dir());
-        return Ok(crate::hooks::run(&hooks, "post-checkout", &opts)?.code);
+        let hook_opts =
+            rgit_hook::RunOptions::with_args([null.to_hex(), oid.to_hex(), "1".into()])
+                .env("GIT_DIR", checked_out.setup.absolute_git_dir());
+        let code = crate::hooks::run(&hooks, "post-checkout", &hook_opts)?.code;
+        if code != 0 || opts.recurse.is_empty() {
+            return Ok(code);
+        }
+        let root = checked_out.setup.cwd.join(checked_out.work_tree()?);
+        return update_submodules(ctx, opts, &root);
     }
     Ok(0)
+}
+
+/// `--recurse-submodules`: `git submodule update --init --recursive` in
+/// the new work tree.
+fn update_submodules(ctx: &Context, opts: &Options, root: &Path) -> CmdResult {
+    let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut args: Vec<String> = ["submodule", "update", "--require-init", "--recursive"]
+        .map(String::from)
+        .to_vec();
+    if opts.quiet {
+        args.push("--quiet".into());
+    }
+    match opts.progress {
+        Some(true) => args.push("--progress".into()),
+        Some(false) => args.push("--no-progress".into()),
+        None => {}
+    }
+    if opts.shallow_submodules {
+        args.push("--depth=1".into());
+    }
+    if opts.remote_submodules {
+        args.push("--remote".into());
+    }
+    if opts.jobs >= 0 {
+        args.push(format!("--jobs={}", opts.jobs));
+    }
+    let mut cmd = std::process::Command::new(exe);
+    let env = ctx.child_env();
+    cmd.envs(
+        env.iter()
+            .filter(|(k, _)| k != "GIT_DIR" && k != "GIT_WORK_TREE")
+            .map(|(k, v)| (k, v)),
+    );
+    cmd.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
+    let _ = std::io::stdout().flush();
+    let status = cmd
+        .args(&args)
+        .current_dir(root)
+        .status()
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    Ok(status.code().unwrap_or(128))
 }
 
 /// The initial checkout: a one-way merge of `commit`'s tree into the
