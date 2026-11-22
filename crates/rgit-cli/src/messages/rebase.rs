@@ -189,6 +189,12 @@ pub const APPLIED_AUTOSTASH: &str = "Applied autostash.";
 pub const AUTOSTASH_CONFLICTS: &str = "Applying autostash resulted in conflicts.\n\
 Your changes are safe in the stash.\n\
 You can run \"git stash pop\" or \"git stash drop\" at any time.\n";
+/// The autostash was applied with conflicts, which are left in the index
+/// and work tree; the stash is kept too.
+pub const AUTOSTASH_APPLIED_WITH_CONFLICTS: &str = "Your local changes are stashed, however \
+applying them\nresulted in conflicts.  You can either resolve the conflicts\nand then discard \
+the stash with \"git stash drop\", or, if you\ndo not want to resolve them now, run \"git reset \
+--hard\" and\napply the local changes later by running \"git stash pop\".";
 pub const AUTOSTASH_KEPT: &str = "Autostash exists; creating a new stash entry.\n\
 Your changes are safe in the stash.\n\
 You can run \"git stash pop\" or \"git stash drop\" at any time.\n";
