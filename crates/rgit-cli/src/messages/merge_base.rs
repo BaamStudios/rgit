@@ -17,7 +17,11 @@ pub const HELP_IS_ANCESTOR: &str = "is the first one ancestor of the other?";
 pub const HELP_FORK_POINT: &str = "find where <commit> forked from reflog of <ref>";
 
 pub const IS_ANCESTOR_TWO: &str = "--is-ancestor takes exactly two commits";
-pub const FORK_POINT_NOT_SUPPORTED: &str = "rgit: merge-base: --fork-point is not supported yet";
+
+/// `No such ref: '<ref>'` (`--fork-point` with a name that is not a ref).
+pub fn no_such_ref(name: &str) -> String {
+    format!("No such ref: '{name}'")
+}
 
 pub fn incompatible(a: &str, b: &str) -> String {
     format!("options '{a}' and '{b}' cannot be used together")
@@ -29,4 +33,9 @@ pub fn not_a_valid_object(name: &str) -> String {
 
 pub fn not_a_valid_commit(name: &str) -> String {
     format!("Not a valid commit name {name}")
+}
+
+/// `Not a valid object name: '<name>'` (the commit of `--fork-point`).
+pub fn not_a_valid_object_name(name: &str) -> String {
+    format!("Not a valid object name: '{name}'")
 }

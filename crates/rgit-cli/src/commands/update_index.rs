@@ -330,7 +330,7 @@ impl State<'_> {
                 self.repo
                     .odb()
                     .write(ObjectKind::Blob, &data)
-                    .map_err(|e| Some(e.to_string()))?
+                    .map_err(|e| Some(crate::messages::objects::insert_failure(&e, &shown)))?
             };
             if existing.is_empty() && !self.flag(Flag::Add) {
                 return Err(Some(msg::missing_add(&shown)));

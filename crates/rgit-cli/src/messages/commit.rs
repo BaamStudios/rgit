@@ -236,3 +236,6 @@ If you wish to commit it anyway, use:
     git commit --allow-empty
 ";
 pub const EMPTY_CHERRY_PICK_SKIP: &str = "Otherwise, please use 'git cherry-pick --skip'";
+
+/// `Error building trees` (the trees of the index cannot be written).
+pub const ERROR_BUILDING_TREES: &str = "Error building trees";

@@ -207,6 +207,11 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         None => {
             let mut last: Option<&[u8]> = None;
             for e in index.entries() {
+                // Skip-worktree paths are outside the checkout: they do
+                // not even match the pathspec unless the bits are ignored.
+                if e.flags.skip_worktree && !how.ignore_skip_worktree {
+                    continue;
+                }
                 if ps.match_path_seen(e.path(), &mut seen).is_none() {
                     continue;
                 }
@@ -239,7 +244,16 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
                 if e.flags.intent_to_add || (e.flags.skip_worktree && !how.ignore_skip_worktree) {
                     continue;
                 }
-                if !matches!(checker.check(e), Ok(Status::Unchanged)) {
+                // A skip-worktree entry counts as unchanged; with
+                // --ignore-skip-worktree-bits its file is checked for real.
+                let changed = if e.flags.skip_worktree {
+                    let mut plain = e.clone();
+                    plain.flags.skip_worktree = false;
+                    !matches!(checker.check(&plain), Ok(Status::Unchanged))
+                } else {
+                    !matches!(checker.check(e), Ok(Status::Unchanged))
+                };
+                if changed {
                     actions.push((e.path().to_vec(), Action::Write(e.clone())));
                 }
             }

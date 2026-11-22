@@ -43,23 +43,42 @@ pub fn write_tree(
     missing_ok: bool,
     prefix: Option<&str>,
 ) -> Result<ObjectId, Die> {
+    write_tree_or(repo, index, missing_ok, prefix, || {
+        Die::Fatal(msg::ERROR_BUILDING_TREES.into())
+    })
+}
+
+/// [`write_tree`] with the caller's final complaint when the trees cannot
+/// be built (`commit` says `error: Error building trees`).
+pub fn write_tree_or(
+    repo: &Repo,
+    index: &Index,
+    missing_ok: bool,
+    prefix: Option<&str>,
+    failed: impl Fn() -> Die,
+) -> Result<ObjectId, Die> {
     let opts = WriteTreeOptions { missing_ok, prefix };
     rgit_commit::write_tree(repo.odb(), index, &opts).map_err(|e| match e {
         WriteTreeError::Unmerged(paths) => {
             for p in paths {
                 eprintln!("{}", msg::unmerged(&String::from_utf8_lossy(&p)));
             }
-            Die::Fatal(msg::ERROR_BUILDING_TREES.into())
+            failed()
         }
         WriteTreeError::MissingObject { mode, id, path } => {
             eprintln!(
                 "error: {}",
                 msg::invalid_object(mode, &id.to_hex(), &String::from_utf8_lossy(&path))
             );
-            Die::Fatal(msg::ERROR_BUILDING_TREES.into())
+            failed()
         }
         WriteTreeError::PrefixNotFound(p) => Die::Fatal(msg::prefix_not_found(&p)),
-        WriteTreeError::BadMode => Die::Fatal(msg::ERROR_BUILDING_TREES.into()),
-        WriteTreeError::Odb(e) => Die::Fatal(e.to_string()),
+        WriteTreeError::BadMode => failed(),
+        WriteTreeError::Odb(e) => {
+            for line in e.git_lines() {
+                eprintln!("error: {line}");
+            }
+            failed()
+        }
     })
 }

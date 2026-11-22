@@ -103,3 +103,12 @@ pub fn alternates_too_deep(dir: &Path) -> String {
         dir.display()
     )
 }
+
+/// `insufficient permission for adding an object to repository database
+/// <dir>` (a new object cannot be created).
+pub fn insufficient_permission(dir: &Path) -> String {
+    format!(
+        "insufficient permission for adding an object to repository database {}",
+        dir.display()
+    )
+}

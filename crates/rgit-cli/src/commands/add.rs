@@ -265,7 +265,7 @@ pub(crate) fn entry_for(
     } else {
         repo.odb()
             .write(ObjectKind::Blob, &data)
-            .map_err(|e| read_err(e.to_string()))?
+            .map_err(|e| read_err(crate::messages::objects::insert_failure(&e, &shown)))?
     };
     let mut entry = Entry::new(path.to_vec(), Stage::MERGED, mode, id);
     entry.stat = stat_from_metadata(&meta);
@@ -290,7 +290,7 @@ fn intent_entry(repo: &Repo, checker: &Checker, path: &[u8]) -> Result<Option<En
     Ok(Some(entry))
 }
 
-fn report_failure(path: &[u8], err: &str) {
+pub(crate) fn report_failure(path: &[u8], err: &str) {
     eprintln!("error: {err}");
     eprintln!("error: {}", msg::unable_to_index(&lossy(path)));
 }

@@ -312,7 +312,15 @@ impl LooseStore {
         reader: &mut dyn Read,
         mut hasher: Option<Hasher>,
     ) -> Result<ObjectId, Error> {
-        let dir_err = |e| Error::io(self.dir.display().to_string(), e);
+        let dir_err = |e: io::Error| {
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                Error::InsufficientPermission {
+                    dir: self.dir.clone(),
+                }
+            } else {
+                Error::io(self.dir.display().to_string(), e)
+            }
+        };
         let mut tmp = TempFile::with_mode(&self.dir, OBJECT_PREFIX, 0o444).map_err(dir_err)?;
         let tmp_err = |e: io::Error| Error::io(tmp_display(&self.dir), e);
         {
@@ -357,8 +365,15 @@ impl LooseStore {
         }
         let dest = self.path_of(&oid);
         let fan = dest.parent().expect("object path has a fan-out directory");
-        create_fanout_dir(fan, self.options.shared)
-            .map_err(|e| Error::io(fan.display().to_string(), e))?;
+        create_fanout_dir(fan, self.options.shared).map_err(|e| {
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                Error::InsufficientPermission {
+                    dir: self.dir.clone(),
+                }
+            } else {
+                Error::io(fan.display().to_string(), e)
+            }
+        })?;
         tmp.persist(&dest)
             .map_err(|e| Error::io(dest.display().to_string(), e))?;
         Ok(oid)

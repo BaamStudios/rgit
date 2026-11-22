@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! `git merge-base` (Documentation/git-merge-base.adoc): best common
-//! ancestors (`--all`, `--octopus`), `--independent` and `--is-ancestor`.
-//! `--fork-point` is not implemented yet.
+//! ancestors (`--all`, `--octopus`), `--independent`, `--is-ancestor` and
+//! `--fork-point` (through the reflog of `<ref>`).
 
 use std::io::Write;
 
@@ -53,12 +53,31 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if mode == IS_ANCESTOR && args.len() != 2 {
         return Err(Die::Fatal(msg::IS_ANCESTOR_TWO.to_owned()));
     }
-    if mode == FORK_POINT {
-        return Err(Die::Fatal(msg::FORK_POINT_NOT_SUPPORTED.to_owned()));
-    }
-
     let setup = repo::setup(ctx, Mode::Required)?;
     let revs = Revs::new(ctx, &setup)?;
+    if mode == FORK_POINT {
+        let (full, commit) = revs.with_resolver(|r| {
+            let dwim = r.dwim_ref(&args[0]).map_err(|e| Die::Fatal(e.to_string()))?;
+            if dwim.count == 0 {
+                return Err(Die::Fatal(msg::no_such_ref(&args[0])));
+            }
+            let name = args.get(1).map_or("HEAD", String::as_str);
+            let commit = r
+                .resolve(name)
+                .ok()
+                .and_then(|o| r.peel_to_commit(&o).ok())
+                .ok_or_else(|| Die::Fatal(msg::not_a_valid_object_name(name)))?;
+            Ok((dwim.full_name, commit))
+        })?;
+        let repo = crate::repository::Repo::from_setup(ctx, setup)?;
+        let Some(found) = crate::rebase::fork_point(&repo, &full, &commit)? else {
+            return Ok(1);
+        };
+        let mut o = std::io::stdout().lock();
+        let _ = writeln!(o, "{found}");
+        let _ = o.flush();
+        return Ok(0);
+    }
     revs.with_resolver(|r| {
         let mut commits = Vec::with_capacity(args.len());
         for a in &args {
