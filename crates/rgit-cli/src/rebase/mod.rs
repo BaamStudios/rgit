@@ -473,8 +473,8 @@ fn run_child(ctx: &Context, args: &[&str], capture: bool) -> Result<(i32, Vec<u8
 }
 
 /// Stashes the local changes, if there are any, as [`create_autostash`]
-/// does (`pull --autostash` before a fast-forward).
-pub(crate) fn autostash_local_changes(ctx: &mut Context) -> Result<Option<String>, Die> {
+/// does (`merge --autostash`).
+pub(crate) fn autostash_local_changes(ctx: &Context) -> Result<Option<String>, Die> {
     let (unstaged, staged) = local_changes(&mut Repo::open(ctx, Mode::Required)?)?;
     if unstaged || staged {
         create_autostash(ctx)
@@ -485,7 +485,7 @@ pub(crate) fn autostash_local_changes(ctx: &mut Context) -> Result<Option<String
 
 /// `--autostash`: stashes the local changes and resets to `HEAD`;
 /// returns the stash commit.
-fn create_autostash(ctx: &mut Context) -> Result<Option<String>, Die> {
+fn create_autostash(ctx: &Context) -> Result<Option<String>, Die> {
     let (code, out) = run_child(ctx, &["stash", "create", msg::AUTOSTASH_MESSAGE], true)?;
     let hex = lossy(&out).trim().to_owned();
     if code != 0 || hex.is_empty() {
@@ -506,7 +506,7 @@ fn create_autostash(ctx: &mut Context) -> Result<Option<String>, Die> {
 }
 
 /// Applies the autostash `hex`; on conflicts it is kept in the stash list.
-pub(crate) fn apply_autostash(ctx: &mut Context, hex: &str) -> Result<(), Die> {
+pub(crate) fn apply_autostash(ctx: &Context, hex: &str) -> Result<(), Die> {
     let (code, _) = run_child(ctx, &["stash", "apply", hex], true)?;
     if code == 0 {
         eprintln!("{}", msg::APPLIED_AUTOSTASH);
@@ -761,6 +761,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
                     }
                     crate::hooks::post_checkout(&repo, current, Some(orig_head), true)?;
                 }
+                crate::maintenance::run_auto(ctx);
                 if !quiet {
                     println!("{}", msg::up_to_date(branch_short.as_deref(), false));
                 }
@@ -3204,6 +3205,7 @@ pub fn abort(ctx: &mut Context) -> CmdResult {
     let _ = std::fs::remove_file(git_dir(&repo).join("AUTO_MERGE"));
     let _ = std::fs::remove_dir_all(dir);
     drop(repo);
+    crate::maintenance::run_auto(rb.ctx);
     if let Some(s) = rb.state.autostash.clone() {
         apply_autostash(rb.ctx, &s)?;
     }
@@ -3215,12 +3217,7 @@ pub fn quit(ctx: &mut Context) -> CmdResult {
     let rb = Rebase::load(ctx)?;
     let dir = rb.dir()?;
     if let Some(s) = rb.state.autostash.clone() {
-        run_child(
-            rb.ctx,
-            &["stash", "store", "-q", "-m", msg::AUTOSTASH_MESSAGE, &s],
-            true,
-        )?;
-        eprint!("{}", msg::AUTOSTASH_KEPT);
+        store_autostash(rb.ctx, &s)?;
     }
     let repo = rb.repo()?;
     delete_labels(rb.ctx, &repo)?;
@@ -3272,4 +3269,15 @@ pub fn edit_todo(ctx: &mut Context) -> CmdResult {
         }
         Err(()) => Ok(1),
     }
+}
+
+/// Keeps the autostash `hex` in the stash list (`--quit`).
+pub(crate) fn store_autostash(ctx: &Context, hex: &str) -> Result<(), Die> {
+    run_child(
+        ctx,
+        &["stash", "store", "-q", "-m", msg::AUTOSTASH_MESSAGE, hex],
+        true,
+    )?;
+    eprint!("{}", msg::AUTOSTASH_KEPT);
+    Ok(())
 }

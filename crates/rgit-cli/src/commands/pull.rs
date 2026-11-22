@@ -24,8 +24,8 @@
 //! - refusing to start with unmerged files or an unfinished merge.
 //!
 //! - `--rebase` (also from the configuration): a fast-forward is done as
-//!   `merge --ff-only` (an autostash made around it), anything else runs `rebase --onto <fetched head>
-//!   <upstream>` as a child (the work is done by [`crate::rebase`]), with
+//!   `merge --ff-only` (with the rebase's `--[no-]autostash`), anything
+//!   else runs `rebase --onto <fetched head> <upstream>` as a child (the work is done by [`crate::rebase`]), with
 //!   the verbosity, `--stat`/`-n`, `--strategy`, `--strategy-option`,
 //!   `--signoff`, `--gpg-sign` and `--[no-]autostash` (`pull.autostash`,
 //!   else `rebase.autoStash`) passed on. The upstream is the fork point of
@@ -749,18 +749,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if rebasing {
         if can_ff {
             drop(repo);
-            // merge has no --autostash yet (#57): the stash is made here,
-            // with merge's messages.
-            let stash = if rebase_autostash {
-                crate::rebase::autostash_local_changes(ctx)?
-            } else {
-                None
-            };
-            let code = children.run(&args.merge_argv(Some("--ff-only"), Some(false)))?;
-            if let Some(s) = stash {
-                crate::rebase::apply_autostash(ctx, &s)?;
-            }
-            return Ok(code);
+            return children.run(&args.merge_argv(Some("--ff-only"), Some(rebase_autostash)));
         }
         match rebase {
             Some(Rebase::Interactive) => {

@@ -1848,7 +1848,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             &RunOptions::with_args(["amend"]).stdin(rgit_hook::Input::Data(input.as_bytes())),
         )?;
     }
+    crate::maintenance::run_auto(ctx);
     if args.quiet {
+        super::merge::apply_merge_autostash(ctx, &git_dir)?;
         return Ok(0);
     }
     let mut out = Vec::new();
@@ -1883,5 +1885,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut o = std::io::stdout().lock();
     let _ = o.write_all(&out);
     let _ = o.flush();
+    drop(o);
+    // The commit concludes a merge made with --autostash.
+    super::merge::apply_merge_autostash(ctx, &git_dir)?;
     Ok(0)
 }

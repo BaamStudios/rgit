@@ -184,3 +184,7 @@ pub const MERGE_PROGRAM_FAILED: &str = "merge program failed";
 pub fn option_not_supported(name: &str) -> String {
     format!("rgit merge: {name} is not supported yet")
 }
+
+/// `--autostash`: the merge stopped before its commit.
+pub const APPLY_STASH_WHEN_FINISHED: &str =
+    "When finished, apply stashed changes with `git stash pop`";

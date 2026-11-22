@@ -914,6 +914,7 @@ impl<'c> Am<'c> {
             self.next_patch()?;
         }
         let _ = std::fs::remove_dir_all(&self.dir);
+        crate::maintenance::run_auto(self.ctx);
         Ok(0)
     }
 

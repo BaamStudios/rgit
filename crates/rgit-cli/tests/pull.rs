@@ -10,7 +10,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use rgit_difftest::{Fixture, Normalizer};
+use rgit_difftest::Fixture;
 
 /// `c0`; `c1`, `c2` and `c3` each add a file on top of it (tags and
 /// branches `b1`..`b3`); `main` is at `c0`.
@@ -483,10 +483,7 @@ fn rebase_autostash() {
             &["pull", "--rebase", "--autostash", ".", "c0"],
         ],
     );
-    // A fast-forward: merge --ff-only with the stash made around it. pull
-    // stashes before merge starts, so "Created autostash" comes before
-    // merge's "Updating" line instead of after it until merge has
-    // --autostash (#57); that line is left out of the comparison.
+    // A fast-forward: merge --ff-only with the rebase's --autostash.
     let ff_cases: [(Prep, &[&str]); 4] = [
         (
             |fx| fx.write("c0.c", "changed\n"),
@@ -515,8 +512,8 @@ fn rebase_autostash() {
         let c = fx
             .compare(args)
             .env("PATH", path)
-            .normalize_stdout(Normalizer::drop_lines("^Updating "))
-            .git_file("ORIG_HEAD");
+            .git_file("ORIG_HEAD")
+            .git_file("AUTO_MERGE");
         if let Err(m) = c.try_run() {
             failed.push(m.to_string());
         }
@@ -540,6 +537,43 @@ fn rebase_autostash() {
                 .git(["add", "c1.c"])
         },
         &[&["pull", "--rebase", "--autostash", ".", "c1"]],
+    );
+}
+
+/// Merging pulls with `--autostash`, `pull.autostash` and
+/// `merge.autoStash` (t5520's autostash cases).
+#[test]
+fn merge_autostash() {
+    cases(
+        |fx| {
+            fx.git(["reset", "-q", "--hard", "c2"])
+                .write("c0.c", "changed\n")
+        },
+        &[
+            &["pull", "--no-rebase", "--autostash", ".", "c1"],
+            &[
+                "-c",
+                "merge.autostash=true",
+                "pull",
+                "--no-rebase",
+                ".",
+                "c1",
+            ],
+            &[
+                "-c",
+                "pull.autostash=true",
+                "pull",
+                "--no-rebase",
+                ".",
+                "c1",
+            ],
+            &["pull", "--no-rebase", "--autostash", ".", "c2"],
+            &["pull", "--ff-only", "--autostash", ".", "c1"],
+        ],
+    );
+    cases(
+        |fx| fx.write("c0.c", "changed\n"),
+        &[&["pull", "--autostash", ".", "c1"]],
     );
 }
 

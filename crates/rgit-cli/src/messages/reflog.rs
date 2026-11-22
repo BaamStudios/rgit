@@ -18,6 +18,36 @@ usage: git reflog [show] [<log-options>] [<ref>]
 ";
 
 pub const USAGE_SHOW: &str = "usage: git reflog [show] [<log-options>] [<ref>]\n\n";
+pub const USAGE_EXPIRE: &str = "\
+git reflog expire [--expire=<time>] [--expire-unreachable=<time>]
+                         [--rewrite] [--updateref] [--stale-fix]
+                         [--dry-run | -n] [--verbose] [--all [--single-worktree] | <refs>...]";
+pub const HELP_DRY_RUN: &str = "do not actually prune any entries";
+pub const HELP_REWRITE: &str =
+    "rewrite the old SHA1 with the new SHA1 of the entry that now precedes it";
+pub const HELP_UPDATEREF: &str = "update the reference to the value of the top reflog entry";
+pub const HELP_VERBOSE: &str = "print extra information on screen";
+pub const HELP_EXPIRE: &str = "prune entries older than the specified time";
+pub const HELP_EXPIRE_UNREACHABLE: &str =
+    "prune entries older than <time> that are not reachable from the current tip of the branch";
+pub const HELP_STALE_FIX: &str = "prune any reflog entries that point to broken commits";
+pub const HELP_ALL: &str = "process the reflogs of all references";
+pub const HELP_SINGLE_WORKTREE: &str =
+    "limits processing to reflogs from the current worktree only";
+pub const ARGH_TIMESTAMP: &str = "timestamp";
+
+/// `reflog expire --verbose`: what happens to an entry.
+pub const KEEP: &str = "keep";
+pub const PRUNE: &str = "prune";
+pub const WOULD_PRUNE: &str = "would prune";
+
+pub fn invalid_timestamp_option(value: &str, option: &str) -> String {
+    format!("invalid timestamp '{value}' given to '--{option}'")
+}
+
+pub fn reflog_not_found(name: &str) -> String {
+    format!("reflog could not be found: '{name}'")
+}
 pub const USAGE_LIST: &str = "git reflog list";
 pub const USAGE_EXISTS: &str = "git reflog exists <ref>";
 
