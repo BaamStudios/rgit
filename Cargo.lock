@@ -471,6 +471,7 @@ dependencies = [
  "rgit-remote",
  "rgit-repo",
  "rgit-revwalk",
+ "rgit-submodule",
  "rgit-trace",
  "rgit-trailer",
  "rgit-transport",

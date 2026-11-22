@@ -5,8 +5,10 @@
 //! `-z`, `-b`, `--[no-]ahead-behind`, `--untracked-files=no|normal|all` and
 //! `--ignored[=traditional|matching|no]` (the walk is in
 //! [`crate::untracked`]) and staged renames (`status.renames`,
-//! `--no-renames`, `-M`). Submodule details, colour and the state banners
-//! other than merging are not implemented yet.
+//! `--no-renames`, `-M`). Submodules show new commits, modified and
+//! untracked content (`--ignore-submodules`, `submodule.<name>.ignore`,
+//! `diff.ignoreSubmodules`). Not implemented yet: `status.submoduleSummary`,
+//! colour, and the state banners other than merging.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -51,6 +53,15 @@ pub(crate) struct Change {
     pub(crate) rename: Option<(Vec<u8>, u8, u32, u32, ObjectId)>,
     /// The source of a staged rename (shown at the new path only).
     pub(crate) renamed_away: bool,
+    /// The work tree state of a submodule (gitlink in the index).
+    pub(crate) sub: Option<crate::submodules::WtState>,
+}
+
+/// How submodules are inspected (see [`check_worktree`]).
+pub(crate) struct SubContext<'a> {
+    pub(crate) rules: &'a crate::submodules::IgnoreRules,
+    /// Look for untracked files in submodules (not with `-uno`).
+    pub(crate) untracked: bool,
 }
 
 pub(crate) fn collect_tree(
@@ -308,6 +319,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let ahead_behind = Cell::new(-1);
     let no_renames = Cell::new(-1);
     let find_renames: RefCell<Option<Option<String>>> = RefCell::new(None);
+    let ignore_submodules: RefCell<Option<String>> = RefCell::new(None);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -352,6 +364,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 },
             )
             .optional(None),
+            Opt::string(
+                None,
+                "ignore-submodules",
+                &ignore_submodules,
+                "when",
+                crate::messages::submodule::HELP_IGNORE_SUBMODULES,
+            )
+            .optional(Some("all")),
         ],
     );
     let args = parser.parse(argv)?.args;
@@ -359,8 +379,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let find_renames = find_renames.into_inner();
 
     let porcelain_version = match porcelain.borrow().as_deref() {
-        None | Some("v1") => 1,
-        Some("v2") => 2,
+        None | Some("v1" | "1") => 1,
+        Some("v2" | "2") => 2,
         Some(v) => return Err(Die::Fatal(msg::unsupported_porcelain(v))),
     };
 
@@ -439,6 +459,26 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
     let checker = repo.checker(index_mtime)?;
+    let ignore_cli = ignore_submodules
+        .borrow()
+        .as_deref()
+        .map(crate::submodules::parse_ignore_arg)
+        .transpose()?;
+    let rules = if index.entries().iter().any(|e| e.mode.is_gitlink()) {
+        Some(crate::submodules::IgnoreRules::load(
+            &repo,
+            Some(&index),
+            ignore_cli,
+            true,
+            rgit_submodule::Ignore::None,
+        )?)
+    } else {
+        None
+    };
+    let sub_ctx = rules.as_ref().map(|rules| SubContext {
+        rules,
+        untracked: mode != Untracked::No,
+    });
     for e in index.entries() {
         let c = changes.get_mut(e.path()).expect("entry");
         if e.stage().is_conflict() {
@@ -447,7 +487,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
             continue;
         }
-        check_worktree(&repo, &checker, &work_tree, e, c);
+        check_worktree(&repo, &checker, &work_tree, e, c, sub_ctx.as_ref())?;
     }
 
     let core = rename_options(&repo, no_renames.get(), find_renames.as_ref())?;
@@ -517,7 +557,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             if show_branch {
                 header(&mut p, 1, &info);
             }
-            short(&mut p, &entries, &untracked_paths, &ignored_paths);
+            short(
+                &mut p,
+                &entries,
+                &untracked_paths,
+                &ignored_paths,
+                format == Format::Short,
+            );
         }
         Format::Porcelain(_) => {
             if show_branch {
@@ -648,6 +694,7 @@ fn short(
     entries: &[(&Vec<u8>, &Change)],
     untracked: &[Vec<u8>],
     ignored: &[Vec<u8>],
+    is_short: bool,
 ) {
     for (path, c) in entries {
         if let Some(code) = conflict_code(c) {
@@ -658,9 +705,15 @@ fn short(
             continue;
         }
         let x = index_letter(c);
-        let y = if c.wt == 0 { b' ' } else { c.wt };
+        let mut y = if c.wt == 0 { b' ' } else { c.wt };
         if x == b' ' && y == b' ' {
             continue;
+        }
+        // The short format tells what changed in a submodule.
+        if let (true, b'M', Some(st)) = (is_short, y, &c.sub) {
+            if !st.new_commits {
+                y = if st.modified { b'm' } else { b'?' };
+            }
         }
         p.out.push(x);
         p.out.push(y);
@@ -735,9 +788,10 @@ fn porcelain_v2(
             Some((m, id, false)) => (m, id),
             _ => (0, zero),
         };
+        let sub = sub_field(c, hm, im);
         if let Some((old, letter, score, hm, hid)) = &c.rename {
             p.text(&format!(
-                "2 {} N... {hm:06o} {im:06o} {:06o} {} {} {}{score} ",
+                "2 {} {sub} {hm:06o} {im:06o} {:06o} {} {} {}{score} ",
                 String::from_utf8_lossy(&xy),
                 c.wt_mode.unwrap_or(0),
                 hid.to_hex(),
@@ -755,7 +809,7 @@ fn porcelain_v2(
             continue;
         }
         p.text(&format!(
-            "1 {} N... {hm:06o} {im:06o} {:06o} {} {} ",
+            "1 {} {sub} {hm:06o} {im:06o} {:06o} {} {} ",
             String::from_utf8_lossy(&xy),
             c.wt_mode.unwrap_or(0),
             hid.to_hex(),
@@ -774,6 +828,23 @@ fn porcelain_v2(
         p.path(u);
         p.end();
     }
+}
+
+/// The `<sub>` field of porcelain v2: `N...` for files, `S<c><m><u>` for
+/// submodules.
+fn sub_field(c: &Change, head_mode: u32, index_mode: u32) -> String {
+    let gitlink = |m: u32| type_bits(m) == 0o160000;
+    if !gitlink(head_mode) && !gitlink(index_mode) && !c.wt_mode.is_some_and(gitlink) {
+        return "N...".to_owned();
+    }
+    let st = c.sub.unwrap_or_default();
+    let flag = |on: bool, ch: char| if on { ch } else { '.' };
+    format!(
+        "S{}{}{}",
+        flag(st.new_commits, 'C'),
+        flag(st.modified, 'M'),
+        flag(st.untracked, 'U')
+    )
 }
 
 struct LongContext<'a> {
@@ -854,10 +925,10 @@ fn long(
         .iter()
         .filter_map(|(path, c)| conflict_code(c).map(|code| (*path, code)))
         .collect();
-    let changed: Vec<(&Vec<u8>, u8)> = entries
+    let changed: Vec<(&Vec<u8>, u8, Option<crate::submodules::WtState>)> = entries
         .iter()
         .filter(|(_, c)| conflict_code(c).is_none() && c.wt != 0 && c.wt != b' ')
-        .map(|(path, c)| (*path, c.wt))
+        .map(|(path, c)| (*path, c.wt, c.sub))
         .collect();
     if ctx.merging {
         if unmerged.is_empty() {
@@ -943,15 +1014,33 @@ fn long(
     if !changed.is_empty() {
         p.text(msg::UNSTAGED_HEADER);
         p.text("\n");
-        if changed.iter().any(|(_, y)| *y == b'D') {
+        if changed.iter().any(|(_, y, _)| *y == b'D') {
             hint(p, msg::HINT_ADD_RM);
         } else {
             hint(p, msg::HINT_ADD);
         }
         hint(p, msg::HINT_RESTORE);
-        for (path, y) in &changed {
+        if changed.iter().any(|(_, _, s)| s.is_some_and(|s| s.dirty())) {
+            hint(p, crate::messages::submodule::HINT_SUBMODULE_CONTENT);
+        }
+        for (path, y, sub) in &changed {
             p.text(&format!("\t{:<12}", label_of(*y)));
             p.path(path);
+            if let (b'M', Some(st)) = (*y, sub) {
+                use crate::messages::submodule as sm;
+                let parts: Vec<&str> = [
+                    (st.new_commits, sm::NEW_COMMITS),
+                    (st.modified, sm::MODIFIED_CONTENT),
+                    (st.untracked, sm::UNTRACKED_CONTENT),
+                ]
+                .iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, t)| *t)
+                .collect();
+                if !parts.is_empty() {
+                    p.text(&format!(" ({})", parts.join(", ")));
+                }
+            }
             p.text("\n");
         }
         p.text("\n");
@@ -1041,24 +1130,46 @@ fn tracking(p: &mut Printer, up: &str, state: Tracking, hints: bool) {
     }
 }
 
-pub(crate) fn check_worktree(repo: &Repo, checker: &Checker, work_tree: &Path, e: &Entry, c: &mut Change) {
+/// The work tree side of the stage-0 entry `e`. Submodules are inspected
+/// with `subs` (their `ignore` setting, untracked files); without it only
+/// a different `HEAD` counts.
+pub(crate) fn check_worktree(
+    repo: &Repo,
+    checker: &Checker,
+    work_tree: &Path,
+    e: &Entry,
+    c: &mut Change,
+    subs: Option<&SubContext<'_>>,
+) -> Result<(), Die> {
     let meta = checker.lstat(e.path()).ok().flatten();
     let Some(meta) = meta else {
         c.wt = b'D';
         c.wt_mode = None;
-        return;
+        return Ok(());
     };
     c.wt_mode = Some(wt_mode(&meta, e.mode.0));
     if e.flags.intent_to_add {
         c.wt = b'A';
-        return;
+        return Ok(());
     }
     if e.mode.is_gitlink() {
-        let dir = work_tree.join(String::from_utf8_lossy(e.path()).as_ref());
-        if repository::submodule_head(&dir, repo.hash).is_some_and(|h| h != e.id) {
-            c.wt = b'M';
+        let dir = crate::diff::collect::os_path(work_tree, e.path());
+        match subs {
+            Some(s) => {
+                let ignore = s.rules.for_path(e.path());
+                let st = crate::submodules::worktree_state(&dir, &e.id, repo.hash, ignore, s.untracked);
+                if st.changed() {
+                    c.wt = b'M';
+                }
+                c.sub = Some(st);
+            }
+            None => {
+                if repository::submodule_head(&dir, repo.hash).is_some_and(|h| h != e.id) {
+                    c.wt = b'M';
+                }
+            }
         }
-        return;
+        return Ok(());
     }
     c.wt = match checker.check(e) {
         Ok(Status::Unchanged | Status::StatOnly) => b' ',
@@ -1069,6 +1180,7 @@ pub(crate) fn check_worktree(repo: &Repo, checker: &Checker, work_tree: &Path, e
         }
         _ => b'M',
     };
+    Ok(())
 }
 
 fn wt_mode(meta: &std::fs::Metadata, index_mode: u32) -> u32 {

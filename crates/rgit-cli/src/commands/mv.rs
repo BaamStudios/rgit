@@ -22,8 +22,11 @@
 //! - Index entries keep their object, mode and flags; the cached stat data
 //!   is refreshed when the moved file still matches the entry.
 //!
-//! Not done yet: submodules (gitlinks move like files, `.gitmodules` is not
-//! updated), sparse-checkout rules (#43).
+//! - A submodule (gitlink) moves like a file; its `.git` file and the
+//!   `core.worktree` of an absorbed git directory are rewritten for the new
+//!   place, and its `path` in `.gitmodules` is changed and staged.
+//!
+//! Not done yet: sparse-checkout rules (#43).
 
 use std::path::{Path, PathBuf};
 
@@ -211,6 +214,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     let mut out = std::io::stdout().lock();
+    let mut moved_links: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for m in &moves {
         if verbose || dry_run {
             use std::io::Write;
@@ -236,6 +240,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let Some(old) = index.remove(&m.src, Stage::MERGED) else {
             continue;
         };
+        if old.mode.is_gitlink() {
+            moved_links.push((m.src.clone(), m.dst.clone()));
+        }
         index.remove_path(&m.dst);
         let mut entry = Entry::new(m.dst.clone(), Stage::MERGED, old.mode, old.id);
         entry.flags = old.flags;
@@ -257,6 +264,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if dry_run {
         lock.rollback();
         return Ok(0);
+    }
+    for (src, dst) in &moved_links {
+        crate::submodules::moved(&repo, &mut index, src, dst)?;
     }
     if let Some(reference) = index_mtime {
         let _ = smudge_racy_entries(&mut index, reference, &checker);
@@ -286,7 +296,10 @@ fn check_one(
     if is_within(&dst, &src) {
         return Some(msg::INTO_ITSELF);
     }
-    if meta.is_dir() && kind == Kind::File {
+    let gitlink = index
+        .get(&src, Stage::MERGED)
+        .is_some_and(|e| e.mode.is_gitlink());
+    if meta.is_dir() && kind == Kind::File && !gitlink {
         let range = index.dir_range(&src);
         if range.is_empty() {
             return Some(msg::DIR_EMPTY);

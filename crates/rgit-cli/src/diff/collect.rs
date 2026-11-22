@@ -52,6 +52,9 @@ pub struct Pair {
     pub unmerged: bool,
     /// `R` or `C` after rename detection.
     pub renamed: Option<u8>,
+    /// A submodule in the work tree with modified (`DIRTY_MODIFIED`) or
+    /// untracked (`DIRTY_UNTRACKED`) content.
+    pub dirty_submodule: u8,
     /// Similarity of a rename or copy, dissimilarity of a complete
     /// rewrite (`rgit_diff::diffcore::MAX_SCORE` units); 0 for none.
     pub score: u32,
@@ -67,6 +70,7 @@ impl Pair {
             unmerged: false,
             renamed: None,
             score: 0,
+            dirty_submodule: 0,
         }
     }
 
@@ -124,6 +128,11 @@ pub fn type_bits(mode: u32) -> u32 {
 
 pub const TREE_MODE: u32 = 0o040000;
 pub const GITLINK_MODE: u32 = 0o160000;
+
+/// [`Pair::dirty_submodule`]: tracked files of the submodule changed.
+pub const DIRTY_MODIFIED: u8 = 1;
+/// [`Pair::dirty_submodule`]: the submodule has untracked files.
+pub const DIRTY_UNTRACKED: u8 = 2;
 
 /// A path below `root`.
 pub fn os_path(root: &Path, rel: &[u8]) -> PathBuf {
@@ -345,6 +354,11 @@ pub struct WorkTree<'a> {
     /// mode did not is not a change (git refreshes the index first).
     pub porcelain: bool,
     pub hash: rgit_hash::HashKind,
+    /// The `ignore` settings of submodules (none: count everything but
+    /// untracked content).
+    pub submodules: Option<&'a crate::submodules::IgnoreRules>,
+    /// Dirty submodules found so far (path, `DIRTY_*` flags).
+    pub dirty: std::cell::RefCell<Vec<(Vec<u8>, u8)>>,
 }
 
 impl WorkTree<'_> {
@@ -371,17 +385,44 @@ impl WorkTree<'_> {
         };
         if e.mode.is_gitlink() {
             if !meta.is_dir() {
-                return Ok(Some(None));
+                // The submodule was replaced by a file.
+                return Ok(Some(Some(self.file_side(e.path(), &meta, None))));
             }
-            let head = crate::repository::submodule_head(&os_path(self.root, e.path()), self.hash);
-            return Ok(match head {
-                Some(h) if h != e.id => Some(Some(Side {
+            let dir = os_path(self.root, e.path());
+            let ignore = self
+                .submodules
+                .map_or(rgit_submodule::Ignore::Untracked, |r| r.for_path(e.path()));
+            let st = crate::submodules::worktree_state(&dir, &e.id, self.hash, ignore, true);
+            if !st.changed() {
+                return Ok(None);
+            }
+            if st.dirty() {
+                let flags = if st.modified { DIRTY_MODIFIED } else { 0 }
+                    | if st.untracked { DIRTY_UNTRACKED } else { 0 };
+                self.dirty.borrow_mut().push((e.path().to_vec(), flags));
+            }
+            // The work tree side is not hashed: the null id when the
+            // submodule moved, else the recorded commit (only dirty).
+            return Ok(Some(Some(Side {
+                mode: GITLINK_MODE,
+                oid: if st.new_commits {
+                    ObjectId::null(self.hash)
+                } else {
+                    e.id
+                },
+                file: Some(dir),
+            })));
+        }
+        if meta.is_dir() && !e.mode.is_symlink() {
+            // A file replaced by a repository: a submodule now.
+            let dir = os_path(self.root, e.path());
+            if crate::repository::submodule_head(&dir, self.hash).is_some() {
+                return Ok(Some(Some(Side {
                     mode: GITLINK_MODE,
-                    oid: h,
-                    file: None,
-                })),
-                _ => None,
-            });
+                    oid: ObjectId::null(self.hash),
+                    file: Some(dir),
+                })));
+            }
         }
         let status = self.checker.check_with(e, &meta).map_err(io)?;
         // A converted file whose stat data changed is read again for the
@@ -394,6 +435,21 @@ impl WorkTree<'_> {
             Status::Deleted => Some(None),
             _ => Some(Some(self.file_side(e.path(), &meta, Some(e.mode.0)))),
         })
+    }
+
+    /// Mark the pairs of dirty submodules found by [`Self::changed`].
+    fn mark_dirty(&self, pairs: &mut [Pair]) {
+        let dirty = self.dirty.borrow();
+        if dirty.is_empty() {
+            return;
+        }
+        for p in pairs {
+            if let Some((_, f)) = dirty.iter().find(|(path, _)| *path == p.path) {
+                if p.new.as_ref().is_some_and(|s| s.file.is_some()) {
+                    p.dirty_submodule = *f;
+                }
+            }
+        }
     }
 
     /// The work tree file of an unmerged path, if any.
@@ -481,6 +537,7 @@ pub fn files(
             pairs.push(Pair::new(path, Some(entry_side(o)), Some(f)));
         }
     }
+    wt.mark_dirty(&mut pairs);
     Ok(pairs)
 }
 
@@ -590,6 +647,9 @@ pub fn index(
             (n, _) => n,
         };
         pairs.push(Pair::new(path, old, new));
+    }
+    if let Some(wt) = wt {
+        wt.mark_dirty(&mut pairs);
     }
     Ok(pairs)
 }
