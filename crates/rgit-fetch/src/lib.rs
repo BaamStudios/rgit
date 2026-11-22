@@ -5,7 +5,9 @@
 //! Behaviour follows `Documentation/git-fetch.adoc`, `fetch-options.adoc`,
 //! `pull-fetch-param.adoc`, `gitprotocol-v2.adoc` (`ls-refs`, `fetch`),
 //! `gitprotocol-pack.adoc` (negotiation) and observations of git 2.56.
-//! Only protocol v2 is spoken.
+//! Protocol v2 is asked for unless `protocol.version` says otherwise;
+//! servers answering with v0 or v1 are handled as well
+//! (`gitprotocol-pack.adoc`, `rgit_protocol::v0`).
 //!
 //! # High level
 //!
@@ -24,8 +26,9 @@
 //!
 //! - [`LocalRepo::open`]: objects, refs, reflog identity of a repository.
 //! - [`Session::connect`]: transport for any supported URL (local path,
-//!   `file://`, `ssh://`, `git://`, `http(s)://`), protocol v2 handshake;
-//!   [`Session::ls_refs`]; [`Session::fetch_pack`] with `haves: None` for a
+//!   `file://`, `ssh://`, `git://`, `http(s)://`), protocol handshake;
+//!   [`Session::ls_refs`] / [`Session::list_refs`];
+//!   [`Session::fetch_pack`] with `haves: None` for a
 //!   clone (no negotiation); [`ReceivedPack::release`] after the refs are
 //!   written.
 //! - [`refmap`]: `ref-prefix` arguments and refspec mapping.
@@ -47,5 +50,6 @@ pub use error::{Error, Result};
 pub use fetch::{FetchOptions, FetchResult, fetch};
 pub use repo::LocalRepo;
 pub use session::{
-    ConnectSettings, PackOptions, ReceivedPack, Session, protocol_name, store_pack_stream,
+    ConnectSettings, PackOptions, ReceivedPack, Session, protocol_name, protocol_version,
+    store_pack_stream,
 };

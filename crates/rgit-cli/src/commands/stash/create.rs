@@ -714,8 +714,12 @@ fn revert(
             let _ = git
                 .cmd(&with_pathspec(vec!["reset".into(), "-q".into()], ps))
                 .status();
+            super::refresh_after(repo);
         }
-        super::refresh_after(repo);
+        // With the index kept it is not written again: `apply -R` leaves
+        // it alone, and a refresh here would smudge the entries whose
+        // files the reverse apply rewrote within the index's timestamp
+        // granularity (racily clean), which git does not do.
         return Ok(());
     }
     if opts.staged {

@@ -183,7 +183,13 @@ fn column_width() {
 
 /// The packet trace of one fetch, as lines.
 fn trace(fx: &Fixture, bin: &Path, dir: &Path, out: &Path) -> String {
+    trace_with(fx, bin, dir, out, &[])
+}
+
+/// The packet trace of `fetch` with global options `pre`.
+fn trace_with(fx: &Fixture, bin: &Path, dir: &Path, out: &Path, pre: &[&str]) -> String {
     let status = Command::new(bin)
+        .args(pre)
         .arg("fetch")
         .current_dir(dir)
         .env_clear()
@@ -278,4 +284,169 @@ fn smart_http() {
             "+refs/heads/*:refs/remotes/origin/*",
         ],
     );
+}
+
+/// `fetch` with `protocol.version` 0 and 1 against every transport.
+#[test]
+fn protocol_v0_and_v1() {
+    for version in ["protocol.version=0", "protocol.version=1"] {
+        let mut fx = fixture();
+        if fx.is_skipped() {
+            return;
+        }
+        compare(&mut fx, "empty", &["-c", version, "fetch"]);
+        compare(&mut fx, "cl", &["-c", version, "fetch", "--prune"]);
+        let mut fx = fixture();
+        compare(&mut fx, "cl", &["-c", version, "fetch", "origin", "side"]);
+        let mut fx = fixture();
+        let url = format!("file://{}", fx.work_dir().join("srv").display());
+        let mut fx2 = fx.git(["-C", "cl", "remote", "set-url", "origin", &url]);
+        compare(&mut fx2, "cl", &["-c", version, "fetch", "-v"]);
+        fx = fixture();
+        compare(&mut fx, "cl", &["-c", version, "fetch", "--tags"]);
+    }
+    let mut fx = fixture();
+    compare(&mut fx, "cl", &["-c", "protocol.version=3", "fetch"]);
+}
+
+#[test]
+fn protocol_v0_daemon_and_http() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let Some((_daemon, base)) = start_daemon(&fx) else {
+        return;
+    };
+    let http = start_http(&fx);
+    for (n, url) in [format!("{base}/srv"), format!("{http}/srv")]
+        .iter()
+        .enumerate()
+    {
+        let fx = fixture();
+        let mut fx = fx
+            .git(["-C", "empty", "remote", "set-url", "origin", url])
+            .git(["-C", "cl", "remote", "set-url", "origin", url]);
+        let v = if n == 0 {
+            "protocol.version=1"
+        } else {
+            "protocol.version=0"
+        };
+        compare(&mut fx, "empty", &["-c", v, "fetch"]);
+        compare(&mut fx, "cl", &["-c", v, "fetch", "--prune"]);
+    }
+}
+
+/// `git://` through `core.gitProxy`: a proxy script that runs the
+/// requested `upload-pack` locally (as in t5532).
+#[test]
+fn git_proxy() {
+    let fx = fixture().write_executable(
+        "proxy",
+        "#!/bin/sh\necho >&2 \"proxying for $*\"\nlen=$(head -c 4)\n\
+         req=$(head -c $((0x$len - 4)) | tr '\\0' '\\n' | head -n 1)\n\
+         set -- $req\ncd \"$(dirname \"$0\")\" && exec \"$1\" \"${2#/}\"\n",
+    );
+    if fx.is_skipped() {
+        return;
+    }
+    let proxy = fx.work_dir().join("proxy");
+    let proxy = proxy.to_str().unwrap();
+    let mut fx = fx
+        .git([
+            "-C",
+            "empty",
+            "remote",
+            "set-url",
+            "origin",
+            "git://example.invalid/srv",
+        ])
+        .git(["-C", "empty", "config", "core.gitProxy", proxy]);
+    compare(&mut fx, "empty", &["fetch"]);
+    compare(
+        &mut fx,
+        "cl",
+        &[
+            "-c",
+            &format!("core.gitProxy={proxy}"),
+            "fetch",
+            "git://-x/srv",
+        ],
+    );
+    let other = format!("core.gitProxy={proxy} for other.invalid");
+    compare(
+        &mut fx,
+        "cl",
+        &[
+            "-c",
+            &format!("core.gitProxy={proxy}x for invalid"),
+            "-c",
+            &other,
+            "fetch",
+            "git://example.invalid/srv",
+        ],
+    );
+}
+
+/// Negotiation lines of a trace: what the client sent and the ACKs.
+fn negotiation(t: &str) -> Vec<String> {
+    t.lines()
+        .filter_map(|l| l.split_once("packet: ").map(|(_, p)| p.trim_start()))
+        .filter(|p| {
+            p.starts_with("fetch>") || p.starts_with("fetch< ACK") || p.starts_with("fetch< NAK")
+        })
+        .filter(|p| !p.contains("agent="))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// v0/v1 negotiation over a stateful connection: the same have batches,
+/// pipelining and ACKs as git.
+#[test]
+fn protocol_v0_negotiation_matches() {
+    for (local, ahead) in [(30, 10), (150, 10), (5, 300)] {
+        let mut fx = Fixture::new()
+            .rgit(env!("CARGO_BIN_EXE_rgit"))
+            .git(["init", "-q", "big"]);
+        if fx.is_skipped() {
+            return;
+        }
+        for i in 0..20 {
+            fx = commit(fx, "big", "f", &format!("c{i}"));
+        }
+        fx = fx.git(["clone", "-q", "big", "local"]);
+        for i in 0..local {
+            fx = commit(fx, "local", "l", &format!("l{i}"));
+        }
+        for i in 0..ahead {
+            fx = commit(fx, "big", "f", &format!("n{i}"));
+        }
+        let work = fx.work_dir();
+        let copy = |name: &str| {
+            let dst = work.join(name);
+            let st = Command::new("cp")
+                .args(["-a"])
+                .arg(work.join("local"))
+                .arg(&dst)
+                .status()
+                .unwrap();
+            assert!(st.success());
+            dst
+        };
+        for v in ["protocol.version=0", "protocol.version=1"] {
+            let (g, r) = (copy(&format!("g{local}{v}")), copy(&format!("r{local}{v}")));
+            let pre = ["-c", v];
+            let git = negotiation(&trace_with(
+                &fx,
+                fx.reference_git(),
+                &g,
+                &work.join("g.trace"),
+                &pre,
+            ));
+            let rgit = PathBuf::from(env!("CARGO_BIN_EXE_rgit"));
+            let ours = negotiation(&trace_with(&fx, &rgit, &r, &work.join("r.trace"), &pre));
+            assert!(git.iter().any(|l| l.contains("have ")));
+            assert_eq!(git, ours, "{v}, {local} local commits");
+        }
+    }
 }

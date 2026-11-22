@@ -74,6 +74,10 @@ pub enum Error {
     ShallowNotSupported,
     /// A request line given by the caller contains LF or is too long.
     BadRequestLine(String),
+    /// v0/v1 negotiation: a line that is neither `ACK` nor `NAK`.
+    ExpectedAckNak(String),
+    /// v0/v1: a bad line where the `shallow`/`unshallow` list was expected.
+    ExpectedShallowList(String),
     /// I/O error of the underlying stream.
     Io(#[from] io::Error),
 }
@@ -110,6 +114,8 @@ impl fmt::Display for Error {
             }
             Error::ShallowNotSupported => f.write_str(messages::SHALLOW_NOT_SUPPORTED),
             Error::BadRequestLine(l) => f.write_str(&messages::bad_request_line(l)),
+            Error::ExpectedAckNak(l) => f.write_str(&messages::expected_ack_nak(l)),
+            Error::ExpectedShallowList(_) => f.write_str(messages::EXPECTED_SHALLOW_LIST),
             Error::Io(e) => fmt::Display::fmt(e, f),
         }
     }

@@ -13,6 +13,8 @@
 //! - [`trace`]: `GIT_TRACE_PACKET` output through `rgit-trace`.
 //! - [`push`]: the `receive-pack` client of protocol v0 (ref
 //!   advertisement, commands, status report).
+//! - [`v0`]: the protocol v0/v1 fetch client (ref advertisement,
+//!   negotiation, pack).
 //! - [`v2`]: the protocol v2 client (`ls-refs`, `fetch` with negotiation).
 //!
 //! Behaviour follows `Documentation/gitprotocol-common.adoc`,
@@ -27,6 +29,7 @@ pub mod pktline;
 pub mod push;
 pub mod sideband;
 pub mod trace;
+pub mod v0;
 pub mod v2;
 
 pub use capabilities::{Capabilities, ProtocolVersion};
