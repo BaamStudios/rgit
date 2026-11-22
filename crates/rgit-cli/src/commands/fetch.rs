@@ -186,6 +186,7 @@ pub fn run_with_reflog_action(
         } else {
             IpVersion::Any
         },
+        verbose: verbose.get() > 0 && !quiet_mode,
     };
     let result =
         rgit_fetch::fetch(&repo, &remote, &opts, &connect).map_err(|e| Die::Fatal(e.to_string()))?;

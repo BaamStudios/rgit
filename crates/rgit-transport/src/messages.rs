@@ -35,6 +35,23 @@ pub fn cannot_run(program: &str, reason: &str) -> String {
     format!("cannot run {program}: {reason}")
 }
 
+/// `git://` with `-v`: before the host name lookup (`done.` follows).
+pub fn looking_up(host: &str) -> String {
+    format!("Looking up {host} ... ")
+}
+
+/// `git://` with `-v`: before connecting (the address and `done.`
+/// follow).
+pub fn connecting_to(host: &str, port: u16) -> String {
+    format!("Connecting to {host} (port {port}) ... ")
+}
+
+/// End of a `-v` connection step.
+pub const DONE: &str = "done.";
+
+/// `fatal:` for a `git://` URL with a newline in the host or path.
+pub const NEWLINE_FORBIDDEN: &str = "newline is forbidden in git:// hosts and repo paths";
+
 /// `fatal:` when the `core.gitProxy` command cannot be started.
 pub fn cannot_start_proxy(proxy: &str) -> String {
     format!("cannot start proxy {proxy}")

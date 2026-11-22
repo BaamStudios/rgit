@@ -175,6 +175,7 @@ impl Repo {
                 .as_ref()
                 .map(|u| u.to_str_lossy().into_owned()),
             ip: IpVersion::Any,
+            verbose: false,
         };
         let fatal = |e: rgit_fetch::Error| Die::Fatal(e.to_string());
         let mut session = Session::connect(&url, &settings, "remote").map_err(fatal)?;

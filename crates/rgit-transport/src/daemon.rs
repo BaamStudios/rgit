@@ -77,10 +77,15 @@ impl DaemonTarget {
 
     /// The `host=` parameter.
     fn host_param(&self) -> String {
-        let host = if self.host.contains(':') {
-            format!("[{}]", self.host)
+        // The test suite's knob for the virtual host sent to the daemon.
+        let virtual_host = std::env::var("GIT_OVERRIDE_VIRTUAL_HOST")
+            .ok()
+            .filter(|h| !h.is_empty());
+        let host = virtual_host.unwrap_or_else(|| self.host.clone());
+        let host = if host.contains(':') {
+            format!("[{host}]")
         } else {
-            self.host.clone()
+            host
         };
         match self.port {
             Some(p) => format!("{host}:{p}"),
@@ -170,17 +175,30 @@ impl DaemonTransport {
     }
 
     /// Connect to the first address of the host that accepts.
-    fn open(&self) -> Result<TcpStream> {
+    fn open(&self, verbose: bool) -> Result<TcpStream> {
         let host = self.target.host.as_str();
         let port = self.target.port.unwrap_or(DEFAULT_PORT);
+        let mut err = io::stderr();
+        if verbose {
+            let _ = write!(err, "{}", messages::looking_up(host));
+        }
         let addrs: Vec<SocketAddr> = match (host, port).to_socket_addrs() {
             Ok(a) => a.collect(),
             Err(_) => return Err(Error::Other(messages::unable_to_look_up(host, port))),
         };
+        if verbose {
+            let _ = writeln!(err, "{}", messages::DONE);
+            let _ = write!(err, "{}", messages::connecting_to(host, port));
+        }
         let mut failures = String::new();
         for (i, addr) in addrs.iter().enumerate() {
             match TcpStream::connect(addr) {
-                Ok(s) => return Ok(s),
+                Ok(s) => {
+                    if verbose {
+                        let _ = writeln!(err, "{} {}", addr.ip(), messages::DONE);
+                    }
+                    return Ok(s);
+                }
                 Err(e) => failures.push_str(&messages::connect_attempt_failed(
                     host,
                     i,
@@ -195,10 +213,13 @@ impl DaemonTransport {
 
 impl Transport for DaemonTransport {
     fn connect(&mut self, options: &ConnectOptions) -> Result<Box<dyn Connection>> {
+        if self.target.host.contains('\n') || self.target.path.contains('\n') {
+            return Err(Error::Other(messages::NEWLINE_FORBIDDEN.into()));
+        }
         let mut conn: Box<dyn Connection> = match &self.proxy {
             Some(proxy) => self.open_proxy(proxy)?,
             None => {
-                let stream = self.open()?;
+                let stream = self.open(options.verbose)?;
                 let read = stream.try_clone()?;
                 Box::new(TcpConnection {
                     read,

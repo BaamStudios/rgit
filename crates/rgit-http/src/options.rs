@@ -86,6 +86,10 @@ pub struct HttpOptions {
     /// Verbosity of the calling command; above 1, POST sizes are reported
     /// (`POST git-receive-pack (123 bytes)`).
     pub verbosity: i32,
+    /// Schemes a redirect may lead to: those that `protocol.allow`,
+    /// `protocol.<name>.allow` and `GIT_ALLOW_PROTOCOL` allow for a URL
+    /// that does not come from the user (`user` does not count).
+    pub redirect_schemes: Vec<&'static str>,
 }
 
 /// `http_proxy`, `https_proxy`, `all_proxy` and `no_proxy` as libcurl
@@ -123,6 +127,7 @@ impl Default for HttpOptions {
             accept_language: None,
             smart: true,
             verbosity: 0,
+            redirect_schemes: vec!["http", "https"],
         }
     }
 }
@@ -151,6 +156,15 @@ impl HttpOptions {
         let mut o = HttpOptions::default();
         o.apply_config(cfg, url, env)?;
         o.apply_env(env);
+        o.redirect_schemes = ["http", "https"]
+            .into_iter()
+            .filter(|s| {
+                matches!(
+                    rgit_remote::protocol::policy(s.as_bytes(), cfg, env),
+                    Ok(rgit_remote::Policy::Always)
+                )
+            })
+            .collect();
         Ok(o)
     }
 
@@ -531,6 +545,20 @@ mod tests {
             accept_language(&env).unwrap(),
             "a, b;q=0.99, c;q=0.98, d;q=0.97, e;q=0.96, f;q=0.95, g;q=0.94, h;q=0.93, i;q=0.92, j;q=0.91, k;q=0.90, l;q=0.89, *;q=0.88"
         );
+    }
+
+    #[test]
+    fn redirect_protocols() {
+        let url = Url::parse("http://h/r").unwrap();
+        let none = MapEnv::new::<&str, &str>([]);
+        let o = HttpOptions::load(&cfg(""), &url, &none).unwrap();
+        assert_eq!(o.redirect_schemes, ["http", "https"]);
+        let c = cfg("[protocol \"http\"]\n\tallow = user\n");
+        let o = HttpOptions::load(&c, &url, &none).unwrap();
+        assert_eq!(o.redirect_schemes, ["https"]);
+        let env = MapEnv::new([("GIT_ALLOW_PROTOCOL", "http")]);
+        let o = HttpOptions::load(&cfg(""), &url, &env).unwrap();
+        assert_eq!(o.redirect_schemes, ["http"]);
     }
 
     #[test]

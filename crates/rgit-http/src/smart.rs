@@ -522,6 +522,18 @@ impl<'a> SmartHttp<'a> {
                             messages::too_many_redirects(MAX_REDIRECTS),
                         )));
                     }
+                    // Only protocols allowed for URLs that do not come
+                    // from the user (protocol.<name>.allow).
+                    let scheme = match loc.trim().split_once("://") {
+                        Some((s, _)) => s.to_ascii_lowercase(),
+                        None => url.scheme.as_str().to_owned(),
+                    };
+                    if !self.client.opts.redirect_schemes.contains(&scheme.as_str()) {
+                        return Err(ExecError::Transport(Transport::new(
+                            1,
+                            messages::protocol_disabled(&scheme),
+                        )));
+                    }
                     self.client
                         .tracer
                         .info(&format!("Issue another request to this URL: '{loc}'"));

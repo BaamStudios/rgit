@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
 use crate::command::Command;
+use crate::sigpipe::IgnoreSigpipe;
 use crate::{Connection, Error, Result, messages};
 
 /// A running child process speaking the protocol on stdin/stdout. Its
@@ -16,6 +17,9 @@ pub struct ChildConnection {
     child: Child,
     stdin: ChildStdin,
     stdout: ChildStdout,
+    /// A service that exits early (a fake `--upload-pack`, a failing
+    /// server) must not kill rgit with SIGPIPE: writes fail with EPIPE.
+    _sigpipe: IgnoreSigpipe,
 }
 
 impl ChildConnection {
@@ -32,6 +36,7 @@ impl ChildConnection {
             child,
             stdin,
             stdout,
+            _sigpipe: IgnoreSigpipe::new(),
         })
     }
 }
@@ -86,6 +91,7 @@ impl Connection for ChildConnection {
             mut child,
             stdin,
             stdout,
+            _sigpipe,
         } = *self;
         drop(stdin);
         drop(stdout);

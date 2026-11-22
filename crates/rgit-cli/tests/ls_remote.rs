@@ -120,3 +120,64 @@ fn ls_remote_remote_names_and_v0_same_as_git() {
         fx.compare(*argv).checks(Check::OUTPUT).run();
     }
 }
+
+/// A pkt-line with `payload`.
+fn pkt(payload: &str) -> String {
+    format!("{:04x}{payload}", payload.len() + 4)
+}
+
+/// Fake servers that print a v0 advertisement and exit without reading
+/// (t5512, t5704): an empty repository in the standard form, several
+/// `symref` capabilities, and a bare `symref` capability.
+#[test]
+fn ls_remote_canned_v0_advertisements() {
+    let oid = "1234567890123456789012345678901234567890";
+    let zero = "0".repeat(40);
+    let empty = format!(
+        "{}0000",
+        pkt(&format!("{zero} capabilities^{{}}\0caps-go-here\n"))
+    );
+    let first = format!(
+        "{oid} HEAD\0some a-fake-symref-cap \
+         symref=refs/remotes/origin/HEAD:refs/remotes/origin/main symref=HEAD:refs/heads/main\n"
+    );
+    let symrefs = format!(
+        "{}{}{}0000",
+        pkt(&first),
+        pkt(&format!("{oid} refs/heads/main\n")),
+        pkt(&format!("{oid} refs/remotes/origin/HEAD\n")),
+    );
+    let bare = format!(
+        "{}0000",
+        pkt(&format!(
+            "{oid} HEAD\0symref object-format=sha1 symref=HEAD:refs/heads/foo\n"
+        ))
+    );
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "r"])
+        .write("empty.adv", &empty)
+        .write("symrefs.adv", &symrefs)
+        .write("bare.adv", &bare)
+        .write_executable("serve", "#!/bin/sh\nexec cat \"$ADV\"\n");
+    if fx.is_skipped() {
+        return;
+    }
+    let serve = format!("--upload-pack={}", fx.work_dir().join("serve").display());
+    for (adv, args) in [
+        ("empty.adv", &["--exit-code"][..]),
+        ("symrefs.adv", &["--symref"]),
+        ("bare.adv", &["--symref"]),
+    ] {
+        let mut argv = vec!["ls-remote"];
+        argv.extend_from_slice(args);
+        argv.extend_from_slice(&[&serve, "."]);
+        let path = fx.work_dir().join(adv);
+        fx.compare(&argv)
+            .in_dir("r")
+            .env("ADV", path)
+            .env("GIT_TEST_PROTOCOL_VERSION", "0")
+            .checks(Check::OUTPUT)
+            .run();
+    }
+}

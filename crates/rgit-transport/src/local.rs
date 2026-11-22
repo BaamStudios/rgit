@@ -15,7 +15,7 @@ use crate::child::ChildConnection;
 use crate::command::Command;
 use crate::os::os_string;
 use crate::ssh::remote_command;
-use crate::{ConnectOptions, Connection, Result, Transport};
+use crate::{ConnectOptions, Connection, Error, Result, Transport, messages};
 
 /// A transport to a repository on the local file system.
 #[derive(Debug, Clone)]
@@ -42,6 +42,12 @@ impl LocalTransport {
 
 impl Transport for LocalTransport {
     fn connect(&mut self, options: &ConnectOptions) -> Result<Box<dyn Connection>> {
+        // The path would reach the service program as an option.
+        if self.path.starts_with(b"-") {
+            return Err(Error::Refused(messages::strange_pathname(
+                &String::from_utf8_lossy(&self.path),
+            )));
+        }
         let cmd = self.command_for(options);
         Ok(Box::new(ChildConnection::spawn(&cmd)?))
     }

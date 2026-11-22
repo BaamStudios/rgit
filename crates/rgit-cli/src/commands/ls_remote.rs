@@ -229,9 +229,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .refs;
             let mut conn = reader.into_inner();
             if !conn.is_stateless() {
-                // End the session: a flush packet instead of wants.
-                conn.write_all(b"0000").map_err(|e| fatal(&e))?;
-                conn.end_request().map_err(|e| fatal(&e))?;
+                // End the session: a flush packet instead of wants. A
+                // server that is gone already does not need it.
+                let _ = conn.write_all(b"0000");
+                let _ = conn.end_request();
             }
             conn.close().map_err(|e| fatal(&e))?;
             refs
