@@ -155,7 +155,7 @@ const TAIL_BLOCK: usize = 1024;
 /// before diffing (observed: whole 1024-byte blocks, then up to the end of
 /// the line). This changes where ambiguous changes are placed, so it is
 /// reproduced here.
-fn trim_common_tail<'x>(a: &'x [u8], b: &'x [u8]) -> (&'x [u8], &'x [u8]) {
+pub fn trim_common_tail<'x>(a: &'x [u8], b: &'x [u8]) -> (&'x [u8], &'x [u8]) {
     let common = a
         .iter()
         .rev()

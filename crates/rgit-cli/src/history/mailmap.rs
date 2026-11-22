@@ -112,9 +112,25 @@ impl Mailmap {
     /// `mailmap.blob` (default `HEAD:.mailmap` in a bare repository), then
     /// `mailmap.file`; later entries win.
     pub fn load(repo: &Repo<'_>) -> Mailmap {
+        Mailmap::load_with(repo.setup, repo.config, &|spec| {
+            let id = repo.resolver.resolve(spec).ok()?;
+            match repo.objects.read(&id) {
+                Ok(Some((ObjectKind::Blob, data))) => Some(data),
+                _ => None,
+            }
+        })
+    }
+
+    /// [`Mailmap::load`] for callers with their own object access:
+    /// `read_blob` returns the blob a revision (`HEAD:.mailmap`) names.
+    pub fn load_with(
+        setup: &rgit_repo::Setup,
+        config: &rgit_config::ConfigSet,
+        read_blob: &dyn Fn(&str) -> Option<Vec<u8>>,
+    ) -> Mailmap {
         let mut mm = Mailmap::default();
-        if let Some(top) = &repo.setup.work_tree {
-            let path = repo.setup.cwd.join(top).join(".mailmap");
+        if let Some(top) = &setup.work_tree {
+            let path = setup.cwd.join(top).join(".mailmap");
             if let Ok(meta) = path.symlink_metadata()
                 && meta.is_file()
                 && let Ok(text) = std::fs::read(&path)
@@ -122,18 +138,17 @@ impl Mailmap {
                 mm.add(&text);
             }
         }
-        let blob = match repo.config.string("mailmap.blob") {
+        let blob = match config.string("mailmap.blob") {
             Ok(Some(v)) => Some(v.to_string()),
-            _ if repo.setup.work_tree.is_none() => Some("HEAD:.mailmap".to_string()),
+            _ if setup.work_tree.is_none() => Some("HEAD:.mailmap".to_string()),
             _ => None,
         };
         if let Some(spec) = blob
-            && let Ok(id) = repo.resolver.resolve(&spec)
-            && let Ok(Some((ObjectKind::Blob, data))) = repo.objects.read(&id)
+            && let Some(data) = read_blob(&spec)
         {
             mm.add(&data);
         }
-        if let Ok(Some(file)) = repo.config.string("mailmap.file") {
+        if let Ok(Some(file)) = config.string("mailmap.file") {
             let file = file.to_string();
             let path = match file.strip_prefix("~/") {
                 Some(rest) => std::env::var_os("HOME")
