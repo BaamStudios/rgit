@@ -186,6 +186,11 @@ jobs:
           mkdir -p "$exec_path" "$prefix/share/git-core/templates"
           find "$ref" -maxdepth 1 -type f -perm -u+x -name 'git*' \
             -exec ln -sf {} "$exec_path/" \;
+          # The shell libraries the scripted commands source (`git submodule`
+          # needs git-sh-setup) are built without the executable bit.
+          for lib in git-sh-setup git-sh-i18n git-mergetool--lib; do
+            if test -f "$ref/$lib"; then ln -sf "$ref/$lib" "$exec_path/"; fi
+          done
           cp -R "$ref/templates/blt/." "$prefix/share/git-core/templates/"
           "$ref/git" init -q "$RUNNER_TEMP/probe" 2>"$RUNNER_TEMP/init.err"
           if test -s "$RUNNER_TEMP/init.err"; then cat "$RUNNER_TEMP/init.err"; exit 1; fi
