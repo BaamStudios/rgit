@@ -193,6 +193,27 @@ fn merge_fetch_head() {
         &[&["merge", "FETCH_HEAD"]],
     );
     cases(with(&[("", "../x", "side")]), &[&["merge", "FETCH_HEAD"]]);
+    // "of ." is left out; the --log headings name the source.
+    cases(
+        with(&[("", "branch 'side' of .", "side")]),
+        &[&["merge", "FETCH_HEAD"], &["merge", "--log", "FETCH_HEAD"]],
+    );
+    cases(
+        with(&[("", "remote-tracking branch 'origin/side' of .", "side")]),
+        &[&["merge", "--log", "FETCH_HEAD"]],
+    );
+    cases(
+        with(&[("", "remote-tracking branch 'origin/side' of ../y", "side")]),
+        &[&["merge", "--log", "FETCH_HEAD"]],
+    );
+    cases(
+        with(&[("", "'x' of .", "side")]),
+        &[&["merge", "--log", "FETCH_HEAD"]],
+    );
+    cases(
+        with(&[("", ".", "side")]),
+        &[&["merge", "--log", "FETCH_HEAD"]],
+    );
     cases(
         with(&[("not-for-merge", "branch 'side' of ../x", "side")]),
         &[&["merge", "FETCH_HEAD"]],

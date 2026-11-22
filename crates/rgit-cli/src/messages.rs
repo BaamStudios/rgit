@@ -39,6 +39,7 @@ pub mod objects;
 pub mod pack_objects;
 pub mod pack_refs;
 pub mod pager;
+pub mod pull;
 pub mod push;
 pub mod read_tree;
 pub mod ref_filter;

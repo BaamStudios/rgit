@@ -121,9 +121,10 @@ pub fn fetch(
         specs.items.push(parse_spec("refs/tags/*:refs/tags/*")?);
     }
 
-    // Merge candidates of the current branch.
+    // Merge candidates of the current branch (also when its remote is a
+    // URL such as `.`).
     let mut merge_refs: Vec<BString> = Vec::new();
-    if !cmdline && remote.is_configured() {
+    if !cmdline {
         if let Some(branch) = repo.current_branch() {
             let short = &branch["refs/heads/".len()..];
             if let Ok(bc) = BranchConfig::from_config(&repo.config, short.as_bytes()) {
