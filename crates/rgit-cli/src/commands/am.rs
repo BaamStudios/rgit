@@ -714,6 +714,9 @@ impl<'c> Am<'c> {
             ..rgit_merge::Options::default()
         };
         crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);
+        // The constructed base holds only the patched files, so git's
+        // am does not look for directory renames.
+        opts.directory_renames = rgit_merge::DirectoryRenames::False;
         let result = rgit_merge::merge_trees(repo.odb(), &base, &head_tree, &theirs, &opts)
             .map_err(|e| Die::Fatal(e.to_string()))?;
         if result.tree == ObjectId::empty_tree(repo.hash) {
