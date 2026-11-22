@@ -172,9 +172,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some(opt) = unsupported.borrow().clone() {
         return Err(Die::Fatal(msg::not_supported(&opt)));
     }
-    if mirror.get() {
-        return Err(Die::Fatal(msg::not_supported("--mirror")));
-    }
     if tags.get() && all.get() {
         return Err(Die::Fatal(msg::TAGS_WITH_ALL.into()));
     }
@@ -259,6 +256,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if tags.get() {
         specs.push("refs/tags/*".into());
+    }
+    // `--mirror` (or `remote.<name>.mirror`): every ref, forced, and the
+    // remote refs without a local one are deleted.
+    let mirror_mode = mirror.get() || (remote.mirror && !all.get() && !tags.get());
+    if mirror_mode {
+        if all.get() {
+            return Err(Die::Fatal(msg::incompatible("--all/--branches", "--mirror")));
+        }
+        if tags.get() {
+            return Err(Die::Fatal(msg::incompatible("--tags", "--mirror")));
+        }
+        if !specs.is_empty() {
+            return Err(Die::Fatal(msg::MIRROR_WITH_REFSPECS.into()));
+        }
+        specs.push("+refs/*:refs/*".into());
+        prune.set(true);
     }
     let from_cli = !specs.is_empty();
     let refspecs = if from_cli {

@@ -652,7 +652,9 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     } else if local_mode {
         // A local clone copies the source's object store (hard links
         // where possible) and borrows what the source borrows.
-        let src = common_dir_of(&repository_git_dir(Path::new(&source.url))).join("objects");
+        let src_git_dir = repository_git_dir(Path::new(&source.url));
+        check_source_ownership(ctx, &src_git_dir, &cwd)?;
+        let src = common_dir_of(&src_git_dir).join("objects");
         let mut copy = LocalCopy {
             hardlink: !opts.no_hardlinks,
             alternates: &mut alternates,
@@ -1378,6 +1380,27 @@ fn common_dir_of(git_dir: &Path) -> PathBuf {
         Ok(text) => git_dir.join(text.trim_end()),
         Err(_) => git_dir.to_path_buf(),
     }
+}
+
+/// A local clone reads the source directly: like opening a repository, a
+/// source owned by someone else must be listed in `safe.directory`.
+fn check_source_ownership(ctx: &Context, git_dir: &Path, cwd: &Path) -> Result<(), Die> {
+    use rgit_repo::ProtectedConfig;
+    let env = SystemEnv::default();
+    if rgit_repo::safe::Owner::current(&env).owns(git_dir) {
+        return Ok(());
+    }
+    let real = rgit_repo::path::real_path_lossy(git_dir, cwd);
+    let mut protected = StandardProtectedConfig::new(&env, command_line(ctx));
+    let set = protected.load().map_err(crate::repo::die)?;
+    let (safe, warnings) = rgit_repo::safe::is_safe_directory(&set, &env, &real, cwd);
+    if safe {
+        return Ok(());
+    }
+    Err(crate::repo::die(rgit_repo::Error::DubiousOwnership {
+        path: real,
+        warnings,
+    }))
 }
 
 /// The object store copy of a local clone (git-clone.adoc, `--local`):

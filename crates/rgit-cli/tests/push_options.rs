@@ -63,6 +63,12 @@ fn push_prune_follow_tags_delete_same_as_git() {
         &["push", "origin", "--delete", "tag", "light"],
         &["push", "origin", "--delete", ""],
         &["push", "origin", "--delete", "main:foo"],
+        &["push", "--mirror", "origin", "main"],
+        &["push", "--mirror", "--all", "origin"],
+        &["push", "--mirror", "--tags", "origin"],
+        &["push", "--mirror", "origin"],
+        &["-c", "remote.origin.mirror=true", "push", "origin"],
+        &["-c", "remote.origin.mirror=true", "push", "origin", "main"],
     ];
     for argv in cases {
         let path = server_path(&fx);
