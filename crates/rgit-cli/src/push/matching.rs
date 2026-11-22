@@ -148,12 +148,20 @@ pub fn match_refs(
     // `--prune`: remote refs a pattern refspec covers whose source is gone
     // locally are deleted.
     if prune {
-        for spec in specs.positive().filter(|s| s.pattern) {
+        for spec in specs.positive().filter(|s| s.pattern || s.matching) {
             for r in remote {
-                let Some(src) = spec.map_dst(r.name.as_bytes()) else {
-                    continue;
+                // `:` covers the branches on both sides.
+                let src = if spec.matching {
+                    if !r.name.starts_with("refs/heads/") {
+                        continue;
+                    }
+                    r.name.clone()
+                } else {
+                    let Some(src) = spec.map_dst(r.name.as_bytes()) else {
+                        continue;
+                    };
+                    src.to_string()
                 };
-                let src = src.to_string();
                 if specs.is_excluded(src.as_bytes())
                     || local.refs.iter().any(|(n, _)| *n == src)
                     || out.iter().any(|o| o.dst == r.name)

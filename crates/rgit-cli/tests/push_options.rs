@@ -42,6 +42,7 @@ fn push_prune_follow_tags_delete_same_as_git() {
         return;
     }
     let cases: &[&[&str]] = &[
+        &["push", "--dry-run", "--prune", "origin", ":"],
         &[
             "push",
             "--dry-run",
