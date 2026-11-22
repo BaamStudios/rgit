@@ -9,9 +9,9 @@
 //! - here: sort keys and version order, and the small API the listing
 //!   commands use ([`RefFormat`], [`SortKey`], [`RefValues`]).
 //!
-//! `%(describe)` runs `describe` for each object. Not yet: `%(is-base:...)`,
-//! `%(signature...)` (needs signature verification); they fail with an
-//! rgit message.
+//! `%(describe)` runs `describe` for each object, `%(signature[:<part>])`
+//! checks commit signatures with [`crate::signing`]. Not yet:
+//! `%(is-base:...)`; it fails with an rgit message.
 
 pub(crate) mod eval;
 pub(crate) mod format;

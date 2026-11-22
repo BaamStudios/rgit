@@ -145,9 +145,24 @@ pub(crate) enum Kind {
     Rest,
     /// `%(describe[:<options>])`: the `git describe` arguments.
     Describe(Vec<String>),
-    /// Atoms rgit does not implement yet (`is-base`, `signature`): an
+    /// `%(signature[:<part>])` of a commit.
+    Signature(SigPart),
+    /// Atoms rgit does not implement yet (`is-base`): an
     /// error when used.
     Unsupported(&'static str),
+}
+
+/// What `%(signature:<part>)` shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SigPart {
+    /// The text of the verification.
+    Output,
+    Grade,
+    Signer,
+    Key,
+    Fingerprint,
+    PrimaryKeyFingerprint,
+    TrustLevel,
 }
 
 /// One `%(...)` placeholder.
@@ -682,7 +697,16 @@ pub(crate) fn parse_atom(spec: &str) -> Result<Atom, FormatError> {
         "worktreepath" => Kind::Worktreepath,
         "rest" => no_args(Kind::Rest)?,
         "describe" => Kind::Describe(parse_describe(arg)?),
-        "signature" => Kind::Unsupported("signature"),
+        "signature" => Kind::Signature(match arg {
+            None => SigPart::Output,
+            Some("grade") => SigPart::Grade,
+            Some("signer") => SigPart::Signer,
+            Some("key") => SigPart::Key,
+            Some("fingerprint") => SigPart::Fingerprint,
+            Some("primarykeyfingerprint") => SigPart::PrimaryKeyFingerprint,
+            Some("trustlevel") => SigPart::TrustLevel,
+            Some(a) => return Err(fatal(msg::unrecognized_arg(name, a))),
+        }),
         _ => match parse_person(name, arg)? {
             Some(k) => k,
             None => return Err(fatal(msg::unknown_field(body))),

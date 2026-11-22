@@ -145,6 +145,13 @@ fn verification_results() {
         &["verify-tag", "-v", "--raw", "st"],
         &["verify-tag", "--format=%(refname) %(tag)", "st"],
         &["tag", "-v", "st"],
+        &[
+            "for-each-ref",
+            "--format=%(refname)|%(signature:grade)|%(signature:key)|%(signature:signer)|\
+             %(signature:fingerprint)|%(signature:primarykeyfingerprint)|\
+             %(signature:trustlevel)|%(*signature:grade)|%(signature)",
+            "refs/tags",
+        ],
         &["merge", "--ff-only", "--verify-signatures", "HEAD~1"],
         &[
             "-c",
@@ -193,6 +200,7 @@ fn verification_errors() {
             &["verify-tag", "lt"],
             &["verify-tag", "nonexistent"],
             &["verify-tag", "--format=%(rest)", "st"],
+            &["for-each-ref", "--format=%(signature:nope)", "refs/tags"],
             &["tag", "-v", "at"],
             &["tag", "-v", "lt"],
             &["tag", "-v", "nope"],
