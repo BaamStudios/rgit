@@ -56,3 +56,7 @@ pub fn skipping_ignored(path: &str) -> String {
 pub fn pathspec_in_submodule(spec: &str, path: &str) -> String {
     format!("Pathspec '{spec}' is in submodule '{path}'")
 }
+
+pub fn migrating(path: &str, from: &str, to: &str) -> String {
+    format!("Migrating git directory of '{path}' from\n'{from}' to\n'{to}'")
+}
