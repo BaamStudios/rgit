@@ -945,10 +945,9 @@ impl Printer<'_, '_> {
             Some(p) => Some(self.repo.tree_of(&p).ok_or_else(walk_error)?),
             None => None,
         };
-        let pathspec = rgit_pathspec::Pathspec::default();
         let mut w = crate::diff::collect::TreeDiff {
             repo: &d.repo,
-            pathspec: &pathspec,
+            pathspec: &d.pathspec,
             recursive: true,
             show_trees: false,
             pairs: Vec::new(),
@@ -1316,6 +1315,7 @@ fn show_commit(p: &mut Printer<'_, '_>, id: &ObjectId) -> Result<(), Die> {
         repo: p.repo,
         grep: None,
         patch_ids: None,
+        paths: None,
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
@@ -1367,6 +1367,9 @@ struct LogDiff {
     merges: MergeDiff,
     /// Root commits get a diff against the empty tree.
     show_root: bool,
+    /// The paths the diffs are limited to (the walk's, unless
+    /// `--full-diff`).
+    pathspec: rgit_pathspec::Pathspec,
 }
 
 /// The diff `log` shows after every commit: only when a diff format was
@@ -1441,6 +1444,7 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
         formats,
         merges,
         show_root,
+        pathspec: rgit_pathspec::Pathspec::default(),
     }))
 }
 
@@ -1690,7 +1694,13 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
         next: None,
-        diff: log_diff(ctx, opts, cmd)?,
+        diff: match log_diff(ctx, opts, cmd)? {
+            Some(mut d) if !opts.full_diff && !resolved.paths.is_empty() => {
+                d.pathspec = paths::parse_pathspec(ctx, repo, &resolved.paths)?;
+                Some(d)
+            }
+            d => d,
+        },
     };
     if opts.graph {
         let palette = p

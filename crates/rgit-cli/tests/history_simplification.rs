@@ -122,6 +122,21 @@ fn documentation_example_in_every_mode() {
         &["rev-list", "--parents", "Q", "--", "foo", "side"],
     );
     same(&mut fx, &["rev-list", "--parents", "--all", "--", "nope"]);
+    same(&mut fx, &["log", "-p", "--format=%s", "Q", "--", "foo"]);
+    same(
+        &mut fx,
+        &[
+            "log",
+            "--stat",
+            "--full-diff",
+            "--format=%s",
+            "Q",
+            "--",
+            "foo",
+        ],
+    );
+    same(&mut fx, &["rev-list", "--objects", "Q", "--", "foo"]);
+    same(&mut fx, &["rev-list", "--no-walk", "A", "C", "--", "foo"]);
     same(
         &mut fx,
         &["log", "--format=%s", "--simplify-by-decoration", "--all"],

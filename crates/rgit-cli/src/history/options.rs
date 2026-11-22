@@ -170,6 +170,8 @@ pub struct Options {
     pub dashdash: bool,
     /// `--simplify-by-decoration`.
     pub simplify_by_decoration: bool,
+    /// `--full-diff`: the diffs of path-limited commits show every path.
+    pub full_diff: bool,
     /// `--follow` / `--no-follow` (log); `None`: `log.follow`.
     pub follow: Option<bool>,
 }
@@ -294,6 +296,7 @@ impl Options {
             paths: Vec::new(),
             dashdash: false,
             simplify_by_decoration: false,
+            full_diff: false,
             follow: None,
         }
     }
@@ -489,6 +492,7 @@ impl Options {
                 "--simplify-merges" => o.walk.simplify_merges = true,
                 "--show-pulls" => o.walk.show_pulls = true,
                 "--remove-empty" => o.walk.remove_empty = true,
+                "--full-diff" if cmd == Command::Log => o.full_diff = true,
                 "--simplify-by-decoration" => {
                     // It works like `--simplify-merges` with decorations.
                     o.simplify_by_decoration = true;
