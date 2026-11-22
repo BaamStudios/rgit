@@ -300,7 +300,13 @@ impl<'a> Env<'a> {
             Kind::Upstream(m) => return Ok(self.upstream(it, *m, false)),
             Kind::Push(m) => return Ok(self.upstream(it, *m, true)),
             Kind::Head => {
-                let is_head = matches!(self.head(), Some(Target::Symbolic(t)) if *t == it.name);
+                // `branch --format` names a detached `HEAD` "(HEAD detached
+                // at ...)", which no reference name can start with.
+                let is_head = match self.head() {
+                    Some(Target::Symbolic(t)) => *t == it.name,
+                    Some(Target::Object(_)) => it.name.starts_with('('),
+                    None => false,
+                };
                 return Ok(Value::text(if is_head { "*" } else { " " }));
             }
             Kind::Color(seq) => {
@@ -403,6 +409,7 @@ impl<'a> Env<'a> {
                     _ => Value::number(c.parents().map_or(0, |p| p.len() as u64)),
                 }
             }
+            Kind::Describe(args) => Value::text(describe(&obj.id, args)),
             Kind::Object | Kind::Type | Kind::Tag => {
                 if obj.kind != ObjectKind::Tag {
                     return none();
@@ -1184,6 +1191,31 @@ fn message(obj: &Loaded, hash: rgit_hash::HashKind) -> Option<Vec<u8>> {
             .ok()
             .map(|t| t.message().to_vec()),
         _ => None,
+    }
+}
+
+/// `git describe <args> <id>` (by running this program), empty when the
+/// object cannot be described.
+fn describe(id: &ObjectId, args: &[String]) -> Vec<u8> {
+    let Ok(exe) = std::env::current_exe() else {
+        return Vec::new();
+    };
+    let out = std::process::Command::new(exe)
+        .arg("describe")
+        .args(args)
+        .arg(id.to_hex())
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let mut v = o.stdout;
+            while v.last() == Some(&b'\n') {
+                v.pop();
+            }
+            v
+        }
+        _ => Vec::new(),
     }
 }
 
