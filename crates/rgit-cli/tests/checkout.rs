@@ -113,3 +113,37 @@ fn missing_subtree() {
         fx.compare(args).run();
     }
 }
+
+/// Switching branches checks an assume-unchanged entry that has to change
+/// for real: its local modification stops the checkout.
+#[test]
+fn assume_unchanged_dirty_file_blocks_switch() {
+    let mut fx = rgit_difftest::Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("f", "one\n")
+        .git(["add", "f"])
+        .git(["commit", "-q", "-m", "one"])
+        .git(["branch", "other"])
+        .tick()
+        .write("f", "two\n")
+        .git(["commit", "-q", "-a", "-m", "two"])
+        .git(["checkout", "-q", "other"])
+        .write("f", "dirty\n")
+        .git(["update-index", "--assume-unchanged", "f"]);
+    fx.compare(["checkout", "main"]).run();
+    // A clean assume-unchanged file does not stop it.
+    let mut fx = rgit_difftest::Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("f", "one\n")
+        .git(["add", "f"])
+        .git(["commit", "-q", "-m", "one"])
+        .git(["branch", "other"])
+        .tick()
+        .write("f", "two\n")
+        .git(["commit", "-q", "-a", "-m", "two"])
+        .git(["checkout", "-q", "other"])
+        .git(["update-index", "--assume-unchanged", "f"]);
+    fx.compare(["checkout", "main"]).run();
+}

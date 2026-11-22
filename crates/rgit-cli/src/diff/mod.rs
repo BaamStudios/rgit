@@ -29,6 +29,7 @@ pub fn pathspec(ctx: &Context, repo: &Repo, args: &[String]) -> Result<Pathspec,
         prefix: repo.prefix(),
         root,
         globals: repository::pathspec_globals(ctx),
+        implicit_base: rgit_pathspec::ImplicitBase::Top,
         ..Default::default()
     };
     Pathspec::parse(args, &opts).map_err(|e| Die::Fatal(e.to_string()))

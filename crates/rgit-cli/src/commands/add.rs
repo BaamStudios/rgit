@@ -391,6 +391,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(Die::Fatal(msg::FROM_FILE_WITH_PATCH.to_owned()));
         }
     }
+    if edit.get() && !interactive_mode && from_file.is_some() {
+        return Err(Die::Fatal(msg::FROM_FILE_WITH_EDIT.to_owned()));
+    }
     if patch.get() || interactive.get() || edit.get() {
         let repo = Repo::open(ctx, RepoMode::Required)?;
         repo.work_tree()?;
@@ -464,6 +467,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         prefix: prefix.clone(),
         root: Some(root.as_os_str().as_encoded_bytes().to_vec()),
         globals: repository::pathspec_globals(ctx),
+        implicit_base: rgit_pathspec::ImplicitBase::Top,
         ..Default::default()
     };
     let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;

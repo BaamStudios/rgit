@@ -544,7 +544,18 @@ impl Unpacker<'_, '_, '_> {
         let Some(wt) = self.wt else {
             return true;
         };
-        match wt.checker.check(e) {
+        // An assume-unchanged entry that has to change is checked for real:
+        // its local changes must not be lost either.
+        let status = if e.flags.assume_valid && !e.flags.skip_worktree {
+            match wt.checker.lstat(e.path()) {
+                Ok(Some(meta)) => wt.checker.check_with(e, &meta),
+                Ok(None) => Ok(Status::Deleted),
+                Err(err) => Err(err),
+            }
+        } else {
+            wt.checker.check(e)
+        };
+        match status {
             // Like git's plumbing, only the cached stat data counts: a file
             // touched but unchanged is "not uptodate" until the index is
             // refreshed (porcelain refreshes before merging).
