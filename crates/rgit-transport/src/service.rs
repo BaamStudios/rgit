@@ -47,6 +47,9 @@ pub struct ConnectOptions {
     /// `-v`: report the steps of connecting (`git://`: host lookup and
     /// connect) on stderr.
     pub verbose: bool,
+    /// Verbosity of the calling command (`-v` counts); smart HTTP reports
+    /// its POST sizes above 1.
+    pub verbosity: i32,
 }
 
 impl ConnectOptions {
@@ -59,6 +62,7 @@ impl ConnectOptions {
             extra_parameters: Vec::new(),
             trace_name: None,
             verbose: false,
+            verbosity: 0,
         }
     }
 

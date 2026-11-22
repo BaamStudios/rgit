@@ -184,3 +184,152 @@ pub fn unsupported_scheme(scheme: &str) -> String {
 pub fn no_username(origin: &str) -> String {
     format!("could not read Username for '{origin}': terminal prompts disabled")
 }
+
+/// `could not read Password for '<url>': terminal prompts disabled`.
+pub fn no_password(url: &str) -> String {
+    format!("could not read Password for '{url}': terminal prompts disabled")
+}
+
+/// `warning: unknown value given to http.version: '<v>'`.
+pub fn unknown_http_version(v: &str) -> String {
+    format!("unknown value given to http.version: '{v}'")
+}
+
+/// `warning: Unknown value for http.proactiveauth`.
+pub const UNKNOWN_PROACTIVE_AUTH: &str = "Unknown value for http.proactiveauth";
+
+/// `warning: Unknown delegation method '<v>': using default`.
+pub fn unknown_delegation(v: &str) -> String {
+    format!("Unknown delegation method '{v}': using default")
+}
+
+/// `warning: unsupported ssl version <v>: using default`.
+pub fn unsupported_ssl_version(v: &str) -> String {
+    format!("unsupported ssl version {v}: using default")
+}
+
+/// `warning: unsupported proxy authentication method <v>: using anyauth`.
+pub fn unsupported_proxy_auth_method(v: &str) -> String {
+    format!("unsupported proxy authentication method {v}: using anyauth")
+}
+
+/// `fatal: Unsupported SSL backend '<v>'. Supported SSL backends:` and
+/// the list, one per line after a tab (rgit has one: rustls).
+pub fn unsupported_ssl_backend(v: &str) -> String {
+    format!("Unsupported SSL backend '{v}'. Supported SSL backends:\n\trustls")
+}
+
+/// `fatal: Invalid proxy URL '<url>': <reason>`.
+pub fn invalid_proxy_url(url: &str, reason: &str) -> String {
+    format!("Invalid proxy URL '{url}': {reason}")
+}
+
+/// Reason: a scheme git does not know.
+pub fn unsupported_proxy_scheme(scheme: &str) -> String {
+    format!("unsupported proxy scheme '{scheme}'")
+}
+
+/// Reason: a path on a non-SOCKS proxy.
+pub const PROXY_PATH_NOT_SOCKS: &str = "only SOCKS proxies support paths";
+
+/// Reason: a Unix socket path with a host other than localhost.
+pub const PROXY_PATH_NOT_LOCALHOST: &str = "host must be localhost if a path is present";
+
+/// libcurl: the proxy could not be reached.
+pub fn failed_to_connect_over_proxy(host: &str, port: u16, proxy: &str, ms: u128) -> String {
+    format!(
+        "Failed to connect to {host}:{port} over proxy {proxy} after {ms} ms: Could not connect to server"
+    )
+}
+
+/// libcurl: a malformed `http.curloptResolve` entry.
+pub fn bad_resolve_entry(entry: &str) -> String {
+    format!("Could not parse CURLOPT_RESOLVE entry '{entry}'")
+}
+
+/// `warning: rate limited, waiting <n> seconds before retry`.
+pub fn rate_limited_waiting(secs: u64) -> String {
+    format!("rate limited, waiting {secs} seconds before retry")
+}
+
+/// `error: response requested a delay greater than http.maxRetryTime (...)`.
+pub fn retry_delay_exceeds(delay: u64, max: i64) -> String {
+    format!("response requested a delay greater than http.maxRetryTime ({delay} > {max} seconds)")
+}
+
+/// `error: configured http.retryAfter exceeds http.maxRetryTime (...)`.
+pub fn configured_retry_exceeds(delay: i64, max: i64) -> String {
+    format!("configured http.retryAfter exceeds http.maxRetryTime ({delay} > {max} seconds)")
+}
+
+/// `fatal: rate limited by '<url>/', please try again in <n> seconds`.
+pub fn rate_limited_by(url: &str, secs: u64) -> String {
+    format!("rate limited by '{url}', please try again in {secs} seconds")
+}
+
+/// `transfer.credentialsInUrl`: `URL '<url>' uses plaintext credentials`.
+pub fn plaintext_credentials(url: &str) -> String {
+    format!("URL '{url}' uses plaintext credentials")
+}
+
+/// An unknown `transfer.credentialsInUrl` value.
+pub fn unrecognized_credentials_in_url(v: &str) -> String {
+    format!("unrecognized value transfer.credentialsInUrl: '{v}'")
+}
+
+/// libcurl: `http.pinnedPubkey` does not match the server's key.
+pub const PINNED_KEY_MISMATCH: &str = "SSL: public key does not match pinned public key";
+
+/// libcurl: the client certificate could not be loaded.
+pub fn client_cert_problem(path: &str) -> String {
+    format!("could not load PEM client certificate from {path}")
+}
+
+/// libcurl: the client key could not be loaded.
+pub fn client_key_problem(path: &str) -> String {
+    format!("unable to set private key file: '{path}' type PEM")
+}
+
+/// A certificate or key type rustls cannot load (only PEM is supported).
+pub fn unsupported_cert_type(kind: &str) -> String {
+    format!("not supported file type '{kind}' for certificate")
+}
+
+/// libcurl: none of the ciphers of `http.sslCipherList` is available.
+pub fn cipher_list_failed(list: &str) -> String {
+    format!("failed setting cipher list: {list}")
+}
+
+/// `http.sslVersion=sslv2|sslv3`: rustls only speaks TLS 1.2 and 1.3.
+pub fn ssl_version_unsupported(v: &str) -> String {
+    format!("TLS connect error: {v} is not supported by rgit's TLS backend (rustls)")
+}
+
+/// An `https://` proxy (TLS to the proxy itself).
+pub const HTTPS_PROXY_UNSUPPORTED: &str =
+    "HTTPS proxies are not supported by rgit; use an http:// or socks proxy";
+
+/// A SOCKS proxy on a Unix domain socket.
+pub const UNIX_SOCKET_PROXY_UNSUPPORTED: &str =
+    "SOCKS proxies on Unix domain sockets are not supported by rgit";
+
+/// libcurl: the SOCKS4 proxy refused the connection.
+pub fn socks4_failed(target: &str) -> String {
+    format!("SOCKS4 connection to {target} not successful: request rejected or failed.")
+}
+
+/// libcurl: the SOCKS5 proxy refused the connection.
+pub fn socks5_failed(target: &str, code: u8) -> String {
+    format!("Can't complete SOCKS5 connection to {target}. ({code})")
+}
+
+/// libcurl: the SOCKS5 proxy wants an authentication method we lack.
+pub const SOCKS5_NO_AUTH: &str = "No authentication method was acceptable.";
+
+/// libcurl: the SOCKS5 proxy rejected user name and password.
+pub const SOCKS5_AUTH_FAILED: &str = "User was rejected by the SOCKS5 server.";
+
+/// SOCKS4 needs an IPv4 address for the target.
+pub fn socks4_no_ipv4(host: &str) -> String {
+    format!("SOCKS4 connection to {host} not supported")
+}

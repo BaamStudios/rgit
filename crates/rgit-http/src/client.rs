@@ -15,15 +15,17 @@
 //! then the caller's headers in order, then `Content-Length`.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 
+use crate::cookies::CookieJar;
 use crate::error::Transport;
 use crate::messages;
-use crate::options::{HttpOptions, Proxy};
+use crate::options::{HttpOptions, Proxy, ProxyKind};
+use crate::socks;
 use crate::tls;
 use crate::trace::Tracer;
 use crate::url::{Scheme, Url};
@@ -248,6 +250,11 @@ pub(crate) struct Client {
     tls: OnceLock<Arc<ClientConfig>>,
     pool: Pool,
     pub tracer: Tracer,
+    /// `http.cookieFile` / `http.saveCookies`.
+    cookies: Option<Mutex<CookieJar>>,
+    /// The proxy password obtained from the credential helpers when the
+    /// proxy URL names a user but no password.
+    pub proxy_password: Option<String>,
 }
 
 pub(crate) fn io_to_transport(e: &io::Error, code: u32, what: &str) -> Transport {
@@ -259,12 +266,39 @@ pub(crate) fn io_to_transport(e: &io::Error, code: u32, what: &str) -> Transport
 
 impl Client {
     pub(crate) fn new(opts: HttpOptions) -> Client {
+        let cookies = opts
+            .cookie_file
+            .as_ref()
+            .map(|f| Mutex::new(CookieJar::load(f, opts.save_cookies)));
         Client {
             opts,
             tls: OnceLock::new(),
             pool: Arc::new(Mutex::new(Vec::new())),
             tracer: Tracer::from_env(),
+            cookies,
+            proxy_password: None,
         }
+    }
+
+    /// The proxy for `url` with the password from the credential helpers
+    /// filled in.
+    fn proxy(&self, url: &Url) -> Result<Option<Proxy>, Transport> {
+        let mut proxy = self
+            .opts
+            .proxy_for(url)
+            .map_err(|e| Transport::new(5, e.to_string()))?;
+        if let Some(p) = proxy.as_mut() {
+            if p.user.is_some() && p.password.is_none() {
+                p.password = self.proxy_password.clone();
+            }
+            if p.kind == ProxyKind::Https {
+                return Err(Transport::new(4, messages::HTTPS_PROXY_UNSUPPORTED));
+            }
+            if p.socket.is_some() {
+                return Err(Transport::new(4, messages::UNIX_SOCKET_PROXY_UNSUPPORTED));
+            }
+        }
+        Ok(proxy)
     }
 
     fn tls_config(&self) -> Result<Arc<ClientConfig>, Transport> {
@@ -277,10 +311,7 @@ impl Client {
 
     /// Send one request and read the response head.
     pub(crate) fn send(&self, req: &mut Request<'_>) -> Result<Response, Transport> {
-        let proxy = self
-            .opts
-            .proxy_for(req.url)
-            .map_err(|e| Transport::new(5, e.to_string()))?;
+        let proxy = self.proxy(req.url)?;
         let key = PoolKey {
             scheme: req.url.scheme,
             host_port: req.url.host_port(),
@@ -314,7 +345,8 @@ impl Client {
 
     fn request_head(&self, req: &Request<'_>, proxy: Option<&Proxy>) -> Vec<u8> {
         let url = req.url;
-        let via_http_proxy = proxy.is_some() && url.scheme == Scheme::Http;
+        let via_http_proxy =
+            proxy.is_some_and(|p| p.kind == ProxyKind::Http) && url.scheme == Scheme::Http;
         let target = if via_http_proxy {
             url.without_credentials().to_string()
         } else {
@@ -343,6 +375,12 @@ impl Client {
         }
         if via_http_proxy {
             h.push_str("Proxy-Connection: Keep-Alive\r\n");
+        }
+        if let Some(jar) = &self.cookies {
+            let jar = jar.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(c) = jar.header(&url.host, &url.path, url.scheme == Scheme::Https) {
+                h.push_str(&format!("Cookie: {c}\r\n"));
+            }
         }
         for (k, v) in &req.headers {
             h.push_str(&format!("{k}: {v}\r\n"));
@@ -437,7 +475,7 @@ impl Client {
                 _ => return Err((false, Transport::new(8, messages::bad_response(line)))),
             };
             let _reason = parts.next();
-            let mut headers = Vec::new();
+            let mut headers: Vec<(String, String)> = Vec::new();
             loop {
                 let raw = match read_head_line(&mut conn.io) {
                     Ok(Some(l)) => l,
@@ -455,6 +493,18 @@ impl Client {
                 if l.is_empty() {
                     break;
                 }
+                // An obsolete line folding (RFC 9112, 5.2) continues the
+                // previous header; empty continuations add nothing.
+                if l.starts_with([' ', '\t']) {
+                    let more = l.trim();
+                    if let (Some((_, v)), false) = (headers.last_mut(), more.is_empty()) {
+                        if !v.is_empty() {
+                            v.push(' ');
+                        }
+                        v.push_str(more);
+                    }
+                    continue;
+                }
                 if let Some((k, v)) = l.split_once(':') {
                     headers.push((k.trim().to_string(), v.trim().to_string()));
                 }
@@ -464,6 +514,10 @@ impl Client {
             }
             break (status, headers, version == "HTTP/1.0");
         };
+        if let Some(jar) = &self.cookies {
+            let mut jar = jar.lock().unwrap_or_else(|p| p.into_inner());
+            jar.store(&req.url.host, &req.url.path, &headers);
+        }
         let get = |n: &str| {
             headers
                 .iter()
@@ -509,14 +563,61 @@ impl Client {
         })
     }
 
+    /// The addresses of `host:port`: `http.curloptResolve` first, then
+    /// the system resolver.
+    fn resolve(&self, host: &str, port: u16, is_proxy: bool) -> Result<Vec<SocketAddr>, Transport> {
+        if let Some(addrs) = resolve_override(&self.opts.resolve, host, port)? {
+            return Ok(addrs);
+        }
+        let resolve_err = || {
+            if is_proxy {
+                Transport::new(5, messages::could_not_resolve_proxy(host))
+            } else {
+                Transport::new(6, messages::could_not_resolve_host(host))
+            }
+        };
+        let addrs: Vec<_> = (host, port)
+            .to_socket_addrs()
+            .map_err(|_| resolve_err())?
+            .collect();
+        if addrs.is_empty() {
+            return Err(resolve_err());
+        }
+        Ok(addrs)
+    }
+
     fn connect(&self, url: &Url, proxy: Option<&Proxy>, key: PoolKey) -> Result<Conn, Transport> {
+        let port = url.port_or_default();
         let tcp = match proxy {
-            Some(p) => tcp_connect(&p.host, p.port, true, &self.tracer)?,
-            None => tcp_connect(&url.host, url.port_or_default(), false, &self.tracer)?,
+            Some(p) => {
+                let addrs = self.resolve(&p.host, p.port, true)?;
+                let tcp = tcp_connect(&addrs, &p.host, p.port, &self.tracer).map_err(|ms| {
+                    Transport::new(
+                        7,
+                        messages::failed_to_connect_over_proxy(&url.host, port, &p.host, ms),
+                    )
+                })?;
+                let resolve = |h: &str, port: u16| self.resolve(h, port, false);
+                socks::handshake(&tcp, p, &url.host, port, &resolve, &self.tracer)?;
+                tcp
+            }
+            None => {
+                let addrs = self.resolve(&url.host, port, false)?;
+                tcp_connect(&addrs, &url.host, port, &self.tracer).map_err(|ms| {
+                    let shown = if url.host.contains(':') {
+                        format!("[{}]", url.host)
+                    } else {
+                        url.host.clone()
+                    };
+                    Transport::new(7, messages::failed_to_connect(&shown, port, ms))
+                })?
+            }
         };
         let _ = tcp.set_nodelay(true);
         if let (Some(p), Scheme::Https) = (proxy, url.scheme) {
-            self.tunnel(&tcp, url, p)?;
+            if p.kind == ProxyKind::Http {
+                self.tunnel(&tcp, url, p)?;
+            }
         }
         let stream = match url.scheme {
             Scheme::Http => Stream::Plain(tcp),
@@ -625,28 +726,60 @@ fn proxy_authorization(p: &Proxy) -> Option<String> {
     ))
 }
 
-fn tcp_connect(
+/// `http.curloptResolve`: the addresses configured for `host:port`, if
+/// any. Entries are `[+]HOST:PORT:ADDRESS[,ADDRESS]` and `-HOST:PORT`
+/// (which removes earlier entries for that pair).
+fn resolve_override(
+    entries: &[String],
     host: &str,
     port: u16,
-    is_proxy: bool,
-    tracer: &Tracer,
-) -> Result<TcpStream, Transport> {
-    let resolve_err = || {
-        if is_proxy {
-            Transport::new(5, messages::could_not_resolve_proxy(host))
-        } else {
-            Transport::new(6, messages::could_not_resolve_host(host))
+) -> Result<Option<Vec<SocketAddr>>, Transport> {
+    let mut found: Option<Vec<SocketAddr>> = None;
+    for e in entries {
+        let bad = || Transport::new(3, messages::bad_resolve_entry(e));
+        let (remove, spec) = match e.strip_prefix('-') {
+            Some(s) => (true, s),
+            None => (false, e.strip_prefix('+').unwrap_or(e)),
+        };
+        let (h, rest) = spec.split_once(':').ok_or_else(bad)?;
+        let (p, addrs) = match rest.split_once(':') {
+            Some((p, a)) => (p, Some(a)),
+            None => (rest, None),
+        };
+        let p: u16 = p.parse().map_err(|_| bad())?;
+        let matches = h.eq_ignore_ascii_case(host) && p == port;
+        if remove {
+            if matches {
+                found = None;
+            }
+            continue;
         }
-    };
-    let addrs: Vec<_> = (host, port)
-        .to_socket_addrs()
-        .map_err(|_| resolve_err())?
-        .collect();
-    if addrs.is_empty() {
-        return Err(resolve_err());
+        let addrs = addrs.ok_or_else(bad)?;
+        let mut list = Vec::new();
+        for a in addrs.split(',') {
+            let a = a.trim().trim_start_matches('[').trim_end_matches(']');
+            let ip: IpAddr = a.parse().map_err(|_| bad())?;
+            list.push(SocketAddr::new(ip, port));
+        }
+        if list.is_empty() {
+            return Err(bad());
+        }
+        if matches {
+            found = Some(list);
+        }
     }
+    Ok(found)
+}
+
+/// Connect to the first reachable address; the error is the time spent.
+fn tcp_connect(
+    addrs: &[SocketAddr],
+    host: &str,
+    port: u16,
+    tracer: &Tracer,
+) -> Result<TcpStream, u128> {
     let start = Instant::now();
-    for a in &addrs {
+    for a in addrs {
         tracer.info(&format!("  Trying {a}..."));
         if let Ok(s) = TcpStream::connect(a) {
             if let Ok(local) = s.local_addr() {
@@ -660,15 +793,7 @@ fn tcp_connect(
             return Ok(s);
         }
     }
-    let shown = if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-    Err(Transport::new(
-        7,
-        messages::failed_to_connect(&shown, port, start.elapsed().as_millis()),
-    ))
+    Err(start.elapsed().as_millis())
 }
 
 /// Read one header line including its line ending; `None` at EOF.

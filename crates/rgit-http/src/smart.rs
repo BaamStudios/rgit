@@ -29,7 +29,7 @@ use crate::auth::{Credential, CredentialProvider};
 use crate::client::{Client, ReqBody, Request, Response};
 use crate::error::{Error, Result, Transport};
 use crate::messages;
-use crate::options::{FollowRedirects, HttpOptions};
+use crate::options::{EmptyAuth, FollowRedirects, HttpOptions, ProactiveAuth};
 use crate::url::Url;
 
 /// libcurl's default redirect limit as set by git.
@@ -37,6 +37,12 @@ const MAX_REDIRECTS: usize = 20;
 
 /// Bodies larger than this are gzip-compressed (upload-pack only).
 const GZIP_THRESHOLD: usize = 1024;
+
+/// The largest pkt-line (`gitprotocol-common(5)`).
+const LARGE_PACKET_MAX: usize = 65520;
+
+/// How many rounds a multistage scheme (`continue=1`) may take.
+const MAX_AUTH_STAGES: usize = 8;
 
 /// The service a session talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +127,10 @@ pub struct SmartHttp<'a> {
     approved: bool,
     git_protocol: Option<String>,
     diagnostics: Box<dyn FnMut(&str) + Send + 'a>,
+    prepared: bool,
+    proactive_done: bool,
+    proxy_cred: Option<Credential>,
+    proxy_approved: bool,
 }
 
 fn print_diagnostic(line: &str) {
@@ -140,6 +150,10 @@ impl<'a> SmartHttp<'a> {
             approved: false,
             git_protocol: None,
             diagnostics: Box::new(print_diagnostic),
+            prepared: false,
+            proactive_done: false,
+            proxy_cred: None,
+            proxy_approved: false,
         })
     }
 
@@ -206,19 +220,26 @@ impl<'a> SmartHttp<'a> {
         }
         let follow = self.client.opts.follow_redirects != FollowRedirects::Never;
         let disp = self.display_url();
-        let (mut resp, final_url) =
-            match self.execute("GET", req_url.clone(), headers, true, Payload::None, follow) {
-                Ok(r) => r,
-                Err(ExecError::Transport(t)) => {
-                    return Err(Error::Access {
-                        url: disp,
-                        status: None,
-                        reason: t.reason,
-                        remote: Vec::new(),
-                    });
-                }
-                Err(ExecError::Other(e)) => return Err(e),
-            };
+        let (mut resp, final_url) = match self.execute(
+            "GET",
+            req_url.clone(),
+            headers,
+            true,
+            Payload::None,
+            follow,
+            &suffix,
+        ) {
+            Ok(r) => r,
+            Err(ExecError::Transport(t)) => {
+                return Err(Error::Access {
+                    url: disp,
+                    status: None,
+                    reason: t.reason,
+                    remote: Vec::new(),
+                });
+            }
+            Err(ExecError::Other(e)) => return Err(e),
+        };
         match resp.status {
             200..=299 | 304 => {}
             404 => return Err(Error::RepositoryNotFound { url: disp }),
@@ -282,16 +303,21 @@ impl<'a> SmartHttp<'a> {
     pub fn rpc(&mut self, service: Service, body: RpcBody<'_>) -> Result<RpcResponse> {
         let url = self.url.join(service.name());
         let limit = self.client.opts.post_buffer;
+        // git reads a request into a buffer of `http.postBuffer` bytes and
+        // streams it chunked as soon as the buffer could not take another
+        // packet of the maximum size (observed with git 2.56.1: a 250-byte
+        // request is chunked with a 65536-byte buffer, not with 100000).
+        let fits = |n: usize| n + LARGE_PACKET_MAX <= limit;
         match body {
-            RpcBody::Bytes(b) if b.len() > limit => {
-                let (head, rest) = b.split_at(limit);
+            RpcBody::Bytes(b) if !fits(b.len()) => {
+                let (head, rest) = b.split_at(b.len().min(limit));
                 self.rpc_chunked(service, url, head, &mut io::Cursor::new(rest))
             }
             RpcBody::Bytes(b) => self.rpc_small(service, url, b),
             RpcBody::Stream(r) => {
                 let mut head = Vec::new();
                 (&mut *r).take(limit as u64 + 1).read_to_end(&mut head)?;
-                if head.len() <= limit {
+                if fits(head.len()) {
                     self.rpc_small(service, url, &head)
                 } else {
                     self.rpc_chunked(service, url, &head, r)
@@ -318,7 +344,15 @@ impl<'a> SmartHttp<'a> {
         };
         let headers = self.post_headers(svc, false, gzip);
         let follow = self.client.opts.follow_redirects == FollowRedirects::Always;
-        let res = self.execute("POST", url, headers, true, Payload::Bytes(payload), follow);
+        let res = self.execute(
+            "POST",
+            url,
+            headers,
+            true,
+            Payload::Bytes(payload),
+            follow,
+            svc,
+        );
         self.finish_rpc(res)
     }
 
@@ -345,6 +379,7 @@ impl<'a> SmartHttp<'a> {
             false,
             Payload::Bytes(b"0000"),
             follow,
+            svc,
         );
         let mut probe = self.finish_rpc(res)?;
         io::copy(&mut probe, &mut io::sink())?;
@@ -360,6 +395,7 @@ impl<'a> SmartHttp<'a> {
             true,
             Payload::Chunked { head, rest },
             false,
+            svc,
         );
         self.finish_rpc(res)
     }
@@ -420,21 +456,104 @@ impl<'a> SmartHttp<'a> {
         let c = self.cred.as_ref()?;
         let same =
             c.protocol == url.scheme.as_str() && c.host.eq_ignore_ascii_case(&url.authority());
-        (same && c.password.is_some()).then(|| c.basic_authorization())
+        if !same {
+            return None;
+        }
+        c.authorization()
     }
 
-    /// Ask for credentials after a 401.
-    fn obtain_credentials(&mut self, url: &Url) -> Result<()> {
+    /// `http.proactiveAuth`: obtain a credential before the first request.
+    fn proactive(&mut self, url: &Url) -> Result<()> {
+        let mode = self.client.opts.proactive_auth;
+        if self.cred.is_some()
+            || self.proactive_done
+            || mode == ProactiveAuth::None
+            || self.client.opts.empty_auth == EmptyAuth::Always
+        {
+            return Ok(());
+        }
+        self.proactive_done = true;
+        let wwwauth = if mode == ProactiveAuth::Basic {
+            vec!["Basic".to_string()]
+        } else {
+            Vec::new()
+        };
+        let base = self.url.clone();
+        self.obtain_credentials(url, &base, wwwauth)?;
+        if let Some(c) = self.cred.as_mut() {
+            c.wwwauth.clear();
+        }
+        Ok(())
+    }
+
+    /// Hand the current credential back to the provider as rejected.
+    fn reject_credential(&mut self, wwwauth: Vec<String>) {
+        if let Some(mut c) = self.cred.take() {
+            if self.cred_from_provider {
+                c.wwwauth = wwwauth;
+                if let Some(p) = self.provider.as_deref_mut() {
+                    p.reject(&c);
+                }
+            }
+        }
+    }
+
+    /// Checks before the first request: `http.sslBackend`, the proxy
+    /// URL, and the proxy password when the proxy URL names a user only.
+    fn prepare(&mut self) -> Result<()> {
+        if self.prepared {
+            return Ok(());
+        }
+        self.prepared = true;
+        if let Some(b) = &self.client.opts.ssl_backend {
+            if self.url.scheme == crate::url::Scheme::Https
+                && !matches!(b.as_str(), "rustls" | "openssl")
+            {
+                return Err(Error::Config(messages::unsupported_ssl_backend(b)));
+            }
+        }
+        let Some(p) = self.client.opts.proxy_for(&self.url)? else {
+            return Ok(());
+        };
+        let (Some(user), None) = (&p.user, &p.password) else {
+            return Ok(());
+        };
+        let mut cred = Credential {
+            protocol: p.kind.scheme().to_string(),
+            host: format!("{}:{}", p.host, p.port),
+            path: None,
+            username: Some(user.clone()),
+            ..Default::default()
+        };
+        match self.provider.as_deref_mut() {
+            Some(prov) => prov.fill(&mut cred).map_err(Error::Credential)?,
+            None => {
+                return Err(Error::Credential(messages::no_password(&format!(
+                    "{}://{}@{}",
+                    cred.protocol, user, cred.host
+                ))));
+            }
+        }
+        self.client.proxy_password = cred.password.clone();
+        self.proxy_cred = Some(cred);
+        Ok(())
+    }
+
+    /// Ask for credentials after a 401. `base` is the repository URL the
+    /// request went to (after redirects).
+    fn obtain_credentials(&mut self, url: &Url, base: &Url, wwwauth: Vec<String>) -> Result<()> {
         let mut cred = Credential {
             protocol: url.scheme.as_str().to_string(),
             host: url.authority(),
-            path: Some(self.url.credential_path()),
+            path: Some(base.credential_path()),
             username: self.url.user.clone().filter(|_| self.url.same_origin(url)),
             password: self
                 .url
                 .password
                 .clone()
                 .filter(|_| self.url.same_origin(url)),
+            wwwauth,
+            ..Default::default()
         };
         if cred.username.is_some() && cred.password.is_some() {
             self.cred_from_provider = false;
@@ -447,10 +566,7 @@ impl<'a> SmartHttp<'a> {
                     let mut with_user = url.without_credentials();
                     with_user.user = Some(u.clone());
                     with_user.path = String::new();
-                    format!(
-                        "could not read Password for '{}': terminal prompts disabled",
-                        with_user.to_string().trim_end_matches('/')
-                    )
+                    messages::no_password(with_user.to_string().trim_end_matches('/'))
                 }
                 None => messages::no_username(&url.origin()),
             };
@@ -461,7 +577,66 @@ impl<'a> SmartHttp<'a> {
         Ok(())
     }
 
-    /// Send a request, handling `401` (once) and redirects.
+    /// What to do with a `429`: `Ok(Some(delay))` to retry after `delay`
+    /// seconds, `Ok(None)` to fail with the response as it is.
+    fn rate_limit(
+        &mut self,
+        resp: &mut Response,
+        attempts: &mut i64,
+    ) -> std::result::Result<Option<u64>, ExecError> {
+        let o = &self.client.opts;
+        let (max, max_time, configured) = (o.max_retries, o.max_retry_time, o.retry_after);
+        if max == 0 {
+            return Ok(None);
+        }
+        let delay = match resp.header("retry-after").and_then(parse_retry_after) {
+            Some(d) => {
+                if i64::try_from(d).unwrap_or(i64::MAX) > max_time {
+                    (self.diagnostics)(&format!(
+                        "error: {}",
+                        messages::retry_delay_exceeds(d, max_time)
+                    ));
+                    drain(resp);
+                    return Ok(None);
+                }
+                d
+            }
+            None => {
+                if configured > max_time {
+                    (self.diagnostics)(&format!(
+                        "error: {}",
+                        messages::configured_retry_exceeds(configured, max_time)
+                    ));
+                    drain(resp);
+                    return Ok(None);
+                }
+                configured.max(0) as u64
+            }
+        };
+        *attempts += 1;
+        if max > 0 && *attempts >= max {
+            let remote = remote_lines(resp);
+            return Err(ExecError::Other(Error::RateLimited {
+                url: self.display_url(),
+                secs: delay,
+                remote,
+            }));
+        }
+        drain(resp);
+        if delay > 0 {
+            (self.diagnostics)(&format!(
+                "warning: {}",
+                messages::rate_limited_waiting(delay)
+            ));
+            std::thread::sleep(std::time::Duration::from_secs(delay));
+        }
+        Ok(Some(delay))
+    }
+
+    /// Send a request, handling `401` (once), `429` (`http.maxRetries`)
+    /// and redirects. `suffix` is what the request URL adds to the
+    /// repository URL (to find the repository after a redirect).
+    #[allow(clippy::too_many_arguments)]
     fn execute(
         &mut self,
         method: &'static str,
@@ -470,9 +645,14 @@ impl<'a> SmartHttp<'a> {
         accept_encoding: bool,
         mut payload: Payload<'_>,
         follow: bool,
+        suffix: &str,
     ) -> std::result::Result<(Response, Url), ExecError> {
+        self.prepare().map_err(ExecError::Other)?;
+        self.proactive(&url).map_err(ExecError::Other)?;
         let mut redirects = 0;
         let mut auth_retried = false;
+        let mut stages = 0;
+        let mut attempts_429 = 0;
         loop {
             let authorization = self.authorization_for(&url);
             let sent_auth = authorization.is_some();
@@ -495,22 +675,61 @@ impl<'a> SmartHttp<'a> {
             let mut resp = self.client.send(&mut req).map_err(ExecError::Transport)?;
             let status = resp.status;
             if status == 401 {
+                let wwwauth = www_authenticate(&resp);
                 drain(&mut resp);
-                if sent_auth || auth_retried || !payload.replayable() {
-                    if let Some(c) = self.cred.take() {
-                        if self.cred_from_provider {
-                            if let Some(p) = self.provider.as_deref_mut() {
-                                p.reject(&c);
-                            }
-                        }
+                // Multistage schemes: the helper asked for another round.
+                let multistage = sent_auth
+                    && self.cred_from_provider
+                    && self.cred.as_ref().is_some_and(|c| c.multistage);
+                if multistage && stages < MAX_AUTH_STAGES && payload.replayable() {
+                    stages += 1;
+                    if let (Some(c), Some(p)) = (self.cred.as_mut(), self.provider.as_deref_mut()) {
+                        c.wwwauth = wwwauth;
+                        c.credential = None;
+                        c.multistage = false;
+                        p.fill(c)
+                            .map_err(|e| ExecError::Other(Error::Credential(e)))?;
                     }
+                    continue;
+                }
+                if sent_auth || auth_retried || !payload.replayable() {
+                    self.reject_credential(wwwauth);
                     return Err(ExecError::Other(Error::AuthenticationFailed {
                         url: self.display_url(),
                     }));
                 }
-                self.obtain_credentials(&url).map_err(ExecError::Other)?;
+                let base = if redirects > 0 {
+                    url.without_credentials()
+                        .strip_suffix(suffix)
+                        .unwrap_or_else(|| self.url.clone())
+                } else {
+                    self.url.clone()
+                };
+                self.obtain_credentials(&url, &base, wwwauth)
+                    .map_err(ExecError::Other)?;
                 auth_retried = true;
                 continue;
+            }
+            if status == 407 {
+                if let Some(c) = self.proxy_cred.take() {
+                    if let Some(p) = self.provider.as_deref_mut() {
+                        p.reject(&c);
+                    }
+                }
+            }
+            if status == 429
+                && payload.replayable()
+                && self.rate_limit(&mut resp, &mut attempts_429)?.is_some()
+            {
+                continue;
+            }
+            if (200..300).contains(&status) && !self.proxy_approved {
+                if let Some(c) = &self.proxy_cred {
+                    self.proxy_approved = true;
+                    if let Some(p) = self.provider.as_deref_mut() {
+                        p.approve(c);
+                    }
+                }
             }
             if follow && matches!(status, 301 | 302 | 303 | 307 | 308) && payload.replayable() {
                 if let Some(loc) = resp.header("location").map(str::to_string) {
@@ -544,7 +763,9 @@ impl<'a> SmartHttp<'a> {
             if (200..300).contains(&status) && sent_auth && !self.approved {
                 self.approved = true;
                 if self.cred_from_provider {
-                    if let (Some(p), Some(c)) = (self.provider.as_deref_mut(), self.cred.as_ref()) {
+                    let wwwauth = www_authenticate(&resp);
+                    if let (Some(p), Some(c)) = (self.provider.as_deref_mut(), self.cred.as_mut()) {
+                        c.wwwauth = wwwauth;
                         p.approve(c);
                     }
                 }
@@ -557,6 +778,29 @@ impl<'a> SmartHttp<'a> {
 enum ExecError {
     Transport(Transport),
     Other(Error),
+}
+
+/// The `WWW-Authenticate` values of a response, in order.
+fn www_authenticate(resp: &Response) -> Vec<String> {
+    resp.headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("www-authenticate"))
+        .map(|(_, v)| v.clone())
+        .collect()
+}
+
+/// `Retry-After`: seconds, or an HTTP date (a date in the past means now).
+fn parse_retry_after(v: &str) -> Option<u64> {
+    let v = v.trim();
+    if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) {
+        return v.parse().ok();
+    }
+    let t = crate::cookies::http_date(v)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(t.saturating_sub(now))
 }
 
 fn display(url: &Url) -> String {
