@@ -1312,15 +1312,17 @@ pub(crate) fn merge_with(
     labels: (&str, &str),
 ) -> Result<MergeResult, Fail> {
     let (base_label, their_label) = labels;
-    match strategy {
-        None | Some("ort" | "recursive") => {}
+    let subtree = match strategy {
+        None | Some("ort" | "recursive") => rgit_merge::Subtree::None,
+        Some("subtree") => rgit_merge::Subtree::Guess,
         Some(s) => return Err(Fail::Die(Die::Fatal(msg::strategy_not_supported(s)))),
-    }
+    };
     let mut opts = rgit_merge::Options {
         branch1: b"HEAD".to_vec(),
         branch2: their_label.as_bytes().to_vec(),
         ancestor: base_label.as_bytes().to_vec(),
         style: crate::commands::merge_file::config_style(&repo.config)?,
+        subtree,
         ..rgit_merge::Options::default()
     };
     crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);

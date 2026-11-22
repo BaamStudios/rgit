@@ -4,15 +4,14 @@
 //! [`rgit_merge`], write the result tree and print it with the conflicted
 //! files and the merge messages.
 //!
-//! Not supported yet: `--stdin`, the deprecated `--trivial-merge` mode, and
-//! the `-X` options other than `ours`, `theirs`, the rename options and the
-//! diff algorithm.
+//! Not supported yet: `--stdin`, the deprecated `--trivial-merge` mode,
+//! and `-X renormalize`.
 
 use std::io::Write;
 
 use rgit_hash::ObjectId;
 use rgit_merge::{
-    Algorithm, DirectoryRenames, Favor, MergeResult, MessageKind, ObjectCommits, Options,
+    Algorithm, DirectoryRenames, Favor, MergeResult, MessageKind, ObjectCommits, Options, Subtree,
 };
 use rgit_object::ObjectKind;
 
@@ -262,16 +261,13 @@ pub(crate) fn apply_strategy_option(opts: &mut Options, x: &str) -> Result<(), S
         },
         ("patience", None) => (opts.algorithm, opts.minimal) = (Algorithm::Patience, false),
         ("histogram", None) => (opts.algorithm, opts.minimal) = (Algorithm::Histogram, false),
-        (
-            "ignore-space-change"
-            | "ignore-all-space"
-            | "ignore-space-at-eol"
-            | "ignore-cr-at-eol"
-            | "renormalize"
-            | "no-renormalize",
-            None,
-        ) => return Err(unsupported()),
-        ("subtree", _) => return Err(unsupported()),
+        ("ignore-space-change", None) => opts.whitespace.change = true,
+        ("ignore-all-space", None) => opts.whitespace.all = true,
+        ("ignore-space-at-eol", None) => opts.whitespace.at_eol = true,
+        ("ignore-cr-at-eol", None) => opts.whitespace.cr_at_eol = true,
+        ("renormalize" | "no-renormalize", None) => return Err(unsupported()),
+        ("subtree", None) => opts.subtree = Subtree::Guess,
+        ("subtree", Some(p)) => opts.subtree = Subtree::Path(p.as_bytes().to_vec()),
         _ => return Err(unknown()),
     }
     Ok(())

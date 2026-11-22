@@ -581,7 +581,7 @@ impl<'a> Resolver<'a> {
                 && local
                     .bytes()
                     .all(|c| c.is_ascii_uppercase() || c == b'_' || c == b'-')
-                && local.ends_with("HEAD"));
+                && (local.ends_with("HEAD") || rgit_refs::name::is_root_ref(local)));
         let candidates = [
             pseudo.then(|| name.to_string()),
             Some(format!("refs/{name}")),
