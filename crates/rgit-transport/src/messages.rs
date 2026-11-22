@@ -35,6 +35,11 @@ pub fn cannot_run(program: &str, reason: &str) -> String {
     format!("cannot run {program}: {reason}")
 }
 
+/// `fatal:` when the `core.gitProxy` command cannot be started.
+pub fn cannot_start_proxy(proxy: &str) -> String {
+    format!("cannot start proxy {proxy}")
+}
+
 /// `fatal:` after a failed start of the ssh or service program.
 pub const UNABLE_TO_FORK: &str = "unable to fork";
 

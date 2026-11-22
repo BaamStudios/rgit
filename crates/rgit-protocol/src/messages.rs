@@ -99,6 +99,15 @@ pub const SHALLOW_NOT_SUPPORTED: &str = "Server does not support shallow request
 /// the filter is then not sent.
 pub const FILTER_NOT_RECOGNIZED: &str = "filtering not recognized by server, ignoring";
 
+/// Protocol v0/v1 negotiation: a response line that is neither `ACK` nor
+/// `NAK`.
+pub fn expected_ack_nak(line: &str) -> String {
+    format!("git fetch-pack: expected ACK/NAK, got '{line}'")
+}
+
+/// Protocol v0/v1: the shallow update after a deepen request is malformed.
+pub const EXPECTED_SHALLOW_LIST: &str = "git fetch-pack: expected shallow list";
+
 // The following texts are rgit's own wording: git reports these situations
 // through internal checks whose texts are not observable from its behaviour.
 

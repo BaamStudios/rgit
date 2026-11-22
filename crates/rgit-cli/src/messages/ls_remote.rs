@@ -32,8 +32,3 @@ pub fn unsupported_sort(key: &str) -> String {
 pub fn no_remote_helper(scheme: &str) -> String {
     format!("unable to find remote helper for '{scheme}'")
 }
-
-/// An invalid `protocol.version`.
-pub fn unknown_protocol_version(value: &str) -> String {
-    format!("unknown value for config 'protocol.version': {value}")
-}
