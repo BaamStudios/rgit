@@ -5,17 +5,17 @@
 //! `show` prints git's default format (`log -g --abbrev-commit
 //! --pretty=oneline`) for one reference, with `-n`/`--max-count`,
 //! `--abbrev=<n>` and `--no-abbrev-commit`; the other `log` options are
-//! `log -g` (#47). `expire` without `--updateref` and `--stale-fix` (see
-//! [`crate::reflog_expire`]); `delete`, `drop` and `write` are #101.
+//! `log -g` (#47). `expire` and `delete` (see [`crate::reflog_expire`]),
+//! `drop` and `write`.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rgit_date::{DateContext, DateMode, show_date};
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::ObjectKind;
 use rgit_refs::files::FilesStore;
-use rgit_refs::name::{RefNameFlags, is_root_ref_syntax, is_valid_refname};
+use rgit_refs::name::{RefNameFlags, is_root_ref, is_root_ref_syntax, is_valid_refname};
 use rgit_refs::reflog::lookup::Target as LookupTarget;
 use rgit_refs::reflog::{FilesReflog, Selector, nth_prior_checkout, resolve};
 use rgit_refs::{MAX_SYMREF_DEPTH, RefStore, Target};
@@ -36,9 +36,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some("list") => list(ctx, args),
         Some("exists") => exists(ctx, args),
         Some("expire") => expire(ctx, args),
-        Some(sub @ ("delete" | "drop" | "write")) => {
-            Err(Die::Fatal(msg::not_supported(&format!("'reflog {sub}'"))))
-        }
+        Some("delete") => delete(ctx, args),
+        Some("drop") => drop(ctx, args),
+        Some("write") => write(ctx, args),
         _ => show(ctx, args),
     }
 }
@@ -199,12 +199,6 @@ fn expire(ctx: &mut Context, argv: &[String]) -> CmdResult {
         total: timestamp(&expire, "expire")?,
         unreachable: timestamp(&expire_unreachable, "expire-unreachable")?,
     };
-    if updateref.get() {
-        return Err(Die::Fatal(msg::not_supported("'--updateref'")));
-    }
-    if stale_fix.get() {
-        return Err(Die::Fatal(msg::not_supported("'--stale-fix'")));
-    }
     let repo = crate::repository::Repo::open(ctx, Mode::Required)?;
     let settings = crate::reflog_expire::Config::load(&repo.config, explicit, &date)?;
     let git_dir = repo.setup.absolute_git_dir();
@@ -219,16 +213,7 @@ fn expire(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let files = FilesReflog::new(&git_dir, &common, kind);
     let mut status = 0;
     for a in &args {
-        let name = if a == "@" { "HEAD" } else { a.as_str() };
-        let mut candidates = vec![name.to_owned()];
-        for pattern in ["refs/", "refs/tags/", "refs/heads/", "refs/remotes/"] {
-            candidates.push(format!("{pattern}{name}"));
-        }
-        candidates.push(format!("refs/remotes/{name}/HEAD"));
-        match candidates
-            .into_iter()
-            .find(|c| is_valid_refname(c.as_bytes(), RefNameFlags::ONELEVEL) && files.exists(c))
-        {
+        match log_name(&files, &git_dir, &common, a) {
             Some(full) => logs.push(crate::reflog_expire::Log {
                 git_dir: git_dir.clone(),
                 name: full,
@@ -244,11 +229,219 @@ fn expire(ctx: &mut Context, argv: &[String]) -> CmdResult {
         dry_run: dry_run.get(),
         verbose: verbose.get(),
         rewrite: rewrite.get(),
+        updateref: updateref.get(),
     };
+    if stale_fix.get() && verbose.get() {
+        println!("{}", msg::MARKING_REACHABLE);
+    }
+    let mut stale = stale_fix
+        .get()
+        .then(|| crate::reflog_expire::StaleFix::new(&repo));
     for log in &logs {
-        crate::reflog_expire::expire(&repo, &common, log, settings.cutoffs(&log.name), o)?;
+        let rule = crate::reflog_expire::Rule::Age(settings.cutoffs(&log.name));
+        crate::reflog_expire::prune(&repo, &common, log, rule, o, stale.as_mut())?;
     }
     Ok(status)
+}
+
+/// The full name of the reference whose reflog `name` stands for: the
+/// first of the `gitrevisions(7)` candidates that has a log and points to
+/// an object.
+fn log_name(files: &FilesReflog, git_dir: &Path, common: &Path, name: &str) -> Option<String> {
+    let name = if name == "@" { "HEAD" } else { name };
+    let mut candidates = vec![name.to_owned()];
+    for pattern in ["refs/", "refs/tags/", "refs/heads/", "refs/remotes/"] {
+        candidates.push(format!("{pattern}{name}"));
+    }
+    candidates.push(format!("refs/remotes/{name}/HEAD"));
+    candidates
+        .into_iter()
+        .find(|c| {
+            is_valid_refname(c.as_bytes(), RefNameFlags::ONELEVEL)
+                && files.exists(c)
+                && crate::reflog_expire::tip(git_dir, common, files.hash_kind(), c).is_some()
+        })
+}
+
+/// `reflog delete <ref>@{<specifier>}...`: removes single entries; each
+/// argument applies to the log as the previous ones left it.
+fn delete(ctx: &mut Context, argv: &[String]) -> CmdResult {
+    let dry_run = Cell::new(false);
+    let rewrite = Cell::new(false);
+    let updateref = Cell::new(false);
+    let verbose = Cell::new(false);
+    let mut parser = Parser::new(
+        &[msg::USAGE_DELETE],
+        vec![
+            Opt::flag('n', "dry-run", &dry_run, msg::HELP_DRY_RUN),
+            Opt::flag(None, "rewrite", &rewrite, msg::HELP_REWRITE),
+            Opt::flag(None, "updateref", &updateref, msg::HELP_UPDATEREF),
+            Opt::flag(None, "verbose", &verbose, msg::HELP_VERBOSE),
+        ],
+    );
+    let args = parser.parse(argv)?.args;
+    if args.is_empty() {
+        return Err(Die::Error(msg::NO_REFLOG_TO_DELETE.to_owned(), 255));
+    }
+    let repo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    let git_dir = repo.setup.absolute_git_dir();
+    let common = repo.setup.absolute_common_dir();
+    let files = FilesReflog::new(&git_dir, &common, repo.hash);
+    let date = DateContext::from_env();
+    let o = crate::reflog_expire::Options {
+        dry_run: dry_run.get(),
+        verbose: verbose.get(),
+        rewrite: rewrite.get(),
+        updateref: updateref.get(),
+    };
+    let mut status = 0;
+    for a in &args {
+        let Some(at) = a.find("@{") else {
+            eprintln!("error: {}", msg::not_a_reflog(a));
+            status = 255;
+            continue;
+        };
+        let Some(full) = (at > 0)
+            .then(|| log_name(&files, &git_dir, &common, &a[..at]))
+            .flatten() else {
+            eprintln!("error: {}", msg::no_reflog_for(a));
+            status = 255;
+            continue;
+        };
+        let spec = &a[at + 2..];
+        let count = spec
+            .strip_suffix('}')
+            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        // A count, else a date: the newest entry older than it. A
+        // selector that matches nothing still walks the log (`--verbose`).
+        let n = match count {
+            Some(n) => n.parse::<usize>().unwrap_or(usize::MAX),
+            None => {
+                let t = rgit_date::approxidate(spec.strip_suffix('}').unwrap_or(spec), &date);
+                files
+                    .read(&full)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .iter()
+                    .rev()
+                    .position(|e| e.time < t)
+                    .unwrap_or(usize::MAX)
+            }
+        };
+        let log = crate::reflog_expire::Log {
+            git_dir: git_dir.clone(),
+            name: full,
+            listed: true,
+        };
+        let rule = crate::reflog_expire::Rule::Nth(n);
+        crate::reflog_expire::prune(&repo, &common, &log, rule, o, None)?;
+    }
+    Ok(status)
+}
+
+/// `reflog drop [--all [--single-worktree] | <refs>...]`: removes whole
+/// reflogs.
+fn drop(ctx: &mut Context, argv: &[String]) -> CmdResult {
+    let all = Cell::new(false);
+    let single_worktree = Cell::new(false);
+    let mut parser = Parser::new(
+        &[msg::USAGE_DROP],
+        vec![
+            Opt::flag(None, "all", &all, msg::HELP_DROP_ALL),
+            Opt::flag(
+                None,
+                "single-worktree",
+                &single_worktree,
+                msg::HELP_DROP_SINGLE_WORKTREE,
+            ),
+        ],
+    );
+    let args = parser.parse(argv)?.args;
+    if all.get() && !args.is_empty() {
+        eprintln!("usage: {}", msg::REFS_WITH_ALL);
+        return Err(Die::Exit(129));
+    }
+    let setup = repo::setup(ctx, Mode::Required)?;
+    let git_dir = setup.absolute_git_dir();
+    let common = setup.absolute_common_dir();
+    let kind = setup.format.object_format;
+    if all.get() {
+        let logs = crate::reflog_expire::all_logs(&git_dir, &common, kind, single_worktree.get());
+        let mut dirs = vec![common.join("logs")];
+        for log in logs {
+            let _ = FilesReflog::new(&log.git_dir, &common, kind).delete(&log.name);
+            dirs.push(log.git_dir.join("logs"));
+        }
+        // Like git, the emptied `logs` directories go too.
+        for d in dirs {
+            remove_empty_dirs(&d);
+        }
+        return Ok(0);
+    }
+    // Without arguments nothing is dropped.
+    let files = FilesReflog::new(&git_dir, &common, kind);
+    let mut status = 0;
+    for a in &args {
+        match log_name(&files, &git_dir, &common, a) {
+            Some(full) => {
+                if let Err(e) = files.delete(&full) {
+                    eprintln!("error: {e}");
+                    status = 255;
+                }
+            }
+            None => {
+                eprintln!("error: {}", msg::reflog_not_found(a));
+                status = 255;
+            }
+        }
+    }
+    Ok(status)
+}
+
+/// Removes `dir` and the directories below it if they hold no files;
+/// whether `dir` is gone.
+fn remove_empty_dirs(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut empty = true;
+    for e in entries.flatten() {
+        let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+        if !(is_dir && remove_empty_dirs(&e.path())) {
+            empty = false;
+        }
+    }
+    empty && std::fs::remove_dir(dir).is_ok()
+}
+
+/// `reflog write <ref> <old-oid> <new-oid> <message>`: appends one entry.
+fn write(ctx: &mut Context, argv: &[String]) -> CmdResult {
+    let mut parser = Parser::new(&[msg::USAGE_WRITE], vec![]);
+    let args = parser.parse(argv)?.args;
+    let [name, old, new, message] = args.as_slice() else {
+        return Err(parser.usage_error().into());
+    };
+    let repo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    if !(is_valid_refname(name.as_bytes(), RefNameFlags::ONELEVEL)
+        && (name.starts_with("refs/") || is_root_ref(name)))
+    {
+        return Err(Die::Fatal(msg::invalid_reference_name(name)));
+    }
+    let parse = |hex: &str, which: &str| -> Result<ObjectId, Die> {
+        let id = ObjectId::from_hex(repo.hash, hex.as_bytes())
+            .map_err(|_| Die::Fatal(msg::invalid_object_id(which, hex)))?;
+        if !id.is_null() && !repo.odb().contains(&id) {
+            return Err(Die::Fatal(msg::object_does_not_exist(which, hex)));
+        }
+        Ok(id)
+    };
+    let old = parse(old, "old")?;
+    let new = parse(new, "new")?;
+    let objects = crate::refs_support::Objects::open(&repo.setup);
+    crate::refs_support::UpdateHooks::new(&repo.setup, &repo.config, &objects)
+        .log(name, old, new, message, true);
+    Ok(0)
 }
 
 /// Options of `reflog show`.

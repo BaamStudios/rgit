@@ -324,15 +324,32 @@ impl Resolver<'_> {
         let Some(log) = self.repo.refs.reflog(&full)? else {
             return Err(Error::NotFound);
         };
-        if log.is_empty() {
-            return Err(Error::NotFound);
-        }
         if !content.is_empty() && content.bytes().all(|b| b.is_ascii_digit()) {
             let n: usize = content.parse().map_err(|_| Error::NotFound)?;
+            // `@{0}` of an empty log is the current value; one past the
+            // oldest entry is that entry's old value.
+            if log.is_empty() {
+                if n == 0 {
+                    return self
+                        .repo
+                        .refs
+                        .resolve(&full)?
+                        .and_then(|v| v.oid)
+                        .ok_or(Error::NotFound);
+                }
+                let e = rgit_refs::reflog::lookup::LookupError::Empty { refname: full };
+                return Err(Error::Fatal(e.to_string()));
+            }
+            if n == log.len() && !log[0].old.is_null() {
+                return Ok(log[0].old);
+            }
             if n >= log.len() {
                 return Err(Error::Fatal(messages::log_only_has(&display, log.len())));
             }
             return Ok(log[log.len() - 1 - n].new);
+        }
+        if log.is_empty() {
+            return Err(Error::NotFound);
         }
         let (at, bad) = approxidate_careful(content, &self.opts.date);
         if bad {

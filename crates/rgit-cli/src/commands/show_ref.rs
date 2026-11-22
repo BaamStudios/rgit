@@ -241,7 +241,7 @@ fn tail_matches(name: &str, pattern: &str) -> bool {
 }
 
 /// `--exists <ref>`: exit 0 if it exists (even dangling), 2 if not.
-fn exists_mode(store: &FilesStore, args: &[String]) -> CmdResult {
+pub(crate) fn exists_mode(store: &FilesStore, args: &[String]) -> CmdResult {
     match args.len() {
         0 => return Err(Die::Fatal(msg::EXISTS_REQUIRES_REF.to_owned())),
         1 => {}

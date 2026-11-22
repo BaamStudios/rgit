@@ -252,6 +252,26 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     })
 }
 
+/// `@{-<n>}` at the start of `name` replaced by the branch it stands for,
+/// as git names the merged commit (`@{-1}~1` is merged as `other~1`).
+fn expand_previous(repo: &Repo, name: &str) -> String {
+    let Some(rest) = name.strip_prefix("@{-") else {
+        return name.to_owned();
+    };
+    let Some((n, tail)) = rest.split_once('}') else {
+        return name.to_owned();
+    };
+    match n
+        .parse::<usize>()
+        .ok()
+        .filter(|&n| n > 0)
+        .and_then(|n| crate::switch_branch::previous_checkout(repo, n))
+    {
+        Some(branch) => format!("{branch}{tail}"),
+        None => name.to_owned(),
+    }
+}
+
 fn fatal(s: impl Into<String>) -> Die {
     Die::Fatal(s.into())
 }
@@ -498,6 +518,7 @@ impl Session<'_> {
             }
             let given = name;
             let name = self.expand_upstream(&given)?;
+            let name = expand_previous(&self.repo, &name);
             let mut r = Resolver::new(&mut self.repo);
             let found = r.resolve(&name).ok().and_then(|res| {
                 r.peel_to(res.oid, ObjectKind::Commit, Some(&name))

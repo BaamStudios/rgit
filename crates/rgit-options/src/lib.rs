@@ -439,6 +439,9 @@ impl<'a> Parser<'a> {
                     add(target, true, format!("no-{long}"));
                     last_neg = Some(format!("no-{long}"));
                 }
+            } else if !name.is_empty() && "no-".starts_with(name) && !long.starts_with("no-") {
+                // `--no` (or `--n`) also abbreviates `--no-<long>`.
+                add(target, true, format!("no-{long}"));
             }
             if let Some(pos) = long.strip_prefix("no-") {
                 if pos.starts_with(name) {

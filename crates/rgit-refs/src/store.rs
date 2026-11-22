@@ -494,7 +494,11 @@ impl Drop for Transaction<'_> {
 /// Checks that the name and the symbolic target (if any) of `update` are
 /// well-formed.
 pub fn check_update_name(update: &RefUpdate) -> Result<(), TransactionError> {
-    if !update.skip_name_check && !is_valid_refname(update.name.as_bytes(), RefNameFlags::ONELEVEL)
+    // A reference with a malformed but harmless name can still be deleted.
+    let safe_delete = update.is_delete() && is_safe_name(&update.name);
+    if !update.skip_name_check
+        && !safe_delete
+        && !is_valid_refname(update.name.as_bytes(), RefNameFlags::ONELEVEL)
     {
         return Err(TransactionError::BadName(update.name.clone()));
     }
@@ -505,6 +509,17 @@ pub fn check_update_name(update: &RefUpdate) -> Result<(), TransactionError> {
         return Err(TransactionError::BadName(t.clone()));
     }
     Ok(())
+}
+
+/// A name that stays inside the reference hierarchy: below `refs/` without
+/// empty, `.` or `..` components, or a root reference.
+fn is_safe_name(name: &str) -> bool {
+    match name.strip_prefix("refs/") {
+        Some(rest) => rest
+            .split('/')
+            .all(|c| !c.is_empty() && c != "." && c != ".."),
+        None => crate::name::is_root_ref_syntax(name),
+    }
 }
 
 /// Fails if a name appears twice in `updates`.

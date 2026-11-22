@@ -18,14 +18,12 @@ use crate::prelude::*;
 use crate::repo::{self, Mode};
 use crate::revisions::{self, Config, IndexFile, Objects, Refs, WorkTree};
 
+#[path = "rev_parse/parseopt.rs"]
+mod parseopt;
+
 /// rev-parse options that are not implemented yet; they fail instead of
 /// being passed through as unknown flags.
 const NOT_YET: &[&str] = &[
-    "--parseopt",
-    "--sq-quote",
-    "--keep-dashdash",
-    "--stop-at-non-option",
-    "--stuck-long",
     "--prefix",
     "--resolve-git-dir",
     "--path-format",
@@ -36,10 +34,6 @@ const NOT_YET: &[&str] = &[
     "--show-ref-format",
     "--exclude-hidden",
     "--output-object-format",
-    "--since",
-    "--after",
-    "--until",
-    "--before",
 ];
 
 /// rev-list options that rev-parse treats as revision flags
@@ -553,7 +547,22 @@ impl State<'_, '_> {
             "--remotes" => self.show_refs("refs/remotes/", None, true)?,
             "--bisect" => self.show_bisect_refs()?,
             _ => {
-                if let Some(n) = arg.strip_prefix("--short=") {
+                let date = [
+                    ("--since=", true),
+                    ("--after=", true),
+                    ("--until=", false),
+                    ("--before=", false),
+                ]
+                .iter()
+                .find_map(|(p, max)| arg.strip_prefix(p).map(|v| (*max, v)));
+                if let Some((max, value)) = date {
+                    // `--since`/`--after` become `--max-age`, `--until` and
+                    // `--before` `--min-age`, with the date as a timestamp.
+                    let ctx = rgit_date::DateContext::from_env();
+                    let t = rgit_date::approxidate(value, &ctx);
+                    let flag = if max { "--max-age" } else { "--min-age" };
+                    self.show_flag(&format!("{flag}={t}"));
+                } else if let Some(n) = arg.strip_prefix("--short=") {
                     self.filter &= !(DO_FLAGS | DO_NOREV);
                     self.verify = true;
                     let hexsz = self.resolver.repo().objects.hash_kind().hex_len();
@@ -735,9 +744,14 @@ impl State<'_, '_> {
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let args = &argv[1.min(argv.len())..];
-    if matches!(args.first().map(String::as_str), Some("-h" | "--help-all")) {
-        let _ = std::io::stdout().write_all(messages::REV_PARSE_USAGE.as_bytes());
-        return Ok(0);
+    match args.first().map(String::as_str) {
+        Some("-h" | "--help-all") => {
+            let _ = std::io::stdout().write_all(messages::REV_PARSE_USAGE.as_bytes());
+            return Ok(0);
+        }
+        Some("--parseopt") => return parseopt::parseopt_mode(&args[1..]),
+        Some("--sq-quote") => return parseopt::sq_quote_mode(&args[1..]),
+        _ => {}
     }
     // Objects, refs and index are read hash-generically; only the files
     // ref backend is supported.

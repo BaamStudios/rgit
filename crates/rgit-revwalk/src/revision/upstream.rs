@@ -68,9 +68,9 @@ impl Resolver<'_> {
     }
 
     /// The branch an `@{upstream}` / `@{push}` suffix applies to: the
-    /// current branch for an empty name or `HEAD`.
+    /// current branch for an empty name, `HEAD` or `@`.
     fn tracking_branch_name(&self, branch: &str) -> Result<String, Error> {
-        if branch.is_empty() || branch == "HEAD" {
+        if branch.is_empty() || branch == "HEAD" || branch == "@" {
             let head = self.repo.refs.resolve("HEAD")?;
             return match head
                 .as_ref()

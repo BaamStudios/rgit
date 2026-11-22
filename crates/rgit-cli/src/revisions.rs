@@ -360,6 +360,34 @@ pub(crate) fn unable_to_parse(key: &str, e: &rgit_config::Entry) -> String {
     }
 }
 
+/// The revision settings from the configuration, ignoring invalid values
+/// (for lookups inside commands that do not report them).
+pub fn options_lenient(config: &ConfigSet, kind: HashKind) -> Options {
+    let mut o = Options::default();
+    if let Ok(Some(b)) = config.bool("core.warnAmbiguousRefs") {
+        o.warn_ambiguous_refs = b;
+    }
+    let value = |key: &str| {
+        config
+            .get(key)
+            .and_then(|e| e.value.as_ref().map(|v| v.to_string()))
+    };
+    if let Some(h) = value("core.disambiguate").and_then(|v| Hint::from_config(&v)) {
+        o.disambiguate = h;
+    }
+    if let Some(v) = value("core.abbrev") {
+        if v.eq_ignore_ascii_case("auto") {
+            o.abbrev = None;
+        } else if let Ok(n) = v.parse::<usize>() {
+            o.abbrev = Some(n.clamp(4, kind.hex_len()));
+        }
+    }
+    if let Some(p) = value("push.default").and_then(|v| PushDefault::from_config(&v)) {
+        o.push_default = p;
+    }
+    o
+}
+
 /// Read the revision settings from the configuration. Invalid values end
 /// the command like git does.
 pub fn options(ctx: &Context, config: &ConfigSet, kind: HashKind) -> Result<Options, Die> {
