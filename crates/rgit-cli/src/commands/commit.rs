@@ -1086,7 +1086,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
     if matches!(args.fixup, Some((FixupKind::Reword, _))) {
-        if args.all || args.include || args.only {
+        if args.patch.is_some() || args.all || args.include || args.only {
             return Err(fatal(msg::REWORD_WITH_CONTENTS));
         }
         if let Some(p) = args.paths.first() {
