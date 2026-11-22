@@ -1572,7 +1572,7 @@ impl Session<'_> {
         if self.args.squash {
             self.autostash_pending();
         } else {
-            crate::maintenance::run_auto(self.ctx);
+            crate::maintenance::run_auto_quiet(self.ctx, self.args.quiet);
             if self.stash.is_some() {
                 apply_merge_autostash(self.ctx, &self.git_dir)?;
                 // Unlike `commit` and `--abort`, a merge that is done

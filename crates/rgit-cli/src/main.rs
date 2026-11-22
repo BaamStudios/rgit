@@ -23,6 +23,7 @@ mod history;
 mod hooks;
 mod interactive;
 mod maintenance;
+mod housekeeping;
 mod messages;
 mod objects;
 mod pager;
