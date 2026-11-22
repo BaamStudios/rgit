@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Differential tests of `merge` (#57): `HEAD`, refs, reflogs, the index
 //! with its conflict stages, the work tree, the state files (`MERGE_HEAD`,
-//! `MERGE_MSG`, `MERGE_MODE`, `SQUASH_MSG`, `AUTO_MERGE`, `ORIG_HEAD`) and
-//! every message, against the reference git.
+//! `MERGE_MSG`, `MERGE_MODE`, `SQUASH_MSG`, `AUTO_MERGE`, `ORIG_HEAD`,
+//! `MERGE_AUTOSTASH`) and every message, against the reference git.
 
 use rgit_difftest::{Check, Comparison, Fixture};
 
@@ -67,6 +67,7 @@ fn files(c: Comparison<'_>) -> Comparison<'_> {
     c.git_file("MERGE_MODE")
         .git_file("SQUASH_MSG")
         .git_file("AUTO_MERGE")
+        .git_file("MERGE_AUTOSTASH")
 }
 
 /// Runs each case in a fresh fixture prepared by `prep`; reports every
@@ -345,6 +346,90 @@ fn merge_after_conflict() {
             &["merge", "--continue"],
             &["merge", "side"],
         ],
+    );
+}
+
+/// `--autostash` and `merge.autoStash`: the stash (`MERGE_AUTOSTASH`,
+/// `refs/stash`), when it is applied and what happens when that
+/// conflicts.
+#[test]
+fn merge_autostash() {
+    let dirty = |fx: Fixture| fx.write("d/x", "dirty\n");
+    cases(
+        dirty,
+        &[
+            &["merge", "--autostash", "side"],
+            &["merge", "--autostash", "-q", "side"],
+            &["merge", "--autostash", "ahead"],
+            &["merge", "--autostash", "conf"],
+            &["merge", "--autostash", "--no-commit", "side"],
+            &["merge", "--autostash", "--squash", "side"],
+            &["merge", "--autostash", "--ff-only", "side"],
+            &["merge", "--autostash", "v0"],
+            &["merge", "--autostash", "-s", "ours", "side"],
+            &["-c", "merge.autostash=true", "merge", "side"],
+        ],
+    );
+    // Without the stash git records the local changes in internal commits
+    // on the way, which rgit does not.
+    cases_skipping(
+        dirty,
+        &[Check::Objects],
+        &[
+            &[
+                "-c",
+                "merge.autostash=true",
+                "merge",
+                "--no-autostash",
+                "side",
+            ],
+            &["merge", "--no-autostash", "side"],
+        ],
+    );
+    // Staged changes, a clean tree, changes the merge result conflicts with.
+    cases(
+        |fx| fx.write("d/x", "staged\n").git(["add", "d/x"]),
+        &[&["merge", "--autostash", "side"]],
+    );
+    cases(|fx| fx, &[&["merge", "--autostash", "side"]]);
+    cases(
+        |fx| fx.write("h", "untracked\n").write("f", "dirty\n"),
+        &[
+            &["merge", "--autostash", "side"],
+            &["merge", "--autostash", "ahead"],
+        ],
+    );
+    cases(
+        |fx| fx.write("f", "1\n2\n3\n4\nlocal\n"),
+        &[&["merge", "--autostash", "side"]],
+    );
+    // The stash waits for the end of a stopped merge.
+    let stopped = |fx: Fixture| dirty(fx).git_output_ok(&["merge", "--autostash", "conf"]);
+    cases(
+        stopped,
+        &[
+            &["merge", "--abort"],
+            &["merge", "--quit"],
+            &["commit", "-q", "-a", "-m", "resolved"],
+            &["status"],
+        ],
+    );
+    cases(
+        |fx| stopped(fx).write("g", "resolved\n").git(["add", "g"]),
+        &[&["merge", "--continue"], &["commit", "--no-edit"]],
+    );
+    cases(
+        |fx| dirty(fx).git(["merge", "-q", "--autostash", "--squash", "side"]),
+        &[&["commit", "--no-edit"]],
+    );
+    cases(
+        |fx| {
+            fx.write("g", "dirty g\n")
+                .git_output_ok(&["merge", "--autostash", "conf"])
+                .write("g", "resolved\n")
+                .git(["add", "g"])
+        },
+        &[&["commit", "-q", "-m", "resolved"]],
     );
 }
 

@@ -5,7 +5,8 @@
 //! `show` prints git's default format (`log -g --abbrev-commit
 //! --pretty=oneline`) for one reference, with `-n`/`--max-count`,
 //! `--abbrev=<n>` and `--no-abbrev-commit`; the other `log` options are
-//! `log -g` (#47). `expire`, `delete`, `drop` and `write` are #101.
+//! `log -g` (#47). `expire` without `--updateref` and `--stale-fix` (see
+//! [`crate::reflog_expire`]); `delete`, `drop` and `write` are #101.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -34,7 +35,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some("show") => show(ctx, &args[1..]),
         Some("list") => list(ctx, args),
         Some("exists") => exists(ctx, args),
-        Some(sub @ ("expire" | "delete" | "drop" | "write")) => {
+        Some("expire") => expire(ctx, args),
+        Some(sub @ ("delete" | "drop" | "write")) => {
             Err(Die::Fatal(msg::not_supported(&format!("'reflog {sub}'"))))
         }
         _ => show(ctx, args),
@@ -148,6 +150,105 @@ fn exists(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(Die::Fatal(msg::invalid_ref_format(name)));
     }
     Ok(i32::from(!Refs::new(&setup).logs().exists(name)))
+}
+
+/// `reflog expire` (see [`crate::reflog_expire`]). `--updateref` and
+/// `--stale-fix` are not supported yet (#101).
+fn expire(ctx: &mut Context, argv: &[String]) -> CmdResult {
+    let dry_run = Cell::new(false);
+    let rewrite = Cell::new(false);
+    let updateref = Cell::new(false);
+    let verbose = Cell::new(false);
+    let expire: RefCell<Option<String>> = RefCell::new(None);
+    let expire_unreachable: RefCell<Option<String>> = RefCell::new(None);
+    let stale_fix = Cell::new(false);
+    let all = Cell::new(false);
+    let single_worktree = Cell::new(false);
+    let mut parser = Parser::new(
+        &[msg::USAGE_EXPIRE],
+        vec![
+            Opt::flag('n', "dry-run", &dry_run, msg::HELP_DRY_RUN),
+            Opt::flag(None, "rewrite", &rewrite, msg::HELP_REWRITE),
+            Opt::flag(None, "updateref", &updateref, msg::HELP_UPDATEREF),
+            Opt::flag(None, "verbose", &verbose, msg::HELP_VERBOSE),
+            Opt::string(None, "expire", &expire, msg::ARGH_TIMESTAMP, msg::HELP_EXPIRE).noneg(),
+            Opt::string(
+                None,
+                "expire-unreachable",
+                &expire_unreachable,
+                msg::ARGH_TIMESTAMP,
+                msg::HELP_EXPIRE_UNREACHABLE,
+            )
+            .noneg(),
+            Opt::flag(None, "stale-fix", &stale_fix, msg::HELP_STALE_FIX),
+            Opt::flag(None, "all", &all, msg::HELP_ALL),
+            Opt::flag(None, "single-worktree", &single_worktree, msg::HELP_SINGLE_WORKTREE),
+        ],
+    );
+    let args = parser.parse(argv)?.args;
+    let date = DateContext::from_env();
+    let timestamp = |value: &RefCell<Option<String>>, option: &str| -> Result<Option<u64>, Die> {
+        let Some(v) = value.borrow().clone() else {
+            return Ok(None);
+        };
+        rgit_date::parse_expiry_date(&v, &date)
+            .map(Some)
+            .map_err(|_| Die::Fatal(msg::invalid_timestamp_option(&v, option)))
+    };
+    let explicit = crate::reflog_expire::Explicit {
+        total: timestamp(&expire, "expire")?,
+        unreachable: timestamp(&expire_unreachable, "expire-unreachable")?,
+    };
+    if updateref.get() {
+        return Err(Die::Fatal(msg::not_supported("'--updateref'")));
+    }
+    if stale_fix.get() {
+        return Err(Die::Fatal(msg::not_supported("'--stale-fix'")));
+    }
+    let repo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    let settings = crate::reflog_expire::Config::load(&repo.config, explicit, &date)?;
+    let git_dir = repo.setup.absolute_git_dir();
+    let common = repo.setup.absolute_common_dir();
+    let kind = repo.hash;
+    let mut logs = Vec::new();
+    if all.get() {
+        logs = crate::reflog_expire::all_logs(&git_dir, &common, kind, single_worktree.get());
+    }
+    // Every name is looked up first; the ones without a reflog are
+    // reported before anything is pruned.
+    let files = FilesReflog::new(&git_dir, &common, kind);
+    let mut status = 0;
+    for a in &args {
+        let name = if a == "@" { "HEAD" } else { a.as_str() };
+        let mut candidates = vec![name.to_owned()];
+        for pattern in ["refs/", "refs/tags/", "refs/heads/", "refs/remotes/"] {
+            candidates.push(format!("{pattern}{name}"));
+        }
+        candidates.push(format!("refs/remotes/{name}/HEAD"));
+        match candidates
+            .into_iter()
+            .find(|c| is_valid_refname(c.as_bytes(), RefNameFlags::ONELEVEL) && files.exists(c))
+        {
+            Some(full) => logs.push(crate::reflog_expire::Log {
+                git_dir: git_dir.clone(),
+                name: full,
+                listed: false,
+            }),
+            None => {
+                eprintln!("error: {}", msg::reflog_not_found(a));
+                status = 255;
+            }
+        }
+    }
+    let o = crate::reflog_expire::Options {
+        dry_run: dry_run.get(),
+        verbose: verbose.get(),
+        rewrite: rewrite.get(),
+    };
+    for log in &logs {
+        crate::reflog_expire::expire(&repo, &common, log, settings.cutoffs(&log.name), o)?;
+    }
+    Ok(status)
 }
 
 /// Options of `reflog show`.

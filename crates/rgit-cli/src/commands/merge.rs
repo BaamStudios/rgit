@@ -29,14 +29,19 @@
 //!   in the last one), the strategy from `-s`, `pull.twohead` or
 //!   `pull.octopus`;
 //! - hooks `pre-merge-commit`, `prepare-commit-msg`, `commit-msg`
-//!   (`--no-verify`) and `post-merge`.
+//!   (`--no-verify`) and `post-merge`;
+//! - `--autostash` (`merge.autoStash`): local changes are stashed before
+//!   the index and work tree move (`MERGE_AUTOSTASH`) and applied when
+//!   the merge is done; a merge that stops before its commit leaves the
+//!   stash to the `commit` that concludes it, `--abort` applies it,
+//!   `--quit` keeps it in the stash list.
 //!
 //! The behaviour was checked against the `git` binary with differential
 //! tests (`tests/merge.rs`).
 //!
 //! Not yet: rename detection (#151; merges run as with `-X no-renames`),
 //! the strategies `resolve` and `subtree` and trying several strategies
-//! (#153), `--autostash`, `--verify-signatures` and `-S` (#51), rerere
+//! (#153), `--verify-signatures` and `-S` (#51), rerere
 //! (#156). The octopus messages are rgit's own approximation.
 
 #[path = "merge/message.rs"]
@@ -273,6 +278,24 @@ struct Session<'a> {
     /// `--cleanup`, `commit.cleanup`.
     cleanup: Cleanup,
     log: usize,
+    /// `--autostash`, `merge.autoStash`.
+    autostash: bool,
+    /// The stash made for `--autostash`.
+    stash: Option<String>,
+}
+
+/// The stash of a merge with `--autostash` that is over: `MERGE_AUTOSTASH`
+/// is applied (kept in the stash list on conflicts) and removed.
+pub(crate) fn apply_merge_autostash(ctx: &Context, git_dir: &Path) -> Result<(), Die> {
+    let path = git_dir.join("MERGE_AUTOSTASH");
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let _ = std::fs::remove_file(&path);
+    if data.trim().is_empty() {
+        return Ok(());
+    }
+    crate::rebase::apply_autostash(ctx, data.trim())
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
@@ -299,11 +322,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(fatal(msg::NO_MERGE_TO_ABORT));
         }
         drop(repo);
-        return super::reset::run(ctx, &["reset".to_owned(), "--merge".to_owned()]);
+        let code = super::reset::run(ctx, &["reset".to_owned(), "--merge".to_owned()])?;
+        if code == 0 {
+            apply_merge_autostash(ctx, &git_dir)?;
+        }
+        return Ok(code);
     }
     if args.quit {
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "AUTO_MERGE"] {
             let _ = std::fs::remove_file(git_dir.join(f));
+        }
+        let stash = git_dir.join("MERGE_AUTOSTASH");
+        if let Ok(data) = std::fs::read_to_string(&stash) {
+            let _ = std::fs::remove_file(&stash);
+            if !data.trim().is_empty() {
+                crate::rebase::store_autostash(ctx, data.trim())?;
+            }
         }
         return Ok(0);
     }
@@ -357,9 +391,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .unwrap_or(false),
         v => v == 1,
     };
-    if autostash {
-        return Err(fatal(msg::option_not_supported("--autostash")));
-    }
 
     // A merge or cherry-pick in progress, or conflicts in the index.
     let (index, _) = repo.read_index()?;
@@ -446,6 +477,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         compact,
         cleanup,
         log,
+        autostash,
+        stash: None,
     };
     s.merge()
 }
@@ -904,6 +937,7 @@ impl Session<'_> {
             );
             let _ = std::io::stdout().flush();
         }
+        self.create_autostash()?;
         let old_tree = self.tree_of(&head)?;
         let new_tree = self.tree_of(&theirs.commit)?;
         self.checkout(old_tree, new_tree, None)?;
@@ -987,6 +1021,7 @@ impl Session<'_> {
         if !matches!(self.strategy.as_str(), "ort" | "recursive" | "ours") {
             return Err(fatal(msg::strategy_not_supported(&self.strategy)));
         }
+        self.create_autostash()?;
         let head_tree = self.tree_of(&head)?;
         let staged = self.staged_changes(head_tree)?;
         if !staged.is_empty() {
@@ -1044,6 +1079,7 @@ impl Session<'_> {
             if matches!(e, Die::Exit(1)) {
                 eprintln!("{}", msg::strategy_failed(&self.strategy));
                 self.keep_local_state(head_tree)?;
+                self.restore_autostash()?;
                 return Err(Die::Exit(2));
             }
             return Err(e);
@@ -1098,6 +1134,7 @@ impl Session<'_> {
                 self.write_merge_state(&parents[1..], &m)?;
             }
             println!("{}", msg::AUTOMATIC_FAILED);
+            self.autostash_pending();
             return Ok(1);
         }
         if self.args.squash {
@@ -1112,6 +1149,7 @@ impl Session<'_> {
         if self.args.commit == 0 {
             self.write_merge_state(&parents[1..], &message)?;
             eprintln!("{}", msg::WENT_WELL);
+            self.autostash_pending();
             return Ok(0);
         }
         let mergetags = message::mergetags(theirs, &parents);
@@ -1143,6 +1181,7 @@ impl Session<'_> {
     /// (fast-forwarding while nothing was merged yet); only the last one
     /// may leave conflicts (git-merge(1), MERGE STRATEGIES).
     fn octopus(&mut self, head: ObjectId, heads: Vec<Head>) -> CmdResult {
+        self.create_autostash()?;
         let head_tree = self.tree_of(&head)?;
         if self.strategy == "ours" {
             let mut parents = vec![head];
@@ -1529,7 +1568,50 @@ impl Session<'_> {
         let hooks = crate::hooks::for_repo(self.ctx, &self.repo.setup, &self.repo.config)?;
         let flag = if self.args.squash { "1" } else { "0" };
         crate::hooks::run(&hooks, "post-merge", &self.hook_opts(&[flag], None, false))?;
+        // A squash leaves the commit (and the autostash) to the user.
+        if self.args.squash {
+            self.autostash_pending();
+        } else {
+            crate::maintenance::run_auto(self.ctx);
+            if self.stash.is_some() {
+                apply_merge_autostash(self.ctx, &self.git_dir)?;
+                // Unlike `commit` and `--abort`, a merge that is done
+                // leaves no AUTO_MERGE from applying the stash.
+                let _ = std::fs::remove_file(self.git_dir.join("AUTO_MERGE"));
+            }
+        }
         Ok(())
+    }
+
+    /// `--autostash`: stashes the local changes, if any, before the index
+    /// and work tree move; the stash is recorded in `MERGE_AUTOSTASH`.
+    fn create_autostash(&mut self) -> Result<(), Die> {
+        if !self.autostash || self.stash.is_some() {
+            return Ok(());
+        }
+        if let Some(hex) = crate::rebase::autostash_local_changes(self.ctx)? {
+            self.write_file("MERGE_AUTOSTASH", format!("{hex}\n").as_bytes())?;
+            self.stash = Some(hex);
+            self.repo = Repo::open(self.ctx, Mode::Required)?;
+        }
+        Ok(())
+    }
+
+    /// The merge failed: the local changes come back from the stash (the
+    /// application's `AUTO_MERGE` stays, as with git).
+    fn restore_autostash(&mut self) -> Result<(), Die> {
+        if let Some(hex) = self.stash.take() {
+            let _ = std::fs::remove_file(self.git_dir.join("MERGE_AUTOSTASH"));
+            crate::rebase::apply_autostash(self.ctx, &hex)?;
+        }
+        Ok(())
+    }
+
+    /// The merge stopped before its commit: the stash waits for it.
+    fn autostash_pending(&self) {
+        if self.stash.is_some() {
+            println!("{}", msg::APPLY_STASH_WHEN_FINISHED);
+        }
     }
 
     /// Whether the merge commit is edited: `-e`/`--no-edit`, else when

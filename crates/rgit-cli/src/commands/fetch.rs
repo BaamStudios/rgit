@@ -5,8 +5,9 @@
 //! Supported: `[<repository> [<refspec>...]]`, `-v`, `-q`, `-a`, `-f`, `-t` /
 //! `--no-tags` / `-n`, `-p` / `--prune`, `--dry-run`,
 //! `--[no-]write-fetch-head`, `-u`, `--upload-pack`, `-o`, `-4` / `-6`,
-//! `--[no-]progress`. Accepted and ignored: `-k`, `--auto-maintenance`,
-//! `--auto-gc`, `--show-forced-updates`, `--write-commit-graph`.
+//! `--[no-]progress`, `--[no-]auto-maintenance` / `--[no-]auto-gc`
+//! ([`crate::maintenance`]). Accepted and ignored: `-k`,
+//! `--show-forced-updates`, `--write-commit-graph`.
 //! Only protocol v2 servers are supported.
 
 use std::io::{IsTerminal, Write};
@@ -55,7 +56,7 @@ pub fn run_with_reflog_action(
     let progress = Cell::new(-1);
     let ipv4 = Cell::new(false);
     let ipv6 = Cell::new(false);
-    let ignored = Cell::new(false);
+    let auto_maintenance = Cell::new(true);
     let ignored_i = Cell::new(0);
     let upload_pack: RefCell<Option<String>> = RefCell::new(None);
     let server_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -84,8 +85,8 @@ pub fn run_with_reflog_action(
             ),
             Opt::flag('4', "ipv4", &ipv4, msg::HELP_IPV4).noneg(),
             Opt::flag('6', "ipv6", &ipv6, msg::HELP_IPV6).noneg(),
-            Opt::flag(None, "auto-maintenance", &ignored, msg::HELP_AUTO_MAINTENANCE),
-            Opt::flag(None, "auto-gc", &ignored, msg::HELP_AUTO_MAINTENANCE),
+            Opt::flag(None, "auto-maintenance", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
+            Opt::flag(None, "auto-gc", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
             Opt::bool(None, "show-forced-updates", &ignored_i, msg::HELP_SHOW_FORCED),
             Opt::bool(None, "write-commit-graph", &ignored_i, msg::HELP_WRITE_COMMIT_GRAPH),
         ],
@@ -211,5 +212,11 @@ pub fn run_with_reflog_action(
         },
     );
     let _ = err.write_all(text.as_bytes());
-    Ok(result.exit_code())
+    let code = result.exit_code();
+    drop(err);
+    drop(cli_repo);
+    if code == 0 && auto_maintenance.get() {
+        crate::maintenance::run_auto(ctx);
+    }
+    Ok(code)
 }

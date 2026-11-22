@@ -33,6 +33,7 @@ pub mod ls_files;
 pub mod ls_remote;
 pub mod ls_tree;
 pub mod mailinfo;
+pub mod maintenance;
 pub mod merge;
 pub mod merge_base;
 pub mod merge_file;
