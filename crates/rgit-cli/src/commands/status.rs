@@ -508,6 +508,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 merging: repo.setup.git_dir.join("MERGE_HEAD").exists(),
                 sequencing: crate::wt_status::sequencing(&repo),
                 rebasing: crate::wt_status::rebasing(&repo),
+                bisecting: crate::wt_status::bisecting(&repo),
                 mode,
             };
             long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
@@ -784,6 +785,7 @@ struct LongContext<'a> {
     merging: bool,
     sequencing: Option<crate::wt_status::Sequencing>,
     rebasing: Option<crate::wt_status::Rebasing>,
+    bisecting: Option<Option<String>>,
     mode: Untracked,
 }
 
@@ -881,6 +883,13 @@ fn long(
     }
     if let Some(rb) = &ctx.rebasing {
         for l in crate::wt_status::rebasing_lines(rb, !unmerged.is_empty(), ctx.hints) {
+            p.text(&l);
+            p.text("\n");
+        }
+        p.text("\n");
+    }
+    if let Some(start) = &ctx.bisecting {
+        for l in crate::wt_status::bisecting_lines(start, ctx.hints) {
             p.text(&l);
             p.text("\n");
         }

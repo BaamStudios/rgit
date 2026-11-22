@@ -35,7 +35,6 @@ const NOT_YET: &[&str] = &[
     "--is-shallow-repository",
     "--show-object-format",
     "--show-ref-format",
-    "--bisect",
     "--exclude-hidden",
     "--output-object-format",
     "--since",
@@ -409,6 +408,30 @@ impl State<'_, '_> {
         Ok(())
     }
 
+    /// `--bisect`: `refs/bisect/bad` and the excluded `refs/bisect/good-*`.
+    fn show_bisect_refs(&mut self) -> Step {
+        let mut found: Vec<(bool, ObjectId)> = Vec::new();
+        let r = self
+            .resolver
+            .repo()
+            .refs
+            .for_each_ref("refs/bisect/", &mut |name, oid| {
+                if name == "refs/bisect/bad" {
+                    found.push((false, *oid));
+                } else if name.starts_with("refs/bisect/good-") {
+                    found.push((true, *oid));
+                }
+            });
+        if let Err(e) = r {
+            return Err(self.rev_error(RevError::Lookup(e)));
+        }
+        found.sort_by_key(|f| f.0);
+        for (negative, oid) in found {
+            self.show_rev(negative, &oid, None)?;
+        }
+        Ok(())
+    }
+
     fn disambiguate(&mut self, hex: &str) -> Step {
         let kind = self.resolver.repo().objects.hash_kind();
         if hex.is_empty() || hex.len() > kind.hex_len() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -518,6 +541,7 @@ impl State<'_, '_> {
             "--branches" => self.show_refs("refs/heads/", None, true)?,
             "--tags" => self.show_refs("refs/tags/", None, true)?,
             "--remotes" => self.show_refs("refs/remotes/", None, true)?,
+            "--bisect" => self.show_bisect_refs()?,
             _ => {
                 if let Some(n) = arg.strip_prefix("--short=") {
                     self.filter &= !(DO_FLAGS | DO_NOREV);
