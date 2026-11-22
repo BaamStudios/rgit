@@ -6,7 +6,9 @@
 //! without one, the default remote is used and its URL printed as
 //! `From <url>` on stderr. Protocol v2 servers are asked with `ls-refs`;
 //! v0/v1 servers (or `protocol.version` 0/1) are read from their ref
-//! advertisement. `--sort` is not wired yet.
+//! advertisement. `--sort` orders the listed entries (a peeled `^{}`
+//! entry sorts as a reference of its own); keys other than `refname` need
+//! a repository and evaluate on the local objects.
 
 use std::io::Write;
 
@@ -20,7 +22,12 @@ use rgit_protocol::{Capabilities, Packet, ProtocolVersion, Reader};
 use rgit_remote::{BranchConfig, Remotes};
 use rgit_transport::{ConnectOptions, Connection, IpVersion, Service, Settings};
 
+use rgit_hash::ObjectId;
+use rgit_repo::Setup;
+
 use crate::messages::ls_remote as msg;
+use crate::ref_filter::{Kind, RefValues, SortKey, Value};
+use crate::refs_support::Objects;
 use crate::prelude::*;
 
 /// Tail match of git's ls-remote patterns: `<pattern>` matches a ref whose
@@ -89,7 +96,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let get_url = Cell::new(false);
     let exit_code = Cell::new(false);
     let symref = Cell::new(false);
-    let sort: RefCell<Option<String>> = RefCell::new(None);
+    let sort: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let upload_pack: RefCell<Option<String>> = RefCell::new(None);
     let server_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let help_only = argv.last().is_some_and(|a| a == "-h") && argv.len() <= 2;
@@ -112,7 +119,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag(heads_short, "heads", &branches, msg::HELP_BRANCHES).hidden(),
             Opt::flag(None, "refs", &refs_only, msg::HELP_REFS),
             Opt::flag(None, "get-url", &get_url, msg::HELP_GET_URL),
-            Opt::string(None, "sort", &sort, "key", msg::HELP_SORT),
+            Opt::string_list(None, "sort", &sort, "key", msg::HELP_SORT),
             Opt::flag(None, "exit-code", &exit_code, msg::HELP_EXIT_CODE),
             Opt::flag(None, "symref", &symref, msg::HELP_SYMREF),
             Opt::string_list(
@@ -125,6 +132,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ],
     );
     let args = parser.parse(argv)?.args;
+    let sort_specs = sort.borrow().clone();
+    let sort_keys = crate::ref_filter::parse_sort_keys(&sort_specs)?;
     let (dest, patterns) = match args.split_first() {
         Some((d, p)) => (Some(d.as_str()), p),
         None => (None, &[][..]),
@@ -157,6 +166,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let remote = remotes
         .get(&name, git_dir.as_deref())
         .map_err(|e| Die::Fatal(e.to_string()))?;
+    if setup.is_none() {
+        // Keys are in reverse command-line order; git names the first
+        // offending one as given.
+        let object_key = sort_specs
+            .iter()
+            .zip(sort_keys.iter().rev())
+            .find(|(_, k)| !matches!(k.atom.kind, Kind::Refname(_)));
+        if let Some((spec, _)) = object_key {
+            let field = spec.strip_prefix('-').unwrap_or(spec);
+            let field = field
+                .strip_prefix("version:")
+                .or_else(|| field.strip_prefix("v:"))
+                .unwrap_or(field);
+            return Err(Die::Fatal(msg::sort_needs_repository(field)));
+        }
+    }
     if dest.is_none() && branch_remote.is_none() && !remote.is_configured() {
         return Err(Die::Fatal(msg::NO_REMOTE.into()));
     }
@@ -243,13 +268,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if dest.is_none() && !quiet.get() {
         eprintln!("From {url}");
     }
-    // Sorting (peeled entries sort as refs of their own) is not done yet.
-    if let Some(k) = sort.borrow().as_deref() {
-        return Err(Die::Fatal(msg::unsupported_sort(k)));
-    }
-
-    let mut out = std::io::stdout().lock();
-    let mut found = false;
+    let mut entries: Vec<Entry> = Vec::new();
     for r in &refs {
         let Some(oid) = r.oid else { continue };
         let name = r.name.as_slice();
@@ -265,20 +284,93 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if !tail_match(patterns, name) {
             continue;
         }
-        found = true;
-        let name = String::from_utf8_lossy(name);
-        if symref.get() {
-            if let Some(t) = &r.symref_target {
-                let _ = writeln!(out, "ref: {}\t{name}", String::from_utf8_lossy(t));
-            }
-        }
-        let _ = writeln!(out, "{}\t{name}", oid.to_hex());
-        if let (Some(p), false) = (r.peeled, refs_only.get()) {
+        let name = String::from_utf8_lossy(name).into_owned();
+        let target = r
+            .symref_target
+            .as_ref()
+            .filter(|_| symref.get())
+            .map(|t| String::from_utf8_lossy(t).into_owned());
+        let peeled = r.peeled.filter(|_| !refs_only.get());
+        entries.push(Entry {
+            name: name.clone(),
+            oid,
+            symref: target,
+        });
+        if let Some(p) = peeled {
             let peeled_name = format!("{name}^{{}}");
             if tail_match(patterns, peeled_name.as_bytes()) {
-                let _ = writeln!(out, "{}\t{peeled_name}", p.to_hex());
+                entries.push(Entry {
+                    name: peeled_name,
+                    oid: p,
+                    symref: None,
+                });
             }
         }
     }
+    let found = !entries.is_empty();
+    if !sort_keys.is_empty() {
+        entries = sort_entries(entries, &sort_keys, setup.as_ref(), &config)?;
+    }
+
+    let mut out = std::io::stdout().lock();
+    for e in &entries {
+        if let Some(t) = &e.symref {
+            let _ = writeln!(out, "ref: {t}\t{}", e.name);
+        }
+        let _ = writeln!(out, "{}\t{}", e.oid.to_hex(), e.name);
+    }
     Ok(if exit_code.get() && !found { 2 } else { 0 })
+}
+
+/// One line of the listing (with its `ref:` line for `--symref`).
+struct Entry {
+    name: String,
+    oid: ObjectId,
+    symref: Option<String>,
+}
+
+/// `entries` in `--sort` order. Outside a repository only `refname` keys
+/// get here; inside, the atoms are evaluated on the local objects.
+fn sort_entries(
+    entries: Vec<Entry>,
+    keys: &[SortKey],
+    setup: Option<&Setup>,
+    config: &ConfigSet,
+) -> Result<Vec<Entry>, Die> {
+    let suffixes = if keys.iter().any(|k| k.version) {
+        crate::ref_filter::version_suffixes(config)
+    } else {
+        Vec::new()
+    };
+    let keyed: Vec<(Vec<Value>, Entry)> = match setup {
+        None => entries
+            .into_iter()
+            .map(|e| {
+                let vals = keys.iter().map(|_| Value::text(e.name.clone())).collect();
+                (vals, e)
+            })
+            .collect(),
+        Some(setup) => {
+            let objects = Objects::open(setup);
+            let store = crate::refs_support::ref_store(setup, config);
+            let mut values = RefValues::new(&objects, &store);
+            values.prepare(keys.iter().map(|k| &k.atom))?;
+            let mut keyed = Vec::with_capacity(entries.len());
+            for e in entries {
+                let mut vals = Vec::with_capacity(keys.len());
+                for k in keys {
+                    vals.push(values.atom_value(&k.atom, &e.name, e.oid)?);
+                }
+                keyed.push((vals, e));
+            }
+            keyed
+        }
+    };
+    Ok(crate::ref_filter::sort_items(
+        keyed,
+        keys,
+        false,
+        &suffixes,
+        |e: &Entry| e.name.as_str(),
+    ))
 }

@@ -23,9 +23,9 @@ and the repository exists.";
 pub const NO_REMOTE: &str = "No remote configured to list refs from.";
 pub const HELP_SORT: &str = "field name to sort on";
 
-/// rgit-specific: `--sort` is not implemented yet.
-pub fn unsupported_sort(key: &str) -> String {
-    format!("rgit: ls-remote --sort={key} is not supported yet")
+/// `--sort` with a key that needs objects outside a repository.
+pub fn sort_needs_repository(field: &str) -> String {
+    format!("not a git repository, but the field '{field}' requires access to object data")
 }
 
 /// No transport handles the URL's scheme.
