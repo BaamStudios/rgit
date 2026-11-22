@@ -6,6 +6,7 @@
 
 mod abbrev;
 mod alias;
+mod argv;
 mod attributes;
 mod autocorrect;
 mod cmdlist;
@@ -291,9 +292,7 @@ fn run(args: Vec<String>) -> CmdResult {
 fn main() {
     let start = std::time::Instant::now();
     reset_sigpipe();
-    let args: Vec<String> = std::env::args_os()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args: Vec<String> = std::env::args_os().map(argv::to_string).collect();
     let code = match run(args.clone()) {
         Ok(code) => code,
         Err(die) => die.emit(),

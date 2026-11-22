@@ -114,6 +114,8 @@ pub struct Options {
     pub date_mode: DateMode,
     /// `--date` was given.
     pub date_given: bool,
+    /// `--encoding=<encoding>`: the output encoding of commit messages.
+    pub encoding: Option<String>,
     /// `-E`, `-F`, `-P` or `--basic-regexp` was given (else
     /// `grep.patternType` decides).
     pub syntax_given: bool,
@@ -269,6 +271,7 @@ impl Options {
             pretty: None,
             date_mode: DateMode::default(),
             date_given: false,
+            encoding: None,
             syntax_given: false,
             decorate: None,
             decorate_filter: Filter::default(),
@@ -642,6 +645,8 @@ impl Options {
                         .or_else(|| a.strip_prefix("--format="))
                     {
                         o.pretty_arg = Some(v.to_string());
+                    } else if let Some(v) = a.strip_prefix("--encoding=") {
+                        o.encoding = Some(v.to_string());
                     } else if let Some(v) = a.strip_prefix("--date=") {
                         o.date_mode = rgit_date::parse_date_mode(v, false)
                             .map_err(|e| Die::Fatal(e.to_string()))?;

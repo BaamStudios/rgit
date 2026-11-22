@@ -101,6 +101,45 @@ pub fn want(config: &ConfigSet, var: Option<&str>, cli: Option<ColorBool>) -> Re
     })
 }
 
+/// The colours of remote messages (`color.remote`, else `color.ui`;
+/// `auto` when stderr is a terminal), `None` without colour. Invalid
+/// `color.remote.<slot>` values keep the default.
+pub fn remote_colors(config: &ConfigSet) -> Option<rgit_protocol::sideband::RemoteColors> {
+    let setting = match colorbool(config, "color.remote") {
+        Ok(Some(c)) => c,
+        _ => match colorbool(config, "color.ui") {
+            Ok(Some(c)) => c,
+            _ => ColorBool::Auto,
+        },
+    };
+    let on = match setting {
+        ColorBool::Always => true,
+        ColorBool::Never => false,
+        ColorBool::Auto => {
+            std::env::var_os("TERM").is_some_and(|t| t != "dumb") && std::io::stderr().is_terminal()
+        }
+    };
+    if !on {
+        return None;
+    }
+    let mut colors = rgit_protocol::sideband::RemoteColors::default();
+    for (key, slot) in [
+        ("color.remote.error", &mut colors.error),
+        ("color.remote.warning", &mut colors.warning),
+        ("color.remote.hint", &mut colors.hint),
+        ("color.remote.success", &mut colors.success),
+    ] {
+        let value = config
+            .get(key)
+            .and_then(|e| e.value.as_ref())
+            .map(|v| v.to_string());
+        if let Some(seq) = value.as_deref().and_then(parse_color) {
+            *slot = seq.into_bytes();
+        }
+    }
+    Some(colors)
+}
+
 /// The escape sequence for the colour slot `key` (e.g.
 /// `color.diff.meta`), or `default`. An invalid value is fatal.
 pub fn slot(config: &ConfigSet, key: &str, default: &str) -> Result<String, Die> {

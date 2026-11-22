@@ -12,6 +12,7 @@
 //! Errors are returned as data; the command prints git's messages.
 
 pub mod message;
+pub mod messages;
 mod tree;
 
 pub use tree::{WriteTreeError, WriteTreeOptions, write_tree, write_tree_cached};
@@ -35,8 +36,16 @@ pub struct NewCommit<'a> {
 }
 
 impl NewCommit<'_> {
-    /// The commit object in git's canonical layout.
+    /// The commit object in git's canonical layout. A message that should
+    /// be UTF-8 (no `encoding`) but is not ([`NewCommit::conforms`]) is
+    /// stored with each byte of an invalid sequence read as ISO-8859-1, as
+    /// git does.
     pub fn to_commit(&self) -> Commit {
+        let message = if self.conforms() {
+            self.message.to_vec()
+        } else {
+            message::fix_utf8(self.message)
+        };
         Commit::new(
             self.tree,
             self.parents,
@@ -44,8 +53,17 @@ impl NewCommit<'_> {
             self.committer,
             self.encoding,
             Vec::new(),
-            self.message.to_vec(),
+            message,
         )
+    }
+
+    /// Whether the message is valid in its encoding: with an `encoding`
+    /// header always, else it must be strict UTF-8 ([`message::is_utf8`]).
+    /// Commands warn about messages that do not conform
+    /// ([`messages::NOT_UTF8_WARNING`]).
+    #[must_use]
+    pub fn conforms(&self) -> bool {
+        self.encoding.is_some() || message::is_utf8(self.message)
     }
 }
 

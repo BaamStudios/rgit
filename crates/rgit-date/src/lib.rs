@@ -17,7 +17,9 @@ mod format;
 mod parse;
 mod strftime;
 
-pub use context::{DateContext, TEST_DATE_NOW_ENV, now_from_env, secs_to_tz, tz_to_minutes};
+pub use context::{
+    DateContext, TEST_DATE_NOW_ENV, local_zone, now_from_env, secs_to_tz, tz_to_minutes,
+};
 pub use format::{DateMode, DateStyle, parse_date_mode, show_date, show_date_relative};
 pub use jiff::tz::TimeZone;
 pub use parse::{approxidate, approxidate_careful, parse_date, parse_expiry_date};

@@ -202,6 +202,62 @@ pub fn auto_comment_char(text: &[u8]) -> Option<u8> {
         .find(|&c| !lines(text).any(|l| l.first() == Some(&c)))
 }
 
+/// The code point of the UTF-8 sequence at the start of `b` and its
+/// length; `None` for an invalid, overlong, surrogate or too large one.
+fn next_char(b: &[u8]) -> Option<(char, usize)> {
+    let n = match *b.first()? {
+        0x00..=0x7f => 1,
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return None,
+    };
+    let s = std::str::from_utf8(b.get(..n)?).ok()?;
+    s.chars().next().map(|c| (c, n))
+}
+
+/// Unicode non-characters (U+FDD0..U+FDEF and the last two code points
+/// of every plane), which git does not accept in UTF-8 messages.
+fn is_nonchar(c: char) -> bool {
+    let v = u32::from(c);
+    (0xfdd0..=0xfdef).contains(&v) || v & 0xfffe == 0xfffe
+}
+
+/// Whether `msg` is valid UTF-8 without non-characters.
+#[must_use]
+pub fn is_utf8(msg: &[u8]) -> bool {
+    let mut i = 0;
+    while i < msg.len() {
+        match next_char(&msg[i..]) {
+            Some((c, n)) if !is_nonchar(c) => i += n,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// `msg` with every byte that does not start a valid character
+/// ([`is_utf8`]) converted from ISO-8859-1 to UTF-8.
+#[must_use]
+pub fn fix_utf8(msg: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(msg.len() + 8);
+    let mut i = 0;
+    while i < msg.len() {
+        match next_char(&msg[i..]) {
+            Some((c, n)) if !is_nonchar(c) => {
+                out.extend_from_slice(&msg[i..i + n]);
+                i += n;
+            }
+            _ => {
+                let mut buf = [0; 2];
+                out.extend_from_slice(char::from(msg[i]).encode_utf8(&mut buf).as_bytes());
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +324,16 @@ mod tests {
     fn auto_char() {
         assert_eq!(auto_comment_char(b"a\n"), Some(b'#'));
         assert_eq!(auto_comment_char(b"#a\n;b\n"), Some(b'@'));
+    }
+
+    #[test]
+    fn utf8_check_and_fix() {
+        assert!(is_utf8("caf\u{e9}\n".as_bytes()));
+        assert!(!is_utf8(b"\xed\xa0\x80"));
+        assert!(!is_utf8(b"\xc0\xa0"));
+        assert!(!is_utf8(b"\xf4\x8f\xbf\xbe"));
+        assert!(!is_utf8(b"\xef\xb7\x90"));
+        assert_eq!(fix_utf8(b"a \xff \xc3\xa9"), "a \u{ff} \u{e9}".as_bytes());
+        assert_eq!(fix_utf8(b"\xe2\x82 x"), "\u{e2}\u{82} x".as_bytes());
     }
 }

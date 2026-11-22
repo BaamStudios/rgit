@@ -96,6 +96,11 @@ pub fn path_required(name: &str) -> String {
     format!("<object>:<path> required, only <object> '{name}' given")
 }
 
+/// `--batch --filters` without a path for a blob.
+pub fn missing_path(oid: &str) -> String {
+    format!("missing path for '{oid}'")
+}
+
 /// rgit wording: a cat-file feature that is not implemented yet.
 pub fn cat_file_not_supported(what: &str) -> String {
     format!("rgit cat-file: {what} is not supported yet")

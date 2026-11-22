@@ -128,3 +128,10 @@ pub fn cannot_read_description(path: &str) -> String {
 pub fn not_supported(what: &str) -> String {
     format!("format-patch {what} is not supported by rgit yet")
 }
+
+/// The MIME headers of a patch whose text is in `charset`.
+pub fn mime_headers(charset: &str) -> String {
+    format!(
+        "MIME-Version: 1.0\nContent-Type: text/plain; charset={charset}\nContent-Transfer-Encoding: 8bit\n"
+    )
+}

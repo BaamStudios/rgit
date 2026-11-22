@@ -79,6 +79,7 @@ enum Step {
 }
 
 /// One line being drawn: bytes plus the number of visible columns.
+#[derive(Clone)]
 struct Line {
     bytes: Vec<u8>,
     cols: usize,
@@ -119,6 +120,7 @@ impl Line {
 type Slots = Vec<Option<usize>>;
 
 /// The `--graph` drawing state.
+#[derive(Clone)]
 pub struct Graph {
     /// Escape sequences of the lane colours; `None` without colour.
     palette: Option<Rc<Vec<String>>>,

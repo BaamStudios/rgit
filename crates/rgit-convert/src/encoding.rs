@@ -91,6 +91,10 @@ fn kind(name: &str) -> Kind {
     }
     match upper.as_str() {
         "UTF-8" | "UTF8" => Kind::Utf8,
+        // iconv spellings WHATWG does not list.
+        "EUCJP" | "EUC_JP" | "UJIS" => Kind::Other(encoding_rs::EUC_JP),
+        "SHIFT-JIS" | "SJIS-OPEN" | "CP932" => Kind::Other(encoding_rs::SHIFT_JIS),
+        "ISO2022JP" | "ISO-2022JP" | "CSISO2022JP" => Kind::Other(encoding_rs::ISO_2022_JP),
         "ISO-8859-1" | "ISO8859-1" | "ISO_8859-1" | "LATIN1" | "L1" | "ISO-IR-100" | "CP819"
         | "IBM819" => Kind::Latin1,
         _ => encoding_rs::Encoding::for_label(upper.as_bytes()).map_or(Kind::Unknown, Kind::Other),
@@ -147,9 +151,33 @@ impl Encoding {
         if let Kind::Unicode { width, endian, bom } = self.kind {
             self.check_bom(path, data, width, endian, bom)?;
         }
-        let out = match self.kind {
-            Kind::Utf8 => return Ok(data.to_vec()),
-            Kind::Unknown => return Err(self.fail_in(path)),
+        if self.is_utf8() {
+            return Ok(data.to_vec());
+        }
+        let out = self.to_utf8(data).ok_or_else(|| self.fail_in(path))?;
+        if roundtrip {
+            let back = self.encode_raw(&out);
+            if back.as_deref() != Some(data) {
+                return Err(Error {
+                    hint: None,
+                    message: messages::roundtrip_failed(path, &self.name),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// `data`, text in this encoding, converted to UTF-8; `None` for an
+    /// unknown encoding or content that is not valid in it. A byte order
+    /// mark of UTF-16 / UTF-32 is dropped.
+    #[must_use]
+    pub fn to_utf8(&self, data: &[u8]) -> Option<Vec<u8>> {
+        Some(match self.kind {
+            Kind::Utf8 => {
+                std::str::from_utf8(data).ok()?;
+                data.to_vec()
+            }
+            Kind::Unknown => return None,
             Kind::Latin1 => {
                 let s: String = data.iter().map(|&b| char::from(b)).collect();
                 s.into_bytes()
@@ -157,7 +185,7 @@ impl Encoding {
             Kind::Other(enc) => {
                 let (s, had_errors) = enc.decode_without_bom_handling(data);
                 if had_errors {
-                    return Err(self.fail_in(path));
+                    return None;
                 }
                 s.into_owned().into_bytes()
             }
@@ -175,19 +203,16 @@ impl Encoding {
                 } else {
                     (body, e)
                 };
-                decode_unicode(body, width, e).ok_or_else(|| self.fail_in(path))?
+                decode_unicode(body, width, e)?
             }
-        };
-        if roundtrip {
-            let back = self.encode_raw(&out);
-            if back.as_deref() != Some(data) {
-                return Err(Error {
-                    hint: None,
-                    message: messages::roundtrip_failed(path, &self.name),
-                });
-            }
-        }
-        Ok(out)
+        })
+    }
+
+    /// The UTF-8 text `data` in this encoding; `None` when it is not valid
+    /// UTF-8 or cannot be expressed in the encoding.
+    #[must_use]
+    pub fn from_utf8(&self, data: &[u8]) -> Option<Vec<u8>> {
+        self.encode_raw(data)
     }
 
     fn check_bom(
@@ -258,6 +283,28 @@ impl Encoding {
                 Some(out)
             }
         }
+    }
+}
+
+/// `data`, text in encoding `from`, converted to encoding `to` (like
+/// iconv); `None` when either encoding is unknown or the text cannot be
+/// converted.
+#[must_use]
+pub fn transcode(data: &[u8], from: &str, to: &str) -> Option<Vec<u8>> {
+    let utf8 = Encoding::new(from).to_utf8(data)?;
+    Encoding::new(to).from_utf8(&utf8)
+}
+
+/// Whether `a` and `b` name the same encoding (`utf8` and `UTF-8`).
+#[must_use]
+pub fn same_encoding(a: &str, b: &str) -> bool {
+    if a.eq_ignore_ascii_case(b) {
+        return true;
+    }
+    match (kind(a), kind(b)) {
+        (Kind::Utf8, Kind::Utf8) | (Kind::Latin1, Kind::Latin1) => true,
+        (Kind::Other(x), Kind::Other(y)) => x == y,
+        _ => false,
     }
 }
 
