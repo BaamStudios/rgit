@@ -35,3 +35,15 @@ pub fn unknown_conflict_style(style: &str) -> String {
 pub fn no_version(path: &str, side: &str) -> String {
     format!("path '{path}' does not have {side} version")
 }
+
+pub fn not_all_versions(path: &str) -> String {
+    format!("path '{path}' does not have all necessary versions")
+}
+
+pub fn recreated_conflicts(n: usize) -> String {
+    if n == 1 {
+        "Recreated 1 merge conflict".to_owned()
+    } else {
+        format!("Recreated {n} merge conflicts")
+    }
+}

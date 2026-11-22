@@ -5,11 +5,14 @@
 //!
 //! Implemented: `-s`/`--source` (also `<a>...<b>`), `-S`/`--staged`,
 //! `-W`/`--worktree`, `--overlay`/`--no-overlay`, `--ours`/`--theirs`,
-//! `--ignore-unmerged`, `--ignore-skip-worktree-bits`, `-q`,
+//! `-m`/`--merge` and `--conflict=<style>` (the conflicted file is merged
+//! again from the stages, labelled `ours`, `base` and `theirs`, observed
+//! with the `git` binary), `--ignore-unmerged`,
+//! `--ignore-skip-worktree-bits`, `-q`, `-p`,
 //! `--pathspec-from-file`/`--pathspec-file-nul`.
 //!
-//! Not yet: `-m`/`--merge`, `--conflict` (they need the three-way file
-//! merge), `-p`, `--recurse-submodules`.
+//! Not yet: re-creating conflicts from the resolve-undo record of an
+//! already resolved path (#35), `--recurse-submodules`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -53,6 +56,9 @@ pub(crate) struct PathCheckout {
     pub report: bool,
     /// No warnings about unmerged paths left alone.
     pub quiet: bool,
+    /// `-m`/`--conflict`: re-create the conflicts of unmerged paths in
+    /// this style.
+    pub merge: Option<rgit_diff::merge::ConflictStyle>,
 }
 
 /// What happens to one path.
@@ -63,7 +69,28 @@ enum Action {
     Remove { gitlink: bool },
     /// Remove the path from the index only (an unmerged path left alone).
     Unindex,
+    /// Merge the stages (base, ours, theirs) of an unmerged path again
+    /// into the work tree.
+    Merge(Box<(Option<Entry>, Entry, Entry)>),
 }
+
+/// The conflict style of `-m` (`merge.conflictStyle`) or `--conflict`.
+pub(crate) fn conflict_style(
+    config: &rgit_config::ConfigSet,
+    given: Option<&str>,
+) -> rgit_diff::merge::ConflictStyle {
+    let name = given.map(str::to_owned).or_else(|| {
+        config
+            .string("merge.conflictstyle")
+            .ok()
+            .flatten()
+            .map(|v| v.to_string())
+    });
+    name.as_deref()
+        .and_then(rgit_diff::merge::ConflictStyle::from_name)
+        .unwrap_or_default()
+}
+
 
 /// `--conflict=<style>`: "error: unknown conflict style" for anything
 /// but the three styles git knows.
@@ -222,6 +249,17 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
                     }
                     last = Some(e.path());
                     let all = index.entries_for_path(e.path());
+                    if how.merge.is_some() {
+                        let find = |s: Stage| all.iter().find(|x| x.stage() == s).cloned();
+                        match (find(Stage::OURS), find(Stage::THEIRS)) {
+                            (Some(ours), Some(theirs)) => actions.push((
+                                e.path().to_vec(),
+                                Action::Merge(Box::new((find(Stage::BASE), ours, theirs)))
+                            )),
+                            _ => errors.push(msg::not_all_versions(&String::from_utf8_lossy(e.path()))),
+                        }
+                        continue;
+                    }
                     let Some(stage) = how.stage else {
                         unmerged(e.path(), &mut errors);
                         continue;
@@ -283,7 +321,7 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
                 }
                 continue;
             }
-            Action::Write(_) => continue,
+            Action::Write(_) | Action::Merge(_) => continue,
         };
         if how.worktree {
             if let Err(e) = rgit_unpack::remove_entry(&work_tree, path, *gitlink) {
@@ -328,7 +366,17 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         }
     };
     let mut delayed: Vec<(&[u8], &Entry)> = Vec::new();
+    let mut recreated = 0usize;
     for (path, action) in &actions {
+        if let Action::Merge(stages) = action {
+            let (base, ours, theirs) = &**stages;
+            recreated += 1;
+            if let Err(e) = remerge(repo, &work_tree, &conv, path, base.as_ref(), ours, theirs, how, symlinks) {
+                eprintln!("error: {e}");
+                failed = true;
+            }
+            continue;
+        }
         let Action::Write(entry) = action else {
             continue;
         };
@@ -384,12 +432,68 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         drop(lock);
     }
     if how.report {
+        if recreated > 0 {
+            eprintln!("{}", msg::recreated_conflicts(recreated));
+        }
         match how.source {
             Some(t) => eprintln!("{}", smsg::updated_paths_from(count, &objects.abbrev(&t, 7))),
-            None => eprintln!("{}", smsg::updated_paths_from_index(count)),
+            None if recreated == 0 || count > 0 => {
+                eprintln!("{}", smsg::updated_paths_from_index(count));
+            }
+            None => {}
         }
     }
+
     Ok(if failed { 1 } else { 0 })
+}
+
+/// Writes the three-way merge of the stages of the unmerged `path` to
+/// the work tree (the index keeps the stages).
+#[allow(clippy::too_many_arguments)]
+fn remerge(
+    repo: &Repo,
+    work_tree: &Path,
+    conv: &crate::convert::Converter,
+    path: &[u8],
+    base: Option<&Entry>,
+    ours: &Entry,
+    theirs: &Entry,
+    how: &PathCheckout,
+    symlinks: bool,
+) -> Result<(), String> {
+    let read = |e: &Entry| rgit_unpack::read_blob(repo.odb(), &e.id).map_err(|e| e.to_string());
+    let base_data = match base {
+        Some(b) => read(b)?,
+        None => Vec::new(),
+    };
+    let (ours_data, theirs_data) = (read(ours)?, read(theirs)?);
+    let opts = rgit_diff::merge::MergeOptions {
+        style: how.merge.unwrap_or_default(),
+        ours_label: b"ours",
+        base_label: b"base",
+        theirs_label: b"theirs",
+        diff: rgit_diff::merge::merge_diff_options(),
+        ..Default::default()
+    };
+    // Binary content cannot be merged: ours stays (as in a merge).
+    let merged = rgit_diff::merge::merge(&base_data, &ours_data, &theirs_data, &opts)
+        .map_or(ours_data, |r| r.content);
+    // Like git, the merged content is stored as a blob.
+    let id = repo
+        .odb()
+        .write(ObjectKind::Blob, &merged)
+        .map_err(|e| e.to_string())?;
+    if !how.worktree {
+        return Ok(());
+    }
+    let data = if ours.mode.is_file() {
+        conv.to_worktree(path, &id, merged)
+    } else {
+        merged
+    };
+    rgit_unpack::write_entry(work_tree, path, ours, &data, symlinks)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Prints "pathspec ... did not match" for every unmatched item; true if
@@ -495,7 +599,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .optional(Some("")),
             Opt::bool(None, "progress", &progress, smsg::HELP_PROGRESS),
             Opt::flag('m', "merge", &merge, smsg::HELP_MERGE),
-            Opt::string(None, "conflict", &conflict, "style", smsg::HELP_CONFLICT),
+            // `--conflict` implies `--merge` (a later `--no-merge` undoes it;
+            // `--no-conflict` only forgets the style).
+            Opt::callback(None, "conflict", Some("style"), smsg::HELP_CONFLICT, |v, unset| {
+                *conflict.borrow_mut() = (!unset).then(|| v.unwrap_or_default().to_owned());
+                if !unset {
+                    merge.set(true);
+                }
+                Ok(())
+            }),
             Opt::set_int('2', "ours", &stage, smsg::HELP_OURS, 2).noneg(),
             Opt::set_int('3', "theirs", &stage, smsg::HELP_THEIRS, 3).noneg(),
             Opt::flag('p', "patch", &patch, rmsg::HELP_PATCH),
@@ -515,7 +627,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
     check_conflict_style(conflict.borrow().as_deref())?;
     let from_file = from_file.borrow().clone();
-    let merge = merge.get() || conflict.borrow().is_some();
+    let merge = merge.get();
     let stage = Stage::new(stage.get() as u8).filter(|s| s.is_conflict());
 
     if from_file.is_some() && !args.is_empty() {
@@ -587,9 +699,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if tree.is_some() && (stage.is_some() || merge) {
         return Err(Die::Fatal(msg::FROM_TREE.to_owned()));
     }
-    if merge {
-        return Err(Die::Fatal(smsg::not_supported("git restore --merge")));
-    }
     checkout_paths(
         repository::pathspec_globals(ctx),
         &repo,
@@ -605,6 +714,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             ignore_skip_worktree: skip_worktree_bits.get(),
             report: false,
             quiet: quiet.get() > 0,
+            merge: merge.then(|| conflict_style(&repo.config, conflict.borrow().as_deref())),
         },
     )
 }

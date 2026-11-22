@@ -44,6 +44,8 @@ struct Modes {
     overlay: Option<bool>,
     /// `-m`/`--conflict`.
     merge: bool,
+    /// `--conflict=<style>`.
+    conflict: Option<String>,
     force: bool,
     quiet: bool,
     ignore_skip_worktree: bool,
@@ -87,9 +89,6 @@ impl Modes {
         if tree.is_some() && (self.stage.is_some() || self.merge) {
             return Err(Die::Fatal(rsmsg::FROM_TREE.to_owned()));
         }
-        if self.merge {
-            return Err(Die::Fatal(msg::not_supported("git checkout --merge")));
-        }
         let rc = rs::checkout_paths(
             self.globals,
             repo,
@@ -105,6 +104,9 @@ impl Modes {
                 ignore_skip_worktree: self.ignore_skip_worktree,
                 report: report && !self.quiet,
                 quiet: self.quiet,
+                merge: self
+                    .merge
+                    .then(|| rs::conflict_style(&repo.config, self.conflict.as_deref())),
             },
         )?;
         // `post-checkout` with `HEAD` twice and flag 0 (not `restore`).
@@ -157,7 +159,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .optional(Some("")),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
             Opt::flag('m', "merge", &merge, msg::HELP_MERGE),
-            Opt::string(None, "conflict", &conflict, "style", msg::HELP_CONFLICT),
+            // `--conflict` implies `--merge` (a later `--no-merge` undoes it;
+            // `--no-conflict` only forgets the style).
+            Opt::callback(None, "conflict", Some("style"), msg::HELP_CONFLICT, |v, unset| {
+                *conflict.borrow_mut() = (!unset).then(|| v.unwrap_or_default().to_owned());
+                if !unset {
+                    merge.set(true);
+                }
+                Ok(())
+            }),
             Opt::flag('d', "detach", &detach, msg::HELP_DETACH),
             Track::option(&track),
             Opt::flag('f', "force", &force, msg::HELP_FORCE),
@@ -221,7 +231,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let modes = Modes {
         stage: Stage::new(stage.get() as u8).filter(|s| s.is_conflict()),
         overlay: (overlay.get() >= 0).then_some(overlay.get() == 1),
-        merge: merge.get() || conflict.borrow().is_some(),
+        merge: merge.get(),
+        conflict: conflict.borrow().clone(),
         force,
         quiet,
         ignore_skip_worktree: skip_worktree_bits.get(),
