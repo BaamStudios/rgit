@@ -41,9 +41,8 @@ pub fn options_incompatible(a: &str, b: &str) -> String {
 pub const ONLY_WITH_ALL: &str =
     "the '--no-[external-commands|aliases]' options can only be used with '--all'";
 
-/// rgit has no list of configuration variables yet.
-pub const CONFIG_LIST_UNSUPPORTED: &str =
-    "rgit cannot list configuration variables yet; see https://git-scm.com/docs/git-config";
+/// The last line of `help -c`.
+pub const CONFIG_FOOTER: &str = "'git help config' for more information";
 
 pub fn unrecognized_help_format(format: &str) -> String {
     format!("unrecognized help format '{format}'")

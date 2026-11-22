@@ -376,16 +376,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "find-renames",
                 Some("n"),
                 msg::HELP_FIND_RENAMES,
-                |v, unset| {
-                    if unset {
-                        no_renames.set(1);
-                    } else {
-                        find_renames.replace(Some(v.map(str::to_string)));
-                    }
+                |v, _| {
+                    find_renames.replace(Some(v.map(str::to_string)));
                     Ok(())
                 },
             )
-            .optional(None),
+            .optional(None)
+            .noneg(),
         ],
     );
     let args = parser.parse(argv)?.args;

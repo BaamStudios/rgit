@@ -78,7 +78,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let store = refs_support::ref_store(&setup, &config);
     let objects = Objects::open(&setup);
     let revs = refs_support::Revs::new(ctx, &setup)?;
-    let mut hooks = UpdateHooks::new(&setup, &config, &objects);
+    let mut hooks = UpdateHooks::new(&setup, &config, &objects)
+        .with_transaction_hook(crate::hooks::for_repo(ctx, &setup, &config)?);
 
     let opts = Options {
         message,

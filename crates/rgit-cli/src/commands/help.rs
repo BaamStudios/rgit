@@ -132,8 +132,32 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             listing(&cmdlist::implemented_in(cat), &mut out);
             out.push('\n');
         }
-        MODE_CONFIG | MODE_CONFIG_VARS | MODE_CONFIG_SECTIONS => {
-            return Err(Die::Fatal(msg::CONFIG_LIST_UNSUPPORTED.into()));
+        MODE_CONFIG => {
+            for name in config_variables() {
+                out.push_str(&name);
+                out.push('\n');
+            }
+            out.push('\n');
+            out.push_str(msg::CONFIG_FOOTER);
+            out.push('\n');
+        }
+        MODE_CONFIG_VARS | MODE_CONFIG_SECTIONS => {
+            // Names with a placeholder are cut before it ("alias." for
+            // "alias.*"); sections are the part before the first dot.
+            let mut seen = Vec::new();
+            for name in config_variables() {
+                let cut = if mode.get() == MODE_CONFIG_SECTIONS {
+                    name.find('.').unwrap_or(name.len())
+                } else {
+                    name.find(['<', '*']).unwrap_or(name.len())
+                };
+                let item = name[..cut].to_owned();
+                if !seen.contains(&item) {
+                    out.push_str(&item);
+                    out.push('\n');
+                    seen.push(item);
+                }
+            }
         }
         _ => {
             let Some(name) = args.first() else {
@@ -484,4 +508,117 @@ fn show_html(ctx: &Context, early: &EarlyConfig, page: &str) -> CmdResult {
             Ok(0)
         }
     }
+}
+
+/// The configuration variable names from git's documentation, generated
+/// at build time (see `build.rs`): variables, then `#fsck <id>` lines.
+const CONFIG_VARIABLES: &str = include_str!(concat!(env!("OUT_DIR"), "/config-variables.txt"));
+
+/// fsck message ids git knows besides the documented ones (as `git help
+/// -c` lists them).
+const UNDOCUMENTED_FSCK_IDS: &[&str] = &["badObjectSha1", "badParentSha1", "badTreeSha1", "nullSha1"];
+
+/// The slots of the `color.<section>.<slot>` variables.
+const COLOR_SLOTS: &[(&str, &[&str])] = &[
+    ("color.branch.", &["current", "local", "plain", "remote", "reset", "upstream", "worktree"]),
+    ("color.decorate.", &["HEAD", "branch", "grafted", "remoteBranch", "stash", "tag"]),
+    (
+        "color.diff.",
+        &[
+            "commit",
+            "context",
+            "contextBold",
+            "contextDimmed",
+            "frag",
+            "func",
+            "meta",
+            "new",
+            "newBold",
+            "newDimmed",
+            "newMoved",
+            "newMovedAlternative",
+            "newMovedAlternativeDimmed",
+            "newMovedDimmed",
+            "old",
+            "oldBold",
+            "oldDimmed",
+            "oldMoved",
+            "oldMovedAlternative",
+            "oldMovedAlternativeDimmed",
+            "oldMovedDimmed",
+            "plain",
+            "whitespace",
+        ],
+    ),
+    (
+        "color.grep.",
+        &[
+            "column",
+            "context",
+            "filename",
+            "function",
+            "lineNumber",
+            "match",
+            "matchContext",
+            "matchSelected",
+            "selected",
+            "separator",
+        ],
+    ),
+    ("color.interactive.", &["error", "header", "help", "plain", "prompt", "reset"]),
+    ("color.remote.", &["error", "hint", "success", "warning"]),
+    (
+        "color.status.",
+        &[
+            "added",
+            "branch",
+            "changed",
+            "header",
+            "localBranch",
+            "noBranch",
+            "remoteBranch",
+            "unmerged",
+            "untracked",
+            "updated",
+        ],
+    ),
+];
+
+/// All configuration variables for `help -c`, sorted: the documented
+/// names with `advice.*`, the colour slots and the fsck message ids
+/// spelled out.
+fn config_variables() -> std::collections::BTreeSet<String> {
+    let mut ids: Vec<&str> = CONFIG_VARIABLES
+        .lines()
+        .filter_map(|l| l.strip_prefix("#fsck "))
+        .collect();
+    ids.extend(UNDOCUMENTED_FSCK_IDS);
+    let mut out = std::collections::BTreeSet::new();
+    for line in CONFIG_VARIABLES.lines().filter(|l| !l.starts_with('#')) {
+        if line == "advice.*" {
+            for a in rgit_messages::advice::Advice::ALL {
+                let name = match a.name() {
+                    // Spelled as `git help -c` lists them.
+                    "statusAheadBehind" => "statusAheadBehindWarning",
+                    "pushUnqualifiedRefname" => "pushUnqualifiedRefName",
+                    n => n,
+                };
+                out.insert(format!("advice.{name}"));
+            }
+            // Advice keys git lists that rgit never shows.
+            for name in ["graftFileDeprecated", "pushNonFastForward"] {
+                out.insert(format!("advice.{name}"));
+            }
+        } else if let Some(section) = line.strip_suffix("<slot>") {
+            if let Some((_, slots)) = COLOR_SLOTS.iter().find(|(s, _)| *s == section) {
+                out.extend(slots.iter().map(|slot| format!("{section}{slot}")));
+            }
+        } else if line == "fsck.<msg-id>" || line == "receive.fsck.<msg-id>" {
+            let section = line.trim_end_matches("<msg-id>");
+            out.extend(ids.iter().map(|id| format!("{section}{id}")));
+        } else {
+            out.insert(line.to_owned());
+        }
+    }
+    out
 }
