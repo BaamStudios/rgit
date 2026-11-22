@@ -17,7 +17,10 @@
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 
-use crate::{ConnectOptions, Connection, Error, Result, Transport, messages};
+use rgit_config::{ConfigSet, Environment};
+
+use crate::command::Command;
+use crate::{ChildConnection, ConnectOptions, Connection, Error, Result, Transport, messages};
 
 /// Default port of `git daemon`.
 pub const DEFAULT_PORT: u16 = 9418;
@@ -111,9 +114,61 @@ impl DaemonTarget {
 pub struct DaemonTransport {
     /// Where to connect.
     pub target: DaemonTarget,
+    /// The proxy command (`core.gitProxy`, `GIT_PROXY_COMMAND`) that is run
+    /// as `<command> <host> <port>` and carries the connection on its
+    /// standard input and output.
+    pub proxy: Option<String>,
+}
+
+/// The proxy command for `host`: `GIT_PROXY_COMMAND` if set, else the
+/// first `core.gitProxy` value that applies. A value `<command> for
+/// <domain>` applies to the host `<domain>` and to hosts ending in
+/// `.<domain>`; a value without `for` to every host. The command `none`
+/// means no proxy (as observed from git 2.56).
+pub fn proxy_for(host: &str, env: &dyn Environment, config: &ConfigSet) -> Option<String> {
+    if let Some(cmd) = env.var("GIT_PROXY_COMMAND") {
+        if !cmd.is_empty() {
+            return Some(cmd.to_string_lossy().into_owned());
+        }
+    }
+    for entry in config.get_all("core.gitproxy") {
+        let Some(value) = entry.value.as_deref() else {
+            continue;
+        };
+        let value = String::from_utf8_lossy(value);
+        let (cmd, applies) = match value.split_once(" for ") {
+            Some((cmd, domain)) => {
+                let matches = host == domain
+                    || host
+                        .strip_suffix(domain)
+                        .is_some_and(|rest| rest.ends_with('.'));
+                (cmd, matches)
+            }
+            None => (value.as_ref(), true),
+        };
+        if applies {
+            return (cmd != "none").then(|| cmd.to_owned());
+        }
+    }
+    None
 }
 
 impl DaemonTransport {
+    /// Run the proxy command for the target.
+    fn open_proxy(&self, proxy: &str) -> Result<Box<dyn Connection>> {
+        let host = self.target.host.as_str();
+        if host.starts_with('-') {
+            return Err(Error::Other(messages::strange_hostname(host)));
+        }
+        let port = self.target.port.unwrap_or(DEFAULT_PORT).to_string();
+        let mut cmd = Command::new(proxy);
+        cmd.arg(host).arg(port);
+        match ChildConnection::spawn(&cmd) {
+            Ok(c) => Ok(Box::new(c)),
+            Err(_) => Err(Error::Other(messages::cannot_start_proxy(proxy))),
+        }
+    }
+
     /// Connect to the first address of the host that accepts.
     fn open(&self) -> Result<TcpStream> {
         let host = self.target.host.as_str();
@@ -140,7 +195,17 @@ impl DaemonTransport {
 
 impl Transport for DaemonTransport {
     fn connect(&mut self, options: &ConnectOptions) -> Result<Box<dyn Connection>> {
-        let mut stream = self.open()?;
+        let mut conn: Box<dyn Connection> = match &self.proxy {
+            Some(proxy) => self.open_proxy(proxy)?,
+            None => {
+                let stream = self.open()?;
+                let read = stream.try_clone()?;
+                Box::new(TcpConnection {
+                    read,
+                    write: stream,
+                })
+            }
+        };
         let req = self.target.request(options);
         if let Some(name) = &options.trace_name {
             rgit_protocol::trace::Tracer::new(name.clone()).packet(
@@ -149,14 +214,10 @@ impl Transport for DaemonTransport {
             );
         }
         let len = req.len() + 4;
-        stream.write_all(format!("{len:04x}").as_bytes())?;
-        stream.write_all(&req)?;
-        stream.flush()?;
-        let read = stream.try_clone()?;
-        Ok(Box::new(TcpConnection {
-            read,
-            write: stream,
-        }))
+        conn.write_all(format!("{len:04x}").as_bytes())?;
+        conn.write_all(&req)?;
+        conn.flush()?;
+        Ok(conn)
     }
 }
 
@@ -229,6 +290,21 @@ mod tests {
         assert_eq!(t.host_param(), "[::1]:99");
         assert!(DaemonTarget::parse("h").is_err());
         assert_eq!(DaemonTarget::parse("h:x/r").unwrap().host, "h:x");
+    }
+
+    #[test]
+    fn proxy_selection() {
+        use rgit_config::{MapEnv, Origin, Scope, parse_bytes};
+        let cfg = |t: &str| parse_bytes(t.as_bytes(), Origin::Stdin, Scope::Local).unwrap();
+        let none = MapEnv::new(Vec::<(String, String)>::new());
+        let c = cfg("[core]\n gitProxy = p for invalid\n gitProxy = none\n gitProxy = q\n");
+        assert_eq!(proxy_for("h.invalid", &none, &c).as_deref(), Some("p"));
+        assert_eq!(proxy_for("invalid", &none, &c).as_deref(), Some("p"));
+        assert_eq!(proxy_for("hinvalid", &none, &c), None);
+        let c = cfg("[core]\n gitProxy = p for .invalid\n gitProxy = q\n");
+        assert_eq!(proxy_for("h.invalid", &none, &c).as_deref(), Some("q"));
+        let env = MapEnv::new([("GIT_PROXY_COMMAND".to_string(), "e".to_string())]);
+        assert_eq!(proxy_for("h", &env, &c).as_deref(), Some("e"));
     }
 
     #[test]

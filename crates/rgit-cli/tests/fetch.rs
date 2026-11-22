@@ -337,6 +337,57 @@ fn protocol_v0_daemon_and_http() {
     }
 }
 
+/// `git://` through `core.gitProxy`: a proxy script that runs the
+/// requested `upload-pack` locally (as in t5532).
+#[test]
+fn git_proxy() {
+    let fx = fixture().write_executable(
+        "proxy",
+        "#!/bin/sh\necho >&2 \"proxying for $*\"\nlen=$(head -c 4)\n\
+         req=$(head -c $((0x$len - 4)) | tr '\\0' '\\n' | head -n 1)\n\
+         set -- $req\ncd \"$(dirname \"$0\")\" && exec \"$1\" \"${2#/}\"\n",
+    );
+    if fx.is_skipped() {
+        return;
+    }
+    let proxy = fx.work_dir().join("proxy");
+    let proxy = proxy.to_str().unwrap();
+    let mut fx = fx
+        .git([
+            "-C",
+            "empty",
+            "remote",
+            "set-url",
+            "origin",
+            "git://example.invalid/srv",
+        ])
+        .git(["-C", "empty", "config", "core.gitProxy", proxy]);
+    compare(&mut fx, "empty", &["fetch"]);
+    compare(
+        &mut fx,
+        "cl",
+        &[
+            "-c",
+            &format!("core.gitProxy={proxy}"),
+            "fetch",
+            "git://-x/srv",
+        ],
+    );
+    let other = format!("core.gitProxy={proxy} for other.invalid");
+    compare(
+        &mut fx,
+        "cl",
+        &[
+            "-c",
+            &format!("core.gitProxy={proxy}x for invalid"),
+            "-c",
+            &other,
+            "fetch",
+            "git://example.invalid/srv",
+        ],
+    );
+}
+
 /// Negotiation lines of a trace: what the client sent and the ACKs.
 fn negotiation(t: &str) -> Vec<String> {
     t.lines()
