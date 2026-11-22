@@ -85,7 +85,6 @@ pub(super) fn template_diff(
     let wt = WorkTree {
         root: &root,
         checker: &checker,
-        porcelain: true,
         hash: repo.hash,
         submodules: submodules.as_ref(),
         dirty: Default::default(),

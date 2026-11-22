@@ -69,6 +69,12 @@ impl Pieces {
         }
     }
 
+    /// The total weight of all pieces (the size without the carriage
+    /// returns that are left out).
+    pub fn total(&self) -> u64 {
+        self.counts.iter().map(|c| c.1).sum()
+    }
+
     /// The amount of material of `self` found in `other`.
     pub fn copied(&self, other: &Pieces) -> u64 {
         let (a, b) = (&self.counts, &other.counts);

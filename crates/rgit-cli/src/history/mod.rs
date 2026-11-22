@@ -950,6 +950,7 @@ impl Printer<'_, '_> {
             pathspec: &d.pathspec,
             recursive: true,
             show_trees: false,
+            max_depth: None,
             pairs: Vec::new(),
         };
         w.walk(old_tree.as_ref(), Some(&tree), b"")?;

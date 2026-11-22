@@ -1560,6 +1560,7 @@ impl Session<'_> {
             pathspec: &pathspec,
             recursive: true,
             show_trees: false,
+            max_depth: None,
             pairs: Vec::new(),
         };
         w.walk(Some(&old), Some(&new), b"")?;

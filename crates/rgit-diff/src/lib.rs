@@ -81,6 +81,8 @@ pub struct DiffOptions {
     pub ignore_blank_lines: bool,
     /// `-I<regex>`.
     pub ignore_regex: IgnoreRegexes,
+    /// `-W`: whole functions as context.
+    pub function_context: bool,
 }
 
 impl DiffOptions {
@@ -104,6 +106,7 @@ impl Default for DiffOptions {
             whitespace: Whitespace::default(),
             ignore_blank_lines: false,
             ignore_regex: IgnoreRegexes::default(),
+            function_context: false,
         }
     }
 }
@@ -252,7 +255,7 @@ pub struct TextDiff {
 
 /// Diffs two texts and renders the hunks in unified format.
 pub fn diff_text(a: &[u8], b: &[u8], opts: &DiffOptions) -> TextDiff {
-    let (a, b) = if opts.context == 0 {
+    let (a, b) = if opts.context == 0 && !opts.function_context {
         trim_common_tail(a, b)
     } else {
         (a, b)

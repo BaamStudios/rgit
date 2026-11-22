@@ -237,3 +237,51 @@ pub const COLOR_MOVED_WS_INDENT_COMBINED: &str =
 pub fn bad_color_moved_ws(reason: &str, value: &str) -> String {
     format!("error: {reason}\nerror: invalid mode '{value}' in --color-moved-ws\n")
 }
+
+pub fn dirstat_unknown(param: &str) -> String {
+    format!("  Unknown dirstat parameter '{param}'\n")
+}
+
+pub fn dirstat_bad_percentage(param: &str) -> String {
+    format!("  Failed to parse dirstat cut-off percentage '{param}'\n")
+}
+
+pub fn dirstat_option_errors(errors: &str) -> String {
+    format!("Failed to parse --dirstat/-X option parameter:\n{errors}")
+}
+
+pub fn dirstat_config_errors(errors: &str) -> String {
+    format!("warning: Found errors in 'diff.dirstat' config variable:\n{errors}\n")
+}
+
+pub fn expects_non_negative(option: &str) -> String {
+    format!("error: {option} expects a non-negative integer\n")
+}
+
+pub fn expects_magnitude(option: &str) -> String {
+    format!(
+        "error: option `{option}' expects a non-negative integer value with an optional k/m/g suffix\n"
+    )
+}
+
+pub const FIND_OBJECT_NEEDS_REPO: &str = "error: --find-object requires a git repository\n";
+
+pub const NO_INDEX_STDIN_DIR: &str = "cannot compare stdin to a directory";
+
+pub const NO_INDEX_PIPE_DIR: &str = "cannot compare a named pipe to a directory";
+
+pub fn orderfile_failed(path: &str) -> String {
+    format!("failed to read orderfile '{path}'")
+}
+
+pub fn no_such_path_in_diff(path: &str) -> String {
+    format!("No such path '{path}' in the diff")
+}
+
+pub fn could_not_open_output(path: &str) -> String {
+    format!("could not open '{path}'")
+}
+
+pub const MAX_DEPTH_WILDCARD: &str = "--max-depth cannot be used with wildcard pathspecs";
+
+pub const NO_INDEX_PATHSPEC_NEEDS_DIRS: &str = "warning: Limiting comparison with pathspecs is only supported if both paths are directories.\n";

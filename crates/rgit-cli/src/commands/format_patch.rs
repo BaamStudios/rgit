@@ -610,6 +610,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if o.diff.stat_width.is_none() {
         o.diff.stat_width = Some(72);
     }
+    o.diff.format_patch = true;
     o.diff.resolve_objects(&mut repo)?;
     let branch = description_branch(&mut repo, &o);
     let repo = repo;
@@ -622,6 +623,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 pathspec: &pathspec,
                 recursive: true,
                 show_trees: false,
+                max_depth: None,
                 pairs: Vec::new(),
             };
             w.walk(old, Some(new), b"")?;
@@ -704,6 +706,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 pathspec: &pathspec,
                 recursive: true,
                 show_trees: false,
+                max_depth: None,
                 pairs: Vec::new(),
             };
             w.walk(parent_tree.as_ref(), Some(&tree), b"")?;
