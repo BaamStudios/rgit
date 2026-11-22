@@ -248,6 +248,9 @@ fn do_apply(
         let result = merge(repo, info.b_tree, c_tree, info.w_tree, labels)?;
         match checkout_result(repo, c_tree, &result)? {
             Ok(()) => {
+                // Like every merge, the application records its result.
+                let auto_merge = repo.setup.cwd.join(&repo.setup.git_dir).join("AUTO_MERGE");
+                let _ = std::fs::write(auto_merge, format!("{}\n", result.tree.to_hex()));
                 if !quiet {
                     let mut out = Vec::new();
                     for m in &result.messages {

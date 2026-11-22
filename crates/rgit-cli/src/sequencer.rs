@@ -301,12 +301,12 @@ pub enum Step {
     Stopped,
 }
 
-fn lossy(b: &[u8]) -> String {
+pub(crate) fn lossy(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
 /// The first line of a commit message.
-fn subject_line(message: &[u8]) -> &[u8] {
+pub(crate) fn subject_line(message: &[u8]) -> &[u8] {
     let m = message.strip_prefix(b"\n").unwrap_or(message);
     let end = m.iter().position(|&b| b == b'\n').unwrap_or(m.len());
     &m[..end]
@@ -863,19 +863,7 @@ impl<'c> Sequencer<'c> {
     }
 
     fn signoff(&self, repo: &Repo, message: &[u8], comment: &str) -> Result<Vec<u8>, Fail> {
-        let committer = ident(repo, Role::Committer)?;
-        let mut line = b"Signed-off-by: ".to_vec();
-        line.extend_from_slice(&committer.name);
-        line.extend_from_slice(b" <");
-        line.extend_from_slice(&committer.email);
-        line.push(b'>');
-        let conf = trailer_config(repo)?;
-        Ok(rgit_trailer::append_signoff(
-            message,
-            &line,
-            &conf,
-            comment.as_bytes(),
-        ))
+        signoff_message(repo, message, comment)
     }
 
     fn merge(
@@ -887,35 +875,16 @@ impl<'c> Sequencer<'c> {
         base_label: &str,
         their_label: &str,
     ) -> Result<MergeResult, Fail> {
-        match self.opts.strategy.as_deref() {
-            None | Some("ort" | "recursive") => {}
-            Some(s) => return Err(Fail::Die(Die::Fatal(msg::strategy_not_supported(s)))),
-        }
-        let mut opts = rgit_merge::Options {
-            branch1: b"HEAD".to_vec(),
-            branch2: their_label.as_bytes().to_vec(),
-            ancestor: base_label.as_bytes().to_vec(),
-            style: crate::commands::merge_file::config_style(&repo.config)?,
-            ..rgit_merge::Options::default()
-        };
-        for x in &self.opts.xopts {
-            use crate::commands::merge_tree::StrategyOptionError as E;
-            match crate::commands::merge_tree::apply_strategy_option(&mut opts, x) {
-                Ok(()) => {}
-                Err(E::Unknown) => {
-                    return Err(Fail::Die(Die::Fatal(
-                        crate::messages::merge_tree::unknown_strategy_option(x),
-                    )));
-                }
-                Err(E::Unsupported) => {
-                    return Err(Fail::Die(Die::Fatal(msg::option_not_supported(&format!(
-                        "-X{x}"
-                    )))));
-                }
-            }
-        }
-        rgit_merge::merge_trees(repo.odb(), base, ours, theirs, &opts)
-            .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))
+        let labels = (base_label, their_label);
+        merge_with(
+            repo,
+            self.opts.strategy.as_deref(),
+            &self.opts.xopts,
+            base,
+            ours,
+            theirs,
+            labels,
+        )
     }
 
     /// Moves the index and work tree from the tree `old` to the merge
@@ -1325,8 +1294,69 @@ impl<'c> Sequencer<'c> {
     }
 }
 
+/// Merges `theirs` into `ours` with `base` as the merge base (strategy
+/// `ort`/`recursive` and the `-X` options); `labels` are the labels of
+/// the base and of `theirs` in conflict markers.
+pub(crate) fn merge_with(
+    repo: &Repo,
+    strategy: Option<&str>,
+    xopts: &[String],
+    base: &ObjectId,
+    ours: &ObjectId,
+    theirs: &ObjectId,
+    labels: (&str, &str),
+) -> Result<MergeResult, Fail> {
+    let (base_label, their_label) = labels;
+    match strategy {
+        None | Some("ort" | "recursive") => {}
+        Some(s) => return Err(Fail::Die(Die::Fatal(msg::strategy_not_supported(s)))),
+    }
+    let mut opts = rgit_merge::Options {
+        branch1: b"HEAD".to_vec(),
+        branch2: their_label.as_bytes().to_vec(),
+        ancestor: base_label.as_bytes().to_vec(),
+        style: crate::commands::merge_file::config_style(&repo.config)?,
+        ..rgit_merge::Options::default()
+    };
+    for x in xopts {
+        use crate::commands::merge_tree::StrategyOptionError as E;
+        match crate::commands::merge_tree::apply_strategy_option(&mut opts, x) {
+            Ok(()) => {}
+            Err(E::Unknown) => {
+                return Err(Fail::Die(Die::Fatal(
+                    crate::messages::merge_tree::unknown_strategy_option(x),
+                )));
+            }
+            Err(E::Unsupported) => {
+                return Err(Fail::Die(Die::Fatal(msg::option_not_supported(&format!(
+                    "-X{x}"
+                )))));
+            }
+        }
+    }
+    rgit_merge::merge_trees(repo.odb(), base, ours, theirs, &opts)
+        .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))
+}
+
+/// `message` with the committer's `Signed-off-by` trailer (`--signoff`).
+pub(crate) fn signoff_message(repo: &Repo, message: &[u8], comment: &str) -> Result<Vec<u8>, Fail> {
+    let committer = ident(repo, Role::Committer)?;
+    let mut line = b"Signed-off-by: ".to_vec();
+    line.extend_from_slice(&committer.name);
+    line.extend_from_slice(b" <");
+    line.extend_from_slice(&committer.email);
+    line.push(b'>');
+    let conf = trailer_config(repo)?;
+    Ok(rgit_trailer::append_signoff(
+        message,
+        &line,
+        &conf,
+        comment.as_bytes(),
+    ))
+}
+
 /// `git reset --merge <commit>` in-process; the exit code.
-fn reset_merge(ctx: &mut Context, commit: &str) -> Result<i32, Die> {
+pub(crate) fn reset_merge(ctx: &mut Context, commit: &str) -> Result<i32, Die> {
     let argv = vec![
         "reset".to_owned(),
         "--merge".to_owned(),
@@ -1337,7 +1367,7 @@ fn reset_merge(ctx: &mut Context, commit: &str) -> Result<i32, Die> {
 }
 
 /// Prints what a [`Die`] would print at the end of the command.
-fn print_die(e: Die) {
+pub(crate) fn print_die(e: Die) {
     match e {
         Die::Fatal(m) => eprintln!("fatal: {m}"),
         Die::Error(m, _) => eprintln!("error: {m}"),
@@ -1350,7 +1380,7 @@ fn print_die(e: Die) {
 
 /// Whether the stage-0 entries of `index` are exactly the tree `tree`
 /// (without writing any object).
-fn index_matches_tree(
+pub(crate) fn index_matches_tree(
     repo: &Repo,
     index: &rgit_index::Index,
     tree: &ObjectId,
@@ -1370,13 +1400,13 @@ fn index_matches_tree(
 }
 
 /// The commit `HEAD` points to; `None` on an unborn branch.
-fn head_commit(repo: &mut Repo) -> Option<ObjectId> {
+pub(crate) fn head_commit(repo: &mut Repo) -> Option<ObjectId> {
     repo.refs.resolve("HEAD")?;
     let id = repo.resolve("HEAD")?;
     repo.peel_to(id, ObjectKind::Commit)
 }
 
-fn read_commit(repo: &Repo, id: &ObjectId) -> Result<Commit, Fail> {
+pub(crate) fn read_commit(repo: &Repo, id: &ObjectId) -> Result<Commit, Fail> {
     match repo.read_object(id) {
         Some(Object::Commit(c)) => Ok(c),
         _ => Err(Fail::Error(rgit_merge::messages::not_a_commit(
@@ -1385,7 +1415,7 @@ fn read_commit(repo: &Repo, id: &ObjectId) -> Result<Commit, Fail> {
     }
 }
 
-fn tree_of(repo: &Repo, id: &ObjectId) -> Result<ObjectId, Fail> {
+pub(crate) fn tree_of(repo: &Repo, id: &ObjectId) -> Result<ObjectId, Fail> {
     crate::switch_branch::commit_tree(repo, id)
         .ok_or_else(|| Fail::Error(rgit_merge::messages::not_a_commit(&id.to_hex())))
 }
@@ -1489,7 +1519,7 @@ fn has_conforming_footer(repo: &Repo, message: &[u8], comment: &str) -> Result<b
     Ok(info.found)
 }
 
-fn trailer_config(repo: &Repo) -> Result<rgit_trailer::Config, Die> {
+pub(crate) fn trailer_config(repo: &Repo) -> Result<rgit_trailer::Config, Die> {
     let (conf, warnings) = rgit_trailer::Config::from_config(&repo.config).map_err(|entry| {
         let name = String::from_utf8_lossy(&entry.name).into_owned();
         crate::comment::bad_entry(&entry, &crate::messages::comment::missing_value(&name))
@@ -1501,7 +1531,7 @@ fn trailer_config(repo: &Repo) -> Result<rgit_trailer::Config, Die> {
 }
 
 /// The "Conflicts:" block of `MERGE_MSG`.
-fn conflicts_block(comment: &str, paths: &[Vec<u8>], quote: bool) -> Vec<u8> {
+pub(crate) fn conflicts_block(comment: &str, paths: &[Vec<u8>], quote: bool) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(b'\n');
     out.extend_from_slice(comment.as_bytes());
@@ -1518,7 +1548,7 @@ fn conflicts_block(comment: &str, paths: &[Vec<u8>], quote: bool) -> Vec<u8> {
 }
 
 /// The user's identity.
-fn ident(repo: &Repo, role: Role) -> Result<Signature, Die> {
+pub(crate) fn ident(repo: &Repo, role: Role) -> Result<Signature, Die> {
     let env = SystemEnv::default();
     let icfg = IdentConfig::from_config(&repo.config).map_err(|p| {
         p.print();
@@ -1536,7 +1566,7 @@ fn ident(repo: &Repo, role: Role) -> Result<Signature, Die> {
 }
 
 /// Moves `HEAD` (its branch) to `new` with the reflog message `message`.
-fn update_head(
+pub(crate) fn update_head(
     ctx: &Context,
     repo: &Repo,
     new: ObjectId,
@@ -1561,7 +1591,7 @@ fn update_head(
 /// Moves the index and work tree from the tree `old` to `new` (a two-way
 /// merge that keeps local changes or refuses), then records the
 /// conflicted paths of `result`.
-fn two_way(
+pub(crate) fn two_way(
     repo: &Repo,
     old: ObjectId,
     new: ObjectId,

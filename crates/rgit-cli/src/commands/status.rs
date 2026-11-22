@@ -507,6 +507,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     .map_err(Die::Fatal)?,
                 merging: repo.setup.git_dir.join("MERGE_HEAD").exists(),
                 sequencing: crate::wt_status::sequencing(&repo),
+                rebasing: crate::wt_status::rebasing(&repo),
                 mode,
             };
             long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
@@ -782,6 +783,7 @@ struct LongContext<'a> {
     hints: bool,
     merging: bool,
     sequencing: Option<crate::wt_status::Sequencing>,
+    rebasing: Option<crate::wt_status::Rebasing>,
     mode: Untracked,
 }
 
@@ -826,6 +828,9 @@ fn long(
     };
     match (&info.branch, &ctx.detached) {
         (Some(b), _) => p.text(&msg::on_branch(b)),
+        (None, _) if ctx.rebasing.is_some() => p.text(&crate::wt_status::rebasing_head_line(
+            ctx.rebasing.as_ref().expect("rebasing"),
+        )),
         (None, Some(Some((name, true)))) => p.text(&msg::detached_at(name)),
         (None, Some(Some((name, false)))) => p.text(&msg::detached_from(name)),
         (None, _) => p.text(msg::NOT_ON_BRANCH),
@@ -869,6 +874,13 @@ fn long(
     let picking = ctx.sequencing.as_ref().is_some_and(|s| s.commit.is_some());
     if let Some(seq) = &ctx.sequencing {
         for l in crate::wt_status::sequencing_lines(seq, !unmerged.is_empty(), ctx.hints) {
+            p.text(&l);
+            p.text("\n");
+        }
+        p.text("\n");
+    }
+    if let Some(rb) = &ctx.rebasing {
+        for l in crate::wt_status::rebasing_lines(rb, !unmerged.is_empty(), ctx.hints) {
             p.text(&l);
             p.text("\n");
         }

@@ -138,6 +138,8 @@ pub struct Header {
     pub amend: bool,
     /// A cherry-pick or revert in progress.
     pub sequencing: Option<Sequencing>,
+    /// A rebase in progress.
+    pub rebasing: Option<Rebasing>,
 }
 
 /// A cherry-pick or revert in progress, for the status banner.
@@ -152,6 +154,10 @@ pub struct Sequencing {
 /// The cherry-pick or revert in progress in `repo`, if any.
 pub fn sequencing(repo: &Repo) -> Option<Sequencing> {
     let dir = repo.setup.cwd.join(&repo.setup.git_dir);
+    if dir.join("rebase-merge").is_dir() {
+        // The rebase banner replaces the cherry-pick one.
+        return None;
+    }
     let pseudo = |name: &str| {
         std::fs::read_to_string(dir.join(name))
             .ok()
@@ -185,6 +191,121 @@ pub fn sequencing(repo: &Repo) -> Option<Sequencing> {
         revert,
         commit: None,
     })
+}
+
+/// A rebase in progress (`.git/rebase-merge`), for the status banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rebasing {
+    /// The abbreviated new base.
+    pub onto: String,
+    /// The branch being rebased; `None` for a detached `HEAD`.
+    pub branch: Option<String>,
+    /// The commands done and still to do, with abbreviated commits.
+    pub done: Vec<String>,
+    pub todo: Vec<String>,
+    /// `.git/rebase-merge/done` as git names it.
+    pub done_path: String,
+}
+
+/// The rebase in progress in `repo`, if any.
+pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
+    let dir = repo
+        .setup
+        .cwd
+        .join(&repo.setup.git_dir)
+        .join("rebase-merge");
+    if !dir.is_dir() {
+        return None;
+    }
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let abbrev = |id: ObjectId| repo.abbrev(&id, repo.default_abbrev());
+    let onto = ObjectId::from_hex(repo.hash, read("onto").trim().as_bytes())
+        .map(abbrev)
+        .unwrap_or_default();
+    let head_name = read("head-name");
+    let branch = head_name
+        .trim_end()
+        .strip_prefix("refs/heads/")
+        .map(str::to_owned);
+    let lines = |text: String| -> Vec<String> {
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let mut parts = l.splitn(3, [' ', '\t']);
+                let word = parts.next().unwrap_or_default();
+                let Some(name) = parts.next() else {
+                    return l.to_owned();
+                };
+                let rest = parts.next();
+                let name = ObjectId::from_hex(repo.hash, name.as_bytes())
+                    .map(abbrev)
+                    .unwrap_or_else(|_| name.to_owned());
+                match rest {
+                    Some(r) => format!("{word} {name} {r}"),
+                    None => format!("{word} {name}"),
+                }
+            })
+            .collect()
+    };
+    Some(Rebasing {
+        onto,
+        branch,
+        done: lines(read("done")),
+        todo: lines(read("git-rebase-todo")),
+        done_path: repo
+            .setup
+            .git_dir
+            .join("rebase-merge/done")
+            .to_string_lossy()
+            .into_owned(),
+    })
+}
+
+/// The banner lines of a rebase in progress after the first line (see
+/// [`rebasing_head_line`]); the caller adds the empty line.
+pub fn rebasing_lines(r: &Rebasing, unmerged: bool, hints: bool) -> Vec<String> {
+    use crate::messages::rebase as rmsg;
+    let mut out = Vec::new();
+    if r.done.is_empty() {
+        out.push(rmsg::NO_COMMANDS_DONE.to_owned());
+    } else {
+        out.push(rmsg::last_done(r.done.len()));
+        let start = r.done.len().saturating_sub(2);
+        for l in &r.done[start..] {
+            out.push(format!("   {l}"));
+        }
+        if r.done.len() > 2 {
+            out.push(rmsg::see_more(&r.done_path));
+        }
+    }
+    if r.todo.is_empty() {
+        out.push(rmsg::NO_COMMANDS_REMAINING.to_owned());
+    } else {
+        out.push(rmsg::next_to_do(r.todo.len()));
+        for l in r.todo.iter().take(2) {
+            out.push(format!("   {l}"));
+        }
+        if hints {
+            out.push(rmsg::HINT_EDIT_TODO.to_owned());
+        }
+    }
+    out.push(rmsg::currently_rebasing(r.branch.as_deref(), &r.onto));
+    if hints {
+        if unmerged {
+            out.push(rmsg::HINT_FIX_CONFLICTS.to_owned());
+            out.push(rmsg::HINT_SKIP.to_owned());
+            out.push(rmsg::HINT_ABORT.to_owned());
+        } else {
+            out.push(rmsg::HINT_ALL_FIXED.to_owned());
+        }
+    }
+    out
+}
+
+/// The first status line during a rebase (instead of "HEAD detached").
+pub fn rebasing_head_line(r: &Rebasing) -> String {
+    crate::messages::rebase::in_progress_onto(&r.onto)
 }
 
 /// The banner lines of a cherry-pick or revert in progress (the hints
@@ -270,6 +391,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
             merging: false,
             amend: false,
             sequencing: sequencing(repo),
+            rebasing: rebasing(repo),
         };
     };
     let branch = target
@@ -284,6 +406,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
         merging: false,
         amend: false,
         sequencing: sequencing(repo),
+        rebasing: rebasing(repo),
     }
 }
 
@@ -445,6 +568,9 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
     let mut line = |s: &str| lines.push(s.as_bytes().to_vec());
     match &header.head {
         HeadState::Branch(b) => line(&msg::on_branch(b)),
+        HeadState::Detached(_) if header.rebasing.is_some() => line(&rebasing_head_line(
+            header.rebasing.as_ref().expect("rebasing"),
+        )),
         HeadState::Detached(Some((name, true))) => line(&msg::detached_at(name)),
         HeadState::Detached(Some((name, false))) => line(&msg::detached_from(name)),
         HeadState::Detached(None) => line(msg::NOT_ON_BRANCH),
@@ -480,6 +606,12 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
     }
     if let Some(seq) = &header.sequencing {
         for l in sequencing_lines(seq, false, r.hints) {
+            line(&l);
+        }
+        line("");
+    }
+    if let Some(rb) = &header.rebasing {
+        for l in rebasing_lines(rb, false, r.hints) {
             line(&l);
         }
         line("");

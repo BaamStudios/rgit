@@ -43,6 +43,7 @@ pub mod pager;
 pub mod pull;
 pub mod push;
 pub mod read_tree;
+pub mod rebase;
 pub mod ref_filter;
 pub mod reflog;
 pub mod remote;
