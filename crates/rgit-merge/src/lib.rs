@@ -51,23 +51,30 @@
 //! renames (`merge.directoryRenames`) reported like `ort` does. The
 //! rules are described in the `renames` module.
 //!
+//! [`Options::whitespace`] makes content merges ignore whitespace changes
+//! (`-X ignore-space-change` etc.), [`Options::subtree`] shifts their tree
+//! and the base into our tree's shape first (`-s subtree`, `-X
+//! subtree=<path>`).
+//!
 //! Not implemented yet: rename caching across a sequence of picks (a
 //! performance feature), some reports of directory rename splits when
-//! both sides renamed the same files, merge attributes and drivers, `-X` whitespace options (#153), merging
+//! both sides renamed the same files, merge attributes and drivers (#153), merging
 //! submodule histories (a submodule changed on both sides is always
 //! reported as not checked out), `merge.renormalize`.
 
 mod engine;
 mod history;
 pub mod messages;
+mod subtree;
 #[cfg(test)]
 mod tests;
 
-pub use rgit_diff::Algorithm;
 pub use rgit_diff::merge::{ConflictStyle, Favor};
+pub use rgit_diff::{Algorithm, Whitespace};
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::{EntryMode, ObjectKind, RawObject};
 use rgit_odb::ObjectDatabase;
+pub use subtree::Subtree;
 
 pub use history::{CommitInfo, Commits, LabelFn, ObjectCommits, merge_bases, read_commit};
 
@@ -154,6 +161,13 @@ pub struct Options {
     pub rename_limit: usize,
     /// `merge.directoryRenames`.
     pub directory_renames: DirectoryRenames,
+    /// Whitespace changes that do not count in content merges (`-X
+    /// ignore-space-change`, `ignore-all-space`, `ignore-space-at-eol`,
+    /// `ignore-cr-at-eol`).
+    pub whitespace: Whitespace,
+    /// Shift their tree and the base to our tree's shape first (`-s
+    /// subtree`, `-X subtree=<path>`).
+    pub subtree: Subtree,
 }
 
 /// What a merge does with a path the other side added to a directory
@@ -188,6 +202,8 @@ impl Default for Options {
             rename_score: rgit_diff::diffcore::DEFAULT_RENAME_SCORE,
             rename_limit: DEFAULT_RENAME_LIMIT,
             directory_renames: DirectoryRenames::Conflict,
+            whitespace: Whitespace::default(),
+            subtree: Subtree::None,
         }
     }
 }
@@ -342,7 +358,8 @@ pub fn merge_trees(
         theirs: &opts.branch2,
         base: &opts.ancestor,
     };
-    engine::merge(objects, opts, labels, 0, base, ours, theirs)
+    let (base, theirs) = subtree::shift_both(objects, &opts.subtree, ours, base, theirs)?;
+    engine::merge(objects, opts, labels, 0, &base, ours, &theirs)
 }
 
 /// Merges the commits `ours` and `theirs` like `git merge`: against their

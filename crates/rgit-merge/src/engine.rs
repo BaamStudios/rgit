@@ -610,6 +610,7 @@ impl Engine<'_> {
             diff: DiffOptions {
                 algorithm: self.opts.algorithm,
                 minimal: self.opts.minimal,
+                whitespace: self.opts.whitespace,
                 ..text::merge_diff_options()
             },
         };
