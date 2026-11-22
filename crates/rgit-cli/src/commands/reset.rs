@@ -576,6 +576,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 prefix: repo.prefix(),
                 root: Some(work_tree.as_os_str().as_encoded_bytes().to_vec()),
                 globals: repository::pathspec_globals(ctx),
+                implicit_base: rgit_pathspec::ImplicitBase::Top,
                 ..Default::default()
             };
             Some(Pathspec::parse(&split.paths, &opts).map_err(|e| Die::Fatal(e.to_string()))?)

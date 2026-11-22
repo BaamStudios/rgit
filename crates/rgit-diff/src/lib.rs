@@ -137,7 +137,49 @@ pub fn diff_lines(a: &[&[u8]], b: &[&[u8]], opts: &DiffOptions) -> Vec<Change> {
         Algorithm::Histogram => histogram::diff(&ia, &ib, classes, opts.minimal),
     };
     compact::compact(&ia, a, &mut ca, &ib, b, &mut cb, opts.indent_heuristic);
+    if opts.algorithm == Algorithm::Histogram {
+        // Sliding groups can shift or join a deletion and an insertion so
+        // that they share lines (git 2.56, t4074): such a hunk is diffed
+        // again and the result compacted once more.
+        let mut rounds = 0;
+        while rediff_shared_hunks(&ia, &ib, &mut ca, &mut cb, classes, opts.minimal) && rounds < 8 {
+            compact::compact(&ia, a, &mut ca, &ib, b, &mut cb, opts.indent_heuristic);
+            rounds += 1;
+        }
+    }
     changes_from_flags(&ca, &cb)
+}
+
+/// Diffs every hunk again whose deleted and inserted lines have a line in
+/// common. Returns whether a hunk changed.
+fn rediff_shared_hunks(
+    ia: &[u32],
+    ib: &[u32],
+    ca: &mut [bool],
+    cb: &mut [bool],
+    classes: usize,
+    minimal: bool,
+) -> bool {
+    let mut any = false;
+    for c in changes_from_flags(ca, cb) {
+        if c.a_len == 0 || c.b_len == 0 {
+            continue;
+        }
+        let ra = c.a_start..c.a_start + c.a_len;
+        let rb = c.b_start..c.b_start + c.b_len;
+        let seen: std::collections::HashSet<u32> = ia[ra.clone()].iter().copied().collect();
+        if !ib[rb.clone()].iter().any(|id| seen.contains(id)) {
+            continue;
+        }
+        let (sa, sb) = histogram::diff(&ia[ra.clone()], &ib[rb.clone()], classes, minimal);
+        if sa.iter().all(|&x| x) && sb.iter().all(|&x| x) {
+            continue;
+        }
+        ca[ra].copy_from_slice(&sa);
+        cb[rb].copy_from_slice(&sb);
+        any = true;
+    }
+    any
 }
 
 fn changes_from_flags(ca: &[bool], cb: &[bool]) -> Vec<Change> {

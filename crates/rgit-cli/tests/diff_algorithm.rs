@@ -174,3 +174,35 @@ fn diff_algorithm_config_matches_git() {
     ];
     compare_all(&mut fx, &cmds);
 }
+
+/// Histogram diffs whose groups are shifted or joined by the compaction so
+/// that a deletion and an insertion share lines: git diffs such a hunk
+/// again.
+#[test]
+fn histogram_rediffs_shifted_groups() {
+    let pairs = [
+        ("cccc", "cbcc"),
+        ("bababab", "bayybabab"),
+        ("baaaabaaaaba", "baaabaaaaba"),
+        ("ebebeeagdgbea", "feeedggaeabbca"),
+        ("bbbadabaadbc", "bbbcdabaadc"),
+        ("pqppp", "pqpzp"),
+        ("kmnkmnkmn", "kmnk123mnzkmn"),
+    ];
+    let lines = |s: &str| s.chars().map(|c| format!("{c}\n")).collect::<String>();
+    let mut fx = Fixture::new().rgit(env!("CARGO_BIN_EXE_rgit"));
+    let mut names = Vec::new();
+    for (i, (a, b)) in pairs.iter().enumerate() {
+        fx = fx
+            .write(format!("a{i}"), lines(a))
+            .write(format!("b{i}"), lines(b));
+        names.push((format!("a{i}"), format!("b{i}")));
+    }
+    let mut cmds: Vec<Vec<&str>> = Vec::new();
+    for (a, b) in &names {
+        cmds.push(vec!["diff", "--no-index", "--histogram", a, b]);
+        cmds.push(vec!["diff", "--no-index", "--histogram", b, a]);
+        cmds.push(vec!["diff", "--no-index", "--histogram", "-w", a, b]);
+    }
+    compare_all(&mut fx, &cmds);
+}

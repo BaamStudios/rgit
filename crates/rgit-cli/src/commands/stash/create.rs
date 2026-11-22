@@ -247,7 +247,7 @@ fn prefixed_pathspecs(repo: &Repo, args: &[String]) -> (Vec<String>, Vec<String>
     for a in args {
         shown.push(format!(":(prefix:{}){prefix}{a}", prefix.len()));
         if a.starts_with(':') {
-            specs.push(a.clone());
+            specs.push(prefix_magic(a, &prefix));
             continue;
         }
         match repo.prefix_path(a.as_bytes()) {
@@ -259,6 +259,42 @@ fn prefixed_pathspecs(repo: &Repo, args: &[String]) -> (Vec<String>, Vec<String>
     (specs, shown)
 }
 
+/// A pathspec with magic, given in the subdirectory `prefix`, as a
+/// pathspec relative to the top: the pattern gets the prefix and the
+/// `prefix:<n>` magic (unless it is `top` magic, which already is).
+fn prefix_magic(arg: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        return arg.to_owned();
+    }
+    let rest = &arg[1..];
+    let (words, pattern): (Vec<String>, &str) = if let Some(long) = rest.strip_prefix('(') {
+        let Some(close) = long.find(')') else {
+            return arg.to_owned();
+        };
+        let words = long[..close].split(',').map(str::to_owned).collect();
+        (words, &long[close + 1..])
+    } else {
+        let end = rest
+            .find(|c: char| !matches!(c, '!' | '^' | '/'))
+            .unwrap_or(rest.len());
+        let mut words = Vec::new();
+        for c in rest[..end].chars() {
+            let w = if c == '/' { "top" } else { "exclude" };
+            if !words.iter().any(|x| x == w) {
+                words.push(w.to_owned());
+            }
+        }
+        let pattern = &rest[end..];
+        (words, pattern.strip_prefix(':').unwrap_or(pattern))
+    };
+    if words.iter().any(|w| w == "top" || w.starts_with("prefix:")) {
+        return arg.to_owned();
+    }
+    let mut words: Vec<String> = words.into_iter().filter(|w| !w.is_empty()).collect();
+    words.push(format!("prefix:{}", prefix.len()));
+    format!(":({}){prefix}{pattern}", words.join(","))
+}
+
 fn parse_pathspec(repo: &Repo, opts: &CreateOptions) -> Result<Pathspec, Failed> {
     let parse = ParseOptions {
         root: repo
@@ -267,6 +303,7 @@ fn parse_pathspec(repo: &Repo, opts: &CreateOptions) -> Result<Pathspec, Failed>
             .as_ref()
             .map(|w| w.as_os_str().as_encoded_bytes().to_vec()),
         globals: opts.globals,
+        implicit_base: rgit_pathspec::ImplicitBase::Top,
         ..Default::default()
     };
     Pathspec::parse(&opts.pathspec, &parse).map_err(|e| {

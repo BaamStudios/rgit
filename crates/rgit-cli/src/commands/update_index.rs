@@ -443,7 +443,13 @@ impl State<'_> {
                 }
             };
             match checker.check_with(&e, &meta) {
-                Ok(Status::Unchanged) => {}
+                // A racily clean entry is rewritten with a newer index
+                // timestamp, so it stops being racy.
+                Ok(Status::Unchanged) => {
+                    if checker.is_racy(&e) {
+                        self.changed = true;
+                    }
+                }
                 Ok(Status::StatOnly) => {
                     let entry = self.index.entry_mut(pos).expect("valid");
                     checker.refresh(entry, &meta);

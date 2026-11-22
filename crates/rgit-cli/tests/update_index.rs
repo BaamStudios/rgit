@@ -190,3 +190,74 @@ fn beyond_symlink_and_submodule() {
     same(&mut fx, "", &["--ignore-submodules", "--refresh"]);
     same(&mut fx, "", &["--verbose", "sub"]);
 }
+
+/// A racily clean entry (file mtime not older than the index) makes
+/// `--refresh` write the index again, so the entry stops being racy; an
+/// index newer than every file is left alone.
+#[test]
+fn refresh_rewrites_racy_index() {
+    use std::path::Path;
+    use std::time::{Duration, SystemTime};
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .git(["config", "core.trustctime", "false"])
+        .write("f", "same\n")
+        .write("g", "same\n")
+        .git(["add", "f", "g"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let work = fx.work_dir();
+    let index = work.join(".git/index");
+    let set = |p: &Path, t: SystemTime| {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .and_then(|f| f.set_modified(t))
+            .expect("set mtime");
+    };
+    let mtime = |p: &Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .expect("mtime")
+    };
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
+            .args(args)
+            .current_dir(&work)
+            .env("HOME", fx.home_dir())
+            .env("XDG_CONFIG_HOME", fx.home_dir().join(".config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("run rgit")
+    };
+    let past = SystemTime::now() - Duration::from_secs(3600);
+    let cases: [(&[&str], bool); 3] = [
+        (&["update-index", "--refresh"], false),
+        (&["update-index", "--really-refresh"], false),
+        (&["update-index", "--refresh"], true),
+    ];
+    for (args, other_changed) in cases {
+        set(&work.join("f"), past);
+        if other_changed {
+            std::fs::write(work.join("g"), "other\n").expect("write");
+        }
+        set(&work.join("g"), past);
+        set(&index, past);
+        run(args);
+        assert_ne!(mtime(&index), past, "{args:?}: racy index not rewritten");
+        if other_changed {
+            std::fs::write(work.join("g"), "same\n").expect("write");
+        }
+    }
+    // Index newer than the files: nothing to fix, nothing written.
+    set(&work.join("f"), past);
+    set(&work.join("g"), past);
+    run(&["update-index", "--refresh"]);
+    let future = SystemTime::now() + Duration::from_secs(60);
+    set(&index, future);
+    let out = run(&["update-index", "--refresh"]);
+    assert!(out.status.success());
+    assert_eq!(mtime(&index), future);
+}

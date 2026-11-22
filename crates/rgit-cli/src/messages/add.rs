@@ -23,6 +23,8 @@ pub const DRY_RUN_WITH_PATCH: &str =
     "options '--dry-run' and '--interactive/--patch' cannot be used together";
 pub const FROM_FILE_WITH_PATCH: &str =
     "options '--pathspec-from-file' and '--interactive/--patch' cannot be used together";
+pub const FROM_FILE_WITH_EDIT: &str =
+    "options '--pathspec-from-file' and '--edit' cannot be used together";
 
 pub const NOTHING_SPECIFIED: &str = "Nothing specified, nothing added.";
 /// Advice `addEmptyPathspec`.
