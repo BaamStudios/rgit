@@ -10,6 +10,19 @@ pub const HELP_FORCE: &str = "allow adding otherwise ignored files";
 pub const HELP_UPDATE: &str = "update tracked files";
 pub const HELP_RENORMALIZE: &str = "renormalize EOL of tracked files (implies -u)";
 pub const HELP_ALL: &str = "add changes from all tracked and untracked files";
+pub const HELP_INTERACTIVE: &str = "interactive picking";
+pub const HELP_PATCH: &str = "select hunks interactively";
+pub const HELP_AUTO_ADVANCE: &str =
+    "auto advance to the next file when selecting hunks interactively";
+pub const HELP_UNIFIED: &str = "generate diffs with <n> lines context";
+pub const HELP_INTER_HUNK: &str =
+    "show context between diff hunks up to the specified number of lines";
+pub const HELP_EDIT: &str = "edit current diff and apply";
+pub const INTERACTIVE: &str = "--interactive/--patch";
+pub const DRY_RUN_WITH_PATCH: &str =
+    "options '--dry-run' and '--interactive/--patch' cannot be used together";
+pub const FROM_FILE_WITH_PATCH: &str =
+    "options '--pathspec-from-file' and '--interactive/--patch' cannot be used together";
 
 pub const NOTHING_SPECIFIED: &str = "Nothing specified, nothing added.";
 /// Advice `addEmptyPathspec`.

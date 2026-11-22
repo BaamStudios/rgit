@@ -29,8 +29,9 @@
 //! `ident`, `working-tree-encoding`, see `crate::convert`); configured
 //! filter drivers are not run yet (#112, a warning is printed instead).
 //!
-//! Not done yet: `--refresh`, interactive modes, untracked nested
-//! repositories.
+//! `-p`, `-i` and `-e` are in `crate::interactive`.
+//!
+//! Not done yet: `--refresh`, untracked nested repositories.
 
 use std::path::{Path, PathBuf};
 
@@ -323,12 +324,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let from_file: RefCell<Option<String>> = RefCell::new(None);
     let file_nul = Cell::new(false);
     let warn_embedded = Cell::new(true);
+    let interactive = Cell::new(false);
+    let patch = Cell::new(false);
+    let auto_advance = Cell::new(-1);
+    let unified = Cell::new(crate::interactive::patch::UNSET);
+    let inter_hunk = Cell::new(crate::interactive::patch::UNSET);
+    let edit = Cell::new(false);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
             Opt::flag('n', "dry-run", &dry_run, msg::HELP_DRY_RUN),
             Opt::flag('v', "verbose", &verbose, msg::HELP_VERBOSE),
             Opt::group(""),
+            Opt::flag('i', "interactive", &interactive, msg::HELP_INTERACTIVE),
+            Opt::flag('p', "patch", &patch, msg::HELP_PATCH),
+            Opt::bool(None, "auto-advance", &auto_advance, msg::HELP_AUTO_ADVANCE),
+            Opt::integer('U', "unified", &unified, msg::HELP_UNIFIED).noneg(),
+            Opt::integer(None, "inter-hunk-context", &inter_hunk, msg::HELP_INTER_HUNK).noneg(),
+            Opt::flag('e', "edit", &edit, msg::HELP_EDIT),
             Opt::flag('f', "force", &force, msg::HELP_FORCE),
             Opt::flag('u', "update", &update, msg::HELP_UPDATE),
             Opt::flag(None, "renormalize", &renormalize, msg::HELP_RENORMALIZE),
@@ -362,6 +375,42 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let renormalize = renormalize.get();
     let chmod = chmod.into_inner();
     let from_file = from_file.into_inner();
+    let interactive_mode = patch.get() || interactive.get();
+    crate::interactive::patch::check_options(
+        interactive_mode,
+        unified.get(),
+        inter_hunk.get(),
+        auto_advance.get() == 0,
+        msg::INTERACTIVE,
+    )?;
+    if interactive_mode {
+        if dry_run {
+            return Err(Die::Fatal(msg::DRY_RUN_WITH_PATCH.to_owned()));
+        }
+        if from_file.is_some() {
+            return Err(Die::Fatal(msg::FROM_FILE_WITH_PATCH.to_owned()));
+        }
+    }
+    if patch.get() || interactive.get() || edit.get() {
+        let repo = Repo::open(ctx, RepoMode::Required)?;
+        repo.work_tree()?;
+        let pathspec: Vec<String> = args
+            .iter()
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+        if edit.get() && !patch.get() && !interactive.get() {
+            return crate::interactive::edit::run(ctx, &repo, &pathspec);
+        }
+        let mut opts = crate::interactive::Options::new(crate::interactive::Mode::Stage);
+        opts.pathspec = pathspec;
+        opts.set_context(unified.get(), inter_hunk.get());
+        opts.auto_advance = auto_advance.get() != 0;
+        if patch.get() {
+            crate::interactive::patch::run(ctx, &repo, &opts)?;
+            return Ok(0);
+        }
+        return crate::interactive::menu::run(ctx, &repo, &opts);
+    }
     if update && all {
         return Err(Die::Fatal(msg::UPDATE_AND_ALL.to_string()));
     }

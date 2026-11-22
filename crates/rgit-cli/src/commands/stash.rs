@@ -19,7 +19,9 @@
 //!
 //! `export` and `import` are in [`export`].
 //!
-//! Not yet: `-p`/`--patch` (#109), and `list`
+//! `push -p` selects hunks with the patch mode of `crate::interactive`.
+//!
+//! Not yet: `list`
 //! with log options other than counts and `--format`/`--pretty=format:`
 //! (they need `log -g`).
 //!
@@ -30,7 +32,7 @@
 #[path = "stash/apply.rs"]
 mod apply;
 #[path = "stash/child.rs"]
-mod child;
+pub(crate) mod child;
 #[path = "stash/create.rs"]
 mod create;
 #[path = "stash/export.rs"]

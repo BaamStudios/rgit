@@ -124,7 +124,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let reflog = Cell::new(false);
     let guess = Cell::new(-1);
     let overlay = Cell::new(-1);
-    let auto_advance = Cell::new(false);
+    let auto_advance = Cell::new(-1);
     let quiet = Cell::new(0);
     let recurse = RefCell::new(None::<String>);
     let progress = Cell::new(-1);
@@ -138,8 +138,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let ignore_other = Cell::new(false);
     let stage = Cell::new(0);
     let patch = Cell::new(false);
-    let unified = Cell::new(-1);
-    let inter_hunk = Cell::new(-1);
+    let unified = Cell::new(crate::interactive::patch::UNSET);
+    let inter_hunk = Cell::new(crate::interactive::patch::UNSET);
     let skip_worktree_bits = Cell::new(false);
     let from_file = RefCell::new(None);
     let file_nul = Cell::new(false);
@@ -151,7 +151,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('l', None, &reflog, msg::HELP_REFLOG),
             Opt::bool(None, "guess", &guess, msg::HELP_GUESS_CHECKOUT),
             Opt::bool(None, "overlay", &overlay, msg::HELP_OVERLAY),
-            long("auto-advance", &auto_advance, rmsg::HELP_AUTO_ADVANCE),
+            Opt::bool(None, "auto-advance", &auto_advance, rmsg::HELP_AUTO_ADVANCE),
             Opt::quiet(&quiet, msg::HELP_QUIET),
             Opt::string(None, "recurse-submodules", &recurse, "checkout", msg::HELP_RECURSE)
                 .optional(Some("")),
@@ -204,8 +204,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if overlay.get() == 1 {
             return Err(Die::Fatal(rsmsg::PATCH_WITH_OVERLAY.to_owned()));
         }
-        return unsupported("git checkout --patch");
     }
+    crate::interactive::patch::check_options(
+        patch.get(),
+        unified.get(),
+        inter_hunk.get(),
+        auto_advance.get() == 0,
+        "--patch",
+    )?;
     if recurse.borrow().is_some() {
         return unsupported("git checkout --recurse-submodules");
     }
@@ -256,6 +262,36 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let guess = sw::guess_enabled(&repo, guess.get());
     let objects = Objects::open(&repo.setup);
     let revs = Revs::new(ctx, &repo.setup)?;
+    if patch.get() {
+        // `checkout -p [<tree-ish>] [--] [<pathspec>...]`.
+        let (rev, mut paths) = match &paths {
+            Some(p) => (before.first().cloned(), p.clone()),
+            None => match before.first() {
+                Some(first)
+                    if revs.resolve(first).is_some()
+                        || super::switch::resolve_commit(&revs, &objects, first).is_some() =>
+                {
+                    (Some(first.clone()), before[1..].to_vec())
+                }
+                _ => (None, before.clone()),
+            },
+        };
+        if let Some(name) = &from_file {
+            paths = rs::read_pathspec_file(&repo, name, file_nul.get())?
+                .into_iter()
+                .map(|p| String::from_utf8_lossy(&p).into_owned())
+                .collect();
+        }
+        let tree = match &rev {
+            Some(name) => Some(rs::resolve_source(&repo, &revs, &objects, name)?),
+            None => None,
+        };
+        let mut opts = rs::patch_options(&repo, &revs, tree, tree.is_some(), true, paths)?;
+        opts.set_context(unified.get(), inter_hunk.get());
+        opts.auto_advance = auto_advance.get() != 0;
+        crate::interactive::patch::run(ctx, &repo, &opts)?;
+        return Ok(0);
+    }
 
     // `--pathspec-from-file`: the paths come from the file, the arguments
     // name at most the tree-ish. An empty file means no paths.

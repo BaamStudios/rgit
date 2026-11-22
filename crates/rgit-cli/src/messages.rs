@@ -29,6 +29,7 @@ pub mod hash_object;
 pub mod help;
 pub mod hook;
 pub mod init;
+pub mod interactive;
 pub mod interpret_trailers;
 pub mod ls_files;
 pub mod ls_remote;

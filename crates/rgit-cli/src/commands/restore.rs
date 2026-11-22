@@ -367,6 +367,45 @@ fn report_unmatched(ps: &Pathspec, seen: &[bool]) -> bool {
     any
 }
 
+/// The patch mode of `restore -p` and `checkout -p`: `tree` is the
+/// source (`None`: the index), `index`/`worktree` what is restored.
+pub(crate) fn patch_options(
+    repo: &Repo,
+    revs: &Revs,
+    tree: Option<ObjectId>,
+    index: bool,
+    worktree: bool,
+    paths: Vec<String>,
+) -> Result<crate::interactive::Options, Die> {
+    use crate::interactive::{Mode as PatchMode, Options};
+    let objects = Objects::open(&repo.setup);
+    let head_tree = revs
+        .resolve("HEAD")
+        .and_then(|h| tree_of(repo, &objects, &h));
+    let mode = match tree {
+        None => PatchMode::CheckoutIndex,
+        Some(t) => {
+            let head = head_tree == Some(t);
+            match (index, worktree, head) {
+                (true, true, true) => PatchMode::CheckoutHead,
+                (true, true, false) => PatchMode::CheckoutRev,
+                (true, false, true) => PatchMode::ResetHead,
+                (true, false, false) => PatchMode::ResetRev,
+                (false, _, true) => PatchMode::WorktreeHead,
+                (false, _, false) => PatchMode::WorktreeRev,
+            }
+        }
+    };
+    let mut opts = Options::new(mode);
+    if let Some(t) = tree {
+        if !matches!(mode, PatchMode::CheckoutHead | PatchMode::ResetHead | PatchMode::WorktreeHead) {
+            opts.rev = t.to_hex();
+        }
+    }
+    opts.pathspec = paths;
+    Ok(opts)
+}
+
 /// Resolves the `--source` tree-ish: "could not resolve" when it names
 /// nothing, "unable to read tree" when it is no tree-ish.
 pub(crate) fn resolve_source(repo: &Repo, revs: &Revs, objects: &Objects, name: &str) -> Result<ObjectId, Die> {
@@ -375,6 +414,10 @@ pub(crate) fn resolve_source(repo: &Repo, revs: &Revs, objects: &Objects, name: 
         None => super::switch::resolve_commit(revs, objects, name)
             .ok_or_else(|| Die::Fatal(msg::could_not_resolve(name)))?,
     };
+    if id == ObjectId::empty_tree(repo.hash) {
+        // The empty tree exists without being stored.
+        return Ok(id);
+    }
     tree_of(repo, objects, &id).ok_or_else(|| {
         let id = objects.peel(&id).unwrap_or(id);
         Die::Fatal(smsg::unable_to_read_tree(&id.to_hex()))
@@ -395,8 +438,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let conflict = RefCell::new(None);
     let stage = Cell::new(0);
     let patch = Cell::new(false);
-    let unified = Cell::new(-1);
-    let inter_hunk = Cell::new(-1);
+    let unified = Cell::new(crate::interactive::patch::UNSET);
+    let inter_hunk = Cell::new(crate::interactive::patch::UNSET);
     let skip_worktree_bits = Cell::new(false);
     let from_file = RefCell::new(None);
     let file_nul = Cell::new(false);
@@ -450,9 +493,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if file_nul.get() && from_file.is_none() {
         return Err(Die::Fatal(rmsg::FILE_NUL_WITHOUT_FROM_FILE.to_owned()));
     }
-    if patch.get() {
-        return Err(Die::Fatal(smsg::not_supported("git restore --patch")));
-    }
+    crate::interactive::patch::check_options(
+        patch.get(),
+        unified.get(),
+        inter_hunk.get(),
+        false,
+        "--patch",
+    )?;
     if recurse.borrow().is_some() {
         return Err(Die::Fatal(smsg::not_supported("git restore --recurse-submodules")));
     }
@@ -468,6 +515,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(name) => Some(resolve_source(&repo, &revs, &objects, name)?),
         None => None,
     };
+    if patch.get() {
+        let paths = match &from_file {
+            Some(name) => read_pathspec_file(&repo, name, file_nul.get())?
+                .into_iter()
+                .map(|p| String::from_utf8_lossy(&p).into_owned())
+                .collect(),
+            None => args,
+        };
+        let opts = patch_options(&repo, &revs, tree, staged, worktree, paths)?;
+        let mut opts = opts;
+        opts.set_context(unified.get(), inter_hunk.get());
+        crate::interactive::patch::run(ctx, &repo, &opts)?;
+        return Ok(0);
+    }
     let specs: Vec<Vec<u8>> = match &from_file {
         Some(name) => read_pathspec_file(&repo, name, file_nul.get())?,
         None => args.into_iter().map(String::into_bytes).collect(),

@@ -21,6 +21,7 @@ mod global;
 mod grep;
 mod history;
 mod hooks;
+mod interactive;
 mod maintenance;
 mod messages;
 mod objects;

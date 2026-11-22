@@ -126,6 +126,55 @@ struct Args {
     /// `--pathspec-from-file` and `--pathspec-file-nul`.
     pathspec_file: Option<(String, bool)>,
     paths: Vec<String>,
+    /// `-p`/`--interactive`: `-U` and `--inter-hunk-context`.
+    patch: Option<(i32, i32)>,
+    /// `--interactive` (the `add -i` menu) rather than `-p`.
+    menu: bool,
+}
+
+/// `-p`/`--interactive`: the index with the hunks or files the user
+/// selects, made in a temporary copy of the index.
+fn patch_index(
+    ctx: &Context,
+    repo: &Repo,
+    args: &Args,
+    context: i32,
+    inter_hunk: i32,
+) -> Result<Index, Die> {
+    let git_dir = repo.setup.cwd.join(&repo.setup.git_dir);
+    let tmp = git_dir.join(format!("index.commit-patch.{}", std::process::id()));
+    struct Remove<'a>(&'a Path);
+    impl Drop for Remove<'_> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+    let _cleanup = Remove(&tmp);
+    let real = repo.setup.cwd.join(repo.index_path());
+    if real.exists() {
+        std::fs::copy(&real, &tmp).map_err(|e| fatal(e.to_string()))?;
+        // The copy keeps the index's time: racily clean entries are
+        // judged against it.
+        if let Ok(modified) = std::fs::metadata(&real).and_then(|m| m.modified()) {
+            if let Ok(f) = std::fs::File::options().write(true).open(&tmp) {
+                let _ = f.set_modified(modified);
+            }
+        }
+    }
+    let mut opts = crate::interactive::Options::new(crate::interactive::Mode::Stage);
+    opts.index_file = Some(tmp.clone());
+    opts.pathspec = args.paths.clone();
+    opts.set_context(context, inter_hunk);
+    if args.menu {
+        crate::interactive::menu::run(ctx, repo, &opts)?;
+    } else {
+        crate::interactive::patch::run(ctx, repo, &opts)?;
+    }
+    if !tmp.exists() {
+        return Ok(Index::new(repo.hash));
+    }
+    Index::read_file(&tmp, repo.hash, &rgit_index::ReadOptions::default())
+        .map_err(|e| fatal(e.to_string()))
 }
 
 /// Split `--fixup=<value>` into its kind and commit; an unknown
@@ -169,8 +218,8 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     let format = Cell::new(0);
     let branch = Cell::new(-1);
     let ahead_behind = Cell::new(-1);
-    let context = Cell::new(-1);
-    let interhunk = Cell::new(-1);
+    let context = Cell::new(crate::interactive::patch::UNSET);
+    let interhunk = Cell::new(crate::interactive::patch::UNSET);
     let author = RefCell::new(None);
     let date = RefCell::new(None);
     let cleanup = RefCell::new(None);
@@ -281,15 +330,13 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     } else if file_nul.get() {
         return Err(fatal(rmsg::FILE_NUL_WITHOUT_FROM_FILE));
     }
-    if context.get() >= 0 && !(interactive.get() || patch.get()) {
-        return Err(fatal(msg::requires_interactive("--unified")));
-    }
-    if interhunk.get() >= 0 && !(interactive.get() || patch.get()) {
-        return Err(fatal(msg::requires_interactive("--inter-hunk-context")));
-    }
-    if interactive.get() || patch.get() {
-        return Err(fatal(msg::not_supported("--interactive/--patch")));
-    }
+    crate::interactive::patch::check_options(
+        interactive.get() || patch.get(),
+        context.get(),
+        interhunk.get(),
+        false,
+        "--interactive/--patch",
+    )?;
     let fixup = match fixup.into_inner() {
         Some(v) => Some(parse_fixup(&v)?),
         None => None,
@@ -332,6 +379,8 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
         nul: nul.get(),
         pathspec_file: from_file.map(|f| (f, file_nul.get())),
         paths,
+        patch: (interactive.get() || patch.get()).then(|| (context.get(), interhunk.get())),
+        menu: interactive.get() && !patch.get(),
     })
 }
 
@@ -1160,6 +1209,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // With -a, -i and -o the updated index is only written once the
     // commit is made (git keeps it locked until then).
     let mut deferred = false;
+    if let Some((context, inter_hunk)) = args.patch {
+        // The hunks are selected into a copy of the index, which replaces
+        // the index once the commit is made.
+        index = patch_index(ctx, &repo, &args, context, inter_hunk)?;
+        args.paths.clear();
+        deferred = true;
+    }
     if args.all {
         deferred = update_all(&repo, &checker, &root, &mut index)?;
     } else if !args.paths.is_empty() {

@@ -73,10 +73,6 @@ pub fn reword_with_path(path: &str) -> String {
     format!("reword option of '--fixup' and path '{path}' cannot be used together")
 }
 
-pub fn requires_interactive(option: &str) -> String {
-    format!("the option '{option}' requires '--interactive/--patch'")
-}
-
 pub fn unknown_fixup(value: &str) -> String {
     format!("unknown option: --fixup={value}")
 }
@@ -240,9 +236,3 @@ If you wish to commit it anyway, use:
     git commit --allow-empty
 ";
 pub const EMPTY_CHERRY_PICK_SKIP: &str = "Otherwise, please use 'git cherry-pick --skip'";
-
-// Messages of rgit itself.
-
-pub fn not_supported(option: &str) -> String {
-    format!("rgit: commit: {option} is not supported yet")
-}

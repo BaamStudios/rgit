@@ -22,7 +22,8 @@
 //! Unmerged entries are reset to the target with `--merge` (and the
 //! work tree file overwritten), as the first DISCUSSION table shows.
 //!
-//! Not yet: `--patch` (#109), `--recurse-submodules` (#121).
+//! `--patch` is the patch mode of `crate::interactive`. Not yet:
+//! `--recurse-submodules` (#121).
 
 use std::path::{Path, PathBuf};
 
@@ -343,15 +344,52 @@ fn write_index(repo: &Repo, index: &Index) -> Result<(), Die> {
     }
 }
 
+/// `reset -p [<tree-ish>] [--] [<pathspec>...]`: unstage hunks, or apply
+/// hunks of another tree to the index.
+fn reset_patch(
+    ctx: &Context,
+    repo: &Repo,
+    revs: &Revs,
+    split: &Args,
+    (unified, inter_hunk): (i32, i32),
+    auto_advance: bool,
+) -> CmdResult {
+    use crate::interactive::{Mode as PatchMode, Options};
+    let objects = Objects::open(&repo.setup);
+    let head = revs.resolve("HEAD");
+    let mut opts = Options::new(PatchMode::ResetHead);
+    match &split.rev {
+        None => {}
+        Some(name) => {
+            let id = revs
+                .resolve(name)
+                .ok_or_else(|| Die::Fatal(msg::not_a_commit(name)))?;
+            let tree = tree_of(&objects, &id).ok_or_else(|| Die::Fatal(msg::not_a_commit(name)))?;
+            if objects.peel(&id) != head || head.is_none() {
+                opts.mode = PatchMode::ResetRev;
+                opts.rev = tree.to_hex();
+            }
+        }
+    }
+    if head.is_none() && opts.mode == PatchMode::ResetHead {
+        opts.rev = ObjectId::empty_tree(repo.hash).to_hex();
+    }
+    opts.pathspec = split.paths.clone();
+    opts.set_context(unified, inter_hunk);
+    opts.auto_advance = auto_advance;
+    crate::interactive::patch::run(ctx, repo, &opts)?;
+    Ok(0)
+}
+
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let quiet = Cell::new(0);
     let no_refresh = Cell::new(false);
     let mode = Cell::new(0);
     let recurse = RefCell::new(None);
     let patch = Cell::new(false);
-    let auto_advance = Cell::new(false);
-    let unified = Cell::new(-1);
-    let inter_hunk = Cell::new(-1);
+    let auto_advance = Cell::new(-1);
+    let unified = Cell::new(crate::interactive::patch::UNSET);
+    let inter_hunk = Cell::new(crate::interactive::patch::UNSET);
     let intent_to_add = Cell::new(false);
     let from_file = RefCell::new(None);
     let file_nul = Cell::new(false);
@@ -374,7 +412,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             )
             .optional(Some("")),
             Opt::flag('p', "patch", &patch, msg::HELP_PATCH),
-            Opt::flag(None, "auto-advance", &auto_advance, msg::HELP_AUTO_ADVANCE),
+            Opt::bool(None, "auto-advance", &auto_advance, msg::HELP_AUTO_ADVANCE),
             Opt::integer('U', "unified", &unified, msg::HELP_UNIFIED).noneg(),
             Opt::integer(None, "inter-hunk-context", &inter_hunk, msg::HELP_INTER_HUNK).noneg(),
             Opt::flag('N', "intent-to-add", &intent_to_add, msg::HELP_INTENT_TO_ADD),
@@ -405,8 +443,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if mode != 0 {
             return Err(Die::Fatal(msg::PATCH_WITH_MODE.to_owned()));
         }
-        return Err(Die::Fatal(msg::not_supported("--patch")));
     }
+    crate::interactive::patch::check_options(
+        patch.get(),
+        unified.get(),
+        inter_hunk.get(),
+        auto_advance.get() == 0,
+        "--patch",
+    )?;
     if file_nul.get() && from_file.is_none() {
         return Err(Die::Fatal(msg::FILE_NUL_WITHOUT_FROM_FILE.to_owned()));
     }
@@ -417,6 +461,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let repo = Repo::open(ctx, Mode::Required)?;
     let revs = Revs::new(ctx, &repo.setup)?;
     let mut split = split_args(&repo, &revs, &args)?;
+    if patch.get() {
+        return reset_patch(
+            ctx,
+            &repo,
+            &revs,
+            &split,
+            (unified.get(), inter_hunk.get()),
+            auto_advance.get() != 0,
+        );
+    }
 
     if let Some(file) = &from_file {
         if !split.paths.is_empty() {
