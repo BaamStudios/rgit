@@ -370,6 +370,28 @@ fn from_origin() {
     );
 }
 
+/// An annotated tag from FETCH_HEAD is merged with a merge commit (it is
+/// not in its natural place under refs/tags/), even with --ff; the merge
+/// commit carries the tag message.
+#[test]
+fn annotated_tag() {
+    cases_in(
+        "dst",
+        |fx| {
+            fx.git(["tag", "-a", "-m", "anno c1", "anno1", "c1"])
+                .git(["init", "-q", "-b", "main", "dst"])
+                .git(["-C", "dst", "pull", "-q", "..", "c0"])
+        },
+        &[
+            &["pull", "--no-edit", "..", "anno1"],
+            &["pull", "--ff", "..", "anno1"],
+            &["-c", "merge.ff=true", "pull", "..", "anno1"],
+            &["-c", "pull.ff=false", "pull", "--no-edit", "..", "anno1"],
+            &["pull", "--ff-only", "..", "anno1"],
+        ],
+    );
+}
+
 /// A rebase that is not a fast-forward needs `rebase` (#154): rgit says
 /// so instead of rebasing.
 #[test]

@@ -598,7 +598,10 @@ impl Session<'_> {
                 name: lossy(desc),
                 kind: message::Kind::Fetch,
                 commit,
-                tag_message: None,
+                tag_message: match self.repo.read_object(&id) {
+                    Some(rgit_object::Object::Tag(t)) => Some(t.message().to_vec()),
+                    _ => None,
+                },
                 signed_tag: message::signed_tag(&self.repo, id, commit),
             });
         }
@@ -708,7 +711,11 @@ impl Session<'_> {
             .map_err(|e| fatal(e.to_string()))?;
         drop(commits);
         let ff_possible = bases.len() == 1 && bases[0] == head;
-        if ff_possible && self.args.ff != FF_NO && self.strategy != "ours" {
+        // git-merge(1): an annotated tag that is not in its natural place
+        // in refs/tags/ (from FETCH_HEAD) gets a merge commit, also with
+        // --ff (checked against git); only --ff-only fast-forwards.
+        let no_ff_tag = self.args.ff == FF_ALLOW && self.untracked_tag(&theirs);
+        if ff_possible && self.args.ff != FF_NO && !no_ff_tag && self.strategy != "ours" {
             return self.fast_forward(head, &theirs);
         }
         if self.args.ff == FF_ONLY {
@@ -758,6 +765,18 @@ impl Session<'_> {
     }
 
     /// Commit access for the merge engine.
+    /// Whether `head` is an annotated tag from `FETCH_HEAD` (not stored
+    /// under `refs/tags/`).
+    fn untracked_tag(&mut self, head: &Head) -> bool {
+        if head.kind != message::Kind::Fetch {
+            return false;
+        }
+        ObjectId::from_hex(self.repo.hash, head.arg.as_bytes())
+            .ok()
+            .and_then(|o| self.repo.read_object(&o))
+            .is_some_and(|o| matches!(o, rgit_object::Object::Tag(_)))
+    }
+
     fn commits(&self) -> ObjectCommits<'_> {
         let shallow = std::fs::read_to_string(self.repo.setup.common_dir.join("shallow"))
             .unwrap_or_default()
