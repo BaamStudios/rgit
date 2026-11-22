@@ -87,6 +87,17 @@ pub trait CommitSource {
         let _ = id;
         Ok(true)
     }
+    /// `--cherry-pick`/`--cherry-mark`: the commits of `left` and `right`
+    /// (the two sides of a symmetric difference, merges left out) that
+    /// introduce the same change as a commit on the other side.
+    fn patch_equivalent(
+        &mut self,
+        left: &[ObjectId],
+        right: &[ObjectId],
+    ) -> Result<HashSet<ObjectId>, Self::Error> {
+        let _ = (left, right);
+        Ok(HashSet::new())
+    }
 }
 
 impl<S: CommitSource + ?Sized> CommitSource for &mut S {
@@ -99,6 +110,13 @@ impl<S: CommitSource + ?Sized> CommitSource for &mut S {
     }
     fn include(&mut self, id: &ObjectId) -> Result<bool, Self::Error> {
         (**self).include(id)
+    }
+    fn patch_equivalent(
+        &mut self,
+        left: &[ObjectId],
+        right: &[ObjectId],
+    ) -> Result<HashSet<ObjectId>, Self::Error> {
+        (**self).patch_equivalent(left, right)
     }
 }
 
@@ -173,6 +191,11 @@ pub struct WalkOptions {
     pub no_walk: Option<NoWalk>,
     /// Record the children of walked commits ([`Walk::children`]).
     pub children: bool,
+    /// `--cherry-pick`: leave out commits with an equivalent change on the
+    /// other side of a symmetric difference.
+    pub cherry_pick: bool,
+    /// `--cherry-mark`: mark such commits ([`Shown::same`]) instead.
+    pub cherry_mark: bool,
 }
 
 /// One commit of the output.
@@ -184,6 +207,8 @@ pub struct Shown {
     pub boundary: bool,
     /// The side of the symmetric difference it is reachable from, if any.
     pub side: Option<Side>,
+    /// `--cherry-mark`: the other side has an equivalent change.
+    pub same: bool,
 }
 
 /// Number of extra queue entries the limited walk takes after it believes
@@ -203,6 +228,8 @@ const BOUNDARY: u16 = 1 << 8;
 /// Read only to show it as a boundary commit: the walk never reached it,
 /// so its parents do not order it.
 const UNREACHED: u16 = 1 << 9;
+/// `--cherry-mark`: the other side has an equivalent change.
+const PATCHSAME: u16 = 1 << 10;
 
 #[derive(Debug)]
 struct Node {
@@ -433,6 +460,7 @@ impl<S: CommitSource> Walk<S> {
             id: node.id,
             boundary,
             side,
+            same: node.flags & PATCHSAME != 0,
         }
     }
 
@@ -645,6 +673,9 @@ impl<S: CommitSource> Walk<S> {
         if self.opts.ancestry_path {
             list = self.ancestry_filter(list);
         }
+        if self.opts.cherry_pick || self.opts.cherry_mark {
+            list = self.cherry(list)?;
+        }
         self.limited_list.clone_from(&list);
         match self.opts.order {
             Order::Default => {}
@@ -746,6 +777,44 @@ impl<S: CommitSource> Walk<S> {
         }
         list.retain(|&n| !self.uninteresting(n));
         Ok(list)
+    }
+
+    /// `--cherry-pick` and `--cherry-mark`: compare the changes of the
+    /// left and the right commits (merges do not take part); equivalent
+    /// ones are dropped or marked.
+    fn cherry(&mut self, list: Vec<u32>) -> Result<Vec<u32>, S::Error> {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for &n in &list {
+            let node = &self.nodes[n as usize];
+            if node.parents.len() > 1 {
+                continue;
+            }
+            if node.flags & LEFT != 0 {
+                left.push(node.id);
+            } else if node.flags & RIGHT != 0 {
+                right.push(node.id);
+            }
+        }
+        if left.is_empty() || right.is_empty() {
+            return Ok(list);
+        }
+        let same = self.source.patch_equivalent(&left, &right)?;
+        if same.is_empty() {
+            return Ok(list);
+        }
+        if self.opts.cherry_mark {
+            for &n in &list {
+                if same.contains(&self.nodes[n as usize].id) {
+                    self.nodes[n as usize].flags |= PATCHSAME;
+                }
+            }
+            return Ok(list);
+        }
+        Ok(list
+            .into_iter()
+            .filter(|&n| !same.contains(&self.nodes[n as usize].id))
+            .collect())
     }
 
     /// `--ancestry-path`: keep the commits of `list` that are a target, an
