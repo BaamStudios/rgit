@@ -80,6 +80,12 @@ pub const DELETED: &str = "[deleted]";
 /// The remote side of a pruned ref.
 pub const NONE: &str = "(none)";
 
+/// A ref left out because its history ends in new shallow commits
+/// (printed after `warning: `).
+pub fn rejected_shallow_root(name: &str) -> String {
+    format!("rejected {name} because shallow roots are not allowed to be updated")
+}
+
 /// The first line of the summary.
 pub fn from_url(url: &str) -> String {
     format!("From {url}")

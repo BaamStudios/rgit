@@ -76,7 +76,6 @@ pub fn invalid_remote_name(name: &str) -> String {
 pub fn depth_not_positive(depth: &str) -> String {
     format!("depth {depth} is not a positive number")
 }
-pub const DEPTH_IGNORED_LOCAL: &str = "--depth is ignored in local clones; use file:// instead.";
 pub fn remote_branch_not_found(branch: &str, remote: &str) -> String {
     format!("Remote branch {branch} not found in upstream {remote}")
 }
@@ -144,4 +143,9 @@ pub fn unable_to_write(path: &str, reason: &str) -> String {
 }
 pub fn unable_to_read_tree(oid: &str) -> String {
     format!("unable to read tree ({oid})")
+}
+pub const SOURCE_SHALLOW: &str = "source repository is shallow, reject to clone.";
+/// `--depth`, `--shallow-since`, `--shallow-exclude` with a local path.
+pub fn ignored_in_local_clones(option: &str) -> String {
+    format!("{option} is ignored in local clones; use file:// instead.")
 }

@@ -256,6 +256,21 @@ nothing to commit, working tree clean" "$(git status)"
     if git rev-parse -q --verify refs/remotes/origin/feature >/dev/null; then
         fail "origin/feature still exists after the deletion"
     fi
+
+    step "shallow clone and unshallow (#94)"
+    git clone -q --depth 1 "$url" "$state/shallow" 2>"$state/shallow.err" || {
+        cat "$state/shallow.err" >&2
+        fail "clone --depth 1"
+    }
+    expect "shallow clone is shallow" true "$(git -C "$state/shallow" rev-parse --is-shallow-repository)"
+    expect "shallow clone history" 1 "$(git -C "$state/shallow" rev-list --count HEAD)"
+    git -C "$state/shallow" fetch -q --unshallow 2>"$state/unshallow.err" || {
+        cat "$state/unshallow.err" >&2
+        fail "fetch --unshallow"
+    }
+    expect "unshallowed repository" false "$(git -C "$state/shallow" rev-parse --is-shallow-repository)"
+    expect "unshallowed history" "$(git rev-list --count origin/main)" \
+        "$(git -C "$state/shallow" rev-list --count origin/main)"
 }
 
 case "${1:-}" in

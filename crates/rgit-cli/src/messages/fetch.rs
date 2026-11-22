@@ -27,3 +27,18 @@ pub const HELP_IPV6: &str = "use IPv6 addresses only";
 pub const HELP_AUTO_MAINTENANCE: &str = "run 'maintenance --auto' after fetching";
 pub const HELP_SHOW_FORCED: &str = "check for forced-updates on all updated branches";
 pub const HELP_WRITE_COMMIT_GRAPH: &str = "write the commit-graph after fetching";
+
+pub const HELP_DEPTH: &str = "deepen history of shallow clone";
+pub const HELP_SHALLOW_SINCE: &str = "deepen history of shallow repository based on time";
+pub const HELP_SHALLOW_EXCLUDE: &str = "deepen history of shallow clone, excluding ref";
+pub const HELP_DEEPEN: &str = "deepen history of shallow clone";
+pub const HELP_UNSHALLOW: &str = "convert to a complete repository";
+pub const HELP_UPDATE_SHALLOW: &str = "accept refs that update .git/shallow";
+pub fn depth_not_positive(depth: &str) -> String {
+    format!("depth {depth} is not a positive number")
+}
+pub fn options_together(a: &str, b: &str) -> String {
+    format!("options '{a}' and '{b}' cannot be used together")
+}
+pub const NEGATIVE_DEEPEN: &str = "negative depth in --deepen is not supported";
+pub const UNSHALLOW_COMPLETE: &str = "--unshallow on a complete repository does not make sense";

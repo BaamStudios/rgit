@@ -25,6 +25,13 @@ pub trait ObjectSource {
     fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, SourceError> {
         Ok(self.read(id)?.map(|o| o.kind))
     }
+
+    /// Whether the commit `id` is shallow (its parents are not walked).
+    /// The default: no commit is.
+    fn is_shallow(&self, id: &ObjectId) -> bool {
+        let _ = id;
+        false
+    }
 }
 
 impl<T: ObjectSource + ?Sized> ObjectSource for &T {
@@ -34,6 +41,33 @@ impl<T: ObjectSource + ?Sized> ObjectSource for &T {
 
     fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, SourceError> {
         (**self).kind(id)
+    }
+
+    fn is_shallow(&self, id: &ObjectId) -> bool {
+        (**self).is_shallow(id)
+    }
+}
+
+/// `inner` with the commits of `shallow` (a repository's `shallow`
+/// file) treated as having no parents.
+pub struct ShallowSource<'a, S: ObjectSource + ?Sized> {
+    /// The objects.
+    pub inner: &'a S,
+    /// The shallow commits.
+    pub shallow: std::collections::HashSet<ObjectId>,
+}
+
+impl<S: ObjectSource + ?Sized> ObjectSource for ShallowSource<'_, S> {
+    fn read(&self, id: &ObjectId) -> Result<Option<Object>, SourceError> {
+        self.inner.read(id)
+    }
+
+    fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, SourceError> {
+        self.inner.kind(id)
+    }
+
+    fn is_shallow(&self, id: &ObjectId) -> bool {
+        self.shallow.contains(id)
     }
 }
 

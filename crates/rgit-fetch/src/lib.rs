@@ -44,6 +44,7 @@ pub mod messages;
 pub mod refmap;
 mod repo;
 mod session;
+pub mod shallow;
 pub mod update;
 
 pub use error::{Error, Result};

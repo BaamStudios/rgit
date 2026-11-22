@@ -112,6 +112,17 @@ impl LocalRepo {
         self.odb.contains(id)
     }
 
+    /// The `shallow` file (`$GIT_SHALLOW_FILE` or `<common dir>/shallow`).
+    pub fn shallow_file(&self) -> PathBuf {
+        crate::shallow::file_for(&self.common_dir)
+    }
+
+    /// The shallow commits (see `Documentation/technical/shallow.adoc`), in
+    /// file order.
+    pub fn shallow(&self) -> Vec<ObjectId> {
+        crate::shallow::read(&self.shallow_file(), self.hash)
+    }
+
     /// The repositories whose objects this one borrows: the directory
     /// holding each alternate object directory (`<repo>/objects`), as an
     /// absolute path.
