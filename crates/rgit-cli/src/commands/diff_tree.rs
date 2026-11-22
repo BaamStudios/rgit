@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! `git diff-tree` (Documentation/git-diff-tree.adoc) for two tree-ishes
-//! with optional pathspecs, in all formats of [`crate::diff::output`].
-//! No single-commit form, no `--stdin`.
+//! with optional pathspecs, in all formats of [`crate::diff::output`],
+//! and `--merge-base`. No single-commit form, no `--stdin`.
 
 use rgit_object::ObjectKind;
 
@@ -19,31 +19,69 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(code);
     }
     let usage = || usage_exit(format!("usage: {}\n{}", msg::USAGE[0], dmsg::COMMON_OPTIONS));
+    let mut merge_base = false;
+    let mut stdin = false;
     let parsed = diff::parse_args(
         &argv[1..],
         |a| match a {
             "--root" | "--no-commit-id" => Ok(true),
-            "--stdin" | "-c" | "--cc" | "-m" | "--merge-base" => {
-                Err(Die::Fatal(dmsg::not_supported(a)))
+            "--merge-base" => {
+                merge_base = true;
+                Ok(true)
             }
+            "--stdin" => {
+                stdin = true;
+                Ok(true)
+            }
+            "-c" | "--cc" | "-m" => Err(Die::Fatal(dmsg::not_supported(a))),
             _ => Ok(false),
         },
         |_| usage(),
     )?;
     let mut opts = parsed.opts;
     let mut args = parsed.args;
+    if merge_base && stdin {
+        return Err(Die::Fatal(dmsg::STDIN_WITH_MERGE_BASE.to_owned()));
+    }
+    if stdin {
+        return Err(Die::Fatal(dmsg::not_supported("--stdin")));
+    }
+    if merge_base {
+        let before = parsed.dashdash_at.unwrap_or(args.len());
+        if args[..before].iter().any(|a| a.contains("..")) {
+            return Err(Die::Fatal(dmsg::MERGE_BASE_WITH_RANGES.to_owned()));
+        }
+        if before < 2 {
+            return Err(Die::Fatal(dmsg::MERGE_BASE_TWO_COMMITS.to_owned()));
+        }
+    }
     let revs = parsed.dashdash_at.unwrap_or(args.len()).min(2);
     if revs != 2 {
         return Err(Die::Fatal(dmsg::not_supported("diff-tree with one tree-ish")));
     }
     let formats = opts.formats(false)?;
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
-    let mut trees = Vec::new();
+    if merge_base
+        && parsed.dashdash_at.unwrap_or(args.len()) > 2
+        && repo.resolve(&args[2]).is_some()
+    {
+        return Err(Die::Fatal(dmsg::MERGE_BASE_TWO_COMMITS.to_owned()));
+    }
+    let mut ids = Vec::new();
     for spec in args.drain(..2) {
         let id = repo
             .resolve(&spec)
-            .and_then(|id| repo.peel_to(id, ObjectKind::Tree))
             .ok_or_else(|| Die::Fatal(msg::bad_object(&spec)))?;
+        ids.push((spec, id));
+    }
+    if merge_base {
+        ids[0].1 = diff::single_merge_base(ctx, &mut repo, ids[0].1, ids[1].1)?;
+    }
+    let mut trees = Vec::new();
+    for (spec, id) in &ids {
+        let id = repo
+            .peel_to(*id, ObjectKind::Tree)
+            .ok_or_else(|| Die::Fatal(msg::bad_object(spec)))?;
         trees.push(id);
     }
     opts.resolve_objects(&mut repo)?;

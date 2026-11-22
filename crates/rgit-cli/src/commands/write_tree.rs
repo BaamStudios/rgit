@@ -27,11 +27,39 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     drop(parser);
     let repo = Repo::open(ctx, Mode::Required)?;
-    let (index, _) = repo.read_index()?;
     let prefix = prefix.into_inner();
-    let oid = write_tree(&repo, &index, missing_ok.get(), prefix.as_deref())?;
+    let oid = if prefix.is_none() {
+        write_tree_and_cache(&repo, missing_ok.get())?
+    } else {
+        let (index, _) = repo.read_index()?;
+        write_tree(&repo, &index, missing_ok.get(), prefix.as_deref())?
+    };
     println!("{oid}");
     Ok(0)
+}
+
+/// Writes the trees of the whole index and records them in its cache tree
+/// (written back when it changed and the index can be locked), as git does.
+fn write_tree_and_cache(repo: &Repo, missing_ok: bool) -> Result<ObjectId, Die> {
+    let index_path = repo.setup.cwd.join(repo.index_path());
+    let lock = rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options()).ok();
+    let (mut index, _) = repo.read_index()?;
+    // Check and report like a plain write first.
+    let oid = write_tree(repo, &index, missing_ok, None)?;
+    let opts = WriteTreeOptions {
+        missing_ok,
+        prefix: None,
+    };
+    let cache = rgit_commit::write_tree_cached(repo.odb(), &index, &opts)
+        .ok()
+        .and_then(|(_, c)| c);
+    if let Some(lock) = lock {
+        if cache.is_some() && index.cache_tree() != cache.as_ref() {
+            index.set_cache_tree(cache);
+            let _ = crate::switch_branch::write_index(repo, &index, lock);
+        }
+    }
+    Ok(oid)
 }
 
 /// Write the trees for `index` (or its `prefix` subdirectory) to the

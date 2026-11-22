@@ -124,6 +124,58 @@ pub fn parse_args(
 }
 
 /// The merge bases of two commits (for `A...B`).
+/// Whether an argument that is not a file may still be meant as a
+/// pathspec without `--`: it has pathspec magic or wildcards.
+pub fn looks_like_pathspec(arg: &str) -> bool {
+    arg.starts_with(':') || arg.contains(['*', '?', '[', '\\'])
+}
+
+/// Paths after the revisions without `--` must exist (or look like
+/// pathspecs): the first one is an "ambiguous argument", later ones
+/// "no such path".
+pub fn verify_paths(repo: &Repo, args: &[String]) -> Result<(), Die> {
+    for (i, arg) in args.iter().enumerate() {
+        let exists = repo.setup.work_tree.is_some()
+            && repo.setup.original_cwd.join(arg).symlink_metadata().is_ok();
+        if !exists && !looks_like_pathspec(arg) {
+            return Err(Die::Fatal(if i == 0 {
+                crate::messages::ambiguous_argument(arg)
+            } else {
+                crate::messages::no_such_path(arg)
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// `--merge-base`: the single merge base of `a` and `b`, which must be
+/// commits (or tags of commits).
+pub fn single_merge_base(
+    ctx: &Context,
+    repo: &mut Repo,
+    a: rgit_hash::ObjectId,
+    b: rgit_hash::ObjectId,
+) -> Result<rgit_hash::ObjectId, Die> {
+    use crate::messages::diff as msg;
+    let mut commits = Vec::new();
+    for id in [a, b] {
+        match repo.peel_to(id, rgit_object::ObjectKind::Commit) {
+            Some(c) => commits.push(c),
+            None => {
+                let kind = repo.object_kind(&id).map_or("object", |k| k.as_str());
+                eprintln!("{}", msg::not_a_commit(&id.to_hex(), kind));
+                return Err(Die::Fatal(msg::NO_MERGE_BASE_FOUND.to_owned()));
+            }
+        }
+    }
+    let bases = merge_bases(ctx, &commits[0], &commits[1])?;
+    match bases.len() {
+        0 => Err(Die::Fatal(msg::NO_MERGE_BASE_FOUND.to_owned())),
+        1 => Ok(bases[0]),
+        _ => Err(Die::Fatal(msg::MULTIPLE_MERGE_BASES_FOUND.to_owned())),
+    }
+}
+
 pub fn merge_bases(
     ctx: &Context,
     a: &rgit_hash::ObjectId,

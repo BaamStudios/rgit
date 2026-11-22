@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! `git diff` (Documentation/git-diff.adoc): work tree against index,
 //! `--cached`/`--staged [<commit>]`, `<commit>` against the work tree,
-//! `<commit> <commit>`, `A..B`, `A...B` and `--no-index <path> <path>`.
-//! No blob or combined diffs.
+//! `<commit> <commit>`, `A..B`, `A...B`, `--merge-base`, `<blob> <blob>`
+//! and `--no-index <path> <path>`. No combined diffs.
 
 use std::path::{Path, PathBuf};
 
@@ -28,6 +28,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let mut cached = false;
     let mut no_index = false;
+    let mut merge_base = false;
     let parsed = diff::parse_args(
         &argv[1..],
         |a| match a {
@@ -39,7 +40,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 no_index = true;
                 Ok(true)
             }
-            "--merge-base" => Err(Die::Fatal(msg::not_supported(a))),
+            "--merge-base" => {
+                merge_base = true;
+                Ok(true)
+            }
             _ => Ok(false),
         },
         |a| usage_exit(format!("{}{}", msg::invalid_option(a), usage())),
@@ -65,24 +69,41 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Revisions first, then paths.
     let split = parsed.dashdash_at.unwrap_or(parsed.args.len());
     let mut revs: Vec<ObjectId> = Vec::new();
-    let mut symmetric = false;
+    let mut names: Vec<String> = Vec::new();
+    let mut ranges = false;
     let mut paths: Vec<String> = Vec::new();
     for (i, arg) in parsed.args[..split].iter().enumerate() {
+        // A range is the only revision argument.
+        if ranges && is_range(&mut repo, arg) {
+            return Err(usage_exit(usage()));
+        }
         if let Some(r) = range(ctx, &mut repo, arg)? {
-            symmetric |= r.2;
+            if !revs.is_empty() {
+                return Err(usage_exit(usage()));
+            }
+            ranges = true;
             revs.push(r.0);
             revs.push(r.1);
+            names.extend(range_names(arg));
             continue;
         }
         match repo.resolve(arg) {
-            Some(id) if paths.is_empty() => revs.push(id),
+            Some(_) if ranges && paths.is_empty() => return Err(usage_exit(usage())),
+            Some(id) if paths.is_empty() => {
+                revs.push(id);
+                names.push(arg.clone());
+            }
             _ => {
                 if parsed.dashdash_at.is_none() {
                     let exists = |a: &str| {
-                        repo.setup.work_tree.is_some()
-                            && Path::new(a).symlink_metadata().is_ok()
+                        (repo.setup.work_tree.is_some()
+                            && repo.setup.original_cwd.join(a).symlink_metadata().is_ok())
+                            || diff::looks_like_pathspec(a)
                     };
                     if !exists(arg) {
+                        if let Some(d) = repo.resolve_diagnosis(arg) {
+                            return Err(Die::Fatal(d));
+                        }
                         return Err(Die::Fatal(if paths.is_empty() && i == revs.len() {
                             messages::ambiguous_argument(arg)
                         } else {
@@ -95,14 +116,54 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
     paths.extend(parsed.args[split..].iter().cloned());
-    let _ = symmetric;
+
+    // Blobs: exactly two of them and nothing else.
+    let blobs: Vec<usize> = (0..revs.len())
+        .filter(|&i| {
+            repo.peel_to(revs[i], ObjectKind::Tree).is_none()
+                && repo.peel_to(revs[i], ObjectKind::Blob).is_some()
+        })
+        .collect();
+    if blobs.len() > 2 {
+        return Err(Die::Fatal(msg::more_than_two_blobs(&names[blobs[2]])));
+    }
+    if !blobs.is_empty() {
+        let blob_and_file = blobs.len() == 1
+            && revs.len() == 1
+            && paths.len() == 1
+            && parsed.dashdash_at.is_none();
+        if blob_and_file && !cached && !merge_base {
+            let file = repo.setup.original_cwd.join(&paths[0]);
+            return diff_blobs(ctx, &mut repo, &mut opts, formats, &names[0], Err((&paths[0], &file)));
+        }
+        if blobs.len() != 2 || revs.len() != 2 || !paths.is_empty() || cached || merge_base {
+            return Err(usage_exit(usage()));
+        }
+        return diff_blobs(ctx, &mut repo, &mut opts, formats, &names[0], Ok(&names[1]));
+    }
+    if merge_base {
+        if ranges {
+            return Err(Die::Fatal(msg::MERGE_BASE_WITH_RANGES.to_owned()));
+        }
+        match revs.len() {
+            0 => return Err(usage_exit(format!("{}{}", msg::invalid_option("--merge-base"), usage()))),
+            1 => {
+                let head = repo
+                    .resolve("HEAD")
+                    .ok_or_else(|| Die::Fatal(msg::NO_MERGE_BASE_FOUND.to_owned()))?;
+                revs[0] = diff::single_merge_base(ctx, &mut repo, revs[0], head)?;
+            }
+            2 => revs[0] = diff::single_merge_base(ctx, &mut repo, revs[0], revs[1])?,
+            _ => return Err(usage_exit(usage())),
+        }
+    }
 
     let pathspec = diff::pathspec(ctx, &repo, &paths)?;
     let mut trees = Vec::new();
     for id in &revs {
         let t = repo
             .peel_to(*id, ObjectKind::Tree)
-            .ok_or_else(|| Die::Fatal(msg::not_supported("diffs of blobs")))?;
+            .ok_or_else(|| usage_exit(usage()))?;
         trees.push(t);
     }
     let head = if trees.is_empty() && cached {
@@ -192,6 +253,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         _ => return Err(Die::Fatal(msg::not_supported("this form of diff"))),
     };
     crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, true)?;
+    if !cached && trees.is_empty() {
+        auto_refresh_index(&repo);
+    }
     page(ctx, Some(&repo), &opts)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true)?;
     out.set_color(&opts)?;
@@ -201,6 +265,133 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let (bytes, changed) = out.render(pairs)?;
     Ok(out.finish(&bytes, changed, &opts))
+}
+
+/// `diff.autoRefreshIndex` (on by default): before comparing the index
+/// with the work tree, the cached stat data of files whose contents did not change is
+/// updated and the index written back, if it can be locked.
+fn auto_refresh_index(repo: &Repo) {
+    use rgit_worktree::stat::Status;
+    let on = repo
+        .config
+        .bool("diff.autorefreshindex")
+        .ok()
+        .flatten()
+        .unwrap_or(true);
+    if !on || repo.setup.work_tree.is_none() {
+        return;
+    }
+    let index_path = repo.setup.cwd.join(repo.index_path());
+    let Ok(lock) = rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options()) else {
+        return;
+    };
+    let Ok((mut index, mtime)) = repo.read_index() else {
+        return;
+    };
+    let Ok(checker) = repo.checker(mtime) else {
+        return;
+    };
+    let mut changed = false;
+    for pos in 0..index.len() {
+        let e = &index.entries()[pos];
+        if e.stage().is_conflict()
+            || e.flags.skip_worktree
+            || e.flags.assume_valid
+            || e.flags.intent_to_add
+            || e.mode.is_gitlink()
+        {
+            continue;
+        }
+        match checker.check(e) {
+            Ok(Status::StatOnly) => {
+                if let (Ok(Some(meta)), Some(entry)) = (checker.lstat(e.path()), index.entry_mut(pos)) {
+                    checker.refresh(entry, &meta);
+                    changed = true;
+                }
+            }
+            Ok(Status::Unchanged) if checker.is_racy(e) => changed = true,
+            _ => {}
+        }
+    }
+    if !changed {
+        return;
+    }
+    if let Some(reference) = mtime {
+        let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
+    }
+    let _ = crate::switch_branch::write_index(repo, &index, lock);
+}
+
+/// Whether `arg` is `A..B` or `A...B` with two existing ends.
+fn is_range(repo: &mut Repo, arg: &str) -> bool {
+    let Some((a, b)) = arg.split_once("..") else {
+        return false;
+    };
+    let b = b.strip_prefix('.').unwrap_or(b);
+    if a.is_empty() && b.is_empty() {
+        return false;
+    }
+    let a = if a.is_empty() { "HEAD" } else { a };
+    let b = if b.is_empty() { "HEAD" } else { b };
+    repo.resolve(a).is_some() && repo.resolve(b).is_some()
+}
+
+/// The two ends of `A..B` (an empty end is `HEAD`).
+fn range_names(arg: &str) -> [String; 2] {
+    let (a, b) = arg.split_once("..").unwrap_or((arg, ""));
+    let b = b.strip_prefix('.').unwrap_or(b);
+    let end = |s: &str| if s.is_empty() { "HEAD".to_owned() } else { s.to_owned() };
+    [end(a), end(b)]
+}
+
+/// `<blob> <blob>` and `<blob> <file>`: the blobs under the paths they
+/// were named by (`<rev>:<path>`, `:<path>`), else under their names as
+/// given; a file under its name, which a blob without a path takes too.
+fn diff_blobs(
+    ctx: &Context,
+    repo: &mut Repo,
+    opts: &mut DiffOpts,
+    formats: crate::diff::options::Formats,
+    old_name: &str,
+    new: Result<&str, (&String, &PathBuf)>,
+) -> CmdResult {
+    let blob = |repo: &mut Repo, name: &str| -> Result<(Option<String>, Side), Die> {
+        let (id, mode, path) = repo
+            .resolve_entry(name)
+            .ok_or_else(|| Die::Fatal(messages::ambiguous_argument(name)))?;
+        let id = repo.peel_to(id, ObjectKind::Blob).unwrap_or(id);
+        let side = Side {
+            mode: mode.unwrap_or(0o100644),
+            oid: id,
+            file: None,
+        };
+        Ok((path, side))
+    };
+    let (old_path, old) = blob(repo, old_name)?;
+    let (old_path, new_path, new) = match new {
+        Ok(name) => {
+            let (path, side) = blob(repo, name)?;
+            (
+                old_path.unwrap_or_else(|| old_name.to_owned()),
+                path.unwrap_or_else(|| name.to_owned()),
+                side,
+            )
+        }
+        Err((name, file)) => {
+            let side = file_side(repo.hash, file)
+                .ok_or_else(|| Die::Fatal(messages::ambiguous_argument(name)))?;
+            (old_path.unwrap_or_else(|| name.clone()), name.clone(), side)
+        }
+    };
+    let mut pair = Pair::new(new_path.into_bytes(), Some(old), Some(new));
+    pair.old_path = old_path.into_bytes();
+    opts.resolve_objects(repo)?;
+    let repo: &Repo = repo;
+    page(ctx, Some(repo), opts)?;
+    let mut out = Output::new(Some(repo), repo.hash, opts, formats, true)?;
+    out.set_color(opts)?;
+    let (bytes, changed) = out.render(vec![pair])?;
+    Ok(out.finish(&bytes, changed, opts))
 }
 
 /// Start the pager (`pager.diff`, on by default) unless the exit code is

@@ -42,6 +42,12 @@ pub const NEED_TREE: &str = "you must specify at least one tree to merge";
 pub const EMPTY_CONTRADICTS: &str = "passing trees as arguments contradicts --empty";
 pub const UNABLE_TO_WRITE_INDEX: &str = "unable to write new index file";
 
+pub const CORRUPTED_CACHE_TREE: &str = "corrupted cache-tree has entries not present in index";
+
+pub fn null_sha1_entry(path: &str) -> String {
+    format!("cache entry has null sha1: {path}")
+}
+
 /// rgit's own: features of read-tree that are not implemented yet.
 pub const PREFIX_TREES_UNSUPPORTED: &str =
     "rgit: read-tree --prefix with several trees is not implemented yet";

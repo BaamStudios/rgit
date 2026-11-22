@@ -143,7 +143,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     );
     let args = parser.parse(argv)?.args;
     drop(parser);
-    let _ = (trivial.get(), aggressive.get(), verbose.get(), quiet.get());
+    let _ = (trivial.get(), aggressive.get(), verbose.get());
 
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let mut trees = Vec::new();
@@ -239,7 +239,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             _ => None,
         };
         let plan = rgit_unpack::plan(repo.odb(), &old, &merge, wt.as_ref(), &mut opts)
-            .map_err(unpack_failed)?;
+            .map_err(|e| match e {
+                // --quiet: the refusal without its messages.
+                rgit_unpack::Error::Rejected(_) if quiet.get() > 0 => Die::Exit(128),
+                e => unpack_failed(e),
+            })?;
+        if let Merge::OneWay(t) = &merge {
+            if opts.reset && check_cache_tree() {
+                let listed = rgit_unpack::tree_entries(repo.odb(), t).map_err(unpack_failed)?;
+                if listed.len() != plan.index().len() {
+                    eprintln!("error: {}", msg::CORRUPTED_CACHE_TREE);
+                    return Err(Die::Fatal(msg::UNABLE_TO_WRITE_INDEX.into()));
+                }
+            }
+        }
         if dry_run.get() != 0 {
             return Ok(0);
         }
@@ -295,6 +308,20 @@ fn write_index(
         .unwrap_or(false);
     let opts = WriteOptions { skip_hash };
     let fail = || Die::Fatal(msg::UNABLE_TO_WRITE_INDEX.into());
+    // git refuses entries with a null object id unless GIT_ALLOW_NULL_SHA1
+    // is set, which turns the error into a warning.
+    let allow_null = std::env::var_os("GIT_ALLOW_NULL_SHA1").is_some();
+    for e in index.entries() {
+        if e.id.is_null() {
+            let m = msg::null_sha1_entry(&String::from_utf8_lossy(e.path()));
+            if allow_null {
+                eprintln!("warning: {m}");
+            } else {
+                eprintln!("error: {m}");
+                return Err(fail());
+            }
+        }
+    }
     match output {
         Some(path) => {
             let path: PathBuf = repo.setup.cwd.join(Path::new(path));
@@ -449,6 +476,15 @@ fn check_out_new(
     Ok(())
 }
 
+/// `GIT_TEST_CHECK_CACHE_TREE`: verify the cache tree before writing the
+/// index (git's test suite turns it on).
+fn check_cache_tree() -> bool {
+    std::env::var("GIT_TEST_CHECK_CACHE_TREE")
+        .ok()
+        .and_then(|v| rgit_config::value::parse_bool(Some(v.as_bytes())))
+        .unwrap_or(false)
+}
+
 /// `read-tree [<tree>]` without `-m`: the index becomes the tree (or empty)
 /// with a fully valid cache tree.
 fn read_plain(
@@ -476,8 +512,16 @@ fn read_plain(
         skip_path_check: true,
         ..AddOptions::default()
     };
+    let listed = entries.len();
     for e in entries {
         index.add(e, add).map_err(|err| Die::Fatal(err.to_string()))?;
+    }
+    // git primes the cache tree from the tree object; a tree with duplicate
+    // names then counts more entries than the index holds, which its cache
+    // tree check (on in git's test suite) reports.
+    if listed != index.len() && check_cache_tree() {
+        eprintln!("error: {}", msg::CORRUPTED_CACHE_TREE);
+        return Err(Die::Fatal(msg::UNABLE_TO_WRITE_INDEX.into()));
     }
     let tree = rgit_unpack::repair_cache_tree(&index, repo.odb());
     index.set_cache_tree(Some(tree));

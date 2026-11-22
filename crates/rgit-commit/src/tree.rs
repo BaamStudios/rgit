@@ -84,6 +84,14 @@ pub fn write_tree_cached(
     if !unmerged.is_empty() {
         return Err(WriteTreeError::Unmerged(unmerged));
     }
+    // A null object id is never valid, not even for a gitlink.
+    if let Some((path, mode, id)) = items.iter().find(|it| it.2.is_null()) {
+        return Err(WriteTreeError::MissingObject {
+            mode: *mode,
+            id: *id,
+            path: path.to_vec(),
+        });
+    }
     if !opts.missing_ok {
         for (path, mode, id) in &items {
             if *mode & 0o170000 == 0o160000 {

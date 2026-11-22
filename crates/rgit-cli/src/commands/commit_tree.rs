@@ -122,8 +122,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
 fn resolve(repo: &mut Repo, name: &str, kind: ObjectKind) -> Result<ObjectId, Die> {
     let not_valid = || Die::Fatal(msg::not_valid_object_name(name));
-    let id = repo.resolve(name).ok_or_else(not_valid)?;
-    repo.peel_to(id, kind).ok_or_else(not_valid)
+    repo.resolve_as(name, kind).ok_or_else(not_valid)
 }
 
 fn signature(resolver: &Resolver<'_>, role: Role) -> Result<Signature, Die> {

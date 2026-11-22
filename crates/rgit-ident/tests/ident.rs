@@ -177,3 +177,52 @@ fn dates() {
         "invalid date format: garbage"
     );
 }
+
+/// The committer counts as explicit (no "configured automatically" notice
+/// after `commit`) only when both its name and its address were given.
+#[test]
+fn explicit_identity() {
+    let explicit = |cfg: &str, env: &[(&str, &str)], role| {
+        let cfg = config(cfg);
+        let env = MapEnv::new(env.iter().copied());
+        Resolver::new(&cfg, &env)
+            .with_user(user("Pat", false))
+            .is_explicit(role)
+    };
+    assert!(!explicit("", &[], Committer));
+    assert!(!explicit("[user]\nname = U\n", &[], Committer));
+    assert!(!explicit("[user]\nemail = u@x\n", &[], Committer));
+    assert!(explicit("[user]\nname = U\nemail = u@x\n", &[], Committer));
+    assert!(explicit(
+        "[user]\nname = U\n",
+        &[("EMAIL", "e@x")],
+        Committer
+    ));
+    assert!(!explicit("[user]\nname = U\n", &[("EMAIL", "")], Committer));
+    assert!(!explicit(
+        "[user]\nname = U\n",
+        &[("GIT_AUTHOR_EMAIL", "a@x")],
+        Committer
+    ));
+    assert!(explicit(
+        "[user]\nname = U\n",
+        &[("GIT_AUTHOR_EMAIL", "a@x")],
+        Author
+    ));
+    assert!(explicit(
+        "[committer]\nname = C\nemail = c@x\n",
+        &[],
+        Committer
+    ));
+    assert!(!explicit(
+        "[committer]\nname = C\nemail = c@x\n",
+        &[],
+        Author
+    ));
+    assert!(explicit(
+        "",
+        &[("GIT_COMMITTER_NAME", "C"), ("GIT_COMMITTER_EMAIL", "c@x")],
+        Committer
+    ));
+    assert!(!explicit("", &[("GIT_COMMITTER_NAME", "C")], Committer));
+}
