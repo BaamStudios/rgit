@@ -234,7 +234,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 let _ = conn.write_all(b"0000");
                 let _ = conn.end_request();
             }
-            conn.close().map_err(|e| fatal(&e))?;
+            // How the server ends after the flush does not matter (git
+            // does not look at its exit status either).
+            let _ = conn.close();
             refs
         }
     };

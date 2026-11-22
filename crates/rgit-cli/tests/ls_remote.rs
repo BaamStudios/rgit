@@ -159,7 +159,7 @@ fn ls_remote_canned_v0_advertisements() {
         .write("empty.adv", &empty)
         .write("symrefs.adv", &symrefs)
         .write("bare.adv", &bare)
-        .write_executable("serve", "#!/bin/sh\nexec cat \"$ADV\"\n");
+        .write_executable("serve", "#!/bin/sh\ncat \"$ADV\"\ncat\n");
     if fx.is_skipped() {
         return;
     }

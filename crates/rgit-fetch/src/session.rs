@@ -431,8 +431,9 @@ impl Session {
                 client: Some(mut client),
                 ..
             } => {
+                // The service may end any way after the final flush.
                 client.close()?;
-                client.into_inner().close()?;
+                let _ = client.into_inner().close();
             }
             Proto::V0 { client: None, .. } => {}
         }

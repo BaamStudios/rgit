@@ -597,6 +597,7 @@ dependencies = [
  "flate2",
  "rgit-config",
  "rgit-protocol",
+ "rgit-remote",
  "rgit-trace",
  "rgit-transport",
  "rustls",
