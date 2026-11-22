@@ -119,11 +119,9 @@ impl ObjectLookup for Objects {
 ///
 /// In a linked work tree, `HEAD` and the other per-worktree references
 /// live in its own git directory and everything else in the common
-/// directory (`rgit-refs` does not split them yet, #104).
+/// directory; the store tells them apart.
 pub struct Refs {
     store: FilesStore,
-    /// The common directory's store when it differs from `store`.
-    common: Option<FilesStore>,
     git_dir: PathBuf,
     common_dir: PathBuf,
     kind: HashKind,
@@ -131,39 +129,21 @@ pub struct Refs {
 
 impl Refs {
     pub fn new(setup: &Setup, kind: HashKind) -> Refs {
-        let linked = setup.git_dir != setup.common_dir;
         Refs {
-            store: FilesStore::new(&setup.git_dir, kind),
-            common: linked.then(|| FilesStore::new(&setup.common_dir, kind)),
+            store: FilesStore::new(&setup.common_dir, kind).with_worktree(&setup.git_dir),
             git_dir: setup.git_dir.clone(),
             common_dir: setup.common_dir.clone(),
             kind,
         }
     }
 
-    fn store_for(&self, name: &str) -> &FilesStore {
-        match &self.common {
-            Some(common) if !per_worktree(name) => common,
-            _ => &self.store,
-        }
+    fn store_for(&self, _name: &str) -> &FilesStore {
+        &self.store
     }
 
     fn log_path(&self, name: &str) -> PathBuf {
-        let base = if per_worktree(name) {
-            &self.git_dir
-        } else {
-            &self.common_dir
-        };
-        base.join("logs").join(name)
+        rgit_refs::reflog::FilesReflog::new(&self.git_dir, &self.common_dir, self.kind).path(name)
     }
-}
-
-/// References that belong to one work tree.
-fn per_worktree(name: &str) -> bool {
-    !name.starts_with("refs/")
-        || name.starts_with("refs/bisect/")
-        || name.starts_with("refs/worktree/")
-        || name.starts_with("refs/rewritten/")
 }
 
 fn lookup_err(e: impl std::fmt::Display) -> LookupError {
@@ -192,33 +172,6 @@ fn parse_reflog_line(kind: HashKind, line: &str) -> Option<ReflogEntry> {
 
 impl RefLookup for Refs {
     fn resolve(&self, name: &str) -> Result<Option<RefValue>, LookupError> {
-        if self.common.is_some() {
-            // Follow symbolic references across the two stores.
-            let mut current = name.to_string();
-            for depth in 0..rgit_refs::MAX_SYMREF_DEPTH {
-                match self
-                    .store_for(&current)
-                    .read_raw(&current)
-                    .map_err(lookup_err)?
-                {
-                    Some(rgit_refs::Target::Object(oid)) => {
-                        return Ok(Some(RefValue {
-                            name: current,
-                            oid: Some(oid),
-                        }));
-                    }
-                    Some(rgit_refs::Target::Symbolic(next)) => current = next,
-                    None if depth == 0 => return Ok(None),
-                    None => {
-                        return Ok(Some(RefValue {
-                            name: current,
-                            oid: None,
-                        }));
-                    }
-                }
-            }
-            return Ok(None);
-        }
         let r = self.store.resolve(name).map_err(lookup_err)?;
         Ok(r.map(|r| RefValue {
             name: r.final_name().to_string(),

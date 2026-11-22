@@ -26,8 +26,9 @@ pub struct Refs {
     git_dir: PathBuf,
     common_dir: PathBuf,
     hash: HashKind,
-    common: FilesStore,
-    worktree: FilesStore,
+    /// The store of the common directory, which knows the per-worktree
+    /// references of a linked worktree.
+    store: FilesStore,
 }
 
 impl Refs {
@@ -37,8 +38,7 @@ impl Refs {
             git_dir: setup.git_dir.clone(),
             common_dir: setup.common_dir.clone(),
             hash,
-            common: FilesStore::new(&setup.common_dir, hash),
-            worktree: FilesStore::new(&setup.git_dir, hash),
+            store: FilesStore::new(&setup.common_dir, hash).with_worktree(&setup.git_dir),
         }
     }
 
@@ -51,12 +51,8 @@ impl Refs {
             || name.starts_with("refs/rewritten/")
     }
 
-    fn store_for(&self, name: &str) -> &FilesStore {
-        if Self::per_worktree(name) {
-            &self.worktree
-        } else {
-            &self.common
-        }
+    fn store_for(&self, _name: &str) -> &FilesStore {
+        &self.store
     }
 
     fn dir_for(&self, name: &str) -> &Path {

@@ -27,8 +27,6 @@ const NOT_YET: &[&str] = &[
     "--stop-at-non-option",
     "--stuck-long",
     "--prefix",
-    "--git-common-dir",
-    "--git-path",
     "--resolve-git-dir",
     "--path-format",
     "--local-env-vars",
@@ -439,6 +437,7 @@ impl State<'_, '_> {
         let line = match arg {
             "--git-dir" => git_dir(setup),
             "--absolute-git-dir" => setup.absolute_git_dir().display().to_string(),
+            "--git-common-dir" => git_common_dir(setup),
             "--show-toplevel" => match &setup.work_tree {
                 Some(wt) => wt.display().to_string(),
                 None => {
@@ -470,6 +469,15 @@ impl State<'_, '_> {
         let arg = args[*i].as_str();
         if let Some(step) = self.location_option(arg) {
             step?;
+            return Ok(true);
+        }
+        if arg == "--git-path" {
+            *i += 1;
+            let Some(p) = args.get(*i) else {
+                return Err(self.die(messages::option_requires_argument("--git-path")));
+            };
+            let line = git_path(self.setup, p);
+            let _ = writeln!(self.out, "{line}");
             return Ok(true);
         }
         if NOT_YET.iter().any(|o| arg == *o || arg.starts_with(&format!("{o}="))) {
@@ -759,6 +767,72 @@ fn git_dir(setup: &Setup) -> String {
     rgit_repo::path::normalize(&setup.cwd.join(&setup.git_dir))
         .display()
         .to_string()
+}
+
+/// `--git-common-dir`: the common directory, relative to the original
+/// directory when it is relative.
+fn git_common_dir(setup: &Setup) -> String {
+    from_original_cwd(setup, &setup.common_dir)
+}
+
+/// `dir` (relative to the top of the work tree, or absolute) as seen from
+/// the directory the command started in.
+fn from_original_cwd(setup: &Setup, dir: &Path) -> String {
+    if dir.is_absolute() {
+        return dir.display().to_string();
+    }
+    match &setup.prefix {
+        Some(p) => {
+            let depth = Path::new(p).components().count();
+            format!("{}{}", "../".repeat(depth), dir.display())
+        }
+        None => dir.display().to_string(),
+    }
+}
+
+/// Whether `path` (below a git directory) is shared by all worktrees and
+/// lives in the common directory (`gitrepository-layout(5)`; the table
+/// follows the `git` binary's `rev-parse --git-path`).
+fn is_common_path(path: &str) -> bool {
+    const PRIVATE: &[&str] = &[
+        "logs/HEAD",
+        "info/sparse-checkout",
+        "refs/bisect",
+        "refs/worktree",
+        "refs/rewritten",
+        "logs/refs/bisect",
+        "logs/refs/worktree",
+        "logs/refs/rewritten",
+    ];
+    const DIRS: &[&str] = &[
+        "branches", "common", "hooks", "info", "logs", "lost-found", "objects", "refs",
+        "remotes", "rr-cache", "svn", "worktrees",
+    ];
+    const FILES: &[&str] = &["config", "gc.pid", "packed-refs", "shallow"];
+    let under = |p: &str, d: &str| {
+        p == d || p.strip_prefix(d).is_some_and(|r| r.starts_with('/'))
+    };
+    if PRIVATE.iter().any(|d| under(path, d)) {
+        return false;
+    }
+    DIRS.iter().any(|d| under(path, d))
+        || FILES.iter().any(|f| path == *f || path.strip_prefix(f) == Some(".lock"))
+}
+
+/// `--git-path <path>`: `path` in the git directory or, for shared files,
+/// the common directory.
+fn git_path(setup: &Setup, path: &str) -> String {
+    let base = if is_common_path(path) {
+        &setup.common_dir
+    } else {
+        &setup.git_dir
+    };
+    let full = if base.as_os_str() == "." {
+        std::path::PathBuf::from(path)
+    } else {
+        base.join(path)
+    };
+    from_original_cwd(setup, &full)
 }
 
 /// `--show-cdup`: the way back up to the top of the work tree; the work

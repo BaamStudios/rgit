@@ -73,7 +73,7 @@ impl Prepared<'_> {
         for item in self.items.drain(..) {
             if let Some(lock) = item.lock {
                 lock.rollback();
-                prune_empty_parents(&self.store.git_dir, &item.path);
+                prune_empty_parents(&self.store.locate(&item.name).0, &item.path);
             }
         }
     }
@@ -160,11 +160,11 @@ impl PreparedTransaction for Prepared<'_> {
                     }
                     lock.rollback();
                     hooks.reflog_delete(&item.name);
-                    prune_empty_parents(&self.store.git_dir, &item.path);
+                    prune_empty_parents(&self.store.locate(&item.name).0, &item.path);
                 }
                 Action::Keep => {
                     lock.rollback();
-                    prune_empty_parents(&self.store.git_dir, &item.path);
+                    prune_empty_parents(&self.store.locate(&item.name).0, &item.path);
                 }
             }
         }
@@ -334,10 +334,9 @@ impl State<'_, '_> {
     /// reference turns out to be missing (and its old value allows that),
     /// so it is returned in [`Locked::blocked`] instead of failing here.
     fn lock(&mut self, name: &str) -> Result<Locked, LockReason> {
-        let git_dir = &self.store.git_dir;
-        let path = git_dir.join(name);
+        let path = self.store.ref_path(name);
         let prefix_file = dir_prefixes(name)
-            .any(|p| std::fs::symlink_metadata(git_dir.join(p)).is_ok_and(|m| !m.is_dir()));
+            .any(|p| std::fs::symlink_metadata(self.store.ref_path(p)).is_ok_and(|m| !m.is_dir()));
         let mut empty_dir = false;
         let mut in_the_way = prefix_file;
         if !prefix_file && std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
@@ -382,7 +381,6 @@ impl State<'_, '_> {
     /// names of the updates are known; afterwards only packed references
     /// count and the referents of symbolic references are known too.
     fn availability(&self, name: &str, include_loose: bool) -> Option<LockReason> {
-        let git_dir = &self.store.git_dir;
         let extra: &[String] = if include_loose {
             &[]
         } else {
@@ -396,7 +394,8 @@ impl State<'_, '_> {
         };
         for prefix in dir_prefixes(name) {
             let loose = include_loose
-                && std::fs::symlink_metadata(git_dir.join(prefix)).is_ok_and(|m| !m.is_dir());
+                && std::fs::symlink_metadata(self.store.ref_path(prefix))
+                    .is_ok_and(|m| !m.is_dir());
             if loose || self.packed.find(prefix).is_some() {
                 return Some(LockReason::NameConflict {
                     existing: prefix.to_owned(),
@@ -412,7 +411,7 @@ impl State<'_, '_> {
         }
         let dir_prefix = format!("{name}/");
         let loose = if include_loose {
-            find_ref_below(&git_dir.join(name), name)
+            find_ref_below(&self.store.ref_path(name), name)
         } else {
             None
         };
@@ -457,7 +456,7 @@ impl State<'_, '_> {
     fn push_item(&mut self, name: &str, update: usize, lock: Option<LockFile>) -> usize {
         self.prepared.items.push(Item {
             name: name.to_owned(),
-            path: self.store.git_dir.join(name),
+            path: self.store.ref_path(name),
             update,
             lock,
             action: Action::Keep,

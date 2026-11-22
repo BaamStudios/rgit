@@ -150,6 +150,7 @@ fn ref_store(setup: &rgit_repo::Setup, config: &ConfigSet) -> FilesStore {
         setup.format.object_format,
         options,
     )
+    .with_worktree(setup.git_dir.clone())
 }
 
 fn committer(config: &ConfigSet) -> Option<Committer> {

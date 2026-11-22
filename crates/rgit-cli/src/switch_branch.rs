@@ -73,6 +73,32 @@ pub struct Request {
     pub refuse_in_progress: bool,
 }
 
+/// `--ignore-other-worktrees` of the running `switch` / `checkout`.
+static IGNORE_OTHER_WORKTREES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Lets [`switch`] check out a branch another worktree has checked out
+/// (`--ignore-other-worktrees`).
+pub fn set_ignore_other_worktrees(on: bool) {
+    IGNORE_OTHER_WORKTREES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Refuses to check out `branch` when another worktree has it checked
+/// out (or is rebasing or bisecting it).
+fn check_other_worktrees(repo: &Repo, branch: &str) -> Result<(), Die> {
+    if IGNORE_OTHER_WORKTREES.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    let full = format!("refs/heads/{branch}");
+    match crate::worktrees::checked_out_elsewhere(&repo.setup, &repo.config, &full) {
+        Some(path) => Err(Die::Fatal(crate::messages::worktree::already_used_by(
+            branch,
+            &path.display().to_string(),
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// `switch` refuses to leave a merge, rebase, am session, cherry-pick or
 /// revert in progress (git-switch.adoc); bisecting only gets a warning.
 pub fn check_in_progress(repo: &Repo) -> Result<(), Die> {
@@ -350,6 +376,11 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
         Some(RefTarget::Symbolic(r)) => Some(r.clone()),
         _ => None,
     };
+    if let Target::Branch(name) = &req.target {
+        if old_branch.as_deref() != Some(format!("refs/heads/{name}").as_str()) {
+            check_other_worktrees(repo, name)?;
+        }
+    }
     let old_oid = store.resolve_oid("HEAD").ok().flatten();
     let new_oid = req.commit;
 

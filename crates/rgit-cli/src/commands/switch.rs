@@ -308,6 +308,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     );
     let mut args = parser.parse(argv)?.args;
     drop(parser);
+    sb::set_ignore_other_worktrees(ignore_other.get());
     let quiet = quiet.get() > 0;
     let force = force.get() || discard.get();
     let track = track.get();

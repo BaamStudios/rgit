@@ -51,7 +51,11 @@ impl FilesStore {
         let mut packed = self.packed_refs()?;
 
         let mut loose = BTreeMap::new();
-        self.collect_loose("refs", &mut loose)?;
+        self.collect_loose(&self.git_dir, "refs", &mut loose)?;
+        if self.worktree_dir.is_some() {
+            // The main worktree's own references stay where they are.
+            loose.retain(|name, _| !crate::name::is_per_worktree(name));
+        }
         let mut moved: Vec<(String, ObjectId)> = Vec::new();
         for (name, value) in loose {
             let LooseRead::Value(Target::Object(oid)) = value else {

@@ -65,6 +65,7 @@ pub fn ref_store(setup: &Setup, config: &ConfigSet) -> FilesStore {
         setup.format.object_format,
         options,
     )
+    .with_worktree(setup.git_dir.clone())
 }
 
 /// Loose objects plus packs. Alternates are not read yet.
