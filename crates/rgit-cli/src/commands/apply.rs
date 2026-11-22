@@ -1228,7 +1228,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     // The index, locked when it may be written.
     let writes_index = settings.apply && (index_wanted || settings.ita);
-    let needs_index = repo.is_some() && (index_wanted || settings.ita || !settings.file_mode);
+    // --build-fake-ancestor takes the blobs of patches without index lines
+    // (pure renames and mode changes) from the index.
+    let needs_index = repo.is_some()
+        && (index_wanted
+            || settings.ita
+            || !settings.file_mode
+            || settings.fake_ancestor.is_some());
     let mut lock = None;
     let mut index_data = None;
     let mut checker = None;

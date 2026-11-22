@@ -3,6 +3,7 @@
 //! (see CLEANROOM.md, "User-visible messages").
 
 pub mod add;
+pub mod am;
 pub mod apply;
 pub mod blame;
 pub mod branch;
@@ -29,6 +30,7 @@ pub mod interpret_trailers;
 pub mod ls_files;
 pub mod ls_remote;
 pub mod ls_tree;
+pub mod mailinfo;
 pub mod merge;
 pub mod merge_base;
 pub mod merge_file;
