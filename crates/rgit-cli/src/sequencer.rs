@@ -1348,6 +1348,7 @@ pub(crate) fn merge_with(
         repo,
         opts.renormalize,
         Some(theirs),
+        None,
     ) {
         opts.path_merge = Some(pm);
     }

@@ -261,6 +261,23 @@ pub fn rename_limit_warnings(needed: usize) -> [String; 2] {
 }
 
 /// Error texts of [`crate::Error`].
+pub const FAILURE_TO_MERGE: &str = "failure to merge";
+
+pub fn collecting_failed(trees: &[String; 3]) -> String {
+    format!(
+        "collecting merge info failed for trees {}, {}, {}",
+        trees[0], trees[1], trees[2]
+    )
+}
+
+pub fn could_not_read(id: &str) -> String {
+    format!("Could not read {id}")
+}
+
+pub fn missing_blob(id: &str) -> String {
+    format!("unable to read blob object {id}")
+}
+
 pub fn missing_object(id: &str) -> String {
     format!("unable to read object {id}")
 }

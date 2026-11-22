@@ -61,6 +61,7 @@ impl RepoPathMerge {
         repo: &Repo,
         renormalize: bool,
         theirs: Option<&ObjectId>,
+        attr_tree: Option<Option<ObjectId>>,
     ) -> Result<Rc<dyn PathMerge>, crate::Die> {
         let root = match &repo.setup.work_tree {
             Some(w) => repo.setup.cwd.join(w),
@@ -72,11 +73,24 @@ impl RepoPathMerge {
                 add_attribute_files(repo, &mut index, tree);
             }
         }
-        let snapshot = rgit_attr::snapshot(&index, repo.odb());
-        let source = Source::Snapshot {
-            root: repo.setup.work_tree.as_ref().map(|w| repo.setup.cwd.join(w)),
-            index: snapshot,
-            order: Order::WorkTreeFirst,
+        let source = match attr_tree {
+            // --attr-source, GIT_ATTR_SOURCE, attr.tree: that tree only.
+            Some(tree) => {
+                let mut t = rgit_index::Index::new(repo.hash);
+                if let Some(tree) = tree {
+                    add_attribute_files(repo, &mut t, &tree);
+                }
+                Source::Snapshot {
+                    root: None,
+                    index: rgit_attr::snapshot(&t, repo.odb()),
+                    order: Order::WorkTreeFirst,
+                }
+            }
+            None => Source::Snapshot {
+                root: repo.setup.work_tree.as_ref().map(|w| repo.setup.cwd.join(w)),
+                index: rgit_attr::snapshot(&index, repo.odb()),
+                order: Order::WorkTreeFirst,
+            },
         };
         let mut attrs = Attributes::new(&crate::attributes::options(repo), source);
         let merge = attrs.id(b"merge");

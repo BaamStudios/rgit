@@ -4,10 +4,13 @@
 //! [`rgit_merge`], write the result tree and print it with the conflicted
 //! files and the merge messages.
 //!
-//! Not supported yet: `--stdin`, the deprecated `--trivial-merge` mode,
-//! and `-X renormalize`.
+//! `--stdin` runs one merge per input line; the deprecated
+//! `--trivial-merge` mode is in `merge_tree/trivial.rs`.
 
 use std::io::Write;
+
+#[path = "merge_tree/trivial.rs"]
+mod trivial;
 
 use rgit_hash::ObjectId;
 use rgit_merge::{
@@ -80,6 +83,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ],
     );
     let args = parser.parse(argv)?.args;
+    let explicit_trivial = mode.get() == MODE_TRIVIAL;
     let mut mode = mode.get();
     if mode == 0 {
         mode = match args.len() {
@@ -109,16 +113,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         )));
     }
     if mode == MODE_TRIVIAL {
-        return Err(Die::Fatal(msg::TRIVIAL_MERGE_NOT_SUPPORTED.into()));
+        let other = argv[1..]
+            .iter()
+            .any(|a| a.starts_with('-') && a != "--trivial-merge");
+        if other && (explicit_trivial || args.len() == 3) {
+            return Err(Die::Fatal(msg::TRIVIAL_INCOMPATIBLE.into()));
+        }
+        let mut repo = Repo::open(ctx, Mode::Required)?;
+        let base = tree_arg(&mut repo, &args[0])?;
+        let ours = tree_arg(&mut repo, &args[1])?;
+        let theirs = tree_arg(&mut repo, &args[2])?;
+        let out = trivial::run(&repo, &base, &ours, &theirs)?;
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(&out);
+        let _ = stdout.flush();
+        return Ok(0);
     }
-    if stdin.get() {
-        return Err(Die::Fatal(msg::STDIN_NOT_SUPPORTED.into()));
-    }
-
     let mut repo = Repo::open(ctx, Mode::Required)?;
     let mut opts = Options {
-        branch1: args[0].as_bytes().to_vec(),
-        branch2: args[1].as_bytes().to_vec(),
         style: crate::commands::merge_file::config_style(&repo.config)?,
         allow_unrelated_histories: allow_unrelated.get(),
         renormalize: super::merge::renormalize_config(&repo.config),
@@ -128,39 +140,27 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     for x in xopts.into_inner() {
         strategy_option(&mut opts, &x)?;
     }
+    let attr_tree = crate::attributes::tree_source(ctx, &mut repo, None)?;
     opts.path_merge = Some(super::merge::attrs::RepoPathMerge::open(
         ctx,
         &repo,
         opts.renormalize,
         None,
+        attr_tree,
     )?);
 
-    let result = match merge_base {
-        Some(base) => {
-            let base_tree = tree_arg(&mut repo, &base)?;
-            let ours = tree_arg(&mut repo, &args[0])?;
-            let theirs = tree_arg(&mut repo, &args[1])?;
-            opts.ancestor = base.into_bytes();
-            rgit_merge::merge_trees(repo.odb(), &base_tree, &ours, &theirs, &opts)
-        }
-        None => {
-            let ours = commit_arg(&mut repo, &args[0])?;
-            let theirs = commit_arg(&mut repo, &args[1])?;
-            let shallow = std::fs::read_to_string(repo.setup.common_dir.join("shallow"))
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| ObjectId::from_hex(repo.hash, l.trim().as_bytes()).ok())
-                .collect();
-            let len = repo.default_abbrev();
-            let commits = ObjectCommits {
-                objects: repo.odb(),
-                shallow,
-                label: Box::new(|id| repo.abbrev(id, len).into_bytes()),
-            };
-            rgit_merge::merge_commits(repo.odb(), &commits, &ours, &theirs, &opts)
-        }
+    if stdin.get() {
+        return merge_stdin(ctx, &mut repo, &opts, name_only.get(), messages.get());
     }
-    .map_err(|e| Die::Fatal(e.to_string()))?;
+    // --quiet writes no objects: the merge keeps them in memory.
+    let result = merge_one(
+        &mut repo,
+        &opts,
+        merge_base.as_deref(),
+        &args[0],
+        &args[1],
+        quiet.get(),
+    )?;
 
     advise_submodules(ctx, &repo, &result)?;
     if quiet.get() {
@@ -216,6 +216,148 @@ pub(crate) fn apply_rename_config(config: &rgit_config::ConfigSet, opts: &mut Op
             }
         };
     }
+}
+
+/// One merge: of the trees `a` and `b` against the tree-ish `base`, or of
+/// the commits `a` and `b`.
+fn merge_one(
+    repo: &mut Repo,
+    opts: &Options,
+    base: Option<&str>,
+    a: &str,
+    b: &str,
+    in_memory: bool,
+) -> Result<MergeResult, Die> {
+    let mut opts = opts.clone();
+    opts.branch1 = a.as_bytes().to_vec();
+    opts.branch2 = b.as_bytes().to_vec();
+    let ids = match base {
+        Some(base) => {
+            opts.ancestor = base.as_bytes().to_vec();
+            [Some(tree_arg(repo, base)?), Some(tree_arg(repo, a)?), Some(tree_arg(repo, b)?)]
+        }
+        None => {
+            // Replace refs apply to the commits merged (core.useReplaceRefs).
+            let (x, y) = (commit_arg(repo, a)?, commit_arg(repo, b)?);
+            [None, Some(repo.replaced(&x)), Some(repo.replaced(&y))]
+        }
+    };
+    let repo = &*repo;
+    let memory;
+    let objects: &dyn rgit_merge::Objects = if in_memory {
+        memory = InMemory {
+            odb: repo.odb(),
+            written: std::cell::RefCell::new(std::collections::HashMap::new()),
+        };
+        &memory
+    } else {
+        repo.odb()
+    };
+    let [base, ours, theirs] = ids;
+    let (ours, theirs) = (ours.expect("resolved"), theirs.expect("resolved"));
+    match base {
+        Some(base_tree) => rgit_merge::merge_trees(objects, &base_tree, &ours, &theirs, &opts),
+        None => {
+            let shallow = std::fs::read_to_string(repo.setup.common_dir.join("shallow"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| ObjectId::from_hex(repo.hash, l.trim().as_bytes()).ok())
+                .collect();
+            let len = repo.default_abbrev();
+            let commits = ObjectCommits {
+                objects: repo.odb(),
+                shallow,
+                label: Box::new(|id| repo.abbrev(id, len).into_bytes()),
+            };
+            rgit_merge::merge_commits(objects, &commits, &ours, &theirs, &opts)
+        }
+    }
+    .map_err(merge_failed)
+}
+
+/// A merge error as git reports it.
+pub(crate) fn merge_failed(e: rgit_merge::Error) -> Die {
+    if let rgit_merge::Error::Collect(c) = &e {
+        let (missing, trees) = &**c;
+        eprintln!("error: {}", rgit_merge::messages::could_not_read(&missing.to_hex()));
+        eprintln!(
+            "error: {}",
+            rgit_merge::messages::collecting_failed(&trees.map(|t| t.to_hex()))
+        );
+    }
+    Die::Fatal(e.to_string())
+}
+
+/// Objects read from the repository, written only to memory (`--quiet`).
+struct InMemory<'a> {
+    odb: &'a rgit_odb::ObjectDatabase,
+    written: std::cell::RefCell<std::collections::HashMap<ObjectId, rgit_object::RawObject>>,
+}
+
+impl rgit_merge::Objects for InMemory<'_> {
+    fn hash_kind(&self) -> rgit_hash::HashKind {
+        self.odb.hash_kind()
+    }
+
+    fn read(&self, id: &ObjectId) -> Result<Option<rgit_object::RawObject>, String> {
+        if let Some(o) = self.written.borrow().get(id) {
+            return Ok(Some(o.clone()));
+        }
+        rgit_merge::Objects::read(self.odb, id)
+    }
+
+    fn write(&self, kind: ObjectKind, data: &[u8]) -> Result<ObjectId, String> {
+        let id = rgit_hash::hash_object(self.odb.hash_kind(), kind.as_str(), data)
+            .map_err(|e| e.to_string())?;
+        self.written
+            .borrow_mut()
+            .insert(id, rgit_object::RawObject::new(kind, data.to_vec()));
+        Ok(id)
+    }
+}
+
+/// `--stdin`: one merge per input line (`[<base> -- ]<branch1>
+/// <branch2>`), each printed as its status, the `-z` output and a NUL.
+fn merge_stdin(
+    ctx: &Context,
+    repo: &mut Repo,
+    opts: &Options,
+    name_only: bool,
+    messages: i32,
+) -> CmdResult {
+    use std::io::BufRead as _;
+    let stdin = std::io::stdin();
+    let mut line = Vec::new();
+    let mut lock = stdin.lock();
+    loop {
+        line.clear();
+        if lock.read_until(b'\n', &mut line).map_err(|e| Die::Fatal(e.to_string()))? == 0 {
+            break;
+        }
+        let text = String::from_utf8_lossy(&line);
+        let text = text.trim_end_matches(['\n', '\r']);
+        let words: Vec<&str> = text.split(' ').collect();
+        let (base, a, b) = match words.as_slice() {
+            [a, b] => (None, *a, *b),
+            [base, "--", a, b] => (Some(*base), *a, *b),
+            // git names the first word of a line with too many words.
+            [first, _, _, ..] => return Err(Die::Fatal(msg::malformed_input_line(first))),
+            _ => return Err(Die::Fatal(msg::malformed_input_line(text))),
+        };
+        let result = merge_one(repo, opts, base, a, b, false)?;
+        advise_submodules(ctx, repo, &result)?;
+        let show_messages = match messages {
+            -1 => !result.clean,
+            v => v != 0,
+        };
+        let mut out = if result.clean { b"1\0".to_vec() } else { b"0\0".to_vec() };
+        out.extend_from_slice(&render(&result, true, name_only, show_messages, repo.quote_path()));
+        out.push(b'\0');
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(&out);
+        let _ = stdout.flush();
+    }
+    Ok(0)
 }
 
 /// Why a `-X` option was not applied.

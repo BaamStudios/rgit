@@ -116,6 +116,17 @@ impl Objects for ObjectDatabase {
 pub enum Error {
     #[error("{}", messages::missing_object(&.0.to_hex()))]
     MissingObject(ObjectId),
+    /// A tree to merge is missing.
+    #[error("{}", messages::could_not_read(&.0.to_hex()))]
+    MissingTree(ObjectId),
+    /// One of the trees to merge is missing (git's messages are
+    /// [`messages::could_not_read`], [`messages::collecting_failed`] and
+    /// this error's text).
+    #[error("{}", messages::FAILURE_TO_MERGE)]
+    Collect(Box<(ObjectId, [ObjectId; 3])>),
+    /// A blob to merge is missing.
+    #[error("{}", messages::missing_blob(&.0.to_hex()))]
+    MissingBlob(ObjectId),
     #[error("{}", messages::not_a_tree(&.0.to_hex()))]
     NotATree(ObjectId),
     #[error("{}", messages::not_a_commit(&.0.to_hex()))]

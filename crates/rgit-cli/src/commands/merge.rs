@@ -50,7 +50,7 @@
 #[path = "merge/attrs.rs"]
 pub(crate) mod attrs;
 #[path = "merge/message.rs"]
-mod message;
+pub(crate) mod message;
 #[path = "merge/resolve.rs"]
 mod resolve;
 
@@ -1059,7 +1059,7 @@ impl Session<'_> {
         Ok(out)
     }
 
-    fn engine_options(&self, theirs: &Head) -> Result<rgit_merge::Options, Die> {
+    fn engine_options(&mut self, theirs: &Head) -> Result<rgit_merge::Options, Die> {
         let mut opts = rgit_merge::Options {
             branch1: b"HEAD".to_vec(),
             branch2: theirs.arg.as_bytes().to_vec(),
@@ -1082,11 +1082,13 @@ impl Session<'_> {
             }
         }
         let their_tree = self.tree_of(&theirs.commit)?;
+        let attr_tree = crate::attributes::tree_source(self.ctx, &mut self.repo, None)?;
         opts.path_merge = Some(attrs::RepoPathMerge::open(
             self.ctx,
             &self.repo,
             opts.renormalize,
             Some(&their_tree),
+            attr_tree,
         )?);
         Ok(opts)
     }
@@ -1865,7 +1867,7 @@ impl Session<'_> {
                 let path = if path.is_absolute() {
                     path.to_path_buf()
                 } else {
-                    self.repo.setup.cwd.join(path)
+                    self.repo.setup.original_cwd.join(path)
                 };
                 m = std::fs::read(&path).map_err(|e| {
                     fatal(crate::messages::commit::could_not_read_log(

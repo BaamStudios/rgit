@@ -230,6 +230,20 @@ pub const KIND_REMOTES: &str = "remote-tracking branches";
 pub const KIND_COMMITS: &str = "commits";
 pub const EARLY_PART: &str = "(early part)";
 
+// Credit lines of the merge message log.
+pub fn credit_by_one(name: &str) -> String {
+    format!("By {name}")
+}
+pub fn credit_by_two(a: &str, an: usize, b: &str, bn: usize) -> String {
+    format!("By {a} ({an}) and {b} ({bn})")
+}
+pub fn credit_by_many(a: &str, an: usize) -> String {
+    format!("By {a} ({an}) and others")
+}
+pub fn credit_via(name: &str) -> String {
+    format!("Via {name}")
+}
+
 pub fn commits_count(n: usize) -> String {
     format!(" ({n} commits)")
 }

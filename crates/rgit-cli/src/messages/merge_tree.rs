@@ -33,13 +33,23 @@ pub fn strategy_option_not_supported(opt: &str) -> String {
     format!("rgit merge-tree: -X{opt} is not supported yet")
 }
 
-pub const TRIVIAL_MERGE_NOT_SUPPORTED: &str =
-    "rgit merge-tree: --trivial-merge is not supported yet";
-pub const STDIN_NOT_SUPPORTED: &str = "rgit merge-tree: --stdin is not supported yet";
+pub const TRIVIAL_INCOMPATIBLE: &str = "--trivial-merge is incompatible with all other options";
+
+// Headings of the trivial-merge mode.
+pub const TRIVIAL_ADDED_IN_REMOTE: &str = "added in remote";
+pub const TRIVIAL_ADDED_IN_BOTH: &str = "added in both";
+pub const TRIVIAL_REMOVED_IN_REMOTE: &str = "removed in remote";
+pub const TRIVIAL_REMOVED_IN_LOCAL: &str = "removed in local";
+pub const TRIVIAL_CHANGED_IN_BOTH: &str = "changed in both";
+pub const TRIVIAL_MERGED: &str = "merged";
 
 /// `advice.submoduleMergeConflict`, naming the conflicted submodules.
 /// `steps` are the lines for submodules that are checked out
 /// ([`submodule_merge_step`]).
+pub fn malformed_input_line(line: &str) -> String {
+    format!("malformed input line: '{line}'.")
+}
+
 pub fn submodule_merge_step(path: &str, commit: &str) -> String {
     format!(
         " - go to submodule ({path}), and either merge commit {commit}\n   \

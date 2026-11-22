@@ -93,6 +93,12 @@ pub(crate) fn merge(
         quiet_conflict: false,
         rename_limit_needed: None,
     };
+    // git reads the three trees before anything else.
+    for t in [base, ours, theirs] {
+        if let Err(Error::MissingTree(missing)) = read_tree(objects, t) {
+            return Err(Error::Collect(Box::new((missing, [*base, *ours, *theirs]))));
+        }
+    }
     let tree = if ours == theirs || base == theirs {
         *ours
     } else if base == ours {
@@ -195,7 +201,7 @@ impl Engine<'_> {
             Some(raw) if raw.kind == ObjectKind::Blob => Ok(raw.data),
             Some(_) => Err(Error::Corrupt(*id, "not a blob".into())),
             None if *id == self.objects.hash_kind().empty_blob() => Ok(Vec::new()),
-            None => Err(Error::MissingObject(*id)),
+            None => Err(Error::MissingBlob(*id)),
         }
     }
 
@@ -854,7 +860,7 @@ pub(crate) fn read_tree(
         Some(raw) if raw.kind == ObjectKind::Tree => raw,
         Some(_) => return Err(Error::NotATree(*id)),
         None if *id == objects.hash_kind().empty_tree() => return Ok(Vec::new()),
-        None => return Err(Error::MissingObject(*id)),
+        None => return Err(Error::MissingTree(*id)),
     };
     let mut out = Vec::new();
     for item in TreeIter::new(objects.hash_kind(), &raw.data) {
