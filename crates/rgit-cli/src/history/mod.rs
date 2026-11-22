@@ -154,6 +154,8 @@ impl Repo<'_> {
 struct Commits<'r, 'a> {
     repo: &'r Repo<'a>,
     grep: Option<CommitGrep>,
+    /// Patch ids for `--cherry-pick` and `--cherry-mark`.
+    patch_ids: Option<crate::patch_id::CommitIds<'r>>,
 }
 
 impl CommitSource for Commits<'_, '_> {
@@ -181,6 +183,17 @@ impl CommitSource for Commits<'_, '_> {
         };
         let (_, raw) = self.repo.read_commit(id).ok_or(*id)?;
         Ok(grep.matches(&raw))
+    }
+
+    fn patch_equivalent(
+        &mut self,
+        left: &[ObjectId],
+        right: &[ObjectId],
+    ) -> Result<std::collections::HashSet<ObjectId>, ObjectId> {
+        Ok(match &self.patch_ids {
+            Some(ids) => ids.equivalent(left, right),
+            None => std::collections::HashSet::new(),
+        })
     }
 }
 
@@ -345,11 +358,20 @@ pub fn walk_with_parents(
     Ok(walked.commits.into_iter().zip(walked.parents).collect())
 }
 
+/// The commits `rev-list <args>` lists, in walk order, each with its
+/// `--cherry-mark` mark (an equivalent change on the other side).
+pub fn walk_marked(ctx: &Context, args: &[String]) -> Result<Vec<(ObjectId, bool)>, Die> {
+    let walked = walk_args(ctx, args)?;
+    Ok(walked.commits.into_iter().zip(walked.same).collect())
+}
+
 /// The result of [`walk_args`].
 struct Walked {
     commits: Vec<ObjectId>,
     /// The parents of each commit as the walk read them.
     parents: Vec<Vec<ObjectId>>,
+    /// `--cherry-mark`: each commit has an equivalent on the other side.
+    same: Vec<bool>,
     other: Vec<(Vec<u8>, ObjectKind)>,
     /// A negative commit limited the walk.
     limited: bool,
@@ -427,14 +449,28 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
     let limited = resolved.commits.iter().any(|c| c.1);
     let unsorted = opts.walk.no_walk == Some(rgit_revwalk::walk::NoWalk::Unsorted);
-    let mut walk = Walk::new(Commits { repo: &repo, grep }, opts.walk.clone());
+    let cherry_repo = if opts.walk.cherry_pick || opts.walk.cherry_mark {
+        Some(crate::repository::Repo::open(ctx, Mode::Required)?)
+    } else {
+        None
+    };
+    let mut walk = Walk::new(
+        Commits {
+            repo: &repo,
+            grep,
+            patch_ids: cherry_repo.as_ref().map(crate::patch_id::CommitIds::new),
+        },
+        opts.walk.clone(),
+    );
     for (id, negative, side) in &resolved.commits {
         walk.push_side(id, *negative, *side).map_err(walk_error)?;
     }
     let mut commits = Vec::new();
     let mut parents = Vec::new();
+    let mut same = Vec::new();
     while let Some(s) = walk.next_shown().map_err(walk_error)? {
         commits.push(s.id);
+        same.push(s.same);
         parents.push(
             walk.parents(&s.id)
                 .map(<[ObjectId]>::to_vec)
@@ -444,6 +480,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     Ok(Walked {
         commits,
         parents,
+        same,
         other,
         limited,
         unsorted,
@@ -558,12 +595,16 @@ impl Printer<'_, '_> {
     }
 
     /// The mark before a commit name: `-` for boundary commits, `<`/`>`
-    /// with `--left-right`.
+    /// with `--left-right`, `=`/`+` with `--cherry-mark`.
     fn mark(&self, s: &Shown) -> &'static str {
         if s.boundary {
             "-"
+        } else if self.opts.walk.cherry_mark && s.same {
+            "="
         } else if self.opts.left_right {
             if s.side == Some(Side::Left) { "<" } else { ">" }
+        } else if self.opts.walk.cherry_mark {
+            "+"
         } else {
             ""
         }
@@ -715,6 +756,8 @@ impl Printer<'_, '_> {
         };
         let mark = if s.boundary {
             b'-'
+        } else if s.same {
+            b'='
         } else if s.side == Some(Side::Left) {
             b'<'
         } else {
@@ -935,7 +978,21 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         walk_opts.skip = 0;
         walk_opts.reverse = false;
     }
-    let mut walk = Walk::new(Commits { repo, grep }, walk_opts);
+    let cherry_repo = if walk_opts.cherry_pick || walk_opts.cherry_mark {
+        Some(crate::repository::Repo::open(ctx, Mode::Required)?)
+    } else {
+        None
+    };
+    let patch_ids = (walk_opts.cherry_pick || walk_opts.cherry_mark)
+        .then(|| crate::patch_id::CommitIds::new(cherry_repo.as_ref().expect("opened")));
+    let mut walk = Walk::new(
+        Commits {
+            repo,
+            grep,
+            patch_ids,
+        },
+        walk_opts,
+    );
     for (id, negative, side) in &resolved.commits {
         walk.push_side(id, *negative, *side).map_err(walk_error)?;
     }
@@ -1026,10 +1083,12 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     if bisecting {
         return run_bisect(&mut p, &mut walk);
     }
-    let (mut left, mut right) = (0usize, 0usize);
+    let (mut left, mut right, mut same) = (0usize, 0usize, 0usize);
     while let Some(s) = walk.next_shown().map_err(walk_error)? {
         if opts.count {
-            if s.side == Some(Side::Left) {
+            if opts.walk.cherry_mark && s.same {
+                same += 1;
+            } else if s.side == Some(Side::Left) {
                 left += 1;
             } else {
                 right += 1;
@@ -1039,10 +1098,11 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         p.commit(&walk, &s)?;
     }
     if opts.count {
-        let text = if opts.left_right {
-            format!("{left}\t{right}\n")
-        } else {
-            format!("{}\n", left + right)
+        let text = match (opts.left_right, opts.walk.cherry_mark) {
+            (true, true) => format!("{left}\t{right}\t{same}\n"),
+            (true, false) => format!("{left}\t{right}\n"),
+            (false, true) => format!("{}\t{same}\n", left + right),
+            (false, false) => format!("{}\n", left + right),
         };
         p.out.extend_from_slice(text.as_bytes());
     }
@@ -1091,6 +1151,7 @@ fn run_bisect(p: &mut Printer<'_, '_>, walk: &mut Walk<Commits<'_, '_>>) -> Resu
                 id: cands[i].id,
                 boundary: false,
                 side: None,
+                same: false,
             };
             p.commit(walk, &s)?;
         }
@@ -1123,6 +1184,7 @@ fn run_bisect(p: &mut Printer<'_, '_>, walk: &mut Walk<Commits<'_, '_>>) -> Resu
             id: cands[best].id,
             boundary: false,
             side: None,
+            same: false,
         };
         p.commit(walk, &s)?;
     }

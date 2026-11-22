@@ -5,7 +5,7 @@
 //!
 //! - Choosing the commits: `<upstream>..<branch>` without merges, oldest
 //!   first, dropping commits whose change is already upstream (patch
-//!   equivalence, [`patch_id`]) unless `--reapply-cherry-picks`, and
+//!   equivalence, [`crate::patch_id`]) unless `--reapply-cherry-picks`, and
 //!   commits that start empty with `--no-keep-empty`; `--onto`,
 //!   `--keep-base`, `--root`, `--fork-point` and the configured upstream;
 //! - "up to date" and fast-forward detection, `--force-rebase`;
@@ -39,7 +39,6 @@
 //! [`edit_todo`] are the entry points for `git rebase` and
 //! `git pull --rebase`.
 
-pub(crate) mod patch_id;
 pub(crate) mod todo;
 
 use std::collections::HashSet;
@@ -1372,30 +1371,16 @@ fn todo_list(
             ],
         )?;
         if !theirs.is_empty() {
-            let mut ours: Vec<(ObjectId, Vec<u8>, Vec<_>)> = Vec::new();
-            for c in &commits {
-                if let Some(ch) = patch_id::changes(repo, c) {
-                    ours.push((*c, patch_id::path_key(&ch), ch));
-                }
-            }
-            let keys: HashSet<&[u8]> = ours.iter().map(|(_, k, _)| k.as_slice()).collect();
-            let mut full: HashSet<Vec<u8>> = HashSet::new();
-            for t in &theirs {
-                let Some(ch) = patch_id::changes(repo, t) else {
-                    continue;
-                };
-                if ch.is_empty() || !keys.contains(patch_id::path_key(&ch).as_slice()) {
-                    continue;
-                }
-                full.insert(patch_id::patch_key(repo, &ch));
-            }
-            if !full.is_empty() {
-                for (c, _, ch) in &ours {
-                    if !ch.is_empty() && full.contains(&patch_id::patch_key(repo, ch)) {
-                        skipped.insert(*c);
-                    }
-                }
-            }
+            // Commits without changes never match.
+            let ids = crate::patch_id::CommitIds::new(repo);
+            let changing = |list: &[ObjectId]| -> Vec<ObjectId> {
+                list.iter()
+                    .copied()
+                    .filter(|c| ids.header_key(c).is_some_and(|k| !k.is_empty()))
+                    .collect()
+            };
+            let same = ids.equivalent(&changing(&commits), &changing(&theirs));
+            skipped.extend(commits.iter().filter(|c| same.contains(c)));
         }
     }
 

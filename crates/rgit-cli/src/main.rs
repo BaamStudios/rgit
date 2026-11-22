@@ -24,6 +24,7 @@ mod hooks;
 mod messages;
 mod objects;
 mod pager;
+mod patch_id;
 mod push;
 mod quote;
 mod rebase;

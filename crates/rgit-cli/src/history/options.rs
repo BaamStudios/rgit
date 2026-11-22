@@ -393,8 +393,24 @@ impl Options {
                 }
                 "--boundary" => o.walk.boundary = true,
                 "--left-right" => o.left_right = true,
-                "--left-only" => o.walk.left_only = true,
-                "--right-only" => o.walk.right_only = true,
+                "--left-only" => {
+                    if o.walk.right_only {
+                        return Err(Die::Fatal(msg::cannot_be_used_together(
+                            "--left-only",
+                            "--right-only/--cherry",
+                        )));
+                    }
+                    o.walk.left_only = true;
+                }
+                "--right-only" => {
+                    if o.walk.left_only {
+                        return Err(Die::Fatal(msg::cannot_be_used_together(
+                            "--right-only",
+                            "--left-only",
+                        )));
+                    }
+                    o.walk.right_only = true;
+                }
                 "--ancestry-path" => o.walk.ancestry_path = true,
                 "--merges" => o.walk.min_parents = Some(2),
                 "--no-merges" => o.walk.max_parents = Some(1),
@@ -419,8 +435,36 @@ impl Options {
                 }
                 "--all-match" => o.grep.all_match = true,
                 "--invert-grep" => o.grep.invert = true,
-                "--cherry-mark" | "--cherry-pick" | "--cherry" => {
-                    return Err(Die::Fatal(msg::not_supported(a)));
+                "--cherry-mark" => {
+                    if o.walk.cherry_pick {
+                        return Err(Die::Fatal(msg::cannot_be_used_together(
+                            "--cherry-mark",
+                            "--cherry-pick",
+                        )));
+                    }
+                    o.walk.cherry_mark = true;
+                }
+                // `--right-only --cherry-mark --no-merges`.
+                "--cherry" => {
+                    if o.walk.left_only {
+                        return Err(Die::Fatal(msg::cannot_be_used_together(
+                            "--cherry",
+                            "--left-only",
+                        )));
+                    }
+                    o.walk.right_only = true;
+                    o.walk.cherry_mark = true;
+                    o.walk.cherry_pick = false;
+                    o.walk.max_parents = Some(1);
+                }
+                "--cherry-pick" => {
+                    if o.walk.cherry_mark {
+                        return Err(Die::Fatal(msg::cannot_be_used_together(
+                            "--cherry-pick",
+                            "--cherry-mark",
+                        )));
+                    }
+                    o.walk.cherry_pick = true;
                 }
                 "--abbrev-commit" => o.abbrev_commit = true,
                 "--no-abbrev-commit" => o.abbrev_commit = false,
