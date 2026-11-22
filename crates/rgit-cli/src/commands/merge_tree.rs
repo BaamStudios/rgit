@@ -121,12 +121,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         branch2: args[1].as_bytes().to_vec(),
         style: crate::commands::merge_file::config_style(&repo.config)?,
         allow_unrelated_histories: allow_unrelated.get(),
+        renormalize: super::merge::renormalize_config(&repo.config),
         ..Options::default()
     };
     apply_rename_config(&repo.config, &mut opts);
     for x in xopts.into_inner() {
         strategy_option(&mut opts, &x)?;
     }
+    opts.path_merge = Some(super::merge::attrs::RepoPathMerge::open(
+        ctx,
+        &repo,
+        opts.renormalize,
+        None,
+    )?);
 
     let result = match merge_base {
         Some(base) => {
@@ -215,7 +222,8 @@ pub(crate) fn apply_rename_config(config: &rgit_config::ConfigSet, opts: &mut Op
 pub(crate) enum StrategyOptionError {
     /// git does not know it.
     Unknown,
-    /// rgit does not implement it yet.
+    /// rgit does not implement it yet (none at the moment).
+    #[allow(dead_code)]
     Unsupported,
 }
 
@@ -230,7 +238,6 @@ fn strategy_option(opts: &mut Options, x: &str) -> Result<(), Die> {
 /// Applies one `-X` option to the merge options (shared with `merge`).
 pub(crate) fn apply_strategy_option(opts: &mut Options, x: &str) -> Result<(), StrategyOptionError> {
     let unknown = || StrategyOptionError::Unknown;
-    let unsupported = || StrategyOptionError::Unsupported;
     let (name, value) = match x.split_once('=') {
         Some((n, v)) => (n, Some(v)),
         None => (x, None),
@@ -265,7 +272,8 @@ pub(crate) fn apply_strategy_option(opts: &mut Options, x: &str) -> Result<(), S
         ("ignore-all-space", None) => opts.whitespace.all = true,
         ("ignore-space-at-eol", None) => opts.whitespace.at_eol = true,
         ("ignore-cr-at-eol", None) => opts.whitespace.cr_at_eol = true,
-        ("renormalize" | "no-renormalize", None) => return Err(unsupported()),
+        ("renormalize", None) => opts.renormalize = true,
+        ("no-renormalize", None) => opts.renormalize = false,
         ("subtree", None) => opts.subtree = Subtree::Guess,
         ("subtree", Some(p)) => opts.subtree = Subtree::Path(p.as_bytes().to_vec()),
         _ => return Err(unknown()),
@@ -314,12 +322,27 @@ pub(crate) fn advise_submodules(ctx: &Context, repo: &Repo, result: &MergeResult
             eprintln!("{w}");
         }
     }
-    let paths: Vec<String> = result
-        .messages
-        .iter()
-        .filter(|m| m.kind == MessageKind::SubmoduleNotInitialized)
-        .map(|m| String::from_utf8_lossy(&m.paths[0]).into_owned())
-        .collect();
+    let mut paths: Vec<String> = Vec::new();
+    let mut steps = String::new();
+    for m in &result.messages {
+        let path = String::from_utf8_lossy(&m.paths[0]).into_owned();
+        match m.kind {
+            MessageKind::SubmoduleNotInitialized => paths.push(path),
+            MessageKind::SubmoduleConflict => {
+                let theirs = result
+                    .conflicts
+                    .iter()
+                    .find(|c| c.path == m.paths[0])
+                    .and_then(|c| c.stages[2]);
+                if let Some(v) = theirs {
+                    let hex = v.oid.to_hex();
+                    steps.push_str(&msg::submodule_merge_step(&path, &hex[..7.min(hex.len())]));
+                }
+                paths.push(path);
+            }
+            _ => {}
+        }
+    }
     if paths.is_empty() {
         return Ok(());
     }
@@ -327,7 +350,7 @@ pub(crate) fn advise_submodules(ctx: &Context, repo: &Repo, result: &MergeResult
     advisor
         .advise(
             rgit_messages::Advice::SubmoduleMergeConflict,
-            &msg::submodule_merge_conflict_advice(&paths.join(" ")),
+            &msg::submodule_merge_conflict_advice(&paths.join(" "), &steps),
         )
         .map_err(Die::Fatal)
 }

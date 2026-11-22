@@ -38,12 +38,21 @@ pub const TRIVIAL_MERGE_NOT_SUPPORTED: &str =
 pub const STDIN_NOT_SUPPORTED: &str = "rgit merge-tree: --stdin is not supported yet";
 
 /// `advice.submoduleMergeConflict`, naming the conflicted submodules.
-pub fn submodule_merge_conflict_advice(paths: &str) -> String {
+/// `steps` are the lines for submodules that are checked out
+/// ([`submodule_merge_step`]).
+pub fn submodule_merge_step(path: &str, commit: &str) -> String {
+    format!(
+        " - go to submodule ({path}), and either merge commit {commit}\n   \
+         or update to an existing commit which has merged those changes\n"
+    )
+}
+
+pub fn submodule_merge_conflict_advice(paths: &str, steps: &str) -> String {
     format!(
         "Recursive merging with submodules currently only supports trivial cases.
 Please manually handle the merging of each conflicted submodule.
 This can be accomplished with the following steps:
- - come back to superproject and run:
+{steps} - come back to superproject and run:
 
       git add {paths}
 

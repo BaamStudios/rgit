@@ -134,6 +134,12 @@ pub fn unknown_strategy(name: &str, custom: &[String]) -> String {
 /// Custom strategies are programs named this followed by the strategy.
 pub const STRATEGY_PROGRAM_PREFIX: &str = "git-merge-";
 
+// Merge attributes and drivers.
+pub fn invalid_marker_size(v: &str) -> String {
+    format!("invalid marker-size '{v}', expecting an integer")
+}
+pub const FAILED_INTERNAL_MERGE: &str = "failed to execute internal merge";
+
 // Trying several strategies.
 pub fn trying_strategy(name: &str) -> String {
     format!("Trying merge strategy {name}...")

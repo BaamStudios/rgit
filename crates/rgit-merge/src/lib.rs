@@ -23,7 +23,7 @@
 //!   without a base); binary files keep our version; the executable bit
 //!   is merged on its own;
 //! - symbolic links and submodules changed on both sides: our version, in
-//!   conflict;
+//!   conflict (but see the submodule fast-forward below);
 //! - changed on one side and deleted on the other: the changed version
 //!   ("CONFLICT (modify/delete)");
 //! - different types (file, link, submodule) on the two sides: the regular
@@ -56,11 +56,18 @@
 //! and the base into our tree's shape first (`-s subtree`, `-X
 //! subtree=<path>`).
 //!
+//! [`Options::path_merge`] supplies what depends on the repository: the
+//! merge driver of a path (`text`, `binary`, `union` or a custom driver)
+//! and its `conflict-marker-size`, renormalization ([`Options::renormalize`];
+//! a file whose change was only the normalization counts as unchanged)
+//! and the history of checked-out submodules (a submodule whose commit
+//! on one side descends from the other's is fast-forwarded).
+//! `-X ours`/`-X theirs` also pick a side of conflicting symbolic links.
+//!
 //! Not implemented yet: rename caching across a sequence of picks (a
 //! performance feature), some reports of directory rename splits when
-//! both sides renamed the same files, merge attributes and drivers (#153), merging
-//! submodule histories (a submodule changed on both sides is always
-//! reported as not checked out), `merge.renormalize`.
+//! both sides renamed the same files, submodule merge resolutions
+//! suggested from merge commits in the submodule.
 
 mod engine;
 mod history;
@@ -123,6 +130,67 @@ pub enum Error {
     /// [`Options::allow_unrelated_histories`] is off.
     #[error("{}", messages::UNRELATED_HISTORIES)]
     UnrelatedHistories,
+    /// A custom merge driver failed (it could not run, or it was killed).
+    #[error("{0}")]
+    Driver(String),
+}
+
+/// The merge driver of a path (the `merge` attribute, gitattributes(5)
+/// "Performing a three-way merge").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Driver {
+    /// The built-in three-way merge with conflict markers.
+    Text,
+    /// Our version, in conflict.
+    Binary,
+    /// The three-way merge taking the lines of both sides.
+    Union,
+    /// A configured custom driver, by name.
+    Custom(Vec<u8>),
+}
+
+/// What a custom merge driver works on.
+#[derive(Debug, Clone, Copy)]
+pub struct DriverInput<'a> {
+    pub path: &'a [u8],
+    pub base: &'a [u8],
+    pub ours: &'a [u8],
+    pub theirs: &'a [u8],
+    /// The conflict marker size.
+    pub marker_size: usize,
+    pub base_label: &'a [u8],
+    pub ours_label: &'a [u8],
+    pub theirs_label: &'a [u8],
+}
+
+/// Per-path merge settings that come from attributes and configuration,
+/// provided by the caller.
+pub trait PathMerge: std::fmt::Debug {
+    /// The driver of `path` and its `conflict-marker-size` (`None`: the
+    /// default). `inner` for the merges that build a virtual merge base
+    /// (the driver's `recursive` setting). A custom driver is only
+    /// returned when it is configured.
+    fn driver(&self, path: &[u8], inner: bool) -> (Driver, Option<usize>);
+    /// Runs the custom driver `name`: the merged content and whether it
+    /// merged cleanly; an error when the driver could not be run or was
+    /// killed.
+    fn run(&self, name: &[u8], input: &DriverInput<'_>) -> Result<(Vec<u8>, bool), String>;
+    /// The content `data` of `path` checked out and checked in again
+    /// (`merge.renormalize`).
+    fn renormalize(&self, _path: &[u8], data: Vec<u8>) -> Vec<u8> {
+        data
+    }
+    /// Whether commit `ancestor` is an ancestor of (or equal to)
+    /// `descendant` in the submodule at `path`; `None` when the
+    /// submodule is not checked out (or lacks one of the commits).
+    fn submodule_is_ancestor(
+        &self,
+        _path: &[u8],
+        _ancestor: &ObjectId,
+        _descendant: &ObjectId,
+    ) -> Option<bool> {
+        None
+    }
 }
 
 /// Options of a merge.
@@ -168,6 +236,13 @@ pub struct Options {
     /// Shift their tree and the base to our tree's shape first (`-s
     /// subtree`, `-X subtree=<path>`).
     pub subtree: Subtree,
+    /// Merge attributes and drivers of paths; `None` merges every file
+    /// with the built-in text driver.
+    pub path_merge: Option<std::rc::Rc<dyn PathMerge>>,
+    /// Normalize the three versions of a file with
+    /// [`PathMerge::renormalize`] before merging them (`-X renormalize`,
+    /// `merge.renormalize`).
+    pub renormalize: bool,
 }
 
 /// What a merge does with a path the other side added to a directory
@@ -204,6 +279,8 @@ impl Default for Options {
             directory_renames: DirectoryRenames::Conflict,
             whitespace: Whitespace::default(),
             subtree: Subtree::None,
+            path_merge: None,
+            renormalize: false,
         }
     }
 }
@@ -252,6 +329,8 @@ pub enum MessageKind {
     FileInTheWay,
     DirectoryRenameSkipped,
     RenameCollision,
+    SubmoduleFastForward,
+    SubmoduleConflict,
 }
 
 impl MessageKind {
@@ -273,6 +352,8 @@ impl MessageKind {
             MessageKind::FileInTheWay => messages::TYPE_FILE_IN_THE_WAY,
             MessageKind::DirectoryRenameSkipped => messages::TYPE_DIRECTORY_RENAME_SKIPPED,
             MessageKind::RenameCollision => messages::TYPE_RENAME_COLLISION,
+            MessageKind::SubmoduleFastForward => messages::TYPE_SUBMODULE_FAST_FORWARD,
+            MessageKind::SubmoduleConflict => messages::TYPE_SUBMODULE,
         }
     }
 }
