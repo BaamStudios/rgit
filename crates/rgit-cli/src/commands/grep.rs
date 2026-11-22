@@ -442,6 +442,9 @@ struct Attrs<'a> {
     funcnames: HashMap<Vec<u8>, FuncName>,
     default_funcname: FuncName,
     textconv: bool,
+    /// Outside a repository with `--attr-source` / `GIT_ATTR_SOURCE` and
+    /// the attributes needed: fatal at the first file, as in git.
+    no_repo_source: bool,
 }
 
 /// What the attributes say about one path.
@@ -599,6 +602,9 @@ impl Grepper<'_> {
 
     /// Search `data` of `path` shown as `name`.
     fn search(&mut self, name: &[u8], path: Option<&[u8]>, data: &[u8]) -> Result<(), Die> {
+        if path.is_some() && self.attrs.no_repo_source {
+            return Err(Die::Fatal(msg::ATTR_SOURCE_WITHOUT_REPO.into()));
+        }
         let info = match path {
             Some(p) => self.attrs.info(p),
             None => PathInfo {
@@ -700,6 +706,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let (expr, patterns) = crate::grep::pattern::parse(&args.tokens).map_err(Die::Fatal)?;
 
+    // `--no-index` searches the directory the command started in, not the
+    // top of a repository it happens to be in.
+    let start_dir = std::env::current_dir().ok();
     let repo = Repo::open_gently(ctx)?;
     let config = match &repo {
         Some(r) => r.config.clone(),
@@ -740,6 +749,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let utf8 = crate::grep::pattern::utf8_locale();
     let mut atoms = Vec::new();
     for p in &patterns {
+        // Only `-P` takes a NUL byte (which can only come from `-f`).
+        if syn != Syntax::Perl && p.contains('\0') {
+            return Err(Die::Fatal(msg::NUL_IN_PATTERN.into()));
+        }
         let atom = Atom::new(p, syn, args.icase, args.word, utf8)
             .map_err(|reason| Die::Fatal(msg::bad_pattern(p, &reason)))?;
         atoms.push(atom);
@@ -787,7 +800,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     if no_index {
-        return run_no_index(ctx, &args, &config, opts, colors, &matcher, open_pager);
+        let outside = repo.is_none();
+        if let Some(dir) = start_dir.filter(|_| !outside) {
+            std::env::set_current_dir(&dir).map_err(|e| {
+                Die::Fatal(crate::messages::cannot_chdir(
+                    &dir.display().to_string(),
+                    &crate::global::strerror(&e),
+                ))
+            })?;
+        }
+        return run_no_index(ctx, &args, &config, opts, colors, &matcher, open_pager, outside);
     }
     let mut repo = repo.expect("repository");
     let prefix = repo.prefix();
@@ -931,6 +953,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             funcnames: HashMap::new(),
             default_funcname: FuncName::Default,
             textconv: args.textconv,
+            no_repo_source: false,
         },
         spec_attrs: spec_tree
             .map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t))),
@@ -1131,7 +1154,14 @@ fn run_no_index(
     colors: Option<Colors>,
     matcher: &Matcher,
     open_pager: Option<String>,
+    outside: bool,
 ) -> CmdResult {
+    // git reads the attributes of every file unless `-a` makes the `diff`
+    // attribute irrelevant (`--textconv` and `-W` still need it); outside a
+    // repository an attribute source is fatal then.
+    let no_repo_source = outside
+        && (ctx.attr_source.is_some() || std::env::var_os("GIT_ATTR_SOURCE").is_some())
+        && (!opts.text || args.textconv || opts.function_context);
     let split = args.dashdash.unwrap_or(args.rest.len());
     if args.dashdash.is_some() && split > 0 {
         return Err(Die::Fatal(msg::NO_INDEX_WITH_REVS.into()));
@@ -1198,6 +1228,7 @@ fn run_no_index(
             funcnames: HashMap::new(),
             default_funcname: FuncName::Default,
             textconv: false,
+            no_repo_source,
         },
         spec_attrs: None,
     };

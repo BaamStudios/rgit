@@ -226,6 +226,8 @@ fn paths_depth_and_trees() {
             &["--full-name", "-n", "-e", "test", "HEAD"],
             &["unusual"],
             &["vvv", ".."],
+            &["--no-index", "vvv"],
+            &["--no-index", "-l", "vvv", "a"],
             &["vvv", "HEAD", "--", ".."],
             &["-l", "-e", "test", "-e", "vvv", "--", "../v", "a"],
             &["-h", "vvv"],
@@ -528,4 +530,48 @@ fn attribute_pathspecs() {
         argv.extend_from_slice(args);
         fx.compare(&argv).output_only().run();
     }
+}
+
+/// A NUL byte in a pattern from `-f` is fatal unless the pattern is a
+/// Perl one (t7816).
+#[test]
+fn nul_in_pattern_file() {
+    let mut fx = fixture().write("nul-pattern", b"y\0f");
+    for args in [
+        &["-f", "nul-pattern", "bin"][..],
+        &["-F", "-f", "nul-pattern", "bin"],
+        &["-i", "-f", "nul-pattern", "bin"],
+        &["-E", "-f", "nul-pattern", "bin"],
+    ] {
+        let mut argv = vec!["grep"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).env("LC_ALL", "C").output_only().run();
+    }
+}
+
+/// Outside a repository an attribute source is fatal as soon as git reads
+/// the attributes of a file (t0003 "diff without repository with attr
+/// source"); `-a` alone does not read them.
+#[test]
+fn attr_source_without_repository() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .write("file", "foo\n");
+    for args in [
+        &["--no-index", "foo", "file"][..],
+        &["--no-index", "-l", "nomatch", "file"],
+        &["--no-index", "-a", "foo", "file"],
+        &["--no-index", "-a", "-W", "foo", "file"],
+        &["--no-index", "-a", "--textconv", "foo", "file"],
+    ] {
+        let mut argv = vec!["grep"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv)
+            .env("GIT_ATTR_SOURCE", "HEAD")
+            .output_only()
+            .run();
+    }
+    fx.compare(["--attr-source=HEAD", "grep", "--no-index", "foo", "file"])
+        .output_only()
+        .run();
 }
