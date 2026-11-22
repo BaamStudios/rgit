@@ -145,11 +145,31 @@ pub fn different(up: &str) -> String {
 }
 pub const HINT_AHEAD_BEHIND: &str = "use \"git status --ahead-behind\" for details";
 
-/// `--show-stash` after the long format.
-pub fn stash_entries(n: usize) -> String {
+pub const HELP_COLUMN: &str = "list untracked files in columns";
+pub const HELP_VERBOSE: &str = "be verbose";
+
+/// `Your stash currently has <n> entry|entries`.
+pub fn stash_count(n: usize) -> String {
     if n == 1 {
-        "Your stash currently has 1 entry\n".to_owned()
+        "Your stash currently has 1 entry".to_owned()
     } else {
-        format!("Your stash currently has {n} entries\n")
+        format!("Your stash currently has {n} entries")
+    }
+}
+
+/// The `advice.statusUoption` text: how long looking for untracked files
+/// took (`cached`: with the untracked cache and fsmonitor).
+pub fn untracked_delay(seconds: f64, cached: bool) -> String {
+    if cached {
+        format!(
+            "It took {seconds:.2} seconds to enumerate untracked files,\n\
+             but the results were cached, and subsequent runs may be faster.\n\
+             See 'git help status' for information on how to improve this."
+        )
+    } else {
+        format!(
+            "It took {seconds:.2} seconds to enumerate untracked files.\n\
+             See 'git help status' for information on how to improve this."
+        )
     }
 }

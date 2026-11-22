@@ -133,6 +133,7 @@ pub struct Remotes {
     raw: Vec<RawRemote>,
     rewrites: UrlRewrites,
     push_default: Option<BString>,
+    warnings: Vec<String>,
 }
 
 impl Remotes {
@@ -145,6 +146,7 @@ impl Remotes {
         let mut fetch: Vec<Vec<BString>> = Vec::new();
         let mut push: Vec<Vec<BString>> = Vec::new();
         let mut push_default = None;
+        let mut warnings = Vec::new();
         for e in config.entries() {
             let (section, sub, key) = split_canonical(e.name.as_bstr());
             if section != "remote" {
@@ -197,6 +199,14 @@ impl Remotes {
                 b"uploadpack" => r.upload_pack = Some(string_value(e)?.to_owned()),
                 b"receivepack" => r.receive_pack = Some(string_value(e)?.to_owned()),
                 b"vcs" => r.vcs = Some(string_value(e)?.to_owned()),
+                b"followremotehead" => {
+                    let v = e.value.as_ref().map(|v| v.as_bstr()).unwrap_or_default();
+                    let known = matches!(v.as_bytes(), b"never" | b"create" | b"warn" | b"always")
+                        || v.starts_with(b"warn-if-not-");
+                    if !known {
+                        warnings.push(messages::unknown_follow_remote_head(v));
+                    }
+                }
                 _ => {}
             }
         }
@@ -208,7 +218,14 @@ impl Remotes {
             raw,
             rewrites,
             push_default,
+            warnings,
         })
+    }
+
+    /// Warnings about the configuration (printed with `warning: ` by
+    /// every command that reads the remotes).
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// The URL rewrite rules.

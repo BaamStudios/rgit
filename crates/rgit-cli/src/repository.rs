@@ -253,8 +253,21 @@ impl Repo {
     pub fn read_index(&self) -> Result<(Index, Option<Time>), Die> {
         let path = self.index_path();
         let mtime = index_mtime(&path).ok().flatten();
-        let index = Index::read_file(&path, self.hash, &ReadOptions::default())
-            .map_err(|e| Die::Fatal(e.to_string()))?;
+        let index = Index::read_file(&path, self.hash, &ReadOptions::default()).map_err(|e| {
+            // git's lines; the last one ends the command.
+            let mut lines = e.report(&path.display().to_string());
+            let last = lines.pop().unwrap_or_default();
+            for l in lines {
+                eprintln!("{l}");
+            }
+            match last.strip_prefix("fatal: ") {
+                Some(m) => Die::Fatal(m.to_owned()),
+                None => Die::Error(
+                    last.strip_prefix("error: ").unwrap_or(&last).to_owned(),
+                    128,
+                ),
+            }
+        })?;
         Ok((index, mtime))
     }
 

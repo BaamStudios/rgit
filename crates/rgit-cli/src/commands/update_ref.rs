@@ -328,18 +328,7 @@ impl<R: BufRead> Session<'_, R> {
         if !self.symlinks || symrefs.is_empty() {
             return;
         }
-        eprint!("{}", msg::PREFER_SYMLINK_REFS_WARNING);
-        #[cfg(unix)]
-        for (name, target) in symrefs {
-            let path = self.store.ref_path(&name);
-            let expected = format!("ref: {target}\n");
-            if std::fs::read(&path).is_ok_and(|c| c == expected.as_bytes()) {
-                let tmp = path.with_extension("symlink.tmp");
-                if std::os::unix::fs::symlink(&target, &tmp).is_ok() {
-                    let _ = std::fs::rename(&tmp, &path);
-                }
-            }
-        }
+        symrefs_as_symlinks(self.store, symrefs);
     }
 
     /// Parses one update command; `rest` follows `<cmd> `.
@@ -616,4 +605,23 @@ fn unquote(s: &str) -> Option<(String, usize)> {
         i += 1;
     }
     None
+}
+
+/// `core.preferSymlinkRefs`: warns like git and replaces the symbolic
+/// references just written (`name`, `target`) by symbolic links.
+pub(crate) fn symrefs_as_symlinks(store: &FilesStore, symrefs: Vec<(String, String)>) {
+    eprint!("{}", msg::PREFER_SYMLINK_REFS_WARNING);
+    #[cfg(unix)]
+    for (name, target) in symrefs {
+        let path = store.ref_path(&name);
+        let expected = format!("ref: {target}\n");
+        if std::fs::read(&path).is_ok_and(|c| c == expected.as_bytes()) {
+            let tmp = path.with_extension("symlink.tmp");
+            if std::os::unix::fs::symlink(&target, &tmp).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (store, symrefs);
 }

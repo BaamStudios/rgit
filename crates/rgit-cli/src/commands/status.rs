@@ -321,9 +321,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let no_renames = Cell::new(-1);
     let find_renames: RefCell<Option<Option<String>>> = RefCell::new(None);
     let ignore_submodules: RefCell<Option<String>> = RefCell::new(None);
+    let column: RefCell<Option<String>> = RefCell::new(None);
+    let verbose = Cell::new(0);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
+            Opt::countup('v', "verbose", &verbose, msg::HELP_VERBOSE),
             Opt::set_int('s', "short", &format, msg::HELP_SHORT, F_SHORT),
             Opt::bool('b', "branch", &branch, msg::HELP_BRANCH),
             Opt::bool(None, "show-stash", &show_stash, msg::HELP_SHOW_STASH),
@@ -350,6 +353,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .optional(Some("all")),
             Opt::string(None, "ignored", &ignored, "mode", msg::HELP_IGNORED)
                 .optional(Some("traditional")),
+            Opt::string(
+                None,
+                "ignore-submodules",
+                &ignore_submodules,
+                "when",
+                crate::messages::submodule::HELP_IGNORE_SUBMODULES,
+            )
+            .optional(Some("all")),
+            Opt::callback(None, "column", Some("style"), msg::HELP_COLUMN, |v, unset| {
+                *column.borrow_mut() = Some(if unset {
+                    "never".to_owned()
+                } else {
+                    v.unwrap_or("always").to_owned()
+                });
+                Ok(())
+            })
+            .optional(None),
             Opt::bool(None, "no-renames", &no_renames, msg::HELP_NO_RENAMES),
             Opt::callback(
                 'M',
@@ -366,14 +386,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 },
             )
             .optional(None),
-            Opt::string(
-                None,
-                "ignore-submodules",
-                &ignore_submodules,
-                "when",
-                crate::messages::submodule::HELP_IGNORE_SUBMODULES,
-            )
-            .optional(Some("all")),
         ],
     );
     let args = parser.parse(argv)?.args;
@@ -388,6 +400,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let advisor = ctx.advisor(&repo.config)?;
+    // column.ui and column.status, then --column (long format only).
+    let mut columns = crate::columns::Mode::from_config(&repo.config, Some("status"))?;
+    if let Some(c) = column.borrow().as_deref() {
+        if let Err(tok) = columns.apply(c) {
+            return Err(Die::Error(crate::messages::column::unsupported_option(&tok), 129));
+        }
+    }
+    let columns = columns.active().then_some(columns);
     let format = match format.get() {
         F_PORCELAIN => Format::Porcelain(porcelain_version),
         F_SHORT => Format::Short,
@@ -398,6 +418,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         _ => Format::Long,
     };
     let show_branch = match branch.get() {
+        // The configuration does not apply to the porcelain formats.
         -1 if matches!(format, Format::Porcelain(_)) => false,
         -1 => config_bool(&repo, "status.branch")?.unwrap_or(false),
         b => b != 0,
@@ -418,7 +439,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         _ => None,
     };
     let mode = match untracked.borrow().as_deref() {
-        Some(m) => parse_mode(m).ok_or_else(|| Die::Fatal(msg::invalid_untracked(m)))?,
+        Some(m) => parse_mode(m)
+            .or_else(|| {
+                rgit_config::value::parse_bool(Some(m.as_bytes()))
+                    .map(|b| if b { Untracked::Normal } else { Untracked::No })
+            })
+            .ok_or_else(|| Die::Fatal(msg::invalid_untracked(m)))?,
         None => match repo.config.get("status.showuntrackedfiles") {
             None => Untracked::Normal,
             Some(e) => {
@@ -450,11 +476,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let revs = Revs::new(ctx, &repo.setup)?;
     let info = branch_info(&mut repo, &revs, count)?;
     let mut changes: BTreeMap<Vec<u8>, Change> = BTreeMap::new();
+    let mut base_tree = ObjectId::empty_tree(repo.hash);
     if let Some(h) = info.head {
         let tree = repo
             .peel_to(h, ObjectKind::Tree)
             .ok_or_else(|| Die::Fatal(crate::messages::ls_tree::NOT_A_TREE.to_string()))?;
         collect_tree(&repo, &tree, b"", &mut changes)?;
+        base_tree = tree;
     }
     let root = work_tree.as_os_str().as_encoded_bytes().to_vec();
     let opts = ParseOptions {
@@ -466,7 +494,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
     let attr_tree = crate::attributes::PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
+    let stash_count = if show_stash { stash_entries(&mut repo) } else { 0 };
     let repo = repo;
+    if !ctx.no_optional_locks && std::env::var("GIT_OPTIONAL_LOCKS").as_deref() != Ok("0") {
+        refresh_index(&repo);
+    }
     let (index, index_mtime) = repo.read_index()?;
     let attrs = attr_tree.map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t)));
     for e in index.entries() {
@@ -530,6 +562,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if ignored_mode == IgnoredMode::Matching && mode == Untracked::No {
         return Err(Die::Fatal(msg::IGNORED_UNTRACKED_COMBINATION.to_string()));
     }
+    let started = std::time::Instant::now();
     // With `attr:` magic the walk sees every path and the attributes
     // decide afterwards.
     let (mut untracked_paths, mut ignored_paths) = untracked_and_ignored(
@@ -544,6 +577,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         untracked_paths.retain(|p| wanted(p));
         ignored_paths.retain(|p| wanted(p));
     }
+    // advice.statusUoption: looking for untracked files took long
+    // (GIT_TEST_UF_DELAY_WARNING pretends 3.25 seconds).
+    let seconds = if std::env::var_os("GIT_TEST_UF_DELAY_WARNING").is_some() {
+        3.25
+    } else {
+        started.elapsed().as_secs_f64()
+    };
+    let uf_delay = (format == Format::Long
+        && mode != Untracked::No
+        && seconds > 2.0
+        && advisor.enabled(Advice::StatusUoption).map_err(Die::Fatal)?)
+    .then(|| {
+        let cached = config_bool(&repo, "core.untrackedcache").ok().flatten() == Some(true)
+            && config_bool(&repo, "core.fsmonitor").ok().flatten() == Some(true);
+        msg::untracked_delay(seconds, cached)
+    });
 
     let relative = !matches!(format, Format::Porcelain(_))
         && !nul.get()
@@ -574,17 +623,38 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 rebasing: crate::wt_status::rebasing(&repo),
                 bisecting: crate::wt_status::bisecting(&repo),
                 mode,
+                columns,
+                uf_delay,
             };
-            long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
-            if show_stash {
-                // The entries of the stash reflog.
-                let log = repo.setup.absolute_common_dir().join("logs/refs/stash");
-                let n = std::fs::read(log)
-                    .map(|d| d.split(|&b| b == b'\n').filter(|l| !l.is_empty()).count())
-                    .unwrap_or(0);
-                if n > 0 {
-                    p.text(&msg::stash_entries(n));
+            let summary = long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
+            let old_len = p.out.len();
+            if config_bool(&repo, "status.displaycommentprefix")? == Some(true) {
+                // Every line but the summary as a comment, like the commit
+                // template.
+                let cm = crate::comment::comment(&repo.config)?.or_hash();
+                let end = summary.unwrap_or(p.out.len());
+                let mut out = Vec::with_capacity(p.out.len() * 2);
+                for line in p.out[..end].split_inclusive(|&b| b == b'\n') {
+                    out.extend_from_slice(&cm);
+                    if !matches!(line.first(), Some(b'\n' | b'\t') | None) {
+                        out.push(b' ');
+                    }
+                    out.extend_from_slice(line);
                 }
+                out.extend_from_slice(&p.out[end..]);
+                p.out = out;
+            }
+            // -v: the diffs go before the summary line.
+            let tail = summary.map_or(0, |s| old_len - s);
+            if verbose.get() > 0 {
+                let diff =
+                    super::commit::verbose::status_diff(&repo, &base_tree, &index, verbose.get())?;
+                let at = p.out.len() - tail;
+                p.out.splice(at..at, diff);
+            }
+            if stash_count > 0 {
+                p.text(&msg::stash_count(stash_count));
+                p.text("\n");
             }
         }
         Format::Short | Format::Porcelain(1) => {
@@ -603,6 +673,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             if show_branch {
                 header(&mut p, 2, &info);
             }
+            if stash_count > 0 {
+                p.text(&format!("# stash {stash_count}"));
+                p.end();
+            }
             porcelain_v2(&mut p, &entries, &untracked_paths, &ignored_paths, zero);
         }
     }
@@ -610,6 +684,47 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let _ = o.write_all(&p.out);
     let _ = o.flush();
     Ok(0)
+}
+
+/// The number of entries of the stash (its reflog).
+fn stash_entries(repo: &mut Repo) -> usize {
+    if repo.resolve("refs/stash").is_none() {
+        return 0;
+    }
+    let log = repo.setup.common_dir.join("logs/refs/stash");
+    std::fs::read(log)
+        .map(|t| t.split(|&b| b == b'\n').filter(|l| !l.is_empty()).count())
+        .unwrap_or(0)
+}
+
+/// Like git, status refreshes the stat data of the index and writes it
+/// back when that changed something or when entries are racily clean;
+/// quietly skipped when the index is locked or cannot be written.
+fn refresh_index(repo: &Repo) {
+    let index_path = repo.setup.cwd.join(repo.index_path());
+    if !index_path.exists() {
+        return;
+    }
+    let Ok(lock) = rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options()) else {
+        return;
+    };
+    let Ok((mut index, mtime)) = repo.read_index() else {
+        return;
+    };
+    let Ok(checker) = repo.checker(mtime) else {
+        return;
+    };
+    let before = index.clone();
+    crate::switch_branch::refresh_stat(&mut index, &checker);
+    let racy = index.entries().iter().any(|e| checker.is_racy(e));
+    if racy {
+        if let Some(reference) = mtime {
+            let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
+        }
+    }
+    if racy || index != before {
+        let _ = crate::switch_branch::write_index(repo, &index, lock);
+    }
 }
 
 /// Rename detection for the staged changes: `--no-renames`,
@@ -892,6 +1007,10 @@ struct LongContext<'a> {
     rebasing: Option<crate::wt_status::Rebasing>,
     bisecting: Option<Option<String>>,
     mode: Untracked,
+    /// `--column` / `column.status`: untracked files in columns.
+    columns: Option<crate::columns::Mode>,
+    /// The advice that looking for untracked files took long.
+    uf_delay: Option<String>,
 }
 
 fn label_of(letter: u8) -> &'static str {
@@ -917,14 +1036,15 @@ fn conflict_label(code: &str) -> &'static str {
     }
 }
 
-/// The long format (Documentation/git-status.adoc, "OUTPUT").
+/// The long format (Documentation/git-status.adoc, "OUTPUT"). Returns
+/// where the closing summary line ("nothing to commit", ...) starts.
 fn long(
     p: &mut Printer,
     ctx: &LongContext,
     entries: &[(&Vec<u8>, &Change)],
     untracked: &[Vec<u8>],
     ignored: &[Vec<u8>],
-) {
+) -> Option<usize> {
     let info = ctx.info;
     let hint = |p: &mut Printer, text: &str| {
         if ctx.hints {
@@ -1083,12 +1203,34 @@ fn long(
         p.text(msg::UNTRACKED_HEADER);
         p.text("\n");
         hint(p, msg::HINT_INCLUDE);
-        for u in untracked {
-            p.text("\t");
-            p.path(u);
-            p.text("\n");
+        match ctx.columns {
+            Some(mode) => {
+                // The quoted paths as cells, laid out after a tab.
+                let mut cells = Vec::new();
+                for u in untracked {
+                    let at = p.out.len();
+                    p.path(u);
+                    cells.push(String::from_utf8_lossy(&p.out[at..]).into_owned());
+                    p.out.truncate(at);
+                }
+                let mut opts = crate::columns::Options::new(mode);
+                opts.indent = "\t".into();
+                p.text(&crate::columns::format(&cells, &opts));
+            }
+            None => {
+                for u in untracked {
+                    p.text("\t");
+                    p.path(u);
+                    p.text("\n");
+                }
+            }
         }
         p.text("\n");
+    }
+    if let Some(text) = &ctx.uf_delay {
+        p.text("\n");
+        p.text(text);
+        p.text("\n\n");
     }
     if !ignored.is_empty() {
         p.text(msg::IGNORED_HEADER);
@@ -1103,7 +1245,7 @@ fn long(
     }
     let (text, hint_text) = if !staged.is_empty() {
         if ctx.mode != Untracked::No {
-            return;
+            return None;
         }
         msg::UNTRACKED_NOT_LISTED
     } else if !changed.is_empty() || !unmerged.is_empty() {
@@ -1117,11 +1259,13 @@ fn long(
     } else {
         msg::NOTHING_CLEAN
     };
+    let at = p.out.len();
     p.text(text);
     if ctx.hints {
         p.text(hint_text);
     }
     p.text("\n");
+    Some(at)
 }
 
 /// The upstream lines of the long format.

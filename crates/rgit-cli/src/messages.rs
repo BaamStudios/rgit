@@ -16,6 +16,7 @@ pub mod checkout_index;
 pub mod cherry;
 pub mod clean;
 pub mod clone;
+pub mod column;
 pub mod comment;
 pub mod commit;
 pub mod config;

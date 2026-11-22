@@ -63,7 +63,12 @@ impl State<'_> {
         let entry = &index.entries()[pos];
         let mut target = self.prefix.clone();
         target.extend_from_slice(entry.path());
-        let full = self.root.join(rgit_unpack_path(&target));
+        // The directories of --prefix may be symbolic links; only the
+        // entry's own directories are checked and created.
+        let split = self.prefix.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1);
+        let base = self.root.join(rgit_unpack_path(&self.prefix[..split]));
+        let rel = target[split..].to_vec();
+        let full = base.join(rgit_unpack_path(&rel));
         if let Ok(meta) = std::fs::symlink_metadata(&full) {
             let changed = if self.prefix.is_empty() {
                 !matches!(self.checker.check_with(entry, &meta), Ok(Status::Unchanged))
@@ -83,14 +88,23 @@ impl State<'_> {
         } else if self.no_create {
             return Ok(());
         }
-        if let Err(e) = rgit_unpack::create_leading_dirs(&self.root, &target, self.force) {
+        if split > 0 {
+            let _ = std::fs::create_dir_all(&base);
+        }
+        if let Err(e) = rgit_unpack::create_leading_dirs(&base, &rel, self.force) {
             return Err(Die::Fatal(e.to_string()));
         }
         let data = if entry.mode.is_gitlink() {
             Vec::new()
         } else {
-            let blob = rgit_unpack::read_blob(self.repo.odb(), &entry.id)
-                .map_err(|e| Die::Error(e.to_string(), 128))?;
+            let Ok(blob) = rgit_unpack::read_blob(self.repo.odb(), &entry.id) else {
+                eprintln!(
+                    "error: {}",
+                    msg::unable_to_read(&lossy(entry.path()), &entry.id.to_hex())
+                );
+                self.errors = true;
+                return Ok(());
+            };
             if entry.mode.is_file() {
                 self.conv.to_worktree(entry.path(), &entry.id, blob)
             } else {
@@ -98,7 +112,7 @@ impl State<'_> {
             }
         };
         let symlinks = self.checker.options().symlinks;
-        match rgit_unpack::write_entry(&self.root, &target, entry, &data, symlinks) {
+        match rgit_unpack::write_entry(&base, &rel, entry, &data, symlinks) {
             Ok(Some(meta)) => {
                 if self.update && self.prefix.is_empty() {
                     if let Some(e) = index.entry_mut(pos) {
@@ -174,8 +188,27 @@ impl State<'_> {
     /// Writes `entry` (converted like a checkout) to a new temporary file
     /// at the top of the work tree and returns its name.
     fn write_temp(&mut self, entry: &Entry) -> Result<Option<String>, Die> {
-        let blob = rgit_unpack::read_blob(self.repo.odb(), &entry.id)
-            .map_err(|e| Die::Error(e.to_string(), 128))?;
+        if entry.mode.is_gitlink() {
+            eprintln!("error: {}", msg::temporary_submodule(&lossy(entry.path())));
+            self.errors = true;
+            return Ok(None);
+        }
+        let Ok(blob) = rgit_unpack::read_blob(self.repo.odb(), &entry.id) else {
+            eprintln!(
+                "error: {}",
+                msg::unable_to_read(&lossy(entry.path()), &entry.id.to_hex())
+            );
+            self.errors = true;
+            // git still names a temporary file for a regular file (one
+            // that was never written); a symbolic link gets no line.
+            if entry.mode.is_symlink() {
+                return Ok(None);
+            }
+            let name = rgit_fs::TempFile::new_in(&self.root, ".merge_file_")
+                .ok()
+                .and_then(|t| t.path().file_name().map(|n| n.to_string_lossy().into_owned()));
+            return Ok(name);
+        };
         // Symbolic links become regular files holding the target.
         let prefix = if entry.mode.is_symlink() {
             ".merge_link_"
