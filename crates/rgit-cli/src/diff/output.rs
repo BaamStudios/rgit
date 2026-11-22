@@ -71,6 +71,12 @@ pub struct Output<'a> {
     pub ws_highlight: u8,
     /// `--check` found whitespace errors.
     ws_errors: std::cell::Cell<bool>,
+    /// `--word-diff` and the word regex (`--word-diff-regex`,
+    /// `diff.wordRegex`).
+    word_diff: Option<(super::words::Mode, Option<regex::bytes::Regex>)>,
+    /// The word regex came from the command line (it beats the diff
+    /// driver's `wordRegex`).
+    word_regex_cli: bool,
 }
 
 /// `diff.submodule` (an unknown value is warned about and ignored).
@@ -316,6 +322,22 @@ impl<'a> Output<'a> {
             (None, None)
         };
         let core = core_options(repo, opts, porcelain)?;
+        let word_diff = match opts.word_diff {
+            None => None,
+            Some(mode) => {
+                let regex = match &opts.word_regex {
+                    Some(r) => Some(r.clone()),
+                    None => match repo.and_then(|r| r.config.get("diff.wordregex")) {
+                        Some(e) => {
+                            let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+                            Some(super::options::word_regex(&v)?)
+                        }
+                        None => None,
+                    },
+                };
+                Some((mode, regex))
+            }
+        };
         let ws_rule = match repo.and_then(|r| r.config.get("core.whitespace")) {
             Some(e) => {
                 let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
@@ -377,6 +399,8 @@ impl<'a> Output<'a> {
             ws_rule,
             ws_highlight,
             ws_errors: std::cell::Cell::new(false),
+            word_diff,
+            word_regex_cli: opts.word_regex.is_some(),
             repo,
             convert: repo.is_some(),
             hash,
@@ -963,8 +987,9 @@ impl<'a> Output<'a> {
             // The whitespace rules of each path (`core.whitespace`, the
             // `whitespace` attribute), for colours and `--check`.
             let need_rules = f.check || self.colors.is_some();
+            let need_driver = self.word_diff.is_some() && !self.word_regex_cli;
             let base_rule = self.ws_rule;
-            let index = match (need_rules, self.repo) {
+            let index = match (need_rules || need_driver, self.repo) {
                 (true, Some(r)) => r.read_index().ok().map(|(i, _)| i),
                 _ => None,
             };
@@ -973,6 +998,30 @@ impl<'a> Output<'a> {
                 _ => None,
             };
             let ws_id = attrs.as_mut().map(|a| a.id(b"whitespace"));
+            let diff_id = attrs.as_mut().map(|a| a.id(b"diff"));
+            // `diff.<driver>.wordRegex` of the path's `diff` attribute.
+            let mut driver_regex = |path: &[u8]| -> Result<Option<regex::bytes::Regex>, Die> {
+                let (Some(a), Some(id), Some(repo)) = (attrs.as_mut(), diff_id, self.repo) else {
+                    return Ok(None);
+                };
+                let rgit_attr::State::Value(drv) = a.lookup(path, false).get(id).clone() else {
+                    return Ok(None);
+                };
+                let key = format!("diff.{}.wordregex", String::from_utf8_lossy(&drv));
+                match repo.config.get(&key) {
+                    Some(e) => {
+                        let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+                        Ok(Some(super::options::word_regex(&v)?))
+                    }
+                    None => Ok(None),
+                }
+            };
+            let mut driver_regexes = Vec::new();
+            if need_driver {
+                for (p, _, _) in &items {
+                    driver_regexes.push(driver_regex(&p.path)?);
+                }
+            }
             let mut rule_for = |path: &[u8]| -> Result<WsRule, Die> {
                 let (Some(a), Some(id)) = (attrs.as_mut(), ws_id) else {
                     return Ok(base_rule);
@@ -988,7 +1037,7 @@ impl<'a> Output<'a> {
                     rgit_attr::State::Unspecified => Ok(base_rule),
                 }
             };
-            for (p, o, n) in &items {
+            for (k, (p, o, n)) in items.iter().enumerate() {
                 if p.unmerged {
                     out.extend_from_slice(msg::UNMERGED_PATH.as_bytes());
                     let mut q = Vec::new();
@@ -1064,6 +1113,18 @@ impl<'a> Output<'a> {
                         if super::check::check_patch(out, &plain, &ws, &name) {
                             self.ws_errors.set(true);
                         }
+                    } else if let Some((mode, regex)) = &self.word_diff {
+                        let regex = driver_regexes
+                            .get(k)
+                            .and_then(Option::as_ref)
+                            .or(regex.as_ref());
+                        let w = super::words::Words {
+                            mode: *mode,
+                            regex,
+                            colors: self.colors.as_ref(),
+                            diff: &self.patch.diff,
+                        };
+                        w.patch(out, &plain);
                     } else if let Some(c) = &self.colors {
                         super::color::patch(out, c, &plain, &ws);
                     } else {

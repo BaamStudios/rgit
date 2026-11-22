@@ -195,3 +195,11 @@ pub const WS_INCOMPLETE: &str = "no newline at the end of file";
 pub fn tab_width_out_of_range(value: &str) -> String {
     format!("tabwidth {value} out of range")
 }
+
+pub fn bad_word_diff(value: &str) -> String {
+    format!("error: bad --word-diff argument: {value}\n")
+}
+
+pub fn invalid_word_regex(pattern: &str) -> String {
+    format!("invalid regular expression: {pattern}")
+}

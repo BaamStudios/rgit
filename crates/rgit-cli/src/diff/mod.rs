@@ -11,6 +11,7 @@ pub mod color;
 pub mod options;
 pub mod output;
 mod stat;
+mod words;
 
 use rgit_pathspec::{ParseOptions, Pathspec};
 
