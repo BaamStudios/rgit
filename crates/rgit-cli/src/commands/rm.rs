@@ -4,8 +4,13 @@
 //! with the up-to-date checks against HEAD and the work tree. Options:
 //! `--cached`, `-r`, `-f`, `-n`, `-q`, `--ignore-unmatch`.
 //!
-//! Not done yet: `--pathspec-from-file`, `--sparse`, submodules (gitlinks
-//! are removed from the index only), `.gitmodules` updates.
+//! Submodules: a populated submodule counts as locally modified when it
+//! has new commits, modified or untracked content. Without `--cached` its
+//! directory is removed (an embedded `.git` directory is first moved to
+//! `$GIT_DIR/modules/<name>`), and its section in `.gitmodules` is removed
+//! and staged.
+//!
+//! Not done yet: `--pathspec-from-file`, `--sparse`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -147,16 +152,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let Some(e) = entries.iter().find(|e| e.stage() == Stage::MERGED) else {
                 continue; // unmerged paths are removed without checks
             };
-            if e.mode.is_gitlink() {
-                continue;
-            }
             let staged = have_head && head.get(path.as_slice()) != Some(&e.id);
-            let local = match checker
+            let local = if e.mode.is_gitlink() {
+                crate::submodules::worktree_state(
+                    &os_path(&root, path),
+                    &e.id,
+                    repo.hash,
+                    rgit_submodule::Ignore::None,
+                    true,
+                )
+                .changed()
+            } else {
+                match checker
                 .check(e)
                 .map_err(|err| Die::Fatal(format!("{}: {err}", lossy(path))))?
             {
                 Status::Unchanged | Status::StatOnly | Status::Deleted => false,
                 Status::Modified | Status::TypeChanged => true,
+                }
             };
             let kind = if staged && local {
                 Some(Problem::Both)
@@ -187,6 +200,32 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
+    // Submodules to remove from the work tree: an embedded repository
+    // needs its name from `.gitmodules` to be moved away first.
+    let gitlinks: Vec<Vec<u8>> = chosen
+        .iter()
+        .filter(|p| {
+            index
+                .get(p, Stage::MERGED)
+                .is_some_and(|e| e.mode.is_gitlink())
+        })
+        .cloned()
+        .collect();
+    let gitmodules = if gitlinks.is_empty() || cached {
+        None
+    } else {
+        Some(crate::submodules::load_gitmodules(&repo, Some(&index))?)
+    };
+    if let Some(gm) = &gitmodules {
+        for p in &gitlinks {
+            let dot_git = os_path(&root, p).join(".git");
+            if std::fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_dir())
+                && gm.by_path(p).is_none()
+            {
+                return Err(Die::Fatal(crate::messages::submodule::no_name_for(&lossy(p))));
+            }
+        }
+    }
     if !quiet {
         let mut out = String::new();
         for p in &chosen {
@@ -202,6 +241,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         index.remove_path(p);
     }
     let cwd = std::fs::canonicalize(os_path(&root, &repo.prefix())).ok();
+    if let Some(gm) = &gitmodules {
+        let mut changed = false;
+        for p in &gitlinks {
+            let dir = os_path(&root, p);
+            if let Some(sub) = gm.by_path(p) {
+                crate::submodules::absorb_git_dir(&repo, &dir, &sub.name)?;
+                changed |= crate::submodules::remove_section(&repo, &sub.name)?;
+            }
+            if dir.join(".git").exists() {
+                let _ = std::fs::remove_dir_all(&dir);
+            } else {
+                let _ = std::fs::remove_dir(&dir);
+            }
+        }
+        if changed {
+            crate::submodules::stage_gitmodules(&repo, &mut index)?;
+        }
+    }
     if !cached {
         for p in &chosen {
             let full = os_path(&root, p);

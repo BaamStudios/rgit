@@ -18,6 +18,7 @@ use rgit_config::ConfigSet;
 
 use super::collect::{GITLINK_MODE, Pair, Side, TREE_MODE, type_bits};
 use super::color::DiffColors;
+use super::options::SubmoduleFormat;
 use super::options::{DiffOpts, Formats, usage_exit};
 use super::stat::{self, FileStat, StatKind, StatLayout};
 use crate::Die;
@@ -58,9 +59,26 @@ pub struct Output<'a> {
     pub pickaxe_all: bool,
     pub filter: DiffFilter,
     pub irreversible_delete: bool,
+    /// `--submodule=<format>` (or `diff.submodule` for the porcelain).
+    pub submodule_format: SubmoduleFormat,
     /// The rename limit that would have been needed (warned about after
     /// the output).
     limit_needed: std::cell::Cell<Option<(usize, bool)>>,
+}
+
+/// `diff.submodule` (an unknown value is warned about and ignored).
+fn submodule_format_config(repo: Option<&Repo>) -> SubmoduleFormat {
+    let Some(v) = repo.and_then(|r| r.config.get("diff.submodule")) else {
+        return SubmoduleFormat::Short;
+    };
+    let v = v.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+    SubmoduleFormat::parse(&v).unwrap_or_else(|| {
+        eprintln!(
+            "warning: {}",
+            crate::messages::submodule::unknown_diff_submodule(&v)
+        );
+        SubmoduleFormat::Short
+    })
 }
 
 /// A compiled pickaxe criterion.
@@ -313,6 +331,11 @@ impl<'a> Output<'a> {
             pickaxe_all: opts.pickaxe_all,
             filter: opts.diff_filter.clone(),
             irreversible_delete: opts.irreversible_delete,
+            submodule_format: match opts.submodule_format {
+                Some(f) => f,
+                None if porcelain => submodule_format_config(repo),
+                None => SubmoduleFormat::Short,
+            },
             limit_needed: std::cell::Cell::new(None),
             repo,
             convert: repo.is_some(),
@@ -416,6 +439,15 @@ impl<'a> Output<'a> {
     }
 
     fn load(&self, side: &Side, path: &[u8]) -> Result<Loaded, Die> {
+        if let (Some(dir), GITLINK_MODE) = (&side.file, type_bits(side.mode)) {
+            // A submodule in the work tree: the commit checked out there.
+            let oid = crate::repository::submodule_head(dir, self.hash).unwrap_or(side.oid);
+            return Ok(Loaded {
+                mode: side.mode,
+                oid,
+                data: format!("Subproject commit {}\n", oid.to_hex()).into_bytes(),
+            });
+        }
         if side.file.is_some() {
             let mut data = self.read_file(side)?;
             if let (Some(repo), true) = (self.repo, self.convert && is_file_mode(side.mode)) {
@@ -436,6 +468,8 @@ impl<'a> Output<'a> {
                 Some(Object::Blob(b)) => b.data,
                 _ => Vec::new(),
             }
+        } else if type_bits(side.mode) == GITLINK_MODE {
+            format!("Subproject commit {}\n", side.oid.to_hex()).into_bytes()
         } else {
             Vec::new()
         };
@@ -545,7 +579,14 @@ impl<'a> Output<'a> {
                 continue;
             }
             let one = side(i, &p.old_path, &p.old);
-            let two = side(i, &p.path, &p.new);
+            let mut two = side(i, &p.path, &p.new);
+            if p.dirty_submodule != 0 {
+                // A dirty submodule keeps the recorded commit; diffcore
+                // must not drop it as unmodified.
+                if let Some(t) = two.as_mut() {
+                    t.oid = ObjectId::null(self.hash);
+                }
+            }
             input.push(diffcore::FilePair::new(one, two));
             originals.push(Some(p));
         }
@@ -625,6 +666,7 @@ impl<'a> Output<'a> {
                     unmerged: false,
                     renamed,
                     score: fp.score,
+                    dirty_submodule: 0,
                 },
             ));
         }
@@ -688,7 +730,9 @@ impl<'a> Output<'a> {
                     && !is_binary(&o.data)
                     && !is_binary(&n.data)
                     && diff_text(&o.data, &n.data, d).hunks.is_empty());
-            keep.push(!(self.porcelain && same && !p.is_rename()) && !ignored);
+            keep.push(
+                !(self.porcelain && same && !p.is_rename() && p.dirty_submodule == 0) && !ignored,
+            );
             loaded.push((o, n));
         }
         let mut items: Vec<(Pair, Option<Loaded>, Option<Loaded>)> = Vec::new();
@@ -733,7 +777,7 @@ impl<'a> Output<'a> {
 
         // Pairs with a visible content or mode difference.
         let differs = |p: &Pair, o: &Option<Loaded>, n: &Option<Loaded>| -> bool {
-            if p.unmerged || p.is_rename() {
+            if p.unmerged || p.is_rename() || p.dirty_submodule != 0 {
                 return true;
             }
             !matches!((o, n), (Some(o), Some(n)) if o.oid == n.oid && o.mode == n.mode)
@@ -745,7 +789,7 @@ impl<'a> Output<'a> {
                 if !differs(p, o, n) {
                     continue;
                 }
-                let is_file = |s: &Option<Side>| s.as_ref().is_none_or(|s| is_file_mode(s.mode));
+                let is_file = |s: &Option<Side>| s.as_ref().is_none_or(|s| s.mode != TREE_MODE);
                 if !p.unmerged && (!is_file(&p.old) || !is_file(&p.new)) {
                     continue;
                 }
@@ -882,10 +926,27 @@ impl<'a> Output<'a> {
                 if !differs(p, o, n) {
                     continue;
                 }
-                let is_file = |s: &Option<Side>| s.as_ref().is_none_or(|s| is_file_mode(s.mode));
+                let is_file = |s: &Option<Side>| s.as_ref().is_none_or(|s| s.mode != TREE_MODE);
                 if !is_file(&p.old) || !is_file(&p.new) {
                     continue;
                 }
+                let dirty_data;
+                let n = match n {
+                    Some(l) if p.dirty_submodule != 0 => {
+                        let mut d = l.data.clone();
+                        if d.last() == Some(&b'\n') {
+                            d.pop();
+                        }
+                        d.extend_from_slice(b"-dirty\n");
+                        dirty_data = Loaded {
+                            mode: l.mode,
+                            oid: l.oid,
+                            data: d,
+                        };
+                        Some(&dirty_data)
+                    }
+                    n => n.as_ref(),
+                };
                 let of = o.as_ref().map(|l| PatchFile {
                     path: &p.old_path,
                     mode: l.mode,
@@ -903,38 +964,74 @@ impl<'a> Output<'a> {
                     rename: p.renamed.map(|c| (c == b'C', p.percent())),
                     rewrite: p.is_rewrite().then(|| p.percent()),
                     irreversible_delete: self.irreversible_delete,
+                    same_id_differs: p.dirty_submodule != 0,
                 };
-                let mut emit =
-                    |old: Option<&PatchFile<'_>>, new: Option<&PatchFile<'_>>| match &self.colors {
-                        None => {
-                            write_file_patch_extra(
-                                &mut out,
+                let emit = |out: &mut Vec<u8>,
+                            old: Option<&PatchFile<'_>>,
+                            new: Option<&PatchFile<'_>>| match &self
+                    .colors
+                {
+                    None => {
+                        write_file_patch_extra(out, old, new, &self.patch, &abbrev, &extra);
+                    }
+                    Some(c) => {
+                        let mut plain = Vec::new();
+                        write_file_patch_extra(&mut plain, old, new, &self.patch, &abbrev, &extra);
+                        let data = if new.is_some() { new_data } else { &[][..] };
+                        super::color::patch(out, c, &plain, data);
+                    }
+                };
+                let link = |f: &Option<PatchFile<'_>>| {
+                    f.as_ref()
+                        .is_some_and(|f| type_bits(f.mode) == GITLINK_MODE)
+                };
+                let new_in_worktree =
+                    p.new.as_ref().is_some_and(|s| s.file.is_some()) && p.dirty_submodule != 0;
+                let summary = |out: &mut Vec<u8>, old: Option<ObjectId>, new: Option<ObjectId>| {
+                    if let Some(repo) = self.repo {
+                        let dirty = if new.is_some() { p.dirty_submodule } else { 0 };
+                        if self.submodule_format == SubmoduleFormat::Diff {
+                            let wt = new.is_some() && new_in_worktree;
+                            crate::submodules::summary_diff(
+                                out,
+                                repo,
+                                &p.path,
                                 old,
                                 new,
-                                &self.patch,
-                                &abbrev,
-                                &extra,
+                                dirty,
+                                wt,
+                                (&self.patch.src_prefix, &self.patch.dst_prefix),
                             );
+                        } else {
+                            crate::submodules::summary_log(out, repo, &p.path, old, new, dirty);
                         }
-                        Some(c) => {
-                            let mut plain = Vec::new();
-                            write_file_patch_extra(
-                                &mut plain,
-                                old,
-                                new,
-                                &self.patch,
-                                &abbrev,
-                                &extra,
-                            );
-                            let data = if new.is_some() { new_data } else { &[][..] };
-                            super::color::patch(&mut out, c, &plain, data);
-                        }
-                    };
-                if p.status() == b'T' {
-                    emit(of.as_ref(), None);
-                    emit(None, nf.as_ref());
+                    }
+                };
+                let log = self.submodule_format != SubmoduleFormat::Short && self.repo.is_some();
+                if log && p.status() == b'T' {
+                    // The submodule side as a summary, the file side as a
+                    // patch, old side first.
+                    if link(&of) {
+                        summary(&mut out, of.as_ref().map(|f| f.oid), None);
+                    } else {
+                        emit(&mut out, of.as_ref(), None);
+                    }
+                    if link(&nf) {
+                        summary(&mut out, None, nf.as_ref().map(|f| f.oid));
+                    } else {
+                        emit(&mut out, None, nf.as_ref());
+                    }
+                } else if log && (link(&of) || link(&nf)) {
+                    summary(
+                        &mut out,
+                        of.as_ref().map(|f| f.oid),
+                        nf.as_ref().map(|f| f.oid),
+                    );
+                } else if p.status() == b'T' {
+                    emit(&mut out, of.as_ref(), None);
+                    emit(&mut out, None, nf.as_ref());
                 } else {
-                    emit(of.as_ref(), nf.as_ref());
+                    emit(&mut out, of.as_ref(), nf.as_ref());
                 }
             }
         }

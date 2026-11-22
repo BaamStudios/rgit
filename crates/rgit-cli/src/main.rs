@@ -38,6 +38,7 @@ mod revision;
 mod revisions;
 mod sequencer;
 mod signing;
+mod submodules;
 mod switch_branch;
 mod tracking;
 mod tree_changes;

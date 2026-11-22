@@ -81,7 +81,7 @@ pub fn collect(
         if e.flags.skip_worktree {
             continue;
         }
-        check_worktree(repo, &checker, &work_tree, e, c);
+        check_worktree(repo, &checker, &work_tree, e, c, None)?;
         let kind = match c.wt {
             b'M' => WtChange::Modified,
             b'D' => WtChange::Deleted,

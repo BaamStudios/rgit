@@ -429,6 +429,37 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
     let (mut index, index_mtime) = repo.read_index()?;
+    // Paths inside a submodule belong to the submodule's repository.
+    for e in index.entries().iter().filter(|e| e.mode.is_gitlink()) {
+        let mut dir = e.path().to_vec();
+        dir.push(b'/');
+        if prefix.starts_with(&dir) {
+            return Err(Die::Fatal(crate::messages::submodule::in_unpopulated(&lossy(e.path()))));
+        }
+        for item in pathspec.items() {
+            let p = item.pattern();
+            if p.len() > dir.len() && p.starts_with(&dir) {
+                return Err(Die::Fatal(crate::messages::submodule::pathspec_in_submodule(
+                    &lossy(item.original()),
+                    &lossy(e.path()),
+                )));
+            }
+        }
+    }
+    // add does not fail over a broken `.gitmodules` (it may be adding the
+    // fix); the submodules then have no `ignore` setting.
+    let ignore_rules = if index.entries().iter().any(|e| e.mode.is_gitlink()) {
+        crate::submodules::IgnoreRules::load(
+            &repo,
+            Some(&index),
+            None,
+            false,
+            rgit_submodule::Ignore::None,
+        )
+        .ok()
+    } else {
+        None
+    };
     let checker = repo.checker(index_mtime)?;
     let conv = repo.converter()?;
     if renormalize {
@@ -521,7 +552,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut failed = false;
     let entries = index.entries();
     for (pos, e) in entries.iter().enumerate() {
-        if !pathspec.is_empty() && pathspec.match_path(e.path()).is_none() {
+        // `sub/` names the submodule `sub` too.
+        let slashed = || {
+            let mut p = e.path().to_vec();
+            p.push(b'/');
+            p
+        };
+        if !pathspec.is_empty()
+            && pathspec.match_path(e.path()).is_none()
+            && !(e.mode.is_gitlink() && pathspec.match_path(&slashed()).is_some())
+        {
             continue;
         }
         if pathspec.is_empty() && !prefix.is_empty() && !update && !all {
@@ -581,6 +621,28 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             // A tracked submodule: record the commit checked out there.
             let full = os_path(&root, e.path());
             let meta = std::fs::symlink_metadata(&full).ok();
+            if meta.as_ref().is_some_and(|m| !m.is_dir()) && !intent {
+                // The submodule was replaced by a file: add the file.
+                match entry_for(&repo, &checker, &root, e.path(), None, dry_run, dry_run) {
+                    Err(EntryError::Fatal(d)) => return Err(d),
+                    Ok(n) => {
+                        if show {
+                            println!("{}", msg::add(&lossy(e.path())));
+                        }
+                        if let Some(n) = n {
+                            updates.push(n);
+                        }
+                    }
+                    Err(EntryError::Read(err)) => {
+                        report_failure(e.path(), &err);
+                        failed = true;
+                        if !ignore_errors {
+                            return Err(Die::Fatal(msg::UPDATING_FAILED.to_string()));
+                        }
+                    }
+                }
+                continue;
+            }
             if !meta.as_ref().is_some_and(std::fs::Metadata::is_dir) {
                 if show {
                     println!("{}", msg::remove(&lossy(e.path())));
@@ -596,6 +658,30 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 continue;
             }
             if let Some(head) = repository::submodule_head(&full, repo.hash) {
+                let explicit = || {
+                    pathspec.items().iter().any(|i| {
+                        let p = i.pattern();
+                        p.strip_suffix(b"/").unwrap_or(p) == e.path()
+                    })
+                };
+                if head != e.id
+                    && ignore_rules
+                        .as_ref()
+                        .is_some_and(|r| r.for_path(e.path()) == rgit_submodule::Ignore::All)
+                    && !(force && explicit())
+                {
+                    // Only staged when named with --force; named without
+                    // it, it is reported.
+                    if explicit() {
+                        advisor
+                            .advise(
+                                Advice::AddIgnoredFile,
+                                &crate::messages::submodule::skipping_ignored(&lossy(e.path())),
+                            )
+                            .map_err(Die::Fatal)?;
+                    }
+                    continue;
+                }
                 if head != e.id {
                     if show {
                         println!("{}", msg::add(&lossy(e.path())));

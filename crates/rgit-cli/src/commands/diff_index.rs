@@ -56,19 +56,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else {
         let root = repo.work_tree()?;
         let checker = repo.checker(mtime)?;
+        let submodules =
+            crate::submodules::IgnoreRules::for_index(&repo, &index, opts.ignore_submodules()?, false)?;
         let wt = WorkTree {
             root: &root,
             checker: &checker,
             porcelain: false,
             hash: repo.hash,
+            submodules: submodules.as_ref(),
+            dirty: Default::default(),
         };
         collect::index(&repo, &tree, &index, &pathspec, Some(&wt), false)?
     };
-    let pairs = if opts.copies_harder {
+    let mut pairs = if opts.copies_harder {
         collect::with_unmodified(pairs, collect::tree_files(&repo, &tree, &pathspec)?)
     } else {
         pairs
     };
+    crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, false)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     let (bytes, changed) = out.render(pairs)?;

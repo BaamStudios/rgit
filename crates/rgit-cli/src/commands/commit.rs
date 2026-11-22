@@ -529,7 +529,52 @@ fn update_path(
     let old = index.get(path, Stage::MERGED).cloned();
     if let Some(o) = &old {
         if o.mode.is_gitlink() {
+            // A submodule: record the commit checked out there.
+            let full = os_path(root, path);
+            if let Some(head) = repository::submodule_head(&full, repo.hash) {
+                if head != o.id {
+                    let mut n = Entry::new(path.to_vec(), Stage::MERGED, IndexMode::GITLINK, head);
+                    if let Ok(m) = std::fs::symlink_metadata(&full) {
+                        n.stat = rgit_worktree::stat::stat_from_metadata(&m);
+                    }
+                    n.flags = o.flags;
+                    index
+                        .add(
+                            n,
+                            AddOptions {
+                                ok_to_replace: true,
+                                ..Default::default()
+                            },
+                        )
+                        .map_err(|err| fatal(err.to_string()))?;
+                    index.invalidate_path(path);
+                }
+            }
             return Ok(());
+        }
+    }
+    {
+        // A file replaced by a repository: record it as a submodule.
+        let full = os_path(root, path);
+        if std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()) {
+            if let Some(head) = repository::submodule_head(&full, repo.hash) {
+                let mut n = Entry::new(path.to_vec(), Stage::MERGED, IndexMode::GITLINK, head);
+                if let Ok(m) = std::fs::symlink_metadata(&full) {
+                    n.stat = rgit_worktree::stat::stat_from_metadata(&m);
+                }
+                index.remove_path(path);
+                index
+                    .add(
+                        n,
+                        AddOptions {
+                            ok_to_replace: true,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|err| fatal(err.to_string()))?;
+                index.invalidate_path(path);
+                return Ok(());
+            }
         }
     }
     let unmerged = index
