@@ -259,6 +259,9 @@ impl<'a> Output<'a> {
             diff.minimal = m;
         }
         diff.anchors = opts.anchors.clone();
+        diff.whitespace = opts.whitespace;
+        diff.ignore_blank_lines = opts.ignore_blank_lines;
+        diff.ignore_regex = rgit_diff::IgnoreRegexes(opts.ignore_regex.clone());
         let quote_high = repo.is_none_or(|r| r.quote_path());
         let mut src = b"a/".to_vec();
         let mut dst = b"b/".to_vec();
@@ -656,7 +659,11 @@ impl<'a> Output<'a> {
         }
         let f = self.formats;
         // Load contents where needed.
-        let need = f.needs_content() || f.summary;
+        // `-w`, `-I` and friends drop pairs whose differences are all
+        // ignored, from every format (not `--ignore-blank-lines` alone).
+        let d = &self.patch.diff;
+        let check = d.whitespace.any() || !d.ignore_regex.0.is_empty();
+        let need = f.needs_content() || f.summary || check;
         let mut loaded: Vec<(Option<Loaded>, Option<Loaded>)> = Vec::with_capacity(pairs.len());
         let mut keep = Vec::with_capacity(pairs.len());
         for p in &pairs {
@@ -674,7 +681,14 @@ impl<'a> Output<'a> {
                 (None, None)
             };
             let same = matches!((&o, &n), (Some(o), Some(n)) if o.oid == n.oid && o.mode == n.mode);
-            keep.push(!(self.porcelain && same && !p.is_rename()));
+            let ignored = check
+                && !p.is_rename()
+                && matches!((&o, &n), (Some(o), Some(n)) if o.mode == n.mode
+                    && is_file_mode(o.mode)
+                    && !is_binary(&o.data)
+                    && !is_binary(&n.data)
+                    && diff_text(&o.data, &n.data, d).hunks.is_empty());
+            keep.push(!(self.porcelain && same && !p.is_rename()) && !ignored);
             loaded.push((o, n));
         }
         let mut items: Vec<(Pair, Option<Loaded>, Option<Loaded>)> = Vec::new();
@@ -687,10 +701,16 @@ impl<'a> Output<'a> {
         let mut out = Vec::new();
 
         if f.raw {
-            for (p, _, _) in &items {
+            // After the content check git shows the hashed work tree files.
+            let hashed = check;
+            for (p, o, n) in &items {
                 let null = ObjectId::null(self.hash);
-                let (om, oo) = p.old.as_ref().map_or((0, null), |s| (s.mode, s.oid));
-                let (nm, no) = p.new.as_ref().map_or((0, null), |s| (s.mode, s.oid));
+                let id = |s: &Side, l: &Option<Loaded>| match l {
+                    Some(l) if hashed && s.file.is_some() => l.oid,
+                    _ => s.oid,
+                };
+                let (om, oo) = p.old.as_ref().map_or((0, null), |s| (s.mode, id(s, o)));
+                let (nm, no) = p.new.as_ref().map_or((0, null), |s| (s.mode, id(s, n)));
                 write!(
                     out,
                     ":{om:06o} {nm:06o} {} {} ",
@@ -763,6 +783,20 @@ impl<'a> Output<'a> {
                         }
                     }
                 };
+                // Only ignored differences (`-w`, `--ignore-blank-lines`).
+                let same_mode = matches!((&p.old, &p.new), (Some(a), Some(b)) if a.mode == b.mode);
+                if matches!(
+                    kind,
+                    StatKind::Text {
+                        added: 0,
+                        deleted: 0
+                    }
+                ) && same_mode
+                    && !p.is_rename()
+                    && self.patch.diff.ignores_changes()
+                {
+                    continue;
+                }
                 let mut name = self.display_name(p);
                 names.push(if self.nul && p.is_rename() {
                     let mut n = vec![0];

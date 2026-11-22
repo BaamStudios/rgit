@@ -72,7 +72,7 @@ pub fn parse_args(
             args.extend(it.by_ref().cloned());
             break;
         }
-        if matches!(a.as_str(), "-S" | "-G" | "-l") {
+        if matches!(a.as_str(), "-S" | "-G" | "-l" | "-I") {
             // The value may also be the next argument.
             let Some(v) = it.next() else {
                 return Err(options::usage_exit(crate::messages::diff::requires_value(
@@ -82,7 +82,10 @@ pub fn parse_args(
             opts.parse_arg(&format!("{a}{v}"))?;
             continue;
         }
-        if matches!(a.as_str(), "--find-object" | "--diff-filter") {
+        if matches!(
+            a.as_str(),
+            "--find-object" | "--diff-filter" | "--ignore-matching-lines"
+        ) {
             let Some(v) = it.next() else {
                 return Err(options::usage_exit(crate::messages::diff::requires_value(
                     &a[2..],

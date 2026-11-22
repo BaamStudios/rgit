@@ -12,3 +12,4 @@ workspace = true
 
 [dependencies]
 rgit-hash = { path = "../rgit-hash" }
+regex = { version = "1.13", default-features = false, features = ["std", "perf"] }

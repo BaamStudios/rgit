@@ -75,6 +75,11 @@ pub struct DiffOpts {
     pub irreversible_delete: bool,
     /// `--diff-filter=...`.
     pub diff_filter: DiffFilter,
+    /// `-w`, `-b`, `--ignore-space-at-eol`, `--ignore-cr-at-eol`.
+    pub whitespace: rgit_diff::Whitespace,
+    pub ignore_blank_lines: bool,
+    /// `-I<regex>`, compiled.
+    pub ignore_regex: Vec<regex::bytes::Regex>,
 }
 
 /// A score option's value (`-M<n>`, `--find-copies=<n>`): the whole value
@@ -153,6 +158,16 @@ impl Formats {
 pub fn usage_exit(text: String) -> Die {
     let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
     Die::Exit(rgit_options::EXIT_USAGE)
+}
+
+/// An `-I` expression (POSIX extended syntax).
+fn ignore_regex(pattern: &str) -> Option<regex::bytes::Regex> {
+    let translated = rgit_revwalk::walk::grep::translate(pattern, true).ok()?;
+    regex::bytes::RegexBuilder::new(&translated)
+        .unicode(false)
+        .multi_line(true)
+        .build()
+        .ok()
 }
 
 fn number(value: &str, option: &str) -> Result<usize, Die> {
@@ -236,6 +251,17 @@ impl DiffOpts {
             "--pickaxe-all" => self.pickaxe_all = true,
             "--pickaxe-regex" => self.pickaxe_regex = true,
             "-D" | "--irreversible-delete" => self.irreversible_delete = true,
+            "-w" | "--ignore-all-space" => self.whitespace.all = true,
+            "--no-ignore-all-space" => self.whitespace.all = false,
+            "-b" | "--ignore-space-change" => self.whitespace.change = true,
+            "--no-ignore-space-change" => self.whitespace.change = false,
+            "--ignore-space-at-eol" => self.whitespace.at_eol = true,
+            "--no-ignore-space-at-eol" => self.whitespace.at_eol = false,
+            "--ignore-cr-at-eol" => self.whitespace.cr_at_eol = true,
+            "--no-ignore-cr-at-eol" => self.whitespace.cr_at_eol = false,
+            "--ignore-blank-lines" => self.ignore_blank_lines = true,
+            "--no-ignore-blank-lines" => self.ignore_blank_lines = false,
+            "--no-ignore-matching-lines" => self.ignore_regex.clear(),
             _ => {
                 if let Some(c) = crate::color::parse_arg(arg) {
                     self.color = Some(c?);
@@ -341,6 +367,12 @@ impl DiffOpts {
             self.pickaxe = Some((false, v.to_string()));
         } else if let Some(v) = arg.strip_prefix("-G") {
             self.pickaxe = Some((true, v.to_string()));
+        } else if let Some(v) = arg
+            .strip_prefix("--ignore-matching-lines=")
+            .or_else(|| arg.strip_prefix("-I"))
+        {
+            let re = ignore_regex(v).ok_or_else(|| usage_exit(msg::invalid_ignore_regex(v)))?;
+            self.ignore_regex.push(re);
         } else if let Some(v) = arg.strip_prefix("--find-object=") {
             self.find_object.push(v.to_string());
         } else if let Some(v) = arg.strip_prefix("--diff-filter=") {

@@ -192,6 +192,7 @@ pub fn write_file_patch_extra(
     extra: &PatchExtra,
 ) -> Stats {
     let q = opts.quote_path;
+    let start = out.len();
     let (old_path, new_path) = match (old, new) {
         (Some(o), Some(n)) => (o.path, n.path),
         (Some(o), None) => (o.path, o.path),
@@ -279,6 +280,12 @@ pub fn write_file_patch_extra(
     }
     let d = diff_text(old_data, new_data, &opts.diff);
     if d.hunks.is_empty() {
+        // Only ignored differences (`-w`, `-I`, ...): no patch at all
+        // unless the header says something.
+        let same_mode = matches!((old, new), (Some(o), Some(n)) if o.mode == n.mode);
+        if same_mode && extra.rename.is_none() && opts.diff.ignores_changes() {
+            out.truncate(start);
+        }
         return d.stats;
     }
     file_line(out, b"--- ", &a_shown);

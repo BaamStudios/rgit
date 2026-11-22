@@ -35,8 +35,25 @@ pub fn split_lines(data: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Maps the lines of both sides to dense ids so that equal lines (bytes
-/// including the line terminator) share an id.
-pub(crate) fn intern<'x>(a: &[&'x [u8]], b: &[&'x [u8]]) -> (Vec<u32>, Vec<u32>, usize) {
+/// including the line terminator) share an id. With whitespace options
+/// lines are equal when their [`crate::whitespace::key`]s are.
+pub(crate) fn intern<'x>(
+    a: &[&'x [u8]],
+    b: &[&'x [u8]],
+    ws: &crate::Whitespace,
+) -> (Vec<u32>, Vec<u32>, usize) {
+    if ws.any() {
+        let mut map: HashMap<Vec<u8>, u32> = HashMap::with_capacity(a.len() + b.len());
+        let mut id = |line: &[u8]| -> u32 {
+            let next = map.len() as u32;
+            let k = crate::whitespace::key(line, ws).unwrap_or_default();
+            *map.entry(k).or_insert(next)
+        };
+        let ia: Vec<u32> = a.iter().map(|l| id(l)).collect();
+        let ib: Vec<u32> = b.iter().map(|l| id(l)).collect();
+        let classes = map.len();
+        return (ia, ib, classes);
+    }
     let mut map: HashMap<&'x [u8], u32> = HashMap::with_capacity(a.len() + b.len());
     let mut id = |line: &'x [u8]| -> u32 {
         let next = map.len() as u32;
