@@ -123,6 +123,25 @@ pub const UNABLE_TO_CHECKOUT: &str = "unable to checkout working tree";
 pub const CHECKOUT_FAILED: &str = "Clone succeeded, but checkout failed.\n\
 You can inspect what was checked out with 'git status'\n\
 and retry with 'git restore --source=HEAD :/'\n\n";
+pub fn reference_not_local(path: &str) -> String {
+    format!("reference repository '{path}' is not a local repository.")
+}
+pub fn reference_shallow(path: &str) -> String {
+    format!("reference repository '{path}' is shallow")
+}
+pub fn reference_grafted(path: &str) -> String {
+    format!("reference repository '{path}' is grafted")
+}
+pub fn reference_linked_checkout(path: &str) -> String {
+    format!("reference repository '{path}' as a linked checkout is not supported yet.")
+}
+/// `--reference-if-able` that cannot be used (printed after `info: `).
+pub fn could_not_add_alternate(path: &str, reason: &str) -> String {
+    format!("Could not add alternate for '{path}': {reason}")
+}
+pub fn unable_to_write(path: &str, reason: &str) -> String {
+    format!("unable to write {path}: {reason}")
+}
 pub fn unable_to_read_tree(oid: &str) -> String {
     format!("unable to read tree ({oid})")
 }

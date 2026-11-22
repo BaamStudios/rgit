@@ -7,7 +7,7 @@
 //! writer from index-pack), progress output, `--include-tag`,
 //! `--shallow`, `--incremental`, `--local`, `--unpacked`, filters,
 //! bitmaps. `--thin` is accepted, but the pack is never thin (which is
-//! always valid). Alternates are not read yet.
+//! always valid).
 
 use std::io::{BufRead, BufWriter, Write};
 

@@ -94,3 +94,12 @@ pub fn unknown_fsync_component(name: &str) -> String {
 pub fn unknown_fsync_method(value: &str) -> String {
     format!("ignoring unknown core.fsyncMethod value '{value}'")
 }
+
+/// `<dir>: ignoring alternate object stores, nesting too deep` (after
+/// `error: `).
+pub fn alternates_too_deep(dir: &Path) -> String {
+    format!(
+        "{}: ignoring alternate object stores, nesting too deep",
+        dir.display()
+    )
+}

@@ -52,6 +52,14 @@ struct Options {
     branch: Option<String>,
     upload_pack: Option<String>,
     depth: Option<String>,
+    /// `-s` / `--shared`.
+    shared: bool,
+    /// `--reference`.
+    reference: Vec<String>,
+    /// `--reference-if-able`.
+    reference_if_able: Vec<String>,
+    /// `--dissociate`.
+    dissociate: bool,
     /// `--single-branch` / `--no-single-branch`.
     single_branch: Option<bool>,
     tags: bool,
@@ -204,14 +212,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
 
     // Options rgit does not implement yet.
-    let unsupported: [(&str, bool); 17] = [
+    let unsupported: [(&str, bool); 13] = [
         ("--reject-shallow", reject_shallow.get() > 0),
         ("--no-hardlinks", no_hardlinks.get()),
-        ("--shared", shared.get()),
         ("--recurse-submodules", !recurse.borrow().is_empty()),
-        ("--reference", !reference.borrow().is_empty()),
-        ("--reference-if-able", !reference_if_able.borrow().is_empty()),
-        ("--dissociate", dissociate.get()),
         ("--revision", revision.borrow().is_some()),
         ("--shallow-since", shallow_since.borrow().is_some()),
         ("--shallow-exclude", !shallow_exclude.borrow().is_empty()),
@@ -241,6 +245,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         branch: branch.into_inner(),
         upload_pack: upload_pack.into_inner(),
         depth: depth.into_inner(),
+        shared: shared.get(),
+        reference: reference.into_inner(),
+        reference_if_able: reference_if_able.into_inner(),
+        dissociate: dissociate.get(),
         single_branch: (single_branch.get() >= 0).then(|| single_branch.get() > 0),
         tags: tags.get() != 0,
         template: template.into_inner(),
@@ -506,6 +514,47 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         config_add(&config_path, k, v)?;
     }
 
+    // Borrow objects: --reference repositories, then the source itself
+    // for a local --shared clone.
+    let mut alternates: Vec<PathBuf> = Vec::new();
+    let references = opts
+        .reference
+        .iter()
+        .map(|r| (r, true))
+        .chain(opts.reference_if_able.iter().map(|r| (r, false)));
+    for (r, required) in references {
+        match reference_objects(r, &cwd) {
+            Ok(dir) => {
+                if !alternates.contains(&dir) {
+                    alternates.push(dir);
+                }
+            }
+            Err(reason) if required => return Err(Die::Fatal(reason)),
+            Err(reason) => eprintln!("info: {}", msg::could_not_add_alternate(r, &reason)),
+        }
+    }
+    if opts.shared && local_mode {
+        let dir = repository_git_dir(Path::new(&source.url)).join("objects");
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        if !alternates.contains(&dir) {
+            alternates.push(dir);
+        }
+    }
+    let alternates_file = git_dir.join("objects").join("info").join("alternates");
+    if !alternates.is_empty() {
+        let mut text = String::new();
+        for a in &alternates {
+            text.push_str(&a.to_string_lossy());
+            text.push('\n');
+        }
+        let shown = alternates_file.to_string_lossy().into_owned();
+        std::fs::create_dir_all(git_dir.join("objects").join("info"))
+            .and_then(|()| std::fs::write(&alternates_file, text))
+            .map_err(|e| {
+                Die::Fatal(msg::unable_to_write(&shown, &crate::global::strerror(&e)))
+            })?;
+    }
+
     // Open the new repository like any command would.
     let setup = open_new_repository(ctx, &git_dir, work_tree.as_deref())?;
     let config = refs_support::load_config(ctx, &setup)?;
@@ -596,6 +645,8 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let reflog_msg = msg::reflog_clone(&anonymize(&source.url));
     let mut packs: Vec<ReceivedPack> = Vec::new();
     let mut remote_head_ref: Option<String> = None;
+    // Every object the new refs and HEAD point to.
+    let mut all_tips: Vec<ObjectId> = Vec::new();
     if empty {
         session.close().map_err(|e| fatal(&e))?;
         eprintln!("warning: {}", msg::EMPTY_REPOSITORY);
@@ -623,18 +674,23 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 }
             }
         }
+        // Objects borrowed from alternates are not asked for.
         let mut wants: Vec<ObjectId> = Vec::new();
         let mut seen = HashSet::new();
         for (_, oid) in &mapped {
-            if seen.insert(*oid) {
+            if seen.insert(*oid) && !repo.has_object(oid) {
                 wants.push(*oid);
             }
         }
         if let Some(Our::Tag(_, oid)) = &our {
-            if seen.insert(*oid) {
+            if seen.insert(*oid) && !repo.has_object(oid) {
                 wants.push(*oid);
             }
         }
+        // With alternates, their refs and the advertised objects found
+        // there are announced as `have`s.
+        let advertised: Vec<ObjectId> = refs.iter().filter_map(|r| r.oid).collect();
+        let haves = (!alternates.is_empty()).then_some(advertised.as_slice());
 
         let show_progress = !opts.quiet
             && opts
@@ -649,7 +705,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         };
         packs.extend(
             session
-                .fetch_pack(&repo, &wants, None, &pack_opts)
+                .fetch_pack(&repo, &wants, haves, &pack_opts)
                 .map_err(|e| fatal(&e))?,
         );
 
@@ -671,7 +727,6 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 }
                 mapped.push((name, oid));
             }
-            let advertised: Vec<ObjectId> = refs.iter().filter_map(|r| r.oid).collect();
             packs.extend(
                 session
                     .fetch_pack(&repo, &more, Some(&advertised), &pack_opts)
@@ -685,6 +740,10 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             .flat_map(|p| p.objects.iter().copied())
             .collect();
         let tips: Vec<ObjectId> = mapped.iter().map(|(_, o)| *o).collect();
+        all_tips.extend(&tips);
+        if let Some(Our::Tag(_, oid) | Our::Branch(_, oid) | Our::Detached(oid)) = &our {
+            all_tips.push(*oid);
+        }
         if graph::check_connected(&repo.odb, &tips, &received).is_err() {
             return Err(Die::Fatal(msg::REMOTE_DID_NOT_SEND_ALL.into()));
         }
@@ -712,6 +771,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 }
             }
         }
+    }
+
+    // --dissociate: copy what is borrowed, then stop borrowing.
+    if opts.dissociate && !alternates.is_empty() {
+        dissociate(&repo, &all_tips, &alternates_file)?;
     }
 
     // HEAD, the local branch and its upstream.
@@ -982,3 +1046,85 @@ fn write_packed_refs(setup: &Setup, config: &ConfigSet, refs: &[PackedRef]) -> R
         .map_err(|e| Die::Fatal(e.to_string()))
 }
 
+
+/// The git directory of the local repository at `path`: `<path>/.git`
+/// (a directory or a gitfile), else `path` itself.
+fn repository_git_dir(path: &Path) -> PathBuf {
+    let gitfile = |file: &Path| -> Option<PathBuf> {
+        let text = std::fs::read_to_string(file).ok()?;
+        let target = text.trim_end().strip_prefix("gitdir: ")?;
+        Some(file.parent().unwrap_or(Path::new(".")).join(target))
+    };
+    if path.is_file() {
+        if let Some(dir) = gitfile(path) {
+            return dir;
+        }
+    }
+    let dot = path.join(".git");
+    if dot.is_dir() {
+        return dot;
+    }
+    gitfile(&dot).unwrap_or_else(|| path.to_path_buf())
+}
+
+/// The object directory of the `--reference` repository `reference`
+/// (absolute), or why it cannot be used.
+fn reference_objects(reference: &str, cwd: &Path) -> Result<PathBuf, String> {
+    let base = cwd.join(reference);
+    let path = std::fs::canonicalize(&base).unwrap_or(base);
+    let git_dir = repository_git_dir(&path);
+    if git_dir.join("commondir").is_file() {
+        return Err(msg::reference_linked_checkout(reference));
+    }
+    if !is_git_directory(&git_dir) {
+        return Err(msg::reference_not_local(reference));
+    }
+    if git_dir.join("shallow").is_file() {
+        return Err(msg::reference_shallow(reference));
+    }
+    if git_dir.join("info").join("grafts").is_file() {
+        return Err(msg::reference_grafted(reference));
+    }
+    let objects = git_dir.join("objects");
+    Ok(std::fs::canonicalize(&objects).unwrap_or(objects))
+}
+
+/// `--dissociate`: write every object reachable from `tips` into a pack
+/// of the new repository, then remove `objects/info/alternates`.
+fn dissociate(repo: &LocalRepo, tips: &[ObjectId], alternates_file: &Path) -> Result<(), Die> {
+    use rgit_pack::write::{self as pw, Tip, WriteOptions};
+    let fatal = |e: &dyn std::fmt::Display| Die::Fatal(e.to_string());
+    let hash = repo.hash;
+    let tips: Vec<Tip> = tips
+        .iter()
+        .map(|id| Tip {
+            id: *id,
+            exclude: false,
+        })
+        .collect();
+    let listed = pw::enumerate(&repo.odb, hash, &tips).map_err(|e| fatal(&e))?;
+    let ordered = pw::pack_order(&listed);
+    // Existing packs (also those of the alternates) are copied from.
+    let mut packs = repo
+        .odb
+        .packs()
+        .map(|p| p.set().packs())
+        .unwrap_or_default();
+    for dir in rgit_odb::resolve_alternates(&repo.objects_dir()) {
+        packs.extend(rgit_pack::PackSet::open(dir.join("pack"), hash).packs());
+    }
+    let opts = WriteOptions {
+        ofs_delta: true,
+        ..WriteOptions::default()
+    };
+    let (_, data) = pw::write_pack(Vec::new(), hash, &ordered, &repo.odb, &packs, &opts)
+        .map_err(|e| fatal(&e))?;
+    let pack = rgit_fetch::store_pack_stream(repo, &mut data.as_slice())
+        .map_err(|e| fatal(&e))?;
+    pack.release();
+    match std::fs::remove_file(alternates_file) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Die::Fatal(e.to_string())),
+    }
+}

@@ -166,6 +166,13 @@ impl Session {
                 for (_, id) in repo.list_refs("") {
                     consecutive.add_tip(id);
                 }
+                // The refs of alternates are tips too: their history is
+                // here.
+                for id in repo.alternate_tips() {
+                    if repo.has_object(&id) {
+                        consecutive.add_tip(id);
+                    }
+                }
                 &mut consecutive
             }
             None => &mut noop,
@@ -267,6 +274,36 @@ impl ReceivedPack {
             let _ = std::fs::remove_file(k);
         }
     }
+}
+
+/// Index the pack read from `reader` and store it in `repo` like a
+/// fetched pack (`objects/pack`, with a `.keep` file the caller releases).
+pub fn store_pack_stream(repo: &LocalRepo, reader: &mut dyn Read) -> Result<ReceivedPack> {
+    let pack_dir = repo.objects_dir().join("pack");
+    std::fs::create_dir_all(&pack_dir)?;
+    let mut tmp = TempFile::with_mode(&pack_dir, rgit_fs::PACK_PREFIX, 0o444)?;
+    let tmp_path = tmp.path().to_path_buf();
+    let mut file = tmp.file_mut().try_clone()?;
+    let ip_opts = index_pack_options(repo);
+    let indexed = ip::index_pack(
+        Input::Stream {
+            reader,
+            dest: &mut file,
+            dest_path: &tmp_path,
+        },
+        &ip_opts,
+        Some(&repo.odb as &dyn ObjectDb),
+        None,
+        None,
+    )?;
+    let stored = store_pack(repo, tmp, &indexed)?;
+    repo.rescan_packs();
+    Ok(ReceivedPack {
+        objects: indexed.objects().iter().map(|o| o.id).collect(),
+        pack: stored.0,
+        keep: stored.1,
+        rounds: 0,
+    })
 }
 
 fn index_pack_options(repo: &LocalRepo) -> Options {
