@@ -54,6 +54,10 @@ pub fn not_found(name: &str) -> String {
 pub fn cannot_delete_checked_out(name: &str, path: &str) -> String {
     format!("cannot delete branch '{name}' used by worktree at '{path}'")
 }
+/// The branch a bisection in this worktree started from.
+pub fn cannot_delete_for_bisect(name: &str, path: &str) -> String {
+    format!("cannot delete branch '{name}' used by worktree at '{path}' for bisect")
+}
 
 pub fn deleted(name: &str, abbrev: &str) -> String {
     format!("Deleted branch {name} (was {abbrev}).")

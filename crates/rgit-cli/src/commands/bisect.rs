@@ -117,6 +117,23 @@ impl Default for Terms {
     }
 }
 
+impl Terms {
+    /// The terms of the bisection in the (per-worktree) git directory of
+    /// `setup` (`BISECT_TERMS`); `bad`/`good` without one. `rev-list
+    /// --bisect` and `rev-parse --bisect` use them.
+    pub fn of(setup: &Setup) -> Terms {
+        let text = std::fs::read_to_string(setup.cwd.join(&setup.git_dir).join("BISECT_TERMS"));
+        let mut lines = text.as_deref().unwrap_or("").lines();
+        match (lines.next(), lines.next()) {
+            (Some(new), Some(old)) => Terms {
+                new: new.to_string(),
+                old: old.to_string(),
+            },
+            _ => Terms::default(),
+        }
+    }
+}
+
 /// What a step ended with (the exit code of the command).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -796,6 +813,13 @@ impl<'c> Bisect<'c> {
                 }
                 terms = self.terms();
                 continue;
+            }
+            if matches!(cmd, "new" | "old") && self.read_terms().is_none() {
+                // As in a live session, the first mark decides the terms.
+                terms = Terms {
+                    new: "new".into(),
+                    old: "old".into(),
+                };
             }
             if cmd == terms.new || cmd == terms.old || cmd == "skip" {
                 self.replay_mark(&terms, cmd, &split_words(wargs))?;

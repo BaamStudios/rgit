@@ -409,25 +409,31 @@ impl State<'_, '_> {
     }
 
     /// `--bisect`: `refs/bisect/bad` and the excluded `refs/bisect/good-*`.
+    /// `--bisect`: the refs `refs/bisect/<new>*`, then `^refs/bisect/<old>*`
+    /// (prefix matches with the current terms, as the reference git).
     fn show_bisect_refs(&mut self) -> Step {
-        let mut found: Vec<(bool, ObjectId)> = Vec::new();
+        let terms = crate::commands::bisect::Terms::of(self.setup);
+        let new = format!("refs/bisect/{}", terms.new);
+        let old = format!("refs/bisect/{}", terms.old);
+        let mut found: Vec<(bool, String, ObjectId)> = Vec::new();
         let r = self
             .resolver
             .repo()
             .refs
             .for_each_ref("refs/bisect/", &mut |name, oid| {
-                if name == "refs/bisect/bad" {
-                    found.push((false, *oid));
-                } else if name.starts_with("refs/bisect/good-") {
-                    found.push((true, *oid));
+                if name.starts_with(&new) {
+                    found.push((false, name.to_string(), *oid));
+                }
+                if name.starts_with(&old) {
+                    found.push((true, name.to_string(), *oid));
                 }
             });
         if let Err(e) = r {
             return Err(self.rev_error(RevError::Lookup(e)));
         }
         found.sort_by_key(|f| f.0);
-        for (negative, oid) in found {
-            self.show_rev(negative, &oid, None)?;
+        for (negative, name, oid) in found {
+            self.show_rev(negative, &oid, Some(&name))?;
         }
         Ok(())
     }

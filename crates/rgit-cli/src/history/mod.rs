@@ -262,10 +262,17 @@ pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
         opts.read_stdin(&input)?;
     }
     if opts.bisect {
-        let bad = matches!(refs.resolve("refs/bisect/bad"), Ok(Some(r)) if r.oid.is_some());
-        let mut good = false;
-        let _ = refs.for_each_ref("refs/bisect/good-", &mut |_, _| good = true);
-        opts.push_bisect_refs(bad, good);
+        let terms = crate::commands::bisect::Terms::of(&setup);
+        let (new, old) = (
+            format!("refs/bisect/{}", terms.new),
+            format!("refs/bisect/{}", terms.old),
+        );
+        let (mut has_new, mut has_old) = (false, false);
+        let _ = refs.for_each_ref("refs/bisect/", &mut |name, _| {
+            has_new |= name.starts_with(&new);
+            has_old |= name.starts_with(&old);
+        });
+        opts.push_bisect_refs(&terms.new, &terms.old, has_new, has_old);
     }
     if opts.has_no_tips() && !opts.stdin && !opts.bisect {
         match cmd {

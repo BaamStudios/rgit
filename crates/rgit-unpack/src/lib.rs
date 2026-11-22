@@ -148,6 +148,9 @@ pub enum Error {
     /// A tree could not be read.
     #[error("{}", messages::failed_to_unpack(&.0.to_hex()))]
     MissingTree(ObjectId),
+    /// A subtree of a tree being read could not be read.
+    #[error("{}", messages::unable_to_read_tree(&.0.to_hex()))]
+    MissingSubtree(ObjectId),
     /// A tree could not be parsed (the parser's message).
     #[error("{0}")]
     CorruptTree(String),

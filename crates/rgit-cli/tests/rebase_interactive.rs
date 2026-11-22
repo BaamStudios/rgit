@@ -156,6 +156,12 @@ fn exec() {
             "git rebase --exec 'echo x >>b; git add b' HEAD~2",
             "git rebase --exec nonexistent-command-xyz HEAD~1",
             "git rebase --exec 'echo new >new' HEAD~1",
+            // -q hides "Executing: ..." (t3400 "rebase --exec -q is quiet").
+            "git rebase --exec true -q main",
+            "git rebase -i -q -x true HEAD~2",
+            // The diffstat of the new base on unrelated histories
+            // (t3406 "rebase -i onto unrelated history").
+            "git checkout -q --orphan o && git rm -q -rf . && echo z >z && git add z && git commit -q -m Z && git rebase -i --stat main",
         ],
     );
 }
@@ -260,6 +266,24 @@ fn reword_and_edit() {
             ),
             &format!("{edit}; git rebase -i main; git rebase --abort"),
             &format!("{edit}; git rebase -i main; git rebase --skip"),
+        ],
+    );
+    // reword runs the pre-commit and commit-msg hooks (also with
+    // --no-verify, which only skips pre-rebase); squash and fixup do not
+    // (t7504 "hook is called for reword during `rebase -i`").
+    let squash = todo(&["pick topic~6", "squash topic~5", "fixup topic~4"]);
+    scripts(
+        |fx| {
+            fx.write_executable(".git/hooks/pre-commit", "#!/bin/sh\necho pre-commit >&2\n")
+                .write_executable(
+                    ".git/hooks/commit-msg",
+                    "#!/bin/sh\necho \"commit-msg $(head -n 1 \"$1\")\" >&2\necho hooked >\"$1\"\n",
+                )
+        },
+        &[
+            &format!("{reword}; git rebase -i main"),
+            &format!("{reword}; git rebase --no-verify -i main"),
+            &format!("{squash}; git rebase -i main"),
         ],
     );
 }

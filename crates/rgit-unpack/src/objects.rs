@@ -52,6 +52,7 @@ pub fn read_blob(odb: &dyn Objects, id: &ObjectId) -> Result<Vec<u8>, Error> {
 ///
 /// # Errors
 /// [`Error::MissingTree`] for a tree that cannot be read,
+/// [`Error::MissingSubtree`] for one of its subtrees,
 /// [`Error::CorruptTree`] for one that cannot be parsed.
 pub fn tree_entries(odb: &dyn Objects, id: &ObjectId) -> Result<Vec<Entry>, Error> {
     let mut out = Vec::new();
@@ -77,7 +78,10 @@ fn walk(
         let mode = rgit_object::EntryMode::from_bits(e.mode_bits).canonical();
         if mode.is_tree() {
             base.push(b'/');
-            walk(odb, &e.oid, base, out)?;
+            walk(odb, &e.oid, base, out).map_err(|err| match err {
+                Error::MissingTree(id) => Error::MissingSubtree(id),
+                other => other,
+            })?;
         } else {
             out.push(Entry::new(
                 base.clone(),

@@ -15,6 +15,11 @@ pub fn failed_to_unpack(id: &str) -> String {
     format!("failed to unpack tree object {id}")
 }
 
+/// A subtree that cannot be read while reading a tree (`fatal: `).
+pub fn unable_to_read_tree(id: &str) -> String {
+    format!("unable to read tree ({id})")
+}
+
 /// A tree entry whose path may not be checked out (`error: `).
 pub fn invalid_path(path: &str) -> String {
     format!("invalid path '{path}'")

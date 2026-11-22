@@ -804,13 +804,23 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
     // The diffstat of what changed upstream.
     if stat {
         let bases = merge_bases(&repo, &onto, &orig_head)?;
-        if let Some(base) = bases.first() {
-            if o.verbose {
-                println!("{}", msg::changes_from(&base.to_hex(), &onto.to_hex()));
+        let n = onto.to_hex();
+        let b = match bases.first() {
+            Some(base) => {
+                if o.verbose {
+                    println!("{}", msg::changes_from(&base.to_hex(), &n));
+                }
+                base.to_hex()
             }
-            let (b, n) = (base.to_hex(), onto.to_hex());
-            run_child(ctx, &["diff", "--stat", "--summary", &b, &n], false)?;
-        }
+            // Unrelated histories: everything up to the new base.
+            None => {
+                if o.verbose {
+                    println!("{}", msg::changes_to(&n));
+                }
+                ObjectId::empty_tree(repo.hash).to_hex()
+            }
+        };
+        run_child(ctx, &["diff", "--stat", "--summary", &b, &n], false)?;
     }
 
     // The todo list.
@@ -2009,7 +2019,9 @@ impl<'c> Rebase<'c> {
                     "GIT_REFLOG_ACTION".to_owned(),
                     format!("{} (reword)", self.action),
                 )];
-                let args = ["--amend", "--allow-empty", "-n", "-e"].map(str::to_owned);
+                // The pre-commit and commit-msg hooks run, as in git
+                // (rebase --no-verify only skips pre-rebase).
+                let args = ["--amend", "--allow-empty", "-e"].map(str::to_owned);
                 let code = self.commit_child(&args, &env, false)?;
                 self.remove_git_file("AUTO_MERGE")?;
                 if code != 0 {
@@ -2260,7 +2272,9 @@ impl<'c> Rebase<'c> {
     /// changes behind.
     fn exec(&mut self, item: &todo::Item, todo: &mut todo::Todo) -> Result<Step, Die> {
         let cmd = item.arg.as_str();
-        eprintln!("{}", msg::executing(cmd));
+        if !self.state.quiet {
+            eprintln!("{}", msg::executing(cmd));
+        }
         let _ = std::io::stdout().flush();
         let mut repo = self.repo()?;
         let work_tree = repo.work_tree()?;

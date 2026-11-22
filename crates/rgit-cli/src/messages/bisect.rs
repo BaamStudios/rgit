@@ -137,6 +137,10 @@ pub fn bisecting(nr: i64, steps: usize) -> String {
 pub fn first_bad(hex: &str, term: &str) -> String {
     format!("{hex} is the first '{term}' commit")
 }
+/// The diffstat of the first new commit failed (`fatal: `).
+pub fn unable_to_start_show(hex: &str) -> String {
+    format!("unable to start 'show' for object '{hex}'")
+}
 
 pub fn first_bad_log(term: &str, hex: &str, subject: &str) -> String {
     format!("# first '{term}' commit: [{hex}] {subject}")
