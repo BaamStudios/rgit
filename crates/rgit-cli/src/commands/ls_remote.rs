@@ -14,9 +14,7 @@ use std::path::Path;
 
 use bstr::ByteSlice;
 use rgit_config::{ConfigSet, SystemEnv};
-use rgit_hash::ObjectId;
 use rgit_pathspec::wildmatch::{WildmatchFlags, wildmatch};
-use rgit_protocol::capabilities::{NO_REFS_NAME, split_ref_line};
 use rgit_protocol::v2::{Client, LsRefsArgs, RemoteRef};
 use rgit_protocol::{Capabilities, Packet, ProtocolVersion, Reader};
 use rgit_remote::{BranchConfig, Remotes};
@@ -64,24 +62,6 @@ fn current_branch(git_dir: &Path) -> Option<Vec<u8>> {
         .map(|r| r.trim_ascii_end().to_vec())
 }
 
-/// `protocol.version` (default 2).
-fn protocol_version(config: &ConfigSet) -> Result<ProtocolVersion, Die> {
-    let Some(value) = config
-        .get("protocol.version")
-        .and_then(|e| e.value.as_deref())
-    else {
-        return Ok(ProtocolVersion::V2);
-    };
-    match value.trim_ascii() {
-        b"0" => Ok(ProtocolVersion::V0),
-        b"1" => Ok(ProtocolVersion::V1),
-        b"2" => Ok(ProtocolVersion::V2),
-        other => Err(Die::Fatal(msg::unknown_protocol_version(
-            &other.to_str_lossy(),
-        ))),
-    }
-}
-
 /// Skip the `# service=git-upload-pack` header and its flush in front of
 /// a smart HTTP advertisement.
 fn skip_service_header(reader: &mut Reader<Box<dyn Connection>>) -> rgit_protocol::Result<()> {
@@ -98,54 +78,6 @@ fn skip_service_header(reader: &mut Reader<Box<dyn Connection>>) -> rgit_protoco
     Ok(())
 }
 
-/// The refs of a protocol v0/v1 advertisement (after the version line):
-/// `<oid> <name>` lines up to a flush, the first one with capabilities
-/// (`symref=HEAD:<target>`), a peeled tag as `<name>^{}` after its tag.
-fn read_v0_advertisement(
-    reader: &mut Reader<Box<dyn Connection>>,
-) -> rgit_protocol::Result<Vec<RemoteRef>> {
-    let mut refs: Vec<RemoteRef> = Vec::new();
-    let mut symrefs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    let bad =
-        |line: &[u8]| rgit_protocol::Error::InvalidLsRefs(String::from_utf8_lossy(line).into_owned());
-    loop {
-        let line = match reader.read_or_eof()? {
-            None | Some(Packet::Flush) => break,
-            Some(Packet::Data(d)) => d.strip_suffix(b"\n").unwrap_or(d).to_vec(),
-            Some(other) => return Err(other.unexpected()),
-        };
-        let (refpart, caps) = split_ref_line(&line);
-        if let Some(caps) = caps {
-            for (from, to) in caps.symrefs() {
-                symrefs.push((from.as_bytes().to_vec(), to.as_bytes().to_vec()));
-            }
-        }
-        let (hex, name) = refpart.split_once_str(" ").ok_or_else(|| bad(&line))?;
-        if name == NO_REFS_NAME {
-            continue;
-        }
-        let oid = ObjectId::from_hex_any(hex).map_err(|_| bad(&line))?;
-        if let Some(base) = name.strip_suffix(b"^{}") {
-            if let Some(last) = refs.last_mut().filter(|r| r.name == base) {
-                last.peeled = Some(oid);
-                continue;
-            }
-        }
-        refs.push(RemoteRef {
-            name: name.to_vec(),
-            oid: Some(oid),
-            symref_target: None,
-            peeled: None,
-        });
-    }
-    for r in &mut refs {
-        r.symref_target = symrefs
-            .iter()
-            .find(|(from, _)| *from == r.name)
-            .map(|(_, to)| to.clone());
-    }
-    Ok(refs)
-}
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // `-q` only silences the "From <url>" line, which is printed when the
@@ -240,6 +172,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(0);
     }
 
+    rgit_remote::check_allowed(rgit_fetch::protocol_name(&url).as_bytes(), &config, &env)
+        .map_err(|e| Die::Fatal(e.to_string()))?;
     let settings = Settings {
         env: &env,
         config: &config,
@@ -260,7 +194,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .as_ref()
             .map(|p| p.to_str_lossy().into_owned())
     });
-    options.protocol_version = protocol_version(&config)?;
+    options.protocol_version =
+        rgit_fetch::protocol_version(&config, &env).map_err(|e| fatal(&e))?;
+    options.trace_name = Some("ls-remote".into());
     let conn = transport.connect(&options).map_err(|e| fatal(&e))?;
     let mut reader = Reader::new(conn, "ls-remote");
     skip_service_header(&mut reader).map_err(|e| fatal(&e))?;
@@ -287,8 +223,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             client.into_inner().close().map_err(|e| fatal(&e))?;
             refs
         }
-        ProtocolVersion::V0 | ProtocolVersion::V1 => {
-            let refs = read_v0_advertisement(&mut reader).map_err(|e| fatal(&e))?;
+        v => {
+            let refs = rgit_protocol::v0::read_advertisement(&mut reader, v)
+                .map_err(|e| fatal(&e))?
+                .refs;
             let mut conn = reader.into_inner();
             if !conn.is_stateless() {
                 // End the session: a flush packet instead of wants.

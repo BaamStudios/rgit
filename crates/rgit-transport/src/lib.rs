@@ -109,9 +109,9 @@ pub fn transport_for(url: &str, settings: &Settings<'_>) -> Result<Option<Box<dy
         })),
         Remote::Other { scheme } if scheme == "git" => {
             let rest = &url[url.find("://").map_or(0, |i| i + 3)..];
-            Some(Box::new(DaemonTransport {
-                target: DaemonTarget::parse(rest)?,
-            }))
+            let target = DaemonTarget::parse(rest)?;
+            let proxy = daemon::proxy_for(&target.host, settings.env, settings.config);
+            Some(Box::new(DaemonTransport { target, proxy }))
         }
         Remote::Other { .. } => None,
     })

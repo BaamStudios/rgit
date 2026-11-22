@@ -200,7 +200,7 @@ pub struct FetchArgs {
 }
 
 impl FetchArgs {
-    fn wants_shallow(&self) -> bool {
+    pub(crate) fn wants_shallow(&self) -> bool {
         !self.shallow.is_empty()
             || self.deepen.is_some()
             || self.deepen_relative
@@ -730,7 +730,7 @@ impl<C: Duplex> Client<C> {
     }
 }
 
-fn read_sideband<R: Read, P: Write, F: FnMut(&[u8]) -> io::Result<()>>(
+pub(crate) fn read_sideband<R: Read, P: Write, F: FnMut(&[u8]) -> io::Result<()>>(
     reader: &mut Reader<R>,
     progress: &mut Progress<P>,
     on_pack: &mut F,
