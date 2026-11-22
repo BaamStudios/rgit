@@ -139,6 +139,8 @@ fn urls() {
         "./%0A",
         "https::ssh://x/%0a",
         "https::https::https://h/x",
+        "http://x y/z",
+        "http://x  ",
     ] {
         assert!(!check_url(bad.as_bytes()), "{bad}");
     }
