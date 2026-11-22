@@ -287,7 +287,7 @@ struct Source {
 fn local_repository(repo: &str, cwd: &Path) -> Option<PathBuf> {
     for (suffix, keep) in [("/.git", ""), ("", ""), (".git/.git", ".git"), (".git", ".git")] {
         let candidate = cwd.join(format!("{repo}{suffix}"));
-        if candidate.is_dir() && is_git_directory(&candidate) {
+        if is_git_directory(&candidate) || gitfile_repository(&candidate) {
             let base = cwd.join(format!("{repo}{keep}"));
             let real = std::fs::canonicalize(&base).unwrap_or(base);
             return Some(real);
@@ -296,9 +296,20 @@ fn local_repository(repo: &str, cwd: &Path) -> Option<PathBuf> {
     None
 }
 
-/// A directory that has `HEAD`, `objects/` and `refs/` (or a gitfile).
+/// A directory that has `HEAD`, `objects/` and `refs/`; for a linked work
+/// tree's git directory `objects/` and `refs/` are in its common
+/// directory.
 fn is_git_directory(dir: &Path) -> bool {
-    dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir()
+    let common = common_dir_of(dir);
+    dir.is_dir()
+        && dir.join("HEAD").is_file()
+        && common.join("objects").is_dir()
+        && common.join("refs").is_dir()
+}
+
+/// A gitfile (`gitdir: <path>`) pointing to a git directory.
+fn gitfile_repository(file: &Path) -> bool {
+    file.is_file() && is_git_directory(&repository_git_dir(file))
 }
 
 /// git's `transport_anonymize_url`: the password (and user) of a URL are
@@ -559,7 +570,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         }
     }
     if opts.shared && local_mode {
-        let dir = repository_git_dir(Path::new(&source.url)).join("objects");
+        let dir = common_dir_of(&repository_git_dir(Path::new(&source.url))).join("objects");
         let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
         if !alternates.contains(&dir) {
             alternates.push(dir);
@@ -1127,6 +1138,15 @@ fn write_packed_refs(setup: &Setup, config: &ConfigSet, refs: &[PackedRef]) -> R
         .map_err(|e| Die::Fatal(e.to_string()))
 }
 
+
+/// The common directory of the git directory `git_dir` (its `commondir`
+/// file for a linked work tree), else `git_dir`.
+fn common_dir_of(git_dir: &Path) -> PathBuf {
+    match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) => git_dir.join(text.trim_end()),
+        Err(_) => git_dir.to_path_buf(),
+    }
+}
 
 /// The git directory of the local repository at `path`: `<path>/.git`
 /// (a directory or a gitfile), else `path` itself.
