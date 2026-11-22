@@ -54,6 +54,11 @@ impl Filters {
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
+    run_with_usage(ctx, argv, msg::USAGE)
+}
+
+/// `for-each-ref` with another usage text (`git refs list`).
+pub fn run_with_usage(ctx: &mut Context, argv: &[String], usage: &[&str]) -> CmdResult {
     let quote = Cell::new(Quote::None);
     let quote_count = Cell::new(0);
     let omit_empty = Cell::new(false);
@@ -94,7 +99,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .noneg()
     };
     let mut parser = Parser::new(
-        msg::USAGE,
+        usage,
         vec![
             quote_opt(Some('s'), "shell", Quote::Shell, msg::HELP_SHELL),
             quote_opt(Some('p'), "perl", Quote::Perl, msg::HELP_PERL),

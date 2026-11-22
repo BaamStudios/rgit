@@ -289,6 +289,26 @@ impl Revs {
         })
     }
 
+    /// The revision parser for `setup` with an already loaded `config`;
+    /// invalid revision settings fall back to the defaults instead of
+    /// ending the command.
+    pub fn with_config(setup: &Setup, config: ConfigSet) -> Revs {
+        let kind = setup.format.object_format;
+        let opts = revisions::options_lenient(&config, kind);
+        let shallow = std::env::var_os("GIT_SHALLOW_FILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| setup.common_dir.join("shallow"));
+        Revs {
+            objects: revisions::Objects::new(revisions::objects_dir(setup), kind, &shallow),
+            refs: revisions::Refs::new(setup, kind),
+            config,
+            index: revisions::IndexFile::new(setup, kind),
+            work_tree: setup.work_tree.clone().map(revisions::WorkTree),
+            info: revisions::work_tree_info(setup),
+            opts,
+        }
+    }
+
     /// The object `name` stands for, if any (no messages).
     pub fn resolve(&self, name: &str) -> Option<ObjectId> {
         let flags = Flags {

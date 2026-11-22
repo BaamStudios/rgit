@@ -117,7 +117,14 @@ impl Config {
                 .as_ref()
                 .map(|v| v.to_str_lossy().into_owned())
                 .unwrap_or_default();
-            let t = rgit_date::parse_expiry_date(&value, date).map_err(|_| {
+            // `false` reads as `never` here (git v2.56.1); other boolean
+            // spellings are invalid.
+            let parsed = if value == "false" {
+                Ok(0)
+            } else {
+                rgit_date::parse_expiry_date(&value, date)
+            };
+            let t = parsed.map_err(|_| {
                 crate::comment::bad_entry(
                     e,
                     &cmsg::invalid_timestamp(&value, &e.name.to_str_lossy()),
@@ -188,6 +195,20 @@ pub struct Options {
     /// `--rewrite`: the old value of an entry after a pruned one becomes
     /// the new value of the entry now before it.
     pub rewrite: bool,
+    /// `--updateref`: when the newest entry goes, the reference is set to
+    /// the new value of the entry that is now the newest (not for
+    /// symbolic references, nor when no entry is left).
+    pub updateref: bool,
+}
+
+/// Which entries go.
+#[derive(Clone, Copy, Debug)]
+pub enum Rule {
+    /// By age and reachability (`reflog expire`).
+    Age(Cutoffs),
+    /// Exactly the entry `<ref>@{<n>}` (`reflog delete`), counted from the
+    /// newest one.
+    Nth(usize),
 }
 
 /// One reflog of some worktree.
@@ -303,6 +324,122 @@ pub fn expire(
     cut: Cutoffs,
     o: Options,
 ) -> Result<(), Die> {
+    prune(repo, common_dir, log, Rule::Age(cut), o, None)
+}
+
+/// `--stale-fix`: finds commits that are not reachable from any reference
+/// and lead, through their parents and trees, to a missing object.
+pub struct StaleFix {
+    reachable: HashSet<ObjectId>,
+    /// Verdicts so far: `true` for a broken commit or an incomplete tree.
+    known: std::collections::HashMap<ObjectId, bool>,
+}
+
+impl StaleFix {
+    /// Marks everything reachable from the references and `HEAD` of `repo`.
+    pub fn new(repo: &Repo) -> StaleFix {
+        let mut todo: Vec<ObjectId> = repo
+            .refs
+            .list("refs/")
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        todo.extend(repo.refs.resolve("HEAD"));
+        let mut reachable = HashSet::new();
+        while let Some(id) = todo.pop() {
+            if !reachable.insert(id) {
+                continue;
+            }
+            match repo.read_object(&id) {
+                Some(Object::Commit(c)) => todo.extend(c.parents().unwrap_or_default()),
+                Some(Object::Tag(t)) => todo.extend(t.object().ok()),
+                _ => {}
+            }
+        }
+        StaleFix {
+            reachable,
+            known: Default::default(),
+        }
+    }
+
+    /// Whether `id` is a broken commit: not reachable, and a commit, tree
+    /// or blob it refers to is missing.
+    pub fn broken(&mut self, repo: &Repo, id: &ObjectId) -> bool {
+        if id.is_null() || self.reachable.contains(id) {
+            return false;
+        }
+        if let Some(&b) = self.known.get(id) {
+            return b;
+        }
+        // Depth-first over the unreachable commits; a commit is decided
+        // once all its parents are.
+        let mut stack = vec![(*id, false)];
+        while let Some((c, expanded)) = stack.pop() {
+            if self.known.contains_key(&c) {
+                continue;
+            }
+            let Some(Object::Commit(commit)) = repo.read_object(&c) else {
+                self.known.insert(c, true);
+                continue;
+            };
+            let parents: Vec<ObjectId> = commit
+                .parents()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| !self.reachable.contains(p))
+                .collect();
+            if !expanded {
+                stack.push((c, true));
+                stack.extend(
+                    parents
+                        .iter()
+                        .filter(|p| !self.known.contains_key(*p))
+                        .map(|p| (*p, false)),
+                );
+                continue;
+            }
+            let bad = parents
+                .iter()
+                .any(|p| self.known.get(p).copied().unwrap_or(false))
+                || commit.tree().map_or(true, |t| self.tree_broken(repo, &t));
+            self.known.insert(c, bad);
+        }
+        self.known.get(id).copied().unwrap_or(true)
+    }
+
+    fn tree_broken(&mut self, repo: &Repo, id: &ObjectId) -> bool {
+        if let Some(&b) = self.known.get(id) {
+            return b;
+        }
+        let bad = match repo.read_object(id) {
+            Some(Object::Tree(tree)) => tree.entries.iter().any(|e| {
+                if e.mode.is_tree() {
+                    self.tree_broken(repo, &e.oid)
+                } else if e.mode == rgit_object::EntryMode::COMMIT {
+                    false
+                } else {
+                    !repo.odb().contains(&e.oid)
+                }
+            }),
+            _ => true,
+        };
+        self.known.insert(*id, bad);
+        bad
+    }
+}
+
+/// Prunes the entries of the reflog `log.name` (worktree `log.git_dir`)
+/// that `rule` selects, and with `stale` those that point to broken
+/// commits. Nothing happens if the reference has no log or the log is
+/// locked.
+pub fn prune(
+    repo: &Repo,
+    common_dir: &Path,
+    log: &Log,
+    rule: Rule,
+    o: Options,
+    mut stale: Option<&mut StaleFix>,
+) -> Result<(), Die> {
     let kind = repo.hash;
     let logs = FilesReflog::new(&log.git_dir, common_dir, kind);
     let Ok(Some(data)) = logs.read_raw(&log.name) else {
@@ -324,13 +461,24 @@ pub fn expire(
     let mut kept: Vec<Entry> = Vec::with_capacity(entries.len());
     let mut changed = false;
     let mut after_pruned = false;
-    for e in &entries {
+    let count = entries.len();
+    for (i, e) in entries.iter().enumerate() {
         let mut e = e.clone();
         if o.rewrite && after_pruned {
             e.old = kept.last().map_or_else(|| kind.null(), |p| p.new);
         }
-        let prune = e.time < cut.total
-            || (e.time < cut.unreachable && (reach.misses(&e.old) || reach.misses(&e.new)));
+        let mut prune = match rule {
+            Rule::Age(cut) => {
+                e.time < cut.total
+                    || (e.time < cut.unreachable && (reach.misses(&e.old) || reach.misses(&e.new)))
+            }
+            Rule::Nth(n) => count - 1 - i == n,
+        };
+        if !prune {
+            if let Some(s) = stale.as_deref_mut() {
+                prune = s.broken(repo, &e.old) || s.broken(repo, &e.new);
+            }
+        }
         if o.verbose {
             let what = match (prune, o.dry_run && log.listed) {
                 (true, true) => crate::messages::reflog::WOULD_PRUNE,
@@ -367,7 +515,30 @@ pub fn expire(
         return Ok(());
     }
     let _ = lock.commit();
+    if o.updateref && after_pruned {
+        if let Some(top) = kept.last() {
+            update_ref(repo, log, top.new);
+        }
+    }
     Ok(())
+}
+
+/// `--updateref`: points the reference of `log` at `new` without a reflog
+/// entry; symbolic references are left alone.
+fn update_ref(repo: &Repo, log: &Log, new: ObjectId) {
+    let store =
+        FilesStore::new(repo.setup.absolute_common_dir(), repo.hash).with_worktree(&log.git_dir);
+    if !matches!(store.read_raw(&log.name), Ok(Some(Target::Object(_)))) {
+        return;
+    }
+    let objects = crate::refs_support::Objects::open(&repo.setup);
+    let mut hooks = crate::refs_support::UpdateHooks::new(&repo.setup, &repo.config, &objects)
+        .without_reflogs();
+    let mut tx = rgit_refs::Transaction::new(&store);
+    let update = rgit_refs::RefUpdate::update(log.name.as_str(), new, None).no_deref(true);
+    if tx.push(update).is_ok() {
+        let _ = tx.commit(&mut hooks);
+    }
 }
 
 /// How many entries of the `HEAD` reflog of the worktree are old enough

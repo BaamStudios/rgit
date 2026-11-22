@@ -56,6 +56,7 @@ pub mod read_tree;
 pub mod rebase;
 pub mod ref_filter;
 pub mod reflog;
+pub mod refs;
 pub mod remote;
 pub mod reset;
 pub mod restore;
@@ -207,6 +208,16 @@ usage: git rev-parse --parseopt [<options>] -- [<args>...]
 
 Run \"git rev-parse --parseopt -h\" for more information on the first usage.
 ";
+
+/// `rev-parse --parseopt` (git-rev-parse(1), PARSEOPT).
+pub const PARSEOPT_USAGE: &str = "git rev-parse --parseopt [<options>] -- [<args>...]";
+pub const PARSEOPT_HELP_KEEP_DASHDASH: &str = "keep the `--` passed as an arg";
+pub const PARSEOPT_HELP_STOP_AT_NON_OPTION: &str =
+    "stop parsing after the first non-option argument";
+pub const PARSEOPT_HELP_STUCK_LONG: &str = "output in stuck long form";
+pub const PARSEOPT_PREMATURE_END: &str = "premature end of input";
+pub const PARSEOPT_NO_USAGE: &str = "no usage string given before the `--' separator";
+pub const PARSEOPT_MISSING_SPEC: &str = "missing opt-spec before option flags";
 
 /// `rev-parse --verify` without exactly one revision.
 pub const NEEDED_SINGLE_REVISION: &str = "Needed a single revision";

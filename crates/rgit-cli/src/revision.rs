@@ -235,11 +235,41 @@ impl<'a> Resolver<'a> {
         }))
     }
 
+    /// Forms this subset does not know (`@{-<n>}`, `@{upstream}`,
+    /// `@{push}`) go to the full revision parser (`rgit_revwalk::revision`).
+    fn needs_full_parser(s: &str) -> bool {
+        let mut rest = s;
+        while let Some(at) = rest.find("@{") {
+            let after = &rest[at + 2..];
+            let spec = after.split('}').next().unwrap_or("");
+            let lower = spec.to_ascii_lowercase();
+            if spec.starts_with('-') || matches!(lower.as_str(), "u" | "upstream" | "push") {
+                return true;
+            }
+            rest = after;
+        }
+        false
+    }
+
+    fn full_parser(&mut self, name: &str) -> Res<ObjectId> {
+        use rgit_revwalk::revision::{Error, Flags};
+        let revs =
+            crate::refs_support::Revs::with_config(&self.repo.setup, self.repo.config.clone());
+        match revs.with_resolver(|r| r.resolve_with(name, Flags::default())) {
+            Ok(id) => Ok(id),
+            Err(Error::Fatal(m)) => Err(Failure::Fatal(m)),
+            Err(_) => Err(Failure::missing()),
+        }
+    }
+
     /// A revision without `:<path>`.
     pub fn rev(&mut self, s: &str) -> Res<ObjectId> {
         // `:/<regex>`: the whole rest is the pattern, no suffixes.
         if let Some(pattern) = s.strip_prefix(":/") {
             return self.search_all_refs(pattern);
+        }
+        if Self::needs_full_parser(s) {
+            return self.full_parser(s);
         }
         if s.ends_with('}') {
             if let Some(open) = matching_brace(s) {

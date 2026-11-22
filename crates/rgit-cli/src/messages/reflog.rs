@@ -75,3 +75,37 @@ pub fn no_commits_yet(branch: &str) -> String {
 pub fn not_supported(what: &str) -> String {
     format!("rgit reflog: {what} is not supported yet")
 }
+
+pub const USAGE_DELETE: &str = "\
+git reflog delete [--rewrite] [--updateref]
+                         [--dry-run | -n] [--verbose] <ref>@{<specifier>}...";
+pub const USAGE_DROP: &str = "git reflog drop [--all [--single-worktree] | <refs>...]";
+pub const USAGE_WRITE: &str = "git reflog write <ref> <old-oid> <new-oid> <message>";
+pub const HELP_DROP_ALL: &str = "drop the reflogs of all references";
+pub const HELP_DROP_SINGLE_WORKTREE: &str = "drop reflogs from the current worktree only";
+pub const NO_REFLOG_TO_DELETE: &str = "no reflog specified to delete";
+pub const REFS_WITH_ALL: &str = "references specified along with --all";
+
+pub fn not_a_reflog(arg: &str) -> String {
+    format!("not a reflog: {arg}")
+}
+
+pub fn no_reflog_for(arg: &str) -> String {
+    format!("no reflog for '{arg}'")
+}
+
+pub fn invalid_reference_name(name: &str) -> String {
+    format!("invalid reference name: {name}")
+}
+
+/// `which` is `old` or `new`.
+pub fn invalid_object_id(which: &str, hex: &str) -> String {
+    format!("invalid {which} object ID: '{hex}'")
+}
+
+pub fn object_does_not_exist(which: &str, hex: &str) -> String {
+    format!("{which} object '{hex}' does not exist")
+}
+
+/// `reflog expire --stale-fix --verbose`, before the walk.
+pub const MARKING_REACHABLE: &str = "Marking reachable objects...";

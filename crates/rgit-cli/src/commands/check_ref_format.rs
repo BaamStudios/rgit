@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! `git check-ref-format` (Documentation/git-check-ref-format.adoc).
 //!
-//! The rules and messages live in `rgit_refs`. `--branch @{-N}` (the
-//! previous checkout, read from the reflog) is not supported yet (#30):
-//! such names are rejected as outside a repository.
+//! The rules and messages live in `rgit_refs`. `--branch @{-N}...` names
+//! the N-th previous checkout (from the `HEAD` reflog) inside a
+//! repository.
 
 use std::io::Write;
 
@@ -22,7 +22,33 @@ fn usage(to_stdout: bool) -> CmdResult {
     }
 }
 
-pub fn run(_ctx: &mut Context, argv: &[String]) -> CmdResult {
+/// `@{-<n>}` at the start of `name` replaced by the n-th previously
+/// checked out branch (or commit); `name` itself outside a repository or
+/// when there are not that many checkouts.
+fn expand_previous(ctx: &Context, name: &str) -> Result<String, Die> {
+    let Some((n, tail)) = name
+        .strip_prefix("@{-")
+        .and_then(|r| r.split_once('}'))
+        .and_then(|(n, t)| n.parse::<usize>().ok().filter(|&n| n > 0).map(|n| (n, t)))
+    else {
+        return Ok(name.to_owned());
+    };
+    let Some(setup) = crate::repo::setup_gently(ctx)? else {
+        return Ok(name.to_owned());
+    };
+    let logs = rgit_refs::reflog::FilesReflog::new(
+        setup.absolute_git_dir(),
+        setup.absolute_common_dir(),
+        setup.format.object_format,
+    );
+    let head = logs.read("HEAD").ok().flatten().unwrap_or_default();
+    Ok(match rgit_refs::reflog::nth_prior_checkout(&head, n) {
+        Some(b) => format!("{}{tail}", String::from_utf8_lossy(b)),
+        None => name.to_owned(),
+    })
+}
+
+pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let args = &argv[1..];
     if args.len() == 1 && (args[0] == "-h" || args[0] == "--help-all") {
         return usage(true);
@@ -31,7 +57,7 @@ pub fn run(_ctx: &mut Context, argv: &[String]) -> CmdResult {
         if args.len() != 2 {
             return usage(false);
         }
-        let name = &args[1];
+        let name = &expand_previous(ctx, &args[1])?;
         return match check_branch_name(name.as_bytes()) {
             Ok(()) => {
                 println!("{name}");
