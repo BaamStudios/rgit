@@ -28,7 +28,8 @@ pub fn server_path(fx: &Fixture) -> std::ffi::OsString {
     std::env::join_paths(dirs).unwrap()
 }
 
-/// A child process killed on drop.
+/// A child process killed and reaped on drop (also while unwinding from a
+/// panic).
 pub struct Server(pub Child);
 
 impl Drop for Server {
@@ -36,6 +37,38 @@ impl Drop for Server {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+/// A command that runs the reference git's `git-daemon` program itself.
+///
+/// `git daemon` is not a builtin: the `git` wrapper starts `git-daemon` as a
+/// child and waits for it. Killing the wrapper (all [`Server`] can do)
+/// leaves that child running, orphaned, with the test's output pipe still
+/// open, so piped `cargo test` runs never finish (#383). Starting the
+/// program directly makes the guard's kill reach the daemon. Falls back to
+/// `git daemon` if no `git-daemon` program is found.
+pub fn daemon_command(git: &Path) -> Command {
+    let exec_path = Command::new(git)
+        .arg("--exec-path")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim_end()));
+    let candidates = exec_path
+        .into_iter()
+        .chain(git.parent().map(Path::to_path_buf))
+        .map(|d| d.join("git-daemon"));
+    for c in candidates {
+        if c.is_file() {
+            return Command::new(c);
+        }
+    }
+    let mut cmd = Command::new(git);
+    cmd.arg("daemon");
+    cmd
 }
 
 pub fn free_port() -> u16 {
@@ -71,18 +104,17 @@ pub fn wait_for_port(port: u16) -> bool {
 /// not start.
 pub fn start_daemon(fx: &Fixture) -> Option<(Server, String)> {
     let port = free_port();
-    let mut cmd = Command::new(fx.reference_git());
+    let mut cmd = daemon_command(fx.reference_git());
     isolated(fx, &mut cmd);
-    cmd.args([
-        "daemon",
-        "--export-all",
-        "--reuseaddr",
-        "--listen=127.0.0.1",
-    ])
-    .arg(format!("--port={port}"))
-    .arg(format!("--base-path={}", fx.work_dir().display()))
-    .arg(fx.work_dir())
-    .stderr(Stdio::null());
+    // Without the `git` wrapper the daemon finds `git upload-pack` on PATH.
+    cmd.env("PATH", server_path(fx));
+    cmd.args(["--export-all", "--reuseaddr", "--listen=127.0.0.1"])
+        .arg(format!("--port={port}"))
+        .arg(format!("--base-path={}", fx.work_dir().display()))
+        .arg(fx.work_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     let daemon = Server(cmd.spawn().unwrap());
     if !wait_for_port(port) {
         eprintln!("skipping: git daemon did not start");

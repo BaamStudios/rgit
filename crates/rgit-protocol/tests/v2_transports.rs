@@ -136,6 +136,28 @@ fn stateless_ls_refs_without_fetch_sends_no_flush() {
     assert_eq!(reader.requests(), 1);
 }
 
+/// The `git-daemon` program of the reference git: in its exec path, or next
+/// to the binary in a build tree.
+fn daemon_program(env: &Env) -> Option<std::path::PathBuf> {
+    let out = env
+        .cmd()
+        .arg("--exec-path")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    let exec_path = out.map(|o| {
+        std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+    });
+    exec_path
+        .into_iter()
+        .chain(env.git.parent().map(Path::to_path_buf))
+        .map(|d| d.join("git-daemon"))
+        .find(|p| p.is_file())
+}
+
+/// Kills and reaps the daemon on drop, also while unwinding from a panic.
 struct Daemon(Child);
 
 impl Drop for Daemon {
@@ -151,14 +173,33 @@ fn start_daemon(env: &Env, base: &Path) -> Option<(Daemon, u16)> {
         .local_addr()
         .ok()?
         .port();
-    let mut c = env.cmd();
-    c.arg("daemon")
-        .arg("--reuseaddr")
+    // `git daemon` is not a builtin: the wrapper starts `git-daemon` as a
+    // child, and killing only the wrapper orphans the daemon (#383). Run the
+    // program itself so the guard's kill reaches it.
+    let mut c = match daemon_program(env) {
+        Some(program) => {
+            // Without the `git` wrapper the daemon finds `git upload-pack`
+            // on PATH: put the reference git first.
+            let mut c = common::git(&program, &env.home);
+            let dirs = env.git.parent().map(Path::to_path_buf).into_iter();
+            let rest = std::env::var_os("PATH").unwrap_or_default();
+            let path = std::env::join_paths(dirs.chain(std::env::split_paths(&rest))).unwrap();
+            c.env("PATH", path);
+            c
+        }
+        None => {
+            let mut c = env.cmd();
+            c.arg("daemon");
+            c
+        }
+    };
+    c.arg("--reuseaddr")
         .arg("--export-all")
         .arg(format!("--base-path={}", base.display()))
         .arg("--listen=127.0.0.1")
         .arg(format!("--port={port}"))
         .arg(base)
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let daemon = Daemon(c.spawn().ok()?);
