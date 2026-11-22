@@ -281,10 +281,12 @@ impl Options {
                 return Ok(false);
             }
             ("max-count", Some(n)) => self.max_count = Some(n.to_string()),
+            // Commits without changes are always included.
+            ("always" | "no-always", None) => {}
             ("no-attach" | "no-base" | "no-notes" | "no-progress" | "progress", None) => {}
             (
                 "attach" | "inline" | "base" | "notes" | "no-binary" | "interdiff" | "range-diff"
-                | "creation-factor" | "commit-list-format" | "always",
+                | "creation-factor" | "commit-list-format",
                 _,
             ) => return Err(Die::Fatal(msg::not_supported(&format!("--{name}")))),
             _ => return Ok(false),

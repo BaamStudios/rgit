@@ -338,6 +338,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
+    opts.apply_grep_config(&config);
     let rev_opts = revisions::options(ctx, &config, kind)?;
     let shallow = setup.common_dir.join("shallow");
     let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
