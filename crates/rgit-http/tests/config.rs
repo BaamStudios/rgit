@@ -220,9 +220,8 @@ fn invalid_proxy_urls() {
         );
     }
     // A proxy that cannot be reached names the target and the proxy.
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
-    let dead = l.local_addr().unwrap().port();
-    drop(l);
+    // Port 1 is privileged; nothing listens there in the test environment.
+    let dead = 1;
     let mut o = HttpOptions::default();
     o.proxy = Some(format!("http://127.0.0.1:{dead}"));
     let mut h = SmartHttp::new("http://example.invalid/r.git", o).unwrap();
