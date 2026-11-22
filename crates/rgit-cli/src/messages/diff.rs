@@ -176,3 +176,22 @@ pub fn rename_limit_hint(n: usize) -> String {
 pub fn invalid_ignore_regex(pattern: &str) -> String {
     format!("error: invalid regex given to -I: '{pattern}'\n")
 }
+
+pub const BAD_WS_ERROR_HIGHLIGHT: &str = "error: unknown value after ws-error-highlight=\n";
+
+pub const WS_RULE_CONFLICT: &str = "cannot enforce both tab-in-indent and indent-with-non-tab";
+
+pub fn ws_check_line(path: &str, line: usize, what: &str) -> String {
+    format!("{path}:{line}: {what}.\n")
+}
+
+pub const WS_TRAILING: &str = "trailing whitespace";
+pub const WS_SPACE_BEFORE_TAB: &str = "space before tab in indent";
+pub const WS_INDENT_WITH_SPACES: &str = "indent with spaces";
+pub const WS_TAB_IN_INDENT: &str = "tab in indent";
+pub const WS_BLANK_AT_EOF: &str = "new blank line at EOF";
+pub const WS_INCOMPLETE: &str = "no newline at the end of file";
+
+pub fn tab_width_out_of_range(value: &str) -> String {
+    format!("tabwidth {value} out of range")
+}

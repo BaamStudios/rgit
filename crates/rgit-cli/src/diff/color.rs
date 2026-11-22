@@ -10,18 +10,26 @@
 //!   the function name in `context` and the function name in `func`;
 //! * context lines and "\ No newline" in `context`, removed lines in
 //!   `old`;
-//! * added lines: the `+` in `new`, then the text in `new` with
-//!   whitespace errors in `whitespace`. Without `core.whitespace` (#146)
-//!   the errors are git's defaults: whitespace at the end of the line
-//!   (`blank-at-eol`), spaces in the indentation before a tab
-//!   (`space-before-tab`, the tabs themselves stay uncoloured) and blank
-//!   lines added at the end of the file (`blank-at-eof`, the whole line).
+//! * lines whose kind is highlighted (`--ws-error-highlight`, by default
+//!   added lines only): the sign in the line's colour, then the text in
+//!   the line's colour with the whitespace errors of the path's rule
+//!   (`core.whitespace`, the `whitespace` attribute) in `whitespace`;
+//!   indent characters before the last tab that are no error stay
+//!   uncoloured; blank lines added at the end of the file are coloured
+//!   as a whole;
+//! * other lines: sign and text in one colour;
+//! * a carriage return at the end of a line is written after the reset
+//!   unless it is highlighted as an error;
+//! * "\ No newline" in `whitespace` after a highlighted line when
+//!   `incomplete-line` is on (not for symbolic links).
 //!
 //! Every coloured part ends with a reset, even for an empty colour.
 
 use rgit_config::ConfigSet;
 
 use crate::Die;
+use rgit_diff::ws_rule::{self, Part, WsRule};
+
 use crate::color::{RESET, slot};
 
 /// The colours of the slots.
@@ -39,19 +47,26 @@ pub struct DiffColors {
 impl DiffColors {
     /// The slots from `color.diff.<slot>` with git's defaults.
     pub fn from_config(config: &ConfigSet) -> Result<DiffColors, Die> {
-        // `plain` is the old name of `context`.
-        let context = match config.get("color.diff.context") {
-            Some(_) => slot(config, "color.diff.context", "")?,
-            None => slot(config, "color.diff.plain", "")?,
+        // `diff.color.<slot>` is the old name of `color.diff.<slot>`,
+        // and `plain` the old name of `context`.
+        let get = |names: &[&str], default: &str| -> Result<String, Die> {
+            for name in names {
+                for key in [format!("color.diff.{name}"), format!("diff.color.{name}")] {
+                    if config.get(&key).is_some() {
+                        return slot(config, &key, default);
+                    }
+                }
+            }
+            Ok(default.to_owned())
         };
         Ok(DiffColors {
-            context,
-            meta: slot(config, "color.diff.meta", "\x1b[1m")?,
-            frag: slot(config, "color.diff.frag", "\x1b[36m")?,
-            func: slot(config, "color.diff.func", "")?,
-            old: slot(config, "color.diff.old", "\x1b[31m")?,
-            new: slot(config, "color.diff.new", "\x1b[32m")?,
-            whitespace: slot(config, "color.diff.whitespace", "\x1b[41m")?,
+            context: get(&["context", "plain"], "")?,
+            meta: get(&["meta"], "\x1b[1m")?,
+            frag: get(&["frag"], "\x1b[36m")?,
+            func: get(&["func"], "")?,
+            old: get(&["old"], "\x1b[31m")?,
+            new: get(&["new"], "\x1b[32m")?,
+            whitespace: get(&["whitespace"], "\x1b[41m")?,
         })
     }
 
@@ -68,64 +83,97 @@ fn paint(out: &mut Vec<u8>, color: &str, text: &[u8]) {
     out.extend_from_slice(RESET.as_bytes());
 }
 
-fn is_space(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\r' | b'\x0b' | b'\x0c')
-}
+/// Which kinds of lines get their whitespace errors highlighted.
+pub const HIGHLIGHT_OLD: u8 = 1;
+pub const HIGHLIGHT_NEW: u8 = 2;
+pub const HIGHLIGHT_CONTEXT: u8 = 4;
 
-/// 1-based number of the first line of the blank lines at the end of
-/// `data` (one past the last line when there are none).
-fn trailing_blank_start(data: &[u8]) -> usize {
-    let lines: Vec<&[u8]> = data.split_inclusive(|&b| b == b'\n').collect();
-    let blank = lines
-        .iter()
-        .rev()
-        .take_while(|l| l.iter().all(|&b| is_space(b) || b == b'\n'))
-        .count();
-    lines.len() - blank + 1
-}
-
-/// The text of an added line with its whitespace errors marked.
-fn added_text(out: &mut Vec<u8>, c: &DiffColors, text: &[u8]) {
-    let trail = text.len() - text.iter().rev().take_while(|&&b| is_space(b)).count();
-    let body = &text[..trail];
-    let indent = body
-        .iter()
-        .take_while(|&&b| b == b' ' || b == b'\t')
-        .count();
-    let region = body[..indent]
-        .iter()
-        .rposition(|&b| b == b'\t')
-        .map_or(0, |i| i + 1);
-    let mut i = 0;
-    while i < region {
-        let start = i;
-        if body[i] == b'\t' {
-            while i < region && body[i] == b'\t' {
-                i += 1;
-            }
-            out.extend_from_slice(&body[start..i]);
-        } else {
-            while i < region && body[i] == b' ' {
-                i += 1;
-            }
-            paint(out, &c.whitespace, &body[start..i]);
+/// Parses a `--ws-error-highlight` / `diff.wsErrorHighlight` value.
+pub fn parse_highlight(value: &str) -> Option<u8> {
+    let mut kinds = 0;
+    for word in value.split(',') {
+        match word.trim() {
+            "none" => kinds = 0,
+            "default" => kinds = HIGHLIGHT_NEW,
+            "all" => kinds = HIGHLIGHT_OLD | HIGHLIGHT_NEW | HIGHLIGHT_CONTEXT,
+            "old" => kinds |= HIGHLIGHT_OLD,
+            "new" => kinds |= HIGHLIGHT_NEW,
+            "context" => kinds |= HIGHLIGHT_CONTEXT,
+            _ => return None,
         }
     }
-    if region < trail {
-        paint(out, &c.new, &body[region..]);
+    Some(kinds)
+}
+
+/// The whitespace settings of one file pair.
+pub struct WsContext<'a> {
+    pub rule: WsRule,
+    /// `HIGHLIGHT_*` bits.
+    pub highlight: u8,
+    pub old_data: &'a [u8],
+    pub new_data: &'a [u8],
+    /// The new side is a symbolic link (no `incomplete-line` errors).
+    pub new_symlink: bool,
+    pub old_symlink: bool,
+}
+
+/// Number of blank lines at the end of `data`.
+fn trailing_blanks(data: &[u8]) -> usize {
+    data.split_inclusive(|&b| b == b'\n')
+        .rev()
+        .take_while(|l| ws_rule::is_blank(l))
+        .count()
+}
+
+/// 1-based number of the first new line that counts as a blank line
+/// added at the end of the file, or `usize::MAX` when there is none:
+/// only when the new side ends in more blank lines than the old one.
+pub fn blank_at_eof_from(ws: &WsContext<'_>) -> usize {
+    if !ws.rule.has(ws_rule::BLANK_AT_EOF) {
+        return usize::MAX;
     }
-    if trail < text.len() {
-        paint(out, &c.whitespace, &text[trail..]);
+    let new_blank = trailing_blanks(ws.new_data);
+    if new_blank <= trailing_blanks(ws.old_data) {
+        return usize::MAX;
+    }
+    let lines = ws.new_data.split_inclusive(|&b| b == b'\n').count();
+    lines - new_blank + 1
+}
+
+/// The text of a line with its whitespace errors marked; `color` is the
+/// colour of the text.
+fn checked_text(out: &mut Vec<u8>, c: &DiffColors, color: &str, text: &[u8], rule: &WsRule) {
+    let check = ws_rule::check_line(text, rule);
+    for (part, range) in &check.parts {
+        match part {
+            Part::Plain => out.extend_from_slice(&text[range.clone()]),
+            Part::Error => paint(out, &c.whitespace, &text[range.clone()]),
+            Part::Text => paint(out, color, &text[range.clone()]),
+        }
+    }
+    out.extend_from_slice(&text[check.body_end..]);
+}
+
+/// A whole line in one colour, with a final carriage return after the
+/// reset.
+fn whole(out: &mut Vec<u8>, color: &str, line: &[u8]) {
+    match line.strip_suffix(b"\r") {
+        Some(l) => {
+            paint(out, color, l);
+            out.push(b'\r');
+        }
+        None => paint(out, color, line),
     }
 }
 
 /// Colour the patch of one file (`plain`, as written by
-/// `rgit_diff::write_file_patch_with`) into `out`; `new_data` is the
-/// new side's contents (for blank lines at its end).
-pub fn patch(out: &mut Vec<u8>, c: &DiffColors, plain: &[u8], new_data: &[u8]) {
-    let blank_from = trailing_blank_start(new_data);
+/// `rgit_diff::write_file_patch_with`) into `out`.
+pub fn patch(out: &mut Vec<u8>, c: &DiffColors, plain: &[u8], ws: &WsContext<'_>) {
+    let blank_from = blank_at_eof_from(ws);
     let mut in_header = true;
     let mut new_line = 0usize;
+    // The sign of the previous line, for "\ No newline".
+    let mut previous = b' ';
     for raw in plain.split_inclusive(|&b| b == b'\n') {
         let (line, eol) = match raw.strip_suffix(b"\n") {
             Some(l) => (l, &b"\n"[..]),
@@ -141,8 +189,14 @@ pub fn patch(out: &mut Vec<u8>, c: &DiffColors, plain: &[u8], new_data: &[u8]) {
             continue;
         }
         in_header = false;
-        match line.first() {
-            Some(b'@') => {
+        let sign = line.first().copied().unwrap_or(b' ');
+        let (color, kind) = match sign {
+            b'+' => (&c.new, HIGHLIGHT_NEW),
+            b'-' => (&c.old, HIGHLIGHT_OLD),
+            _ => (&c.context, HIGHLIGHT_CONTEXT),
+        };
+        match sign {
+            b'@' => {
                 let end = line[2..]
                     .windows(2)
                     .position(|w| w == b"@@")
@@ -162,27 +216,51 @@ pub fn patch(out: &mut Vec<u8>, c: &DiffColors, plain: &[u8], new_data: &[u8]) {
                     .and_then(|r| r.split(',').next()?.parse().ok())
                     .unwrap_or(0);
             }
-            Some(b'+') => {
-                let text = &line[1..];
-                if new_line >= blank_from && text.iter().all(|&b| is_space(b)) {
+            b'\\' => {
+                let symlink = if previous == b'-' {
+                    ws.old_symlink
+                } else {
+                    ws.new_symlink
+                };
+                let kind = match previous {
+                    b'+' => HIGHLIGHT_NEW,
+                    b'-' => HIGHLIGHT_OLD,
+                    _ => HIGHLIGHT_CONTEXT,
+                };
+                if ws.rule.has(ws_rule::INCOMPLETE_LINE)
+                    && !symlink
+                    && previous != b' '
+                    && ws.highlight & kind != 0
+                {
                     paint(out, &c.whitespace, line);
                 } else {
-                    paint(out, &c.new, b"+");
-                    added_text(out, c, text);
+                    paint(out, &c.context, line);
                 }
-                new_line += 1;
             }
-            Some(b'-') => paint(out, &c.old, line),
-            Some(b' ') => {
-                paint(out, &c.context, line);
-                new_line += 1;
+            b'+' | b'-' | b' ' => {
+                let text = &line[1..];
+                let highlighted = ws.highlight & kind != 0;
+                if sign == b'+' && highlighted && new_line >= blank_from && ws_rule::is_blank(text)
+                {
+                    whole(out, &c.whitespace, line);
+                } else if highlighted {
+                    paint(out, color, &line[..1]);
+                    checked_text(out, c, color, text, &ws.rule);
+                } else {
+                    whole(out, color, line);
+                }
+                if sign != b'-' {
+                    new_line += 1;
+                }
             }
             _ => paint(out, &c.context, line),
+        }
+        if sign != b'\\' {
+            previous = sign;
         }
         out.extend_from_slice(eol);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,12 +271,15 @@ mod tests {
 
     fn color_patch(plain: &str, new_data: &str) -> String {
         let mut out = Vec::new();
-        patch(
-            &mut out,
-            &DiffColors::defaults(),
-            plain.as_bytes(),
-            new_data.as_bytes(),
-        );
+        let ws = WsContext {
+            rule: WsRule::default(),
+            highlight: HIGHLIGHT_NEW,
+            old_data: b"",
+            new_data: new_data.as_bytes(),
+            new_symlink: false,
+            old_symlink: false,
+        };
+        patch(&mut out, &DiffColors::defaults(), plain.as_bytes(), &ws);
         show(&out)
     }
 

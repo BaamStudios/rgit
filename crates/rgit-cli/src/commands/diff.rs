@@ -289,8 +289,8 @@ fn run_no_index(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts, args: &[Str
         out.mnemonic(opts, "1", "2");
     }
     let (bytes, changed) = out.render(pairs)?;
-    out.finish(&bytes, changed, opts);
-    Ok(i32::from(changed))
+    let code = out.finish(&bytes, changed, opts);
+    Ok(i32::from(changed) | code)
 }
 
 fn path_bytes(p: &Path) -> Vec<u8> {

@@ -5,6 +5,7 @@
 //! Break, rename and copy detection, pickaxe and `--diff-filter` run in
 //! [`output::Output::diffcore`] (`rgit_diff::diffcore`). No combined diffs.
 
+mod check;
 pub mod collect;
 pub mod color;
 pub mod options;
