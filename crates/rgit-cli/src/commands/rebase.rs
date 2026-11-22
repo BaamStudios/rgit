@@ -5,6 +5,7 @@
 use crate::messages::rebase as msg;
 use crate::prelude::*;
 use crate::rebase::{self, Empty, Options, RebaseMerges};
+use crate::signing::Sign;
 
 const CONTINUE: i32 = 1;
 const SKIP: i32 = 2;
@@ -40,7 +41,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let empty: RefCell<Option<Empty>> = RefCell::new(None);
     let autosquash = Cell::new(-1);
     let update_refs = Cell::new(-1);
-    let gpg_sign = Cell::new(false);
+    let gpg_sign: RefCell<Option<Option<Sign>>> = RefCell::new(None);
     let autostash = Cell::new(-1);
     let exec: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let rebase_merges: RefCell<Option<RebaseMerges>> = RefCell::new(None);
@@ -149,8 +150,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .noneg(),
         Opt::bool(None, "autosquash", &autosquash, msg::HELP_AUTOSQUASH),
         Opt::bool(None, "update-refs", &update_refs, msg::HELP_UPDATE_REFS),
-        Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |_, unset| {
-            gpg_sign.set(!unset);
+        Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |v, unset| {
+            *gpg_sign.borrow_mut() = Some((!unset).then(|| Sign::from_arg(v)));
             Ok(())
         })
         .optional(None),
@@ -216,7 +217,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ("--whitespace (#136)", whitespace.borrow().is_some()),
         ("--ignore-whitespace", ignore_ws.get() == 1),
         ("--trailer", !trailers.borrow().is_empty()),
-        ("--gpg-sign", gpg_sign.get()),
         ("--rerere-autoupdate", rerere.get() == 1),
         ("--preserve-merges", preserve.get() == 1),
     ];
@@ -301,6 +301,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             -1 => None,
             v => Some(v == 1),
         },
+        gpg_sign: gpg_sign.borrow().clone(),
     };
     rebase::start(ctx, &o)
 }

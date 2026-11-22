@@ -58,6 +58,7 @@ pub mod rev_list;
 pub mod rm;
 pub mod sequencer;
 pub mod show_ref;
+pub mod signing;
 pub mod stash;
 pub mod status;
 pub mod stripspace;

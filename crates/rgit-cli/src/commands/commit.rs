@@ -28,8 +28,9 @@
 //!
 //! Hooks (#76): `pre-commit` and `commit-msg` (skipped with
 //! `--no-verify`), `prepare-commit-msg`, `post-commit` and `post-rewrite`
-//! after `--amend`. Not yet: `-S`/`commit.gpgSign` (#51),
-//! `-p`/`--interactive`, similarity renames in
+//! after `--amend`. `-S[<keyid>]`, `--no-gpg-sign` and `commit.gpgSign`
+//! with OpenPGP ([`crate::signing`]). Not yet: the other signing formats
+//! (#51), `-p`/`--interactive`, similarity renames in
 //! the summary (#145), the implicit-committer notice.
 
 use std::collections::BTreeSet;
@@ -56,6 +57,7 @@ use crate::refs_support::{self, Objects, UpdateHooks};
 use rgit_hook::RunOptions;
 use crate::repo::Mode;
 use crate::repository::{self, Repo};
+use crate::signing::{self, Sign, SignError};
 use crate::tree_changes::{self, Flat, Pair};
 use crate::wt_status::{self, Render};
 
@@ -112,8 +114,8 @@ struct Args {
     squash: Option<String>,
     trailers: Vec<String>,
     signoff: bool,
-    /// `--no-gpg-sign` was given.
-    no_gpg_sign: bool,
+    /// `-S[<keyid>]` (`Some(Some(_))`) or `--no-gpg-sign` (`Some(None)`).
+    gpg_sign: Option<Option<Sign>>,
     template: Option<String>,
     dry_run: bool,
     /// `FORMAT_*`, 0 when not given.
@@ -178,7 +180,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     let fixup: RefCell<Option<String>> = RefCell::new(None);
     let squash = RefCell::new(None);
     let template = RefCell::new(None);
-    let gpg_sign = Cell::new(-1);
+    let gpg_sign: RefCell<Option<Option<Sign>>> = RefCell::new(None);
     let trailers = RefCell::new(Vec::new());
     let from_file = RefCell::new(None);
     let file_nul = Cell::new(false);
@@ -213,8 +215,8 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
             Opt::bool('e', "edit", &edit, msg::HELP_EDIT),
             Opt::string(None, "cleanup", &cleanup, "mode", msg::HELP_CLEANUP),
             Opt::bool(None, "status", &status, msg::HELP_STATUS),
-            Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |_, unset| {
-                gpg_sign.set(i32::from(!unset));
+            Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |v, unset| {
+                *gpg_sign.borrow_mut() = Some((!unset).then(|| Sign::from_arg(v)));
                 Ok(())
             })
             .optional(None),
@@ -285,9 +287,6 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     if interhunk.get() >= 0 && !(interactive.get() || patch.get()) {
         return Err(fatal(msg::requires_interactive("--inter-hunk-context")));
     }
-    if gpg_sign.get() == 1 {
-        return Err(fatal(msg::not_supported("-S/--gpg-sign")));
-    }
     if interactive.get() || patch.get() {
         return Err(fatal(msg::not_supported("--interactive/--patch")));
     }
@@ -324,7 +323,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
         squash: squash.into_inner(),
         trailers: trailers.into_inner(),
         signoff: signoff.get(),
-        no_gpg_sign: gpg_sign.get() == 0,
+        gpg_sign: gpg_sign.into_inner(),
         template: template.into_inner(),
         dry_run: dry_run.get(),
         format: format.get(),
@@ -928,9 +927,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if args.all && !args.paths.is_empty() {
         return Err(fatal(msg::paths_with_all(&args.paths[0])));
     }
-    if !args.no_gpg_sign && config_bool(&repo, "commit.gpgsign") == Some(true) {
-        return Err(fatal(msg::not_supported("commit.gpgSign")));
-    }
+    let sign = signing::resolve(&repo.config, args.gpg_sign.clone());
     let cleanup_cfg = args
         .cleanup
         .clone()
@@ -1771,7 +1768,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         encoding: encoding.as_deref(),
         message: &cleaned,
     };
-    let oid = rgit_commit::create_commit(repo.odb(), &new).map_err(|e| fatal(e.to_string()))?;
+    let mut object = new.to_commit();
+    if let Some(sign) = &sign {
+        match signing::sign_commit(&repo.config, repo.hash, &mut object, sign, &committer) {
+            Ok(()) => {}
+            Err(SignError::Failed) => {
+                return Err(fatal(crate::messages::signing::FAILED_TO_WRITE_COMMIT));
+            }
+            Err(SignError::Die(d)) => return Err(d),
+        }
+    }
+    let oid = repo
+        .odb()
+        .write(ObjectKind::Commit, &object.serialize())
+        .map_err(|e| fatal(e.to_string()))?;
 
     let kind = if args.amend {
         msg::REFLOG_AMEND
