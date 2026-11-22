@@ -75,6 +75,32 @@ pub struct DiffOpts {
     pub irreversible_delete: bool,
     /// `--diff-filter=...`.
     pub diff_filter: DiffFilter,
+    /// `--ignore-submodules[=<when>]`, unparsed.
+    pub ignore_submodules: Option<String>,
+    /// `--submodule[=<format>]`.
+    pub submodule_format: Option<SubmoduleFormat>,
+}
+
+/// How submodule changes are shown (`--submodule`, `diff.submodule`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmoduleFormat {
+    /// `Subproject commit <id>` lines.
+    Short,
+    /// The commits in the range, like `git submodule summary`.
+    Log,
+    /// The diff of the submodule's contents.
+    Diff,
+}
+
+impl SubmoduleFormat {
+    pub fn parse(value: &str) -> Option<SubmoduleFormat> {
+        match value {
+            "short" => Some(SubmoduleFormat::Short),
+            "log" => Some(SubmoduleFormat::Log),
+            "diff" => Some(SubmoduleFormat::Diff),
+            _ => None,
+        }
+    }
 }
 
 /// A score option's value (`-M<n>`, `--find-copies=<n>`): the whole value
@@ -227,6 +253,8 @@ impl DiffOpts {
                 self.detect = Some(Detect::Copies);
             }
             "--find-copies-harder" => self.copies_harder = true,
+            "--ignore-submodules" => self.ignore_submodules = Some("all".to_owned()),
+            "--submodule" => self.submodule_format = Some(SubmoduleFormat::Log),
             "-B" | "--break-rewrites" => {
                 self.break_rewrites =
                     Some((diffcore::DEFAULT_BREAK_SCORE, diffcore::DEFAULT_MERGE_SCORE));
@@ -343,6 +371,13 @@ impl DiffOpts {
             self.pickaxe = Some((true, v.to_string()));
         } else if let Some(v) = arg.strip_prefix("--find-object=") {
             self.find_object.push(v.to_string());
+        } else if let Some(v) = arg.strip_prefix("--ignore-submodules=") {
+            self.ignore_submodules = Some(v.to_owned());
+        } else if let Some(v) = arg.strip_prefix("--submodule=") {
+            self.submodule_format =
+                Some(SubmoduleFormat::parse(v).ok_or_else(|| {
+                    usage_exit(crate::messages::submodule::bad_submodule_format(v))
+                })?);
         } else if let Some(v) = arg.strip_prefix("--diff-filter=") {
             self.diff_filter
                 .parse_into(v)
@@ -410,6 +445,13 @@ impl DiffOpts {
     }
 
     /// Whether `--exit-code` semantics apply (also implied by `--quiet`).
+    pub fn ignore_submodules(&self) -> Result<Option<rgit_submodule::Ignore>, Die> {
+        self.ignore_submodules
+            .as_deref()
+            .map(crate::submodules::parse_ignore_arg)
+            .transpose()
+    }
+
     pub fn wants_exit_code(&self) -> bool {
         self.exit_code || self.quiet
     }

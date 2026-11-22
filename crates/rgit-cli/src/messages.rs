@@ -62,6 +62,7 @@ pub mod signing;
 pub mod stash;
 pub mod status;
 pub mod stripspace;
+pub mod submodule;
 pub mod switch;
 pub mod tag;
 pub mod tracking;

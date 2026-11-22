@@ -116,16 +116,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     opts.resolve_objects(&mut repo)?;
     let repo = repo;
-    let (pairs, mnemonic) = match (trees.len(), cached) {
+    let (mut pairs, mnemonic) = match (trees.len(), cached) {
         (0, false) => {
             let root = repo.work_tree()?;
             let (index, mtime) = repo.read_index()?;
             let checker = repo.checker(mtime)?;
+            let submodules =
+                crate::submodules::IgnoreRules::for_index(&repo, &index, opts.ignore_submodules()?, true)?;
             let wt = WorkTree {
                 root: &root,
                 checker: &checker,
                 porcelain: true,
                 hash: repo.hash,
+                submodules: submodules.as_ref(),
+                dirty: Default::default(),
             };
             (collect::files(&index, &pathspec, &wt, false)?, Some(("i", "w")))
         }
@@ -149,11 +153,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             } else {
                 let root = repo.work_tree()?;
                 let checker = repo.checker(mtime)?;
+                let submodules = crate::submodules::IgnoreRules::for_index(
+                    &repo,
+                    &index,
+                    opts.ignore_submodules()?,
+                    true,
+                )?;
                 let wt = WorkTree {
                     root: &root,
                     checker: &checker,
                     porcelain: true,
                     hash: repo.hash,
+                    submodules: submodules.as_ref(),
+                    dirty: Default::default(),
                 };
                 (
                     collect::index(&repo, &tree, &index, &pathspec, Some(&wt), true)?,
@@ -179,6 +191,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         _ => return Err(Die::Fatal(msg::not_supported("this form of diff"))),
     };
+    crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, true)?;
     page(ctx, Some(&repo), &opts)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true)?;
     out.set_color(&opts)?;

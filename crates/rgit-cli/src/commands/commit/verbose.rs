@@ -81,11 +81,14 @@ pub(super) fn template_diff(
     let opts = options();
     let root = repo.work_tree()?;
     let checker = repo.checker(None)?;
+    let submodules = crate::submodules::IgnoreRules::for_index(repo, index, None, true)?;
     let wt = WorkTree {
         root: &root,
         checker: &checker,
         porcelain: true,
         hash: repo.hash,
+        submodules: submodules.as_ref(),
+        dirty: Default::default(),
     };
     let pairs = collect::files(index, &Pathspec::default(), &wt, false)?;
     let mut unstaged = output(repo, &opts)?;

@@ -142,6 +142,9 @@ pub struct PatchExtra {
     pub rewrite: Option<u32>,
     /// `-D`: leave out the old contents of deletions (and of rewrites).
     pub irreversible_delete: bool,
+    /// The contents differ although the object ids are equal (a dirty
+    /// submodule): show them without an `index` line.
+    pub same_id_differs: bool,
 }
 
 /// Lines of a complete rewrite: `-` lines of the old, then `+` lines of
@@ -240,20 +243,22 @@ pub fn write_file_patch_extra(
     } else if let Some(pct) = extra.rewrite {
         writeln!(out, "dissimilarity index {pct}%").unwrap();
     }
-    if !content_changed {
+    if !content_changed && !extra.same_id_differs {
         return Stats::default();
     }
-    let kind = old.or(new).map(|f| f.oid.kind()).unwrap();
-    let null = ObjectId::null(kind);
-    let oa = old.map_or(null, |f| f.oid);
-    let ob = new.map_or(null, |f| f.oid);
-    write!(out, "index {}..{}", abbrev(&oa), abbrev(&ob)).unwrap();
-    if let (Some(o), Some(n)) = (old, new) {
-        if o.mode == n.mode {
-            write!(out, " {:06o}", o.mode).unwrap();
+    if content_changed {
+        let kind = old.or(new).map(|f| f.oid.kind()).unwrap();
+        let null = ObjectId::null(kind);
+        let oa = old.map_or(null, |f| f.oid);
+        let ob = new.map_or(null, |f| f.oid);
+        write!(out, "index {}..{}", abbrev(&oa), abbrev(&ob)).unwrap();
+        if let (Some(o), Some(n)) = (old, new) {
+            if o.mode == n.mode {
+                write!(out, " {:06o}", o.mode).unwrap();
+            }
         }
+        out.push(b'\n');
     }
-    out.push(b'\n');
 
     let a_shown = if old.is_some() {
         a_name.clone()
