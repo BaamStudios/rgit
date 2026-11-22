@@ -41,6 +41,20 @@ pub struct FetchOptions {
     pub no_progress: bool,
     /// `-o` / `--server-option`.
     pub server_options: Vec<String>,
+    /// `-k` / `--keep`: always keep the received pack.
+    pub keep: bool,
+}
+
+/// `fetch.unpackLimit`, else `transfer.unpackLimit`, else 100; 0 or less
+/// means every pack is unpacked.
+fn unpack_limit(config: &rgit_config::ConfigSet) -> u32 {
+    let n = config
+        .int("fetch.unpackLimit")
+        .ok()
+        .flatten()
+        .or_else(|| config.int("transfer.unpackLimit").ok().flatten())
+        .unwrap_or(100);
+    u32::try_from(n).ok().filter(|&n| n > 0).unwrap_or(u32::MAX)
 }
 
 /// The result of [`fetch`].
@@ -250,6 +264,7 @@ pub fn fetch(
         no_progress: opts.no_progress,
         include_tag: follow_tags,
         server_options: opts.server_options.clone(),
+        unpack_limit: (!opts.keep).then(|| unpack_limit(&repo.config)),
     };
     let mut packs: Vec<ReceivedPack> = Vec::new();
     if let Some(p) = session.fetch_pack(repo, &wants, Some(&advertised), &pack_opts)? {

@@ -646,6 +646,8 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             // (the tag objects arrive, no tag refs are written).
             include_tag: single_ref.is_some() && !opts.mirror,
             server_options: opts.server_options.clone(),
+            // A clone always keeps the pack.
+            unpack_limit: None,
         };
         packs.extend(
             session

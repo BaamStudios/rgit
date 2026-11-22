@@ -5,8 +5,11 @@
 //! handles the command line, the repository, the output files and the
 //! `--strict` checks.
 //!
-//! Not supported yet: `--promisor` (#24), `--verify-stat` (verify-pack),
-//! `fsck.<msg-id>` configuration (#95), `core.sharedRepository` file modes.
+//! `--verify-stat` / `--verify-stat-only` (used by `verify-pack`) print the
+//! object list and the histogram of delta chain lengths after verifying.
+//!
+//! Not supported yet: `--promisor` (#24), `fsck.<msg-id>` configuration
+//! (#95), `core.sharedRepository` file modes.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -42,6 +45,8 @@ struct Args {
     fsck_msgs: Vec<(String, String)>,
     self_contained: bool,
     verify: bool,
+    /// `--verify-stat` (`Some(false)`) / `--verify-stat-only` (`Some(true)`).
+    stat: Option<bool>,
     keep: Option<String>,
     threads: Option<usize>,
     pack_header: Option<(u32, u32)>,
@@ -146,6 +151,14 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
             }
             ("--check-self-contained-and-connected", None) => a.self_contained = true,
             ("--verify", None) => a.verify = true,
+            ("--verify-stat", None) => {
+                a.verify = true;
+                a.stat = Some(false);
+            }
+            ("--verify-stat-only", None) => {
+                a.verify = true;
+                a.stat = Some(true);
+            }
             ("--keep", v) => a.keep = Some(v.unwrap_or("").to_string()),
             ("--threads", Some(v)) => {
                 a.threads = Some(v.parse::<usize>().map_err(|_| usage())?);
@@ -765,6 +778,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let index = indexed.index_bytes(version).map_err(fail)?;
     if let Some(old) = existing_index {
+        // Statistics come before the comparison with the old index.
+        if let Some(only) = args.stat {
+            let p = args.pack.as_deref().expect("checked");
+            print_stats(Path::new(p), hash, &indexed, !only)?;
+        }
         let name = index_name.expect("checked");
         if old != index {
             return Err(Die::Fatal(m::index_differs(Path::new(&name))));
@@ -837,6 +855,91 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let _ = out.write_all(indexed.trailing_data());
     let _ = out.flush();
     Ok(0)
+}
+
+/// `--verify-stat[-only]`: the object list (with `list`) and the
+/// histogram of delta chain lengths, in pack order like git.
+fn print_stats(pack: &Path, hash: HashKind, indexed: &IndexedPack, list: bool) -> Result<(), Die> {
+    let data = rgit_pack::PackData::open(pack, hash).map_err(|e| Die::Fatal(e.to_string()))?;
+    let objects = indexed.objects();
+    let by_offset: HashMap<u64, usize> = objects.iter().enumerate().map(|(i, o)| (o.offset, i)).collect();
+    let by_id: HashMap<ObjectId, usize> = objects.iter().enumerate().map(|(i, o)| (o.id, i)).collect();
+    // Per entry: inflated size and the index of the delta base.
+    let mut size = Vec::with_capacity(objects.len());
+    let mut base: Vec<Option<usize>> = Vec::with_capacity(objects.len());
+    for o in objects {
+        let h = data.entry_header(o.offset).map_err(|e| Die::Fatal(e.to_string()))?;
+        size.push(h.size);
+        base.push(match h.kind {
+            rgit_pack::EntryKind::Base(_) => None,
+            rgit_pack::EntryKind::OfsDelta { base_offset } => by_offset.get(&base_offset).copied(),
+            rgit_pack::EntryKind::RefDelta { base } => by_id.get(&base).copied(),
+        });
+    }
+    // Chain depth, iteratively (chains can be long).
+    let mut depth: Vec<Option<u32>> = vec![None; objects.len()];
+    for i in 0..objects.len() {
+        let mut chain = Vec::new();
+        let mut cur = i;
+        let mut d = loop {
+            if let Some(d) = depth[cur] {
+                break d;
+            }
+            match base[cur] {
+                None => {
+                    depth[cur] = Some(0);
+                    break 0;
+                }
+                Some(b) if chain.len() <= objects.len() => {
+                    chain.push(cur);
+                    cur = b;
+                }
+                Some(_) => break 0,
+            }
+        };
+        while let Some(c) = chain.pop() {
+            d += 1;
+            depth[c] = Some(d);
+        }
+    }
+    // Entries in pack order: the next entry starts where one ends.
+    let mut order: Vec<usize> = (0..objects.len()).collect();
+    order.sort_by_key(|&i| objects[i].offset);
+    let mut histogram: Vec<u64> = Vec::new();
+    let mut out = io::stdout().lock();
+    for (k, &i) in order.iter().enumerate() {
+        let o = &objects[i];
+        let d = depth[i].unwrap_or(0) as usize;
+        if histogram.len() <= d {
+            histogram.resize(d + 1, 0);
+        }
+        histogram[d] += 1;
+        if !list {
+            continue;
+        }
+        let end = order.get(k + 1).map_or(data.entries_end(), |&n| objects[n].offset);
+        let mut line = format!(
+            "{} {:<6} {} {} {}",
+            o.id,
+            o.kind.name(),
+            size[i],
+            end - o.offset,
+            o.offset
+        );
+        if let Some(b) = base[i] {
+            line.push_str(&format!(" {d} {}", objects[b].id));
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    for (d, &n) in histogram.iter().enumerate() {
+        if d == 0 {
+            let _ = writeln!(out, "{}", m::stat_non_delta(n));
+        } else if n > 0 {
+            let _ = writeln!(out, "{}", m::stat_chain_length(d, n));
+        }
+    }
+    let _ = out.flush();
+    Ok(())
 }
 
 /// Whether standard input is a regular file (not a pipe or terminal).
