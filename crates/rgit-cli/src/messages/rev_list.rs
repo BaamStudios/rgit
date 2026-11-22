@@ -154,3 +154,7 @@ pub fn invalid_decorate(value: &str) -> String {
 }
 
 pub const UNABLE_TO_PARSE_PRETTY: &str = "unable to parse --pretty format";
+
+pub fn invalid_graph_color(color: &str) -> String {
+    format!("ignoring invalid color '{color}' in log.graphColors")
+}
