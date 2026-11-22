@@ -212,6 +212,8 @@ fn fixup_and_squash() {
         &["commit", "--fixup=reword:HEAD~1", "-m", "x"],
         &["commit", "--fixup=reword:HEAD~1", "-a"],
         &["commit", "--fixup=reword:HEAD~1", "--only"],
+        &["commit", "--fixup=reword:HEAD~1", "--interactive"],
+        &["commit", "--fixup=reword:HEAD~1", "--patch"],
         &["commit", "--fixup=reword:HEAD~1", "--", "a"],
         &["commit", "--fixup=amend:HEAD~1", "-F", "tmpl"],
         &["commit", "--fixup=bogus:HEAD~1"],
