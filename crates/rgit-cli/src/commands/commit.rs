@@ -1231,7 +1231,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Die::Exit(rgit_options::EXIT_FATAL)
         })
     };
+    // git resolves the author first unless it is given or reused.
+    let author_from_env = args.author.is_none()
+        && (args.reset_author || (reused.is_none() && old_commit.is_none() && picked_commit.is_none()));
+    if author_from_env {
+        ident(Role::Author)?;
+    }
     let committer_ident = ident(Role::Committer)?;
+    let committer_implicit = !resolver.is_explicit(Role::Committer);
     let committer = signature_from(&committer_ident.to_bstring())?;
     let author_commit = reused
         .as_ref()
@@ -1726,6 +1733,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             if show_author_date {
                 idents.push(msg::template_date(&show_date(&author)));
             }
+            if committer_implicit {
+                idents.push(msg::template_committer(&name_email(&committer)));
+            }
             if !idents.is_empty() {
                 lines.push(String::new());
                 lines.extend(idents);
@@ -2041,6 +2051,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if show_author_date {
         out.extend_from_slice(msg::summary_date(&show_date(&author)).as_bytes());
         out.push(b'\n');
+    }
+    if committer_implicit {
+        out.extend_from_slice(msg::summary_committer(&name_email(&committer)).as_bytes());
+        out.push(b'\n');
+        if advisor.enabled(Advice::ImplicitIdentity).map_err(Die::Fatal)? {
+            out.extend_from_slice(msg::IMPLICIT_IDENT_ADVICE.as_bytes());
+        }
     }
     let new_flat = wt_status::index_flat(commit_index);
     // The summary detects renames even with diff.renames=false.

@@ -902,7 +902,9 @@ impl<'a> Output<'a> {
                 if f.name_status {
                     self.write_status(&mut out, p);
                 } else {
-                    self.write_path(&mut out, p.shown_path());
+                    // The new side's name (they differ for --no-index and
+                    // blob pairs).
+                    self.write_path(&mut out, &p.path);
                 }
             }
         }

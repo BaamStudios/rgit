@@ -189,6 +189,30 @@ pub fn summary_author(ident: &str) -> String {
     format!(" Author: {ident}")
 }
 
+pub fn template_committer(ident: &str) -> String {
+    format!("Committer: {ident}")
+}
+
+pub fn summary_committer(ident: &str) -> String {
+    format!(" Committer: {ident}")
+}
+
+/// Shown after the summary when the committer identity was guessed.
+pub const IMPLICIT_IDENT_ADVICE: &str =
+    "Your name and email address were configured automatically based
+on your username and hostname. Please check that they are accurate.
+You can suppress this message by setting them explicitly. Run the
+following command and follow the instructions in your editor to edit
+your configuration file:
+
+    git config --global --edit
+
+After doing this, you may fix the identity used for this commit with:
+
+    git commit --amend --reset-author
+
+";
+
 pub fn summary_date(date: &str) -> String {
     format!(" Date: {date}")
 }

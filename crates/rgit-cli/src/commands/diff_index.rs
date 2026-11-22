@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! `git diff-index` (Documentation/git-diff-index.adoc): a tree against the
-//! index (`--cached`) or the work tree. No `--merge-base`, no `-m`.
+//! index (`--cached`) or the work tree, `--merge-base`. No `-m`.
 
 use rgit_object::ObjectKind;
 
@@ -21,6 +21,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(code);
     }
     let mut cached = false;
+    let mut merge_base = false;
     let parsed = diff::parse_args(
         &argv[1..],
         |a| match a {
@@ -28,7 +29,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 cached = true;
                 Ok(true)
             }
-            "-m" | "--merge-base" => Err(Die::Fatal(msg::not_supported(a))),
+            "--merge-base" => {
+                merge_base = true;
+                Ok(true)
+            }
+            "-m" => Err(Die::Fatal(msg::not_supported(a))),
             _ => Ok(false),
         },
         |_| usage(),
@@ -41,9 +46,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let formats = opts.formats(false)?;
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let spec = args.remove(0);
-    let id = repo
+    // One tree-ish only: a second revision is a usage error.
+    let paths_end = parsed.dashdash_at.map_or(args.len(), |d| d - 1);
+    if spec.contains("..") || args[..paths_end].first().is_some_and(|a| repo.resolve(a).is_some()) {
+        return Err(usage());
+    }
+    diff::verify_paths(&repo, &args[..paths_end])?;
+    let mut id = repo
         .resolve(&spec)
         .ok_or_else(|| Die::Fatal(crate::messages::ambiguous_argument(&spec)))?;
+    if merge_base {
+        let head = repo
+            .resolve("HEAD")
+            .ok_or_else(|| Die::Fatal(msg::NO_MERGE_BASE_FOUND.to_owned()))?;
+        id = diff::single_merge_base(ctx, &mut repo, id, head)?;
+    }
     let tree = repo
         .peel_to(id, ObjectKind::Tree)
         .ok_or_else(|| Die::Fatal(msg::bad_tree_object(&spec)))?;

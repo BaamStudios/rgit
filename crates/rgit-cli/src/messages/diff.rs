@@ -117,6 +117,21 @@ pub fn no_merge_base(a: &str, b: &str) -> String {
     format!("{a}...{b}: no merge base")
 }
 
+pub const NO_MERGE_BASE_FOUND: &str = "no merge base found";
+pub const MULTIPLE_MERGE_BASES_FOUND: &str = "multiple merge bases found";
+pub const MERGE_BASE_WITH_RANGES: &str = "--merge-base does not work with ranges";
+pub const MERGE_BASE_TWO_COMMITS: &str = "--merge-base only works with two commits";
+pub const STDIN_WITH_MERGE_BASE: &str =
+    "options '--stdin' and '--merge-base' cannot be used together";
+
+pub fn not_a_commit(hex: &str, kind: &str) -> String {
+    format!("error: object {hex} is a {kind}, not a commit")
+}
+
+pub fn more_than_two_blobs(name: &str) -> String {
+    format!("more than two blobs given: '{name}'")
+}
+
 pub fn multiple_merge_bases(a: &str, b: &str, base: &str) -> String {
     format!("warning: {a}...{b}: multiple merge bases, using {base}")
 }
