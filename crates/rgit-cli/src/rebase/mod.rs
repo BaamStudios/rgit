@@ -12,7 +12,9 @@
 //! - replaying the commits like `cherry-pick` (the merge, the two-way
 //!   update of the index and work tree and the conflict stages come from
 //!   [`crate::sequencer`]), the original author, `--signoff`,
-//!   `--committer-date-is-author-date`, `--reset-author-date`, `--empty`;
+//!   `--committer-date-is-author-date`, `--reset-author-date`, `--empty`,
+//!   signing with `-S[<keyid>]`, `--no-gpg-sign` and `commit.gpgSign`
+//!   ([`crate::signing`], state file `gpg_sign_opt`);
 //! - the state in `.git/rebase-merge/` in git's layout (`head-name`,
 //!   `onto`, `orig-head`, `git-rebase-todo`, `done`, `msgnum`, `end`,
 //!   `message`, `author-script`, `stopped-sha`, `patch`, option files),
@@ -57,6 +59,7 @@ use crate::refs_support::{self, Objects, UpdateHooks};
 use crate::repo::Mode;
 use crate::repository::Repo;
 use crate::sequencer::{self, Fail};
+use crate::signing::{self, Sign, SignError};
 
 /// What happens to commits that become empty (`--empty`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -110,6 +113,9 @@ pub struct Options {
     pub rebase_merges: Option<RebaseMerges>,
     /// `--[no-]reschedule-failed-exec`; `None`: `rebase.rescheduleFailedExec`.
     pub reschedule_failed_exec: Option<bool>,
+    /// `-S[<keyid>]` (`Some(Some(_))`), `--no-gpg-sign` (`Some(None)`);
+    /// `None`: `commit.gpgSign`.
+    pub gpg_sign: Option<Option<Sign>>,
 }
 
 /// `--rebase-merges[=<mode>]`.
@@ -151,6 +157,8 @@ struct State {
     squash_onto: Option<ObjectId>,
     force: bool,
     reschedule_failed_exec: bool,
+    /// Sign the new commits (`gpg_sign_opt`).
+    gpg_sign: Option<Sign>,
 }
 
 fn lossy(b: &[u8]) -> String {
@@ -857,6 +865,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         squash_onto,
         force: o.force || o.signoff || o.committer_date_is_author_date || o.ignore_date,
         reschedule_failed_exec,
+        gpg_sign: signing::resolve(&repo.config, o.gpg_sign.clone()),
     };
     if o.interactive {
         // git reads the setting once more before writing the list.
@@ -1480,6 +1489,9 @@ fn write_state(
     if let Some(a) = &s.autostash {
         write(&f("autostash"), format!("{a}\n"))?;
     }
+    if let Some(sign) = &s.gpg_sign {
+        write(&f("gpg_sign_opt"), format!("{}\n", sign.to_opt()))?;
+    }
     if let Some(sq) = &s.squash_onto {
         write(&f("squash-onto"), format!("{}\n", sq.to_hex()))?;
     }
@@ -1547,6 +1559,7 @@ fn read_state(repo: &Repo, dir: &Path) -> Result<State, Die> {
         squash_onto: oid("squash-onto"),
         force: signoff || cdate_is_adate || ignore_date,
         reschedule_failed_exec: exists("reschedule-failed-exec"),
+        gpg_sign: read("gpg_sign_opt").and_then(|s| Sign::from_opt(s.trim_end_matches('\n'))),
     })
 }
 
@@ -1961,11 +1974,19 @@ impl<'c> Rebase<'c> {
             result.tree,
             commit.encoding(),
             &author,
-            message,
+            message.clone(),
             &comment,
             item.cmd.name(),
         )?;
-        let _ = new;
+        if new.is_none() {
+            // Signing failed: stop like git (with `CHERRY_PICK_HEAD`) so
+            // that `--continue` commits.
+            self.write_stopped(&repo, &id, &message, &original_author, true)?;
+            drop(repo);
+            let abbrev = repo_abbrev(self, &id)?;
+            eprintln!("{}", msg::could_not_apply(&abbrev, &item.arg));
+            return Ok(Step::Exit(1));
+        }
         self.after_pick(repo, item, id, todo, false)
     }
 
@@ -2122,6 +2143,9 @@ impl<'c> Rebase<'c> {
             &comment,
             item.cmd.name(),
         )?;
+        let Some(new) = new else {
+            return Ok(Step::Exit(1));
+        };
         // The commit amended `HEAD`.
         let hooks = crate::hooks::for_repo(self.ctx, &repo.setup, &repo.config)?;
         if hooks.exists("post-rewrite") {
@@ -2454,7 +2478,9 @@ impl<'c> Rebase<'c> {
             &comment,
             "merge",
         )?;
-        let mut new = new;
+        let Some(mut new) = new else {
+            return Ok(Step::Exit(1));
+        };
         if item.commit.is_none() || item.flag == Some('c') {
             // A new merge, or `-c`: the user edits the message.
             drop(repo);
@@ -2544,6 +2570,7 @@ impl<'c> Rebase<'c> {
 
     /// Creates a commit and moves `HEAD` to it: hooks `prepare-commit-msg`
     /// and `post-commit`, the reflog entry `rebase (<what>): <subject>`.
+    /// `None`: signing failed (the error has been printed).
     #[allow(clippy::too_many_arguments)]
     fn commit(
         &mut self,
@@ -2555,7 +2582,7 @@ impl<'c> Rebase<'c> {
         message: Vec<u8>,
         comment: &str,
         what: &str,
-    ) -> Result<ObjectId, Fail> {
+    ) -> Result<Option<ObjectId>, Fail> {
         let head = sequencer::head_commit(repo);
         let mut committer = sequencer::ident(repo, Role::Committer)?;
         if self.state.cdate_is_adate {
@@ -2612,14 +2639,30 @@ impl<'c> Rebase<'c> {
             encoding,
             message: &message,
         };
-        let oid = rgit_commit::create_commit(repo.odb(), &new)
+        let mut object = new.to_commit();
+        if let Some(sign) = &self.state.gpg_sign {
+            match signing::sign_commit(&repo.config, repo.hash, &mut object, sign, &committer) {
+                Ok(()) => {}
+                Err(SignError::Failed) => {
+                    eprintln!(
+                        "error: {}",
+                        crate::messages::signing::FAILED_TO_WRITE_COMMIT
+                    );
+                    return Ok(None);
+                }
+                Err(SignError::Die(d)) => return Err(Fail::Die(d)),
+            }
+        }
+        let oid = repo
+            .odb()
+            .write(ObjectKind::Commit, &object.serialize())
             .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))?;
         let subject = lossy(rgit_commit::message::first_line(&message));
         let what = msg::reflog(&self.action, what, &subject);
         sequencer::update_head(self.ctx, repo, oid, head, &what)?;
         let o = RunOptions::with_args(std::iter::empty::<&str>());
         crate::hooks::run(&hooks, "post-commit", &o)?;
-        Ok(oid)
+        Ok(Some(oid))
     }
 
     /// Runs `git commit` with `args` (and the environment `env`); with
@@ -2632,8 +2675,13 @@ impl<'c> Rebase<'c> {
     ) -> Result<i32, Die> {
         let _ = std::io::stdout().flush();
         let exe = std::env::current_exe().map_err(io_die)?;
+        let sign = match &self.state.gpg_sign {
+            Some(sign) => sign.to_opt(),
+            None => "--no-gpg-sign".to_owned(),
+        };
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("commit")
+            .arg(sign)
             .args(args)
             .envs(self.ctx.child_env())
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
@@ -3025,7 +3073,6 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
         }
     }
     if staged {
-        let _ = std::fs::remove_file(git_dir(&repo).join("CHERRY_PICK_HEAD"));
         if in_chain {
             // A conflicted `squash`/`fixup`: the user edits the message.
             let comment = crate::commands::commit::comment_string(&repo, b"")?;
