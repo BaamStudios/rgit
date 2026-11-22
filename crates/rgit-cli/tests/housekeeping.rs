@@ -25,7 +25,11 @@ fn fixture() -> Fixture {
 /// own detached HEAD, index and `refs/bisect` ref, and dangling blobs,
 /// trees, commits and tags. Some objects are packed, some loose.
 fn repo() -> Fixture {
-    let mut fx = fixture().git(["init", "-q"]);
+    // No automatic maintenance from the setup commands: a detached
+    // background run of the reference git would race with the checks.
+    let mut fx = fixture()
+        .git(["init", "-q"])
+        .git(["config", "maintenance.auto", "false"]);
     for c in 0..4 {
         fx = fx
             .write("a.txt", format!("a {c}\n"))
@@ -723,7 +727,7 @@ fn gc_auto() {
     // The hook can veto.
     sh(
         &fx,
-        "printf '#!/bin/sh\\necho vetoed >&2\\nexit 1\\n' >.git/hooks/pre-auto-gc && chmod +x .git/hooks/pre-auto-gc",
+        "mkdir -p .git/hooks && printf '#!/bin/sh\\necho vetoed >&2\\nexit 1\\n' >.git/hooks/pre-auto-gc && chmod +x .git/hooks/pre-auto-gc",
     );
     assert_eq!(sh_err(&fx, "\"$RGIT\" gc --auto"), "vetoed\n");
     sh(&fx, "rm .git/hooks/pre-auto-gc");
@@ -820,7 +824,11 @@ fn commit_and_merge_run_auto_gc_like_git() {
             Check::Objects,
         ])
         .run();
-    let mut fx = fx.git(["config", "maintenance.strategy", "gc"]);
+    let mut fx = fx.git(["config", "maintenance.auto", "true"]).git([
+        "config",
+        "maintenance.strategy",
+        "gc",
+    ]);
     let state = [
         Check::ExitCode,
         Check::Stdout,
@@ -857,6 +865,7 @@ fn fetch_runs_auto_gc_like_git() {
         .git(["remote", "add", "up", "../upstream"])
         .git(["config", "gc.auto", "1"])
         .git(["config", "gc.autoDetach", "false"])
+        .git(["config", "maintenance.auto", "true"])
         .git(["config", "maintenance.strategy", "gc"]);
     if fx.is_skipped() {
         return;
