@@ -8,9 +8,11 @@
 mod check;
 pub mod collect;
 pub mod color;
+pub mod moved;
 pub mod options;
 pub mod output;
 mod stat;
+mod words;
 
 use rgit_pathspec::{ParseOptions, Pathspec};
 

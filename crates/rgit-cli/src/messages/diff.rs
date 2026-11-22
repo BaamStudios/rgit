@@ -195,3 +195,30 @@ pub const WS_INCOMPLETE: &str = "no newline at the end of file";
 pub fn tab_width_out_of_range(value: &str) -> String {
     format!("tabwidth {value} out of range")
 }
+
+pub fn bad_word_diff(value: &str) -> String {
+    format!("error: bad --word-diff argument: {value}\n")
+}
+
+pub fn invalid_word_regex(pattern: &str) -> String {
+    format!("invalid regular expression: {pattern}")
+}
+
+pub const COLOR_MOVED_MUST_BE: &str = "color moved setting must be one of 'no', 'default', 'blocks', 'zebra', 'dimmed-zebra', 'plain'";
+
+pub fn bad_color_moved(value: &str) -> String {
+    format!("error: {COLOR_MOVED_MUST_BE}\nerror: bad --color-moved argument: {value}\n")
+}
+
+pub fn unknown_color_moved_ws(mode: &str) -> String {
+    format!(
+        "unknown color-moved-ws mode '{mode}', possible values are 'ignore-space-change', 'ignore-space-at-eol', 'ignore-all-space', 'allow-indentation-change'"
+    )
+}
+
+pub const COLOR_MOVED_WS_INDENT_COMBINED: &str =
+    "color-moved-ws: allow-indentation-change cannot be combined with other whitespace modes";
+
+pub fn bad_color_moved_ws(reason: &str, value: &str) -> String {
+    format!("error: {reason}\nerror: invalid mode '{value}' in --color-moved-ws\n")
+}

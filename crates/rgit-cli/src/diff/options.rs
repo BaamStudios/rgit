@@ -88,6 +88,14 @@ pub struct DiffOpts {
     pub check: bool,
     /// `--ws-error-highlight=<kinds>` (`color::HIGHLIGHT_*` bits).
     pub ws_error_highlight: Option<u8>,
+    /// `--word-diff[=<mode>]`, `--color-words`.
+    pub word_diff: Option<super::words::Mode>,
+    /// `--word-diff-regex`, `--color-words=<regex>`.
+    pub word_regex: Option<regex::bytes::Regex>,
+    /// `--color-moved[=<mode>]`: `Some(None)` without a mode.
+    pub color_moved: Option<Option<super::moved::Mode>>,
+    /// `--color-moved-ws=<modes>`.
+    pub color_moved_ws: Option<super::moved::MovedWs>,
 }
 
 /// How submodule changes are shown (`--submodule`, `diff.submodule`).
@@ -193,6 +201,19 @@ pub fn usage_exit(text: String) -> Die {
     Die::Exit(rgit_options::EXIT_USAGE)
 }
 
+/// A word regex (POSIX extended syntax); an invalid one is fatal.
+pub fn word_regex(pattern: &str) -> Result<regex::bytes::Regex, Die> {
+    rgit_revwalk::walk::grep::translate(pattern, true)
+        .ok()
+        .and_then(|t| {
+            regex::bytes::RegexBuilder::new(&t)
+                .unicode(false)
+                .build()
+                .ok()
+        })
+        .ok_or_else(|| Die::Fatal(msg::invalid_word_regex(pattern)))
+}
+
 /// An `-I` expression (POSIX extended syntax).
 fn ignore_regex(pattern: &str) -> Option<regex::bytes::Regex> {
     let translated = rgit_revwalk::walk::grep::translate(pattern, true).ok()?;
@@ -248,6 +269,20 @@ impl DiffOpts {
             "--name-only" => self.name_only = true,
             "--name-status" => self.name_status = true,
             "--check" => self.check = true,
+            "--color-moved" => self.color_moved = Some(None),
+            "--no-color-moved" => self.color_moved = Some(Some(super::moved::Mode::No)),
+            "--no-color-moved-ws" => {
+                self.color_moved_ws = Some(super::moved::MovedWs::default());
+            }
+            "--word-diff" => {
+                if self.word_diff.is_none() {
+                    self.word_diff = Some(super::words::Mode::Plain);
+                }
+            }
+            "--color-words" => {
+                self.word_diff = Some(super::words::Mode::Color);
+                self.color = Some(rgit_config::color::ColorBool::Always);
+            }
             "-z" => self.nul = true,
             "-r" => self.recursive = true,
             "-t" => self.show_trees = true,
@@ -409,6 +444,30 @@ impl DiffOpts {
         {
             let re = ignore_regex(v).ok_or_else(|| usage_exit(msg::invalid_ignore_regex(v)))?;
             self.ignore_regex.push(re);
+        } else if let Some(v) = arg.strip_prefix("--color-moved=") {
+            let mode = super::moved::Mode::parse(v, false)
+                .ok_or_else(|| usage_exit(msg::bad_color_moved(v)))?;
+            self.color_moved = Some(Some(mode));
+        } else if let Some(v) = arg.strip_prefix("--color-moved-ws=") {
+            let ws = super::moved::MovedWs::parse(v)
+                .map_err(|reason| usage_exit(msg::bad_color_moved_ws(&reason, v)))?;
+            self.color_moved_ws = Some(ws);
+        } else if let Some(v) = arg.strip_prefix("--word-diff=") {
+            let mode =
+                super::words::Mode::parse(v).map_err(|_| usage_exit(msg::bad_word_diff(v)))?;
+            if mode == Some(super::words::Mode::Color) {
+                self.color = Some(rgit_config::color::ColorBool::Always);
+            }
+            self.word_diff = mode;
+        } else if let Some(v) = arg.strip_prefix("--word-diff-regex=") {
+            self.word_regex = Some(word_regex(v)?);
+            if self.word_diff.is_none() {
+                self.word_diff = Some(super::words::Mode::Plain);
+            }
+        } else if let Some(v) = arg.strip_prefix("--color-words=") {
+            self.word_regex = Some(word_regex(v)?);
+            self.word_diff = Some(super::words::Mode::Color);
+            self.color = Some(rgit_config::color::ColorBool::Always);
         } else if let Some(v) = arg.strip_prefix("--ws-error-highlight=") {
             let kinds = super::color::parse_highlight(v)
                 .ok_or_else(|| usage_exit(msg::BAD_WS_ERROR_HIGHLIGHT.to_string()))?;
