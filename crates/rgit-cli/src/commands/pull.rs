@@ -23,10 +23,19 @@
 //!   empty tree, keeping staged new files), several heads (octopus);
 //! - refusing to start with unmerged files or an unfinished merge.
 //!
-//! `--rebase` (also from the configuration) is only carried out when it
-//! is a fast-forward (done as `merge --ff-only`, as git does); anything
-//! else needs `rebase` (#154) and fails with a clear error. `--autostash`
-//! is passed on to `merge`, which does not support it yet.
+//! - `--rebase` (also from the configuration): a fast-forward is done as
+//!   `merge --ff-only` (an autostash made around it), anything else runs `rebase --onto <fetched head>
+//!   <upstream>` as a child (the work is done by [`crate::rebase`]), with
+//!   the verbosity, `--stat`/`-n`, `--strategy`, `--strategy-option`,
+//!   `--signoff`, `--gpg-sign` and `--[no-]autostash` (`pull.autostash`,
+//!   else `rebase.autoStash`) passed on. The upstream is the fork point of
+//!   the branch in the reflog of the remote-tracking branch (computed
+//!   before fetching, as `merge-base --fork-point`), so that commits the
+//!   upstream rewrote are not replayed; the fetched head when there is
+//!   none or it is already part of the fetched history.
+//!
+//! Not yet: `--rebase=interactive` (#155) and `--rebase=merges` (rebase
+//! has no `--rebase-merges` yet) when the pull is not a fast-forward.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -418,6 +427,22 @@ impl Args {
         a
     }
 
+    /// `rebase` with the options a rebasing pull passes on.
+    fn rebase_argv(&self, autostash: bool, onto: &ObjectId, upstream: &ObjectId) -> Vec<String> {
+        let mut a = vec!["rebase".to_owned()];
+        self.verbosity_args(&mut a);
+        a.extend(self.diffstat.iter().cloned());
+        a.extend(self.strategies.iter().cloned());
+        a.extend(self.strategy_opts.iter().cloned());
+        a.extend(self.signoff.iter().cloned());
+        a.extend(self.gpg_sign.iter().cloned());
+        a.push(if autostash { "--autostash" } else { "--no-autostash" }.to_owned());
+        a.push("--onto".to_owned());
+        a.push(onto.to_hex());
+        a.push(upstream.to_hex());
+        a
+    }
+
     fn merge_argv(&self, ff: Option<&str>, autostash: Option<bool>) -> Vec<String> {
         let mut a = vec!["merge".to_owned()];
         self.verbosity_args(&mut a);
@@ -634,6 +659,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
+    // The fork point is taken before the fetch moves the remote-tracking
+    // branch.
+    let fork = match orig_head {
+        Some(head) if rebase_requested => rebase_fork_point(&repo, &args, branch.as_deref(), head),
+        _ => None,
+    };
+
     let action = std::env::var("GIT_REFLOG_ACTION")
         .ok()
         .filter(|a| !a.is_empty())
@@ -714,15 +746,77 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     let stash = autostash(&repo, &args);
-    drop(repo);
     if rebasing {
         if can_ff {
-            let argv = args.merge_argv(Some("--ff-only"), Some(rebase_autostash));
-            return children.run(&argv);
+            drop(repo);
+            // merge has no --autostash yet (#57): the stash is made here,
+            // with merge's messages.
+            let stash = if rebase_autostash {
+                crate::rebase::autostash_local_changes(ctx)?
+            } else {
+                None
+            };
+            let code = children.run(&args.merge_argv(Some("--ff-only"), Some(false)))?;
+            if let Some(s) = stash {
+                crate::rebase::apply_autostash(ctx, &s)?;
+            }
+            return Ok(code);
         }
-        return Err(fatal(msg::REBASE_NOT_SUPPORTED));
+        match rebase {
+            Some(Rebase::Interactive) => {
+                return Err(fatal(msg::rebase_mode_not_supported("interactive")));
+            }
+            Some(Rebase::Merges) => return Err(fatal(msg::rebase_mode_not_supported("merges"))),
+            _ => {}
+        }
+        let onto = merge_heads[0];
+        // A fork point the fetched history already contains gives the
+        // same commits as the fetched head itself.
+        let upstream = match (fork, commits.first()) {
+            (Some(f), Some(c)) if !is_ancestor(&repo, &f, c)? => f,
+            _ => onto,
+        };
+        drop(repo);
+        return children.run(&args.rebase_argv(rebase_autostash, &onto, &upstream));
     }
+    drop(repo);
     children.run(&args.merge_argv(ff.as_deref(), stash))
+}
+
+/// The fork point of `head` in the reflog of the remote-tracking branch
+/// of what is pulled: `refs/remotes/<repository>/<branch>` for a refspec
+/// given on the command line (`refs/heads/<branch>` for the repository
+/// `.`), the upstream of the current branch
+/// otherwise. `None` when there is none (or no current branch).
+fn rebase_fork_point(
+    repo: &Repo,
+    args: &Args,
+    branch: Option<&str>,
+    head: ObjectId,
+) -> Option<ObjectId> {
+    let branch = branch?;
+    let tracking = match (args.rest.first(), args.rest.get(1)) {
+        (Some(remote), Some(spec)) => {
+            let spec = spec.strip_prefix('+').unwrap_or(spec);
+            let src = spec.split(':').next().unwrap_or_default();
+            let src = if src.is_empty() { "HEAD" } else { src };
+            let src = src.strip_prefix("refs/heads/").unwrap_or(src);
+            if remote == "." {
+                format!("refs/heads/{src}")
+            } else {
+                format!("refs/remotes/{remote}/{src}")
+            }
+        }
+        _ => {
+            let config = &repo.config;
+            let b = BranchConfig::from_config(config, branch.as_bytes()).ok()?;
+            let remotes = Remotes::from_config(config).ok()?;
+            lossy(&rgit_remote::upstream_ref(&remotes, Some(&repo.setup.git_dir), Some(&b)).ok()?)
+        }
+    };
+    let flags = rgit_refs::name::RefNameFlags::STRICT;
+    rgit_refs::name::check_refname_format(tracking.as_bytes(), flags).ok()?;
+    crate::rebase::fork_point(repo, &tracking, &head).ok().flatten()
 }
 
 /// Before a rebasing pull: no changes in the work tree or the index

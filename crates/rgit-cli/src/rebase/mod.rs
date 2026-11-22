@@ -286,8 +286,14 @@ fn walk(ctx: &Context, args: &[String]) -> Result<Vec<ObjectId>, Die> {
 }
 
 /// `merge-base --fork-point <ref> <head>`: the newest entry of `<ref>`'s
-/// reflog (or its current value) that is an ancestor of `head`.
-fn fork_point(repo: &Repo, refname: &str, head: &ObjectId) -> Result<Option<ObjectId>, Die> {
+/// reflog (or its current value) that is an ancestor of `head`. The old
+/// value of an entry counts too, so a ref whose reflog starts with an
+/// update (not its creation) still knows where it was before.
+pub(crate) fn fork_point(
+    repo: &Repo,
+    refname: &str,
+    head: &ObjectId,
+) -> Result<Option<ObjectId>, Die> {
     let mut candidates = Vec::new();
     if let Some(cur) = repo.refs.resolve(refname) {
         candidates.push(cur);
@@ -297,12 +303,12 @@ fn fork_point(repo: &Repo, refname: &str, head: &ObjectId) -> Result<Option<Obje
     let mut entries: Vec<ObjectId> = Vec::new();
     for line in text.split(|&b| b == b'\n') {
         let mut fields = line.split(|&b| b == b' ');
-        let _old = fields.next();
-        if let Some(new) = fields.next()
-            && let Ok(id) = ObjectId::from_hex(repo.hash, new)
-            && !id.is_null()
-        {
-            entries.push(id);
+        for field in [fields.next(), fields.next()].into_iter().flatten() {
+            if let Ok(id) = ObjectId::from_hex(repo.hash, field)
+                && !id.is_null()
+            {
+                entries.push(id);
+            }
         }
     }
     candidates.extend(entries.into_iter().rev());
@@ -431,6 +437,17 @@ fn run_child(ctx: &Context, args: &[&str], capture: bool) -> Result<(i32, Vec<u8
     }
 }
 
+/// Stashes the local changes, if there are any, as [`create_autostash`]
+/// does (`pull --autostash` before a fast-forward).
+pub(crate) fn autostash_local_changes(ctx: &mut Context) -> Result<Option<String>, Die> {
+    let (unstaged, staged) = local_changes(&mut Repo::open(ctx, Mode::Required)?)?;
+    if unstaged || staged {
+        create_autostash(ctx)
+    } else {
+        Ok(None)
+    }
+}
+
 /// `--autostash`: stashes the local changes and resets to `HEAD`;
 /// returns the stash commit.
 fn create_autostash(ctx: &mut Context) -> Result<Option<String>, Die> {
@@ -454,7 +471,7 @@ fn create_autostash(ctx: &mut Context) -> Result<Option<String>, Die> {
 }
 
 /// Applies the autostash `hex`; on conflicts it is kept in the stash list.
-fn apply_autostash(ctx: &mut Context, hex: &str) -> Result<(), Die> {
+pub(crate) fn apply_autostash(ctx: &mut Context, hex: &str) -> Result<(), Die> {
     let (code, _) = run_child(ctx, &["stash", "apply", hex], true)?;
     if code == 0 {
         eprintln!("{}", msg::APPLIED_AUTOSTASH);
@@ -465,7 +482,15 @@ fn apply_autostash(ctx: &mut Context, hex: &str) -> Result<(), Die> {
         &["stash", "store", "-q", "-m", msg::AUTOSTASH_MESSAGE, hex],
         true,
     )?;
-    eprint!("{}", msg::AUTOSTASH_CONFLICTS);
+    // Conflicts left in the index and work tree get their own message.
+    let conflicted = Repo::open(ctx, Mode::Required)
+        .and_then(|r| r.read_index())
+        .is_ok_and(|(index, _)| index.has_conflicts());
+    if conflicted {
+        eprintln!("{}", msg::AUTOSTASH_APPLIED_WITH_CONFLICTS);
+    } else {
+        eprint!("{}", msg::AUTOSTASH_CONFLICTS);
+    }
     Ok(())
 }
 
@@ -759,7 +784,6 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         squash_onto,
         force: o.force || o.signoff || o.committer_date_is_author_date || o.ignore_date,
     };
-    write_orig_head(ctx, &repo, orig_head)?;
     write_state(&repo, &state, &items)?;
 
     // Check out the new base.
@@ -771,12 +795,18 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
     let onto_tree = sequencer::tree_of(&repo, &onto).map_err(fail_die)?;
     if let Err(e) = crate::switch_branch::move_index(&repo, old_tree, onto_tree, false) {
         let _ = std::fs::remove_dir_all(state_dir(&repo));
+        if let Some(s) = &state.autostash {
+            apply_autostash(ctx, s)?;
+        }
         if let Die::Exit(code) = e {
             eprintln!("error: {}", msg::COULD_NOT_DETACH);
             return Ok(code);
         }
         return Err(e);
     }
+    // ORIG_HEAD only once the checkout worked (git leaves it alone when
+    // local changes are in the way).
+    write_orig_head(ctx, &repo, orig_head)?;
     let action = reflog_action();
     detach_head(
         ctx,
