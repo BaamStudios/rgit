@@ -878,3 +878,114 @@ fn fetch_runs_auto_gc_like_git() {
         .checks(state)
         .run();
 }
+
+#[test]
+fn badly_named_refs_stop_destructive_commands() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    // History reachable only from a ref whose name git would not create.
+    let bogus = sh(
+        &fx,
+        "\"$GIT\" commit -q --allow-empty -m bogus && \"$GIT\" rev-parse HEAD && \"$GIT\" -c core.logAllRefUpdates=false reset -q --hard HEAD^",
+    )
+    .trim()
+    .to_string();
+    sh(
+        &fx,
+        &format!(
+            "\"$GIT\" reflog expire --expire=now --all && echo {bogus} >'.git/refs/heads/bogus..name'"
+        ),
+    );
+    for cmd in [
+        "prune --expire=now",
+        "repack -a -d",
+        "repack -A -d --unpack-unreachable=now",
+        "gc --prune=now",
+    ] {
+        let err = sh_err(&fx, &format!("\"$RGIT\" {cmd} || echo failed >&2"));
+        assert!(err.ends_with("failed\n"), "{cmd}: {err}");
+        sh(&fx, &format!("\"$GIT\" cat-file -e {bogus}"));
+    }
+    // GIT_REF_PARANOIA=0 skips such references.
+    sh(&fx, "GIT_REF_PARANOIA=0 \"$RGIT\" repack -a -d -k");
+    sh(&fx, &format!("\"$GIT\" cat-file -e {bogus}"));
+}
+
+#[test]
+fn objects_reachable_from_recent_ones_survive_repack_and_prune() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    // A blob that became unreachable sits in an old pack; a new tree
+    // (not yet committed by "another process") refers to it.
+    sh(
+        &fx,
+        "\"$GIT\" -c core.logAllRefUpdates=false checkout -q -b doomed
+        echo abandon >abandon && \"$GIT\" add abandon && \"$GIT\" -c core.logAllRefUpdates=false commit -q -m abandon
+        \"$GIT\" repack -a -d -q
+        \"$GIT\" -c core.logAllRefUpdates=false checkout -q main && \"$GIT\" branch -q -D doomed
+        \"$GIT\" reflog expire --expire=now --expire-unreachable=now --all",
+    );
+    let pack = sh(&fx, "ls .git/objects/pack/*.pack").trim().to_string();
+    set_mtime(&fx.work_dir().join(&pack), 86400);
+    let tree = sh(
+        &fx,
+        "GIT_INDEX_FILE=.git/index.tmp; export GIT_INDEX_FILE; \"$GIT\" read-tree HEAD && echo abandon >abandon && \"$GIT\" add abandon && \"$GIT\" write-tree",
+    )
+    .trim()
+    .to_string();
+    sh(&fx, "rm -f .git/index.tmp abandon");
+    sh(&fx, "\"$RGIT\" gc -q --prune=12.hours.ago");
+    sh(
+        &fx,
+        &format!(
+            "\"$GIT\" ls-tree -r {tree} >/dev/null && echo foo | \"$GIT\" commit-tree -p HEAD {tree} >/dev/null"
+        ),
+    );
+    let commit = sh(
+        &fx,
+        &format!("echo foo | \"$GIT\" commit-tree -p HEAD {tree}"),
+    );
+    sh(
+        &fx,
+        &format!("\"$GIT\" update-ref refs/heads/rescued {}", commit.trim()),
+    );
+    sh(&fx, "\"$GIT\" fsck --full");
+    // gc.recentObjectsHook names objects that count as recent.
+    let blob = sh(&fx, "echo precious | \"$GIT\" hash-object -w --stdin")
+        .trim()
+        .to_string();
+    set_mtime(&loose_path(&fx, &blob), 86400);
+    sh(
+        &fx,
+        &format!("printf '#!/bin/sh\\necho {blob}\\n' >hook && chmod +x hook"),
+    );
+    sh(
+        &fx,
+        "\"$RGIT\" -c gc.recentObjectsHook=./hook prune --expire=now",
+    );
+    assert!(loose_path(&fx, &blob).exists());
+    sh(&fx, "\"$RGIT\" prune --expire=now");
+    assert!(!loose_path(&fx, &blob).exists());
+}
+
+#[test]
+fn pack_garbage_is_removed() {
+    let fx = gc_repo();
+    if fx.is_skipped() {
+        return;
+    }
+    sh(
+        &fx,
+        "cd .git/objects/pack && : >foo.keep && : >foo.pack && : >fake.idx && : >fake2.keep && : >fake2.idx && : >fake3.keep",
+    );
+    sh(&fx, "\"$RGIT\" gc -q");
+    let left = sh(
+        &fx,
+        "cd .git/objects/pack && ls foo* fake* 2>/dev/null | sort",
+    );
+    assert_eq!(left, "fake3.keep\nfoo.keep\nfoo.pack\n");
+}

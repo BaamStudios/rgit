@@ -86,6 +86,14 @@ pub fn failed_to_run(cmd: &str) -> String {
     format!("failed to run {cmd}")
 }
 
+pub fn hook_failed(cmd: &str) -> String {
+    format!("unable to enumerate additional recent objects: '{cmd}' failed")
+}
+
+pub fn hook_bad_line(line: &str) -> String {
+    format!("invalid extra cruft tip: '{line}'")
+}
+
 // ------------------------------------------------------------- prune
 
 pub const PRUNE_USAGE: &[&str] =

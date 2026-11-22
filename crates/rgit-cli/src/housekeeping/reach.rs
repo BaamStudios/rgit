@@ -6,7 +6,8 @@
 //! the per-worktree ones such as `refs/bisect/*`), the `HEAD` of every
 //! worktree, every entry of every reflog, and the objects named by the
 //! index of every worktree (entries, cache-tree trees, resolve-undo
-//! blobs). Root references such as `ORIG_HEAD` or `MERGE_HEAD` are not
+//! blobs), and the original `HEAD` and autostash of a rebase in progress.
+//! Root references such as `ORIG_HEAD` or `MERGE_HEAD` are not
 //! starting points (checked against the reference git).
 //!
 //! [`Walk`] marks everything reachable from a set of starting points:
@@ -27,7 +28,7 @@ use rgit_odb::ObjectDatabase;
 use rgit_pack::write::ListedObject;
 use rgit_refs::files::FilesStore;
 use rgit_refs::reflog::FilesReflog;
-use rgit_refs::{IterItem, IterOptions, RefStore, Target};
+use rgit_refs::{IterItem, IterOptions, RefStore};
 use rgit_repo::Setup;
 
 use crate::Die;
@@ -58,6 +59,15 @@ pub fn roots(setup: &Setup, odb: &ObjectDatabase) -> Result<Roots, BadRef> {
     let common = setup.absolute_common_dir();
     let mut out = Roots::default();
     let mut seen_refs: HashSet<String> = HashSet::new();
+    // GIT_REF_PARANOIA (git(1)): on unless set to false.
+    let paranoia = std::env::var("GIT_REF_PARANOIA")
+        .map(|v| {
+            !matches!(
+                v.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true);
     for wt in worktrees::list(setup, false) {
         let store = FilesStore::new(&common, kind).with_worktree(&wt.git_dir);
         let linked = wt.id.is_some();
@@ -92,19 +102,12 @@ pub fn roots(setup: &Setup, odb: &ObjectDatabase) -> Result<Roots, BadRef> {
                         out.refs.push((name, id));
                     }
                 }
-                IterItem::Broken(_) => return Err(BadRef::Unparsable(name)),
-                // A file under a name git would not create: still keep
-                // what it points to.
-                IterItem::BadName(_) => match store.read_loose_ref(&name) {
-                    Ok(Some(Target::Object(id))) => out.refs.push((name, id)),
-                    Ok(Some(Target::Symbolic(_))) => {}
-                    _ => {
-                        let packed = store.packed_refs().ok();
-                        if let Some(r) = packed.as_ref().and_then(|p| p.find(&name)) {
-                            out.refs.push((name, r.oid));
-                        }
-                    }
-                },
+                // A broken file or a name git would not create: stop,
+                // unless GIT_REF_PARANOIA=0 says to skip such references.
+                IterItem::Broken(_) | IterItem::BadName(_) if paranoia => {
+                    return Err(BadRef::Unparsable(name));
+                }
+                IterItem::Broken(_) | IterItem::BadName(_) => {}
             }
         }
         // Reflogs: the shared ones once, the per-worktree ones of each
@@ -127,6 +130,16 @@ pub fn roots(setup: &Setup, odb: &ObjectDatabase) -> Result<Roots, BadRef> {
                 }
             }
         }
+        // A rebase in progress keeps its original HEAD and autostash.
+        for dir in ["rebase-merge", "rebase-apply"] {
+            for file in ["orig-head", "autostash"] {
+                if let Ok(text) = std::fs::read_to_string(wt.git_dir.join(dir).join(file)) {
+                    if let Ok(id) = ObjectId::from_hex(kind, text.trim().as_bytes()) {
+                        out.weak.push(id);
+                    }
+                }
+            }
+        }
         // The index of the worktree.
         let index_path = if wt.current {
             rgit_index::index_path(&wt.git_dir)
@@ -135,10 +148,12 @@ pub fn roots(setup: &Setup, odb: &ObjectDatabase) -> Result<Roots, BadRef> {
         };
         index_objects(&index_path, kind, &mut out.weak);
     }
-    for (name, id) in &out.refs {
-        if !odb.contains(id) {
+    if paranoia {
+        if let Some((name, _)) = out.refs.iter().find(|(_, id)| !odb.contains(id)) {
             return Err(BadRef::Missing(name.clone()));
         }
+    } else {
+        out.refs.retain(|(_, id)| odb.contains(id));
     }
     Ok(out)
 }

@@ -84,6 +84,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let loose = store::loose_objects(&objects, kind);
     let packs = store::local_packs(&odb, &[]);
+    let hooked = crate::housekeeping::recent_objects_hook(&config, &odb)?;
+    if !hooked.is_empty() {
+        walk.walk(&hooked, true)?;
+    }
     if expire != u64::MAX {
         // Unreachable but recent objects, and what they reach, stay.
         let mut recent: Vec<ObjectId> = loose

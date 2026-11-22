@@ -241,6 +241,11 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
         children.run(&["rerere", "gc"])?;
     }
 
+    // extensions.preciousObjects: nothing may be deleted, so neither
+    // repack nor prune runs.
+    if setup.format.precious_objects {
+        return Ok(0);
+    }
     let mut repack: Vec<String> = vec!["repack".into(), "-d".into(), "-l".into()];
     if aggressive.get() {
         let depth = config.int("gc.aggressivedepth").ok().flatten().unwrap_or(50);

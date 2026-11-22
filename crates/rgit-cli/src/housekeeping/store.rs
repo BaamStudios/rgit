@@ -152,6 +152,31 @@ pub fn delete_pack(base: &Path) {
     }
 }
 
+/// Remove the leftovers of packs whose `.pack` file is gone: when an
+/// `.idx` has no `.pack` next to it, every file with that base name goes
+/// (`.idx`, `.keep`, `.rev`, ...). A `.pack` without `.idx` may still be
+/// being written and stays, as does a lone `.keep`.
+pub fn remove_pack_garbage(pack_dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(pack_dir) else {
+        return;
+    };
+    let names: Vec<String> = rd
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    for idx in names.iter().filter_map(|n| n.strip_suffix(".idx")) {
+        if names.iter().any(|n| n.strip_suffix(".pack") == Some(idx)) {
+            continue;
+        }
+        for n in names.iter().filter(|n| {
+            n.strip_prefix(idx)
+                .is_some_and(|rest| rest.starts_with('.') && !rest[1..].contains('.'))
+        }) {
+            let _ = std::fs::remove_file(pack_dir.join(n));
+        }
+    }
+}
+
 /// Remove the multi-pack index (`objects/pack/multi-pack-index`, its
 /// incremental chain in `multi-pack-index.d/` and its bitmap and reverse
 /// index files). It is only an index over the packs: after packs were
@@ -180,6 +205,8 @@ pub struct PackOptions {
     pub rev: bool,
     /// `.idx` version (`pack.indexVersion`).
     pub idx_version: IndexVersion,
+    /// `core.sharedRepository` for the new files.
+    pub shared: rgit_fs::SharedRepository,
 }
 
 impl PackOptions {
@@ -219,6 +246,7 @@ impl PackOptions {
             write,
             rev,
             idx_version,
+            shared: crate::refs_support::shared_repository(config),
         })
     }
 }
@@ -267,26 +295,52 @@ pub fn write_pack(
         drop(tmp);
         return Ok(Some(checksum));
     }
+    share(&tmp_path, opts.shared);
     tmp.persist(with("pack"))
         .map_err(|e| io_fatal(&with("pack"), e))?;
     if opts.rev {
         let bytes = indexed.rev_bytes().map_err(|e| Die::Fatal(e.to_string()))?;
-        write_file(&with("rev"), "tmp_rev_", &bytes)?;
+        write_file(&with("rev"), "tmp_rev_", &bytes, opts.shared)?;
     }
     let bytes = indexed
         .index_bytes(opts.idx_version)
         .map_err(|e| Die::Fatal(e.to_string()))?;
-    write_file(&with("idx"), "tmp_idx_", &bytes)?;
+    write_file(&with("idx"), "tmp_idx_", &bytes, opts.shared)?;
     Ok(Some(checksum))
 }
 
-fn write_file(dest: &Path, prefix: &str, data: &[u8]) -> Result<(), Die> {
+fn write_file(
+    dest: &Path,
+    prefix: &str,
+    data: &[u8],
+    shared: rgit_fs::SharedRepository,
+) -> Result<(), Die> {
     let dir = dest.parent().unwrap_or(Path::new("."));
     let mut tmp = rgit_fs::TempFile::with_mode(dir, prefix, 0o444).map_err(|e| io_fatal(dir, e))?;
     tmp.file_mut()
         .write_all(data)
         .map_err(|e| io_fatal(dest, e))?;
+    share(tmp.path(), shared);
     tmp.persist(dest).map_err(|e| io_fatal(dest, e))
+}
+
+/// Apply `core.sharedRepository` to a new file; a read-only file stays
+/// read-only.
+pub fn share(path: &Path, shared: rgit_fs::SharedRepository) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let before = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode());
+        let _ = shared.apply(path);
+        if before & 0o200 == 0 {
+            if let Ok(m) = std::fs::metadata(path) {
+                let mode = m.permissions().mode() & !0o222;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, shared);
 }
 
 /// Write `id` as a loose object with modification time `mtime` (seconds),

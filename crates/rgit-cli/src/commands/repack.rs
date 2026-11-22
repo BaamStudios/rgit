@@ -16,7 +16,8 @@
 //! is false.
 //!
 //! Not yet: `--cruft` (#96), `--geometric`, `--write-midx` (#21),
-//! `--write-bitmap-index` (#23), `--filter` (#24), `--max-pack-size`.
+//! `--filter` (#24), `--max-pack-size`. `-b` is accepted, but bitmaps
+//! (#23) are not written.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -174,11 +175,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if cruft.get() {
         unsupported.borrow_mut().get_or_insert_with(|| "--cruft".into());
     }
-    if bitmap.get() {
-        unsupported
-            .borrow_mut()
-            .get_or_insert_with(|| "--write-bitmap-index".into());
-    }
+    // Bitmaps (#23) only speed up later reads: -b is accepted, but no
+    // bitmap is written.
+    let _ = bitmap.get();
     if let Some(opt) = unsupported.borrow().as_deref() {
         return Err(Die::Fatal(msg::not_supported(opt)));
     }
@@ -277,11 +276,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .filter(|p| !p.keep && Some(&p.file_name) != new_name.as_ref())
                 .collect();
             if all_loosen && !keep_unreachable.get() {
+                let hooked = crate::housekeeping::recent_objects_hook(&config, &odb)?;
+                let rescued =
+                    rescue_recent(&odb, &walk, &packs, &loose, unpack_expire, &hooked, &common)?;
                 for p in &old {
-                    if unpack_expire.is_some_and(|t| p.mtime < t) {
-                        continue;
-                    }
+                    let old_pack = unpack_expire.is_some_and(|t| p.mtime < t);
                     for id in p.pack.index().ids() {
+                        if old_pack && !rescued.contains(&id) {
+                            continue;
+                        }
                         if walk.seen.contains(&id)
                             || new_ids.contains(&id)
                             || in_kept(&id)
@@ -302,6 +305,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
             remove_stale_tmp_packs(&pack_dir);
         }
+        store::remove_pack_garbage(&pack_dir);
         let packs_now = store::local_packs(&odb, &keep_names);
         store::prune_packed(&objects_dir, &objects_dir, kind, &packs_now, false)?;
     }
@@ -314,9 +318,49 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .unwrap_or(true);
     if update_info {
         let packs_now = store::local_packs(&odb, &keep_names);
-        let _ = server_info::update(&setup, &odb, &packs_now);
+        let _ = server_info::update(&setup, &odb, &packs_now, opts.shared);
     }
     Ok(0)
+}
+
+/// With `--unpack-unreachable=<date>`: the unreachable objects that are
+/// reachable from unreachable but recent ones (loose objects, or objects
+/// of packs, newer than the date). They are loosened whatever the age of
+/// their pack, so that a recent object being written by another process
+/// (a new tree naming an old blob) stays complete; `prune` keeps them for
+/// the same reason.
+fn rescue_recent(
+    odb: &rgit_odb::ObjectDatabase,
+    walk: &Walk<'_>,
+    packs: &[store::LocalPack],
+    loose: &[(ObjectId, std::path::PathBuf, u64)],
+    expire: Option<u64>,
+    hooked: &[ObjectId],
+    common: &std::path::Path,
+) -> Result<HashSet<ObjectId>, Die> {
+    let Some(expire) = expire else {
+        return Ok(HashSet::new());
+    };
+    let mut recent: Vec<ObjectId> = hooked.to_vec();
+    recent.extend(loose
+        .iter()
+        .filter(|(id, _, mtime)| *mtime > expire && !walk.seen.contains(id))
+        .map(|(id, _, _)| *id));
+    for p in packs.iter().filter(|p| p.mtime > expire) {
+        recent.extend(p.pack.index().ids().filter(|id| !walk.seen.contains(id)));
+    }
+    if recent.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let kind = odb.hash_kind();
+    let mut extra = Walk::new(odb, reach::shallow_commits(common, kind));
+    extra.seen = walk.seen.clone();
+    extra.walk(&recent, true)?;
+    Ok(extra
+        .seen
+        .into_iter()
+        .filter(|id| !walk.seen.contains(id))
+        .collect())
 }
 
 /// The object is available from an alternate object database.
