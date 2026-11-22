@@ -254,12 +254,6 @@ pub fn move_index_with(
     };
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
     let applied = plan.apply(repo.odb(), &wt, &conv);
-    if conv.skipped_filter() {
-        eprintln!(
-            "warning: {}",
-            crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED
-        );
-    }
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if let Some(reference) = mtime {
@@ -399,7 +393,14 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
     let moved = if skip_merge {
         None
     } else {
-        Some(move_index(repo, old_tree, new_tree, req.force)?)
+        let refname = match &req.target {
+            Target::Branch(name) => Some(format!("refs/heads/{name}")),
+            _ => None,
+        };
+        crate::convert::set_checkout_meta(refname, Some(&new_oid));
+        let moved = move_index(repo, old_tree, new_tree, req.force);
+        crate::convert::set_checkout_meta(None, None);
+        Some(moved?)
     };
     if let Some(m) = &moved {
         if !req.quiet && !m.changes.is_empty() {

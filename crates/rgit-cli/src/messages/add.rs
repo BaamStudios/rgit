@@ -44,13 +44,6 @@ pub fn remove(path: &str) -> String {
     format!("remove '{path}'")
 }
 
-/// rgit-specific (decision on #107): a configured filter driver is not
-/// run yet (#112).
-#[must_use]
-pub fn attributes_not_applied(path: &str) -> String {
-    format!("rgit: filter drivers are not applied yet; '{path}' added unfiltered")
-}
-
 pub const HELP_INTENT_TO_ADD: &str = "record only the fact that the path will be added later";
 pub const HELP_IGNORE_ERRORS: &str = "just skip files which cannot be added because of errors";
 pub const HELP_IGNORE_MISSING: &str = "check if - even missing - files are ignored in dry run";

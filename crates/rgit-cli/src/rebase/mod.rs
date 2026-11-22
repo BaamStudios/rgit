@@ -776,7 +776,10 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
                         None => ObjectId::empty_tree(repo.hash),
                     };
                     let new_tree = sequencer::tree_of(&repo, &orig_head).map_err(fail_die)?;
+                    let refname = head_name.starts_with("refs/").then(|| head_name.clone());
+                    crate::convert::set_checkout_meta(refname, Some(&orig_head));
                     crate::switch_branch::move_index(&repo, old_tree, new_tree, false)?;
+                    crate::convert::set_checkout_meta(None, None);
                     let what = format!("{}: {}", reflog_action(), msg::checkout(b));
                     if head_name.starts_with("refs/") {
                         attach_head(ctx, &repo, &head_name, &what)?;

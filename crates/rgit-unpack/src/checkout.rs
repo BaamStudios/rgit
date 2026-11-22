@@ -17,12 +17,25 @@ use rgit_index::Entry;
 use crate::messages as msg;
 
 /// Content conversion applied to regular files on their way into the work
-/// tree (line endings, `ident`, `working-tree-encoding`; filter drivers
-/// are #112). [`Identity`] leaves the blob unchanged.
+/// tree (line endings, `ident`, `working-tree-encoding`, filter drivers).
+/// [`Identity`] leaves the blob unchanged.
 pub trait Filter {
     /// The work tree form of `data`, the blob `id` of the index entry at
     /// `path`.
     fn to_worktree(&self, path: &[u8], id: &ObjectId, data: Vec<u8>) -> Vec<u8>;
+
+    /// [`Filter::to_worktree`] for a checkout that can wait: `None` when
+    /// the conversion was delayed (a `process` filter driver with the
+    /// `delay` capability); [`Filter::finish_delayed`] delivers it later.
+    fn to_worktree_delayable(&self, path: &[u8], id: &ObjectId, data: Vec<u8>) -> Option<Vec<u8>> {
+        Some(self.to_worktree(path, id, data))
+    }
+
+    /// Hands every delayed path with its work tree content to `ready`;
+    /// returns messages (without `error: `) for paths that never came.
+    fn finish_delayed(&self, _ready: &mut dyn FnMut(&[u8], Vec<u8>)) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// The filter that changes nothing.

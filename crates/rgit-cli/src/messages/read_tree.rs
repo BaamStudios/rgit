@@ -47,11 +47,6 @@ pub const PREFIX_TREES_UNSUPPORTED: &str =
     "rgit: read-tree --prefix with several trees is not implemented yet";
 pub const THREE_WAY_UNSUPPORTED: &str = "rgit: read-tree with three trees is not implemented yet";
 
-/// rgit's own: the work tree was written without running configured
-/// filter drivers (#112).
-pub const ATTRIBUTES_NOT_APPLIED: &str =
-    "rgit: filter drivers are not applied yet; files were checked out unfiltered";
-
 pub const PREFIX_SLASH: &str = "Invalid prefix, prefix cannot start with '/'";
 
 /// `Entry '<path>' overlaps with '<path>'.  Cannot bind.` (`--prefix`).

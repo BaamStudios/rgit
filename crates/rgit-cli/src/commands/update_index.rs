@@ -236,12 +236,6 @@ impl State<'_> {
     fn to_git(&self, path: &[u8], data: Vec<u8>) -> Result<Vec<u8>, Die> {
         let conv = self.repo.converter()?;
         let c = conv.conversion(path);
-        if conv.unapplied_filter(&c) {
-            eprintln!(
-                "warning: {}",
-                crate::messages::add::attributes_not_applied(&lossy(path))
-            );
-        }
         let opts = if self.flag(Flag::InfoOnly) {
             rgit_convert::Options::QUIET
         } else {

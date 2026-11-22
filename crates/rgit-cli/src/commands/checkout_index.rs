@@ -42,7 +42,6 @@ struct State<'a> {
     cwd_prefix: Vec<u8>,
     out: Vec<u8>,
     errors: bool,
-    wrote_files: bool,
     /// Whether `-u` recorded new stat data in the in-memory index.
     refreshed: bool,
 }
@@ -93,7 +92,6 @@ impl State<'_> {
             let blob = rgit_unpack::read_blob(self.repo.odb(), &entry.id)
                 .map_err(|e| Die::Error(e.to_string(), 128))?;
             if entry.mode.is_file() {
-                self.wrote_files = true;
                 self.conv.to_worktree(entry.path(), &entry.id, blob)
             } else {
                 blob
@@ -185,7 +183,6 @@ impl State<'_> {
             ".merge_file_"
         };
         let data = if entry.mode.is_file() {
-            self.wrote_files = true;
             self.conv.to_worktree(entry.path(), &entry.id, blob)
         } else {
             blob
@@ -339,7 +336,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         cwd_prefix: repo.prefix(),
         out: Vec::new(),
         errors: false,
-        wrote_files: false,
         refreshed: false,
     };
 
@@ -399,9 +395,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mut o = std::io::stdout().lock();
         let _ = o.write_all(&state.out);
         let _ = o.flush();
-    }
-    if state.wrote_files && state.conv.skipped_filter() {
-        eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);
     }
     if let Some(mut lock) = lock.take() {
         if state.refreshed {

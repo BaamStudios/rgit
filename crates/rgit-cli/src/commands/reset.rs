@@ -566,7 +566,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if matches!(mode, HARD | MERGE | KEEP) {
         let empty = ObjectId::empty_tree(repo.hash);
         let head_tree = head.and_then(|h| tree_of(&objects, &h)).unwrap_or(empty);
+        let branch = format!("refs/heads/{rev_name}");
+        let refname = revs.resolve(&branch).map(|_| branch);
+        crate::convert::set_checkout_meta(refname, commit.as_ref());
         reset_worktree(&repo, mode, head_tree, tree.unwrap_or(empty), &rev_name)?;
+        crate::convert::set_checkout_meta(None, None);
     }
 
     if mode == MIXED {
@@ -703,9 +707,6 @@ fn reset_worktree(
     };
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
     let applied = plan.apply(repo.odb(), &wt, &conv);
-    if conv.skipped_filter() {
-        eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);
-    }
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if mode == KEEP {

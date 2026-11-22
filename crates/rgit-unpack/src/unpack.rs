@@ -222,6 +222,7 @@ impl Plan {
             }
         }
         let symlinks = wt.checker.options().symlinks;
+        let mut delayed = false;
         for path in &update {
             let Ok(pos) = index.position(path, Stage::MERGED) else {
                 continue;
@@ -231,7 +232,15 @@ impl Plan {
                 Vec::new()
             } else {
                 match read_blob(odb, &entry.id) {
-                    Ok(d) if entry.mode.is_file() => filter.to_worktree(path, &entry.id, d),
+                    Ok(d) if entry.mode.is_file() => {
+                        match filter.to_worktree_delayable(path, &entry.id, d) {
+                            Some(d) => d,
+                            None => {
+                                delayed = true;
+                                continue;
+                            }
+                        }
+                    }
                     Ok(d) => d,
                     Err(e) => {
                         errors.push(e.to_string());
@@ -248,6 +257,25 @@ impl Plan {
                 Ok(None) => {}
                 Err(e) => errors.push(e.to_string()),
             }
+        }
+        if delayed {
+            let mut ready = |path: &[u8], data: Vec<u8>| {
+                let Ok(pos) = index.position(path, Stage::MERGED) else {
+                    return;
+                };
+                let entry = index.entries()[pos].clone();
+                match checkout::write_entry(wt.root, path, &entry, &data, symlinks) {
+                    Ok(Some(meta)) => {
+                        if let Some(e) = index.entry_mut(pos) {
+                            e.stat = stat_from_metadata(&meta);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => errors.push(e.to_string()),
+                }
+            };
+            let missing = filter.finish_delayed(&mut ready);
+            errors.extend(missing);
         }
         Applied { index, errors }
     }

@@ -189,6 +189,7 @@ fn run_command(ctx: &mut Context, argv: &[String]) -> Option<CmdResult> {
     }
     if let Some(cmd) = builtin {
         rgit_trace::trace_builtin(argv);
+        rgit_convert::filter::set_base_env(ctx.child_env());
         return Some((cmd.run)(ctx, argv));
     }
     external::run(ctx, argv)
@@ -297,6 +298,8 @@ fn main() {
         Ok(code) => code,
         Err(die) => die.emit(),
     };
+    // Filter processes see the end of their input and finish.
+    rgit_convert::filter::finish_all();
     let _ = std::io::stdout().flush();
     // GIT_TRACE_PERFORMANCE: the whole command line as invoked.
     rgit_trace::trace_command_performance(start, &args);

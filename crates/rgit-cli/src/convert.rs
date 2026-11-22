@@ -10,8 +10,10 @@
 //! describes. `text=auto`'s rule for files that already
 //! have CR LF in the index looks at the stage-0 entry of the index file.
 //!
-//! Filter drivers (`filter=`, #112) are not run; [`Converter::filter`]
-//! names them so that commands can warn.
+//! Filter drivers (`filter=`, rgit_convert::filter) run before the other
+//! conversions on the way in and after them on the way out, as
+//! gitattributes(5) "Interaction between checkin/checkout attributes"
+//! describes. A failing `required` filter is fatal.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -20,6 +22,7 @@ use std::rc::Rc;
 
 use rgit_attr::{AttrId, Attributes, Order, Source};
 use rgit_config::ConfigSet;
+use rgit_convert::filter::{self, Direction, Driver, Meta, Outcome};
 use rgit_convert::{AutoCrlf, Config, Conversion, Eol, Notice, Options, SafeCrlf, Stats};
 use rgit_hash::ObjectId;
 use rgit_index::{Index, ReadOptions, Stage};
@@ -77,6 +80,52 @@ pub fn config(cfg: &ConfigSet) -> Result<Config, Die> {
     Ok(out)
 }
 
+/// What `process` filters are told about the commit being checked out.
+static CHECKOUT_META: std::sync::Mutex<Meta> = std::sync::Mutex::new(Meta {
+    refname: None,
+    treeish: None,
+    blob: None,
+});
+
+/// Tells `process` filters which ref (`ref=`) and commit or tree
+/// (`treeish=`) the following checkout writes.
+pub fn set_checkout_meta(refname: Option<String>, treeish: Option<&ObjectId>) {
+    let mut m = CHECKOUT_META.lock().unwrap_or_else(|e| e.into_inner());
+    m.refname = refname;
+    m.treeish = treeish.map(ObjectId::to_hex);
+}
+
+/// Files converted with a filter driver in this process: path, digest of
+/// the work tree content, blob.
+type Converted = HashMap<Vec<u8>, (u64, ObjectId)>;
+
+static WRITTEN: std::sync::LazyLock<std::sync::Mutex<Converted>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn content_digest(data: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut h);
+    h.finish()
+}
+
+fn remember(path: &[u8], digest: u64, id: ObjectId) {
+    WRITTEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_vec(), (digest, id));
+}
+
+/// Dies at once with `fatal: <message>` from inside a conversion that
+/// cannot return an error (checkout, comparing with the index): removes
+/// lock files and ends the filter processes first.
+pub fn die_now(message: &str) -> ! {
+    eprintln!("fatal: {message}");
+    rgit_fs::remove_registered_files();
+    filter::finish_all();
+    std::process::exit(rgit_messages::EXIT_FATAL);
+}
+
 /// Prints a conversion message with git's prefix.
 pub fn print_notice(n: Notice) {
     match n {
@@ -101,6 +150,14 @@ struct Lookup {
     ids: [AttrId; 6],
 }
 
+/// A blob a `process` filter delayed.
+struct Delayed {
+    path: Vec<u8>,
+    driver: Driver,
+    meta: Meta,
+    id: Option<ObjectId>,
+}
+
 /// Applies the conversions of a repository.
 pub struct Converter {
     cfg: Config,
@@ -116,7 +173,8 @@ pub struct Converter {
     snapshot: RefCell<Option<HashMap<Vec<u8>, Vec<u8>>>>,
     odb: OnceCell<Option<ObjectDatabase>>,
     lookup: RefCell<Option<Lookup>>,
-    skipped_filter: Cell<bool>,
+    drivers: RefCell<HashMap<Vec<u8>, Option<Driver>>>,
+    delayed: RefCell<Vec<Delayed>>,
     renormalize: Cell<bool>,
     /// Paths a warning was printed for (git warns once per path).
     warned: RefCell<std::collections::HashSet<Vec<u8>>>,
@@ -137,7 +195,8 @@ impl Converter {
             snapshot: RefCell::new(None),
             odb: OnceCell::new(),
             lookup: RefCell::new(None),
-            skipped_filter: Cell::new(false),
+            drivers: RefCell::new(HashMap::new()),
+            delayed: RefCell::new(Vec::new()),
             renormalize: Cell::new(false),
             warned: RefCell::new(std::collections::HashSet::new()),
         })
@@ -265,29 +324,179 @@ impl Converter {
 
     /// Whether `path` is converted at all.
     pub fn converts(&self, path: &[u8]) -> bool {
-        !self.conversion(path).is_identity()
+        let conv = self.conversion(path);
+        !conv.is_identity() || self.driver(&conv).is_some()
     }
 
-    /// Whether `conv` names a filter driver that is configured (and that
-    /// rgit does not run yet, #112). Remembered for
-    /// [`Converter::skipped_filter`].
-    pub fn unapplied_filter(&self, conv: &Conversion) -> bool {
-        let Some(name) = &conv.attrs.filter else {
-            return false;
-        };
-        let name = String::from_utf8_lossy(name);
-        let configured = ["clean", "smudge", "process"]
-            .iter()
-            .any(|k| self.git_config.get(format!("filter.{name}.{k}")).is_some());
-        if configured {
-            self.skipped_filter.set(true);
+    /// The filter driver `conv` names, if it is configured.
+    pub fn driver(&self, conv: &Conversion) -> Option<Driver> {
+        let name = conv.attrs.filter.as_ref()?;
+        if let Some(d) = self.drivers.borrow().get(name) {
+            return d.clone();
         }
-        configured
+        let shown = String::from_utf8_lossy(name).into_owned();
+        let cfg = &self.git_config;
+        let d = filter::driver(
+            &shown,
+            |key| {
+                cfg.get(format!("filter.{shown}.{key}"))
+                    .map(|e| e.value.as_ref().map(|v| v.to_vec()))
+            },
+            cfg.bool(format!("filter.{shown}.required")).ok().flatten(),
+        );
+        self.drivers.borrow_mut().insert(name.clone(), d.clone());
+        d
     }
 
-    /// Whether a configured filter driver was skipped so far.
-    pub fn skipped_filter(&self) -> bool {
-        self.skipped_filter.get()
+    /// Where filters run: the top of the work tree, with `GIT_PREFIX` and
+    /// absolute `GIT_DIR` / `GIT_WORK_TREE` when they were given.
+    fn filter_context(&self) -> filter::Context {
+        let mut env: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![(
+            "GIT_PREFIX".into(),
+            self.setup.prefix.clone().unwrap_or_default(),
+        )];
+        if self.setup.explicit {
+            env.push(("GIT_DIR".into(), self.setup.absolute_git_dir().into()));
+            if let Some(r) = &self.root {
+                env.push(("GIT_WORK_TREE".into(), r.clone().into()));
+            }
+        }
+        filter::Context {
+            cwd: self.root.clone(),
+            env,
+        }
+    }
+
+    /// Runs the filter driver of `conv` over `data`. `Err` is the fatal
+    /// message of a `required` driver that did not filter.
+    fn run_filter(
+        &self,
+        conv: &Conversion,
+        dir: Direction,
+        path: &[u8],
+        data: Vec<u8>,
+        blob: Option<&ObjectId>,
+    ) -> Result<Vec<u8>, String> {
+        self.run_filter_delayable(conv, dir, path, data, blob, false)
+            .map(|d| d.unwrap_or_default())
+    }
+
+    /// [`Converter::run_filter`]; with `can_delay` a `process` filter may
+    /// delay the blob (`Ok(None)`, kept for [`Converter::finish_delayed`]).
+    fn run_filter_delayable(
+        &self,
+        conv: &Conversion,
+        dir: Direction,
+        path: &[u8],
+        data: Vec<u8>,
+        blob: Option<&ObjectId>,
+        can_delay: bool,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let Some(driver) = self.driver(conv) else {
+            return Ok(Some(data));
+        };
+        let mut meta = CHECKOUT_META
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        meta.blob = blob.map(ObjectId::to_hex);
+        let ctx = self.filter_context();
+        match filter::apply(&driver, dir, path, &data, &meta, &ctx, can_delay) {
+            Outcome::Filtered(d) => Ok(Some(d)),
+            Outcome::Delayed => {
+                self.delayed.borrow_mut().push(Delayed {
+                    path: path.to_vec(),
+                    driver,
+                    meta,
+                    id: blob.copied(),
+                });
+                Ok(None)
+            }
+            Outcome::NotRun | Outcome::Failed if driver.required => {
+                let shown = String::from_utf8_lossy(path);
+                Err(match dir {
+                    Direction::Clean => {
+                        rgit_convert::messages::clean_filter_failed(&shown, &driver.name)
+                    }
+                    Direction::Smudge => {
+                        rgit_convert::messages::smudge_filter_failed(&shown, &driver.name)
+                    }
+                })
+            }
+            Outcome::NotRun | Outcome::Failed => Ok(Some(data)),
+        }
+    }
+
+    /// Fetches the blobs `process` filters delayed and hands each to
+    /// `ready`; returns error messages for those that never came.
+    pub fn finish_delayed(&self, ready: &mut dyn FnMut(&[u8], Vec<u8>)) -> Vec<String> {
+        let mut pending = std::mem::take(&mut *self.delayed.borrow_mut());
+        let mut errors = Vec::new();
+        let ctx = self.filter_context();
+        // Each filter is asked until it answers with an empty list.
+        let mut active: Vec<String> = Vec::new();
+        for d in &pending {
+            let cmd = d.driver.process.clone().unwrap_or_default();
+            if !active.contains(&cmd) {
+                active.push(cmd);
+            }
+        }
+        while !active.is_empty() {
+            let mut still = Vec::new();
+            for cmd in active {
+                let of_cmd = |d: &Delayed| d.driver.process.as_deref() == Some(cmd.as_str());
+                let list = match filter::list_available(&cmd) {
+                    Ok(l) if !l.is_empty() => l,
+                    _ => continue,
+                };
+                let mut fetched = false;
+                let mut bad = false;
+                for p in list {
+                    let Some(i) = pending.iter().position(|d| of_cmd(d) && d.path == p) else {
+                        errors.push(rgit_convert::messages::not_delayed_earlier(
+                            &cmd,
+                            &String::from_utf8_lossy(&p),
+                        ));
+                        bad = true;
+                        continue;
+                    };
+                    fetched = true;
+                    let d = pending.remove(i);
+                    let out = filter::apply(
+                        &d.driver,
+                        Direction::Smudge,
+                        &d.path,
+                        &[],
+                        &d.meta,
+                        &ctx,
+                        false,
+                    );
+                    match out {
+                        Outcome::Filtered(c) => {
+                            if let Some(id) = d.id {
+                                remember(&d.path, content_digest(&c), id);
+                            }
+                            ready(&d.path, c);
+                        }
+                        _ => errors.push(rgit_convert::messages::not_filtered_properly(
+                            &String::from_utf8_lossy(&d.path),
+                        )),
+                    }
+                }
+                // A filter that names a blob it did not delay is not asked
+                // again.
+                if !bad && (fetched || pending.iter().any(of_cmd)) {
+                    still.push(cmd);
+                }
+            }
+            active = still;
+        }
+        for d in pending {
+            errors.push(rgit_convert::messages::not_filtered_properly(
+                &String::from_utf8_lossy(&d.path),
+            ));
+        }
+        errors
     }
 
     /// Normalizes line endings even of files whose index blob has CR LF,
@@ -345,6 +554,28 @@ impl Converter {
         data: Vec<u8>,
         opts: Options,
     ) -> Result<Vec<u8>, Die> {
+        if self.driver(conv).is_none() {
+            return self.convert_to_git(conv, path, data, opts);
+        }
+        let digest = content_digest(&data);
+        let data = self
+            .run_filter(conv, Direction::Clean, path, data, None)
+            .map_err(Die::Fatal)?;
+        let out = self.convert_to_git(conv, path, data, opts)?;
+        if let Ok(id) = rgit_hash::hash_object(self.hash, "blob", &out) {
+            remember(path, digest, id);
+        }
+        Ok(out)
+    }
+
+    /// [`Converter::to_git_with`] after the filter driver.
+    fn convert_to_git(
+        &self,
+        conv: &Conversion,
+        path: &[u8],
+        data: Vec<u8>,
+        opts: Options,
+    ) -> Result<Vec<u8>, Die> {
         if conv.is_identity() {
             return Ok(data);
         }
@@ -372,22 +603,70 @@ impl Converter {
 
     /// The work tree form of the blob `id` (content `data`) of `path`.
     pub fn to_worktree(&self, path: &[u8], id: &ObjectId, data: Vec<u8>) -> Vec<u8> {
+        self.to_worktree_delayable(path, id, data, false)
+            .unwrap_or_default()
+    }
+
+    /// [`Converter::to_worktree`]; with `can_delay` `None` when a
+    /// `process` filter delayed the blob ([`Converter::finish_delayed`]).
+    pub fn to_worktree_delayable(
+        &self,
+        path: &[u8],
+        id: &ObjectId,
+        data: Vec<u8>,
+        can_delay: bool,
+    ) -> Option<Vec<u8>> {
         let conv = self.conversion(path);
-        self.unapplied_filter(&conv);
-        if conv.is_identity() {
-            return data;
+        let data = if conv.is_identity() {
+            data
+        } else {
+            let shown = String::from_utf8_lossy(path);
+            rgit_convert::to_worktree(&shown, data, &conv, &id.to_hex(), &mut print_notice)
+        };
+        if self.driver(&conv).is_none() {
+            return Some(data);
         }
-        let shown = String::from_utf8_lossy(path);
-        rgit_convert::to_worktree(&shown, data, &conv, &id.to_hex(), &mut print_notice)
+        match self.run_filter_delayable(&conv, Direction::Smudge, path, data, Some(id), can_delay) {
+            Ok(Some(d)) => {
+                remember(path, content_digest(&d), *id);
+                Some(d)
+            }
+            Ok(None) => None,
+            Err(m) => die_now(&m),
+        }
+    }
+
+    /// The blob just checked out to or added from `path` if `data` is
+    /// exactly what was converted (git does not clean such files again).
+    fn just_written(&self, path: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+        let id = {
+            let w = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+            let (digest, id) = w.get(path)?;
+            if *digest != content_digest(data) {
+                return None;
+            }
+            *id
+        };
+        let raw = self.odb()?.read(&id).ok().flatten()?;
+        Some(raw.data)
     }
 }
 
 impl rgit_worktree::stat::ContentFilter for Converter {
     fn to_git(&self, path: &[u8], data: Vec<u8>) -> Vec<u8> {
         let conv = self.conversion(path);
-        // Quietly: problems are reported instead of failing.
-        self.to_git_with(&conv, path, data, Options::QUIET)
-            .unwrap_or_default()
+        if self.driver(&conv).is_some() {
+            if let Some(blob) = self.just_written(path, &data) {
+                return blob;
+            }
+        }
+        // Quietly: problems are reported instead of failing; only a
+        // required filter driver is fatal.
+        match self.to_git_with(&conv, path, data, Options::QUIET) {
+            Ok(d) => d,
+            Err(Die::Fatal(m)) => die_now(&m),
+            Err(_) => Vec::new(),
+        }
     }
 
     fn converts(&self, path: &[u8]) -> bool {
@@ -398,5 +677,13 @@ impl rgit_worktree::stat::ContentFilter for Converter {
 impl rgit_unpack::Filter for Converter {
     fn to_worktree(&self, path: &[u8], id: &ObjectId, data: Vec<u8>) -> Vec<u8> {
         Converter::to_worktree(self, path, id, data)
+    }
+
+    fn to_worktree_delayable(&self, path: &[u8], id: &ObjectId, data: Vec<u8>) -> Option<Vec<u8>> {
+        Converter::to_worktree_delayable(self, path, id, data, true)
+    }
+
+    fn finish_delayed(&self, ready: &mut dyn FnMut(&[u8], Vec<u8>)) -> Vec<String> {
+        Converter::finish_delayed(self, ready)
     }
 }

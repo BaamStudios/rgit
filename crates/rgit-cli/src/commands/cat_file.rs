@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 //! `git cat-file` (Documentation/git-cat-file.adoc).
 //!
-//! Not implemented yet: `--textconv`, `--filters` (#112, #147),
-//! `--use-mailmap` (#127) and `--filter=` (#24); they are parsed and
-//! checked like git, then refused.
+//! `--filters` converts a blob as a checkout of its path would (smudge
+//! filters, line endings); other objects are printed unchanged.
+//!
+//! Not implemented yet: `--textconv` (#147), `--filters` with `--batch`
+//! (#403), `--use-mailmap` (#127) and `--filter=` (#24); they are parsed
+//! and checked like git, then refused.
 
 use std::io::{BufRead, BufWriter, Write};
 
@@ -162,7 +165,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(parser.usage_msg(msg::BATCH_NO_ARGS).into());
         }
     } else if filtering {
-        if args.len() > 2 {
+        if args.len() > 1 {
             return Err(parser.usage_msg(msg::TOO_MANY_ARGS).into());
         }
         if args.is_empty() {
@@ -189,7 +192,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     drop(parser);
 
-    if opt == MODE_TEXTCONV || opt == MODE_FILTERS {
+    if opt == MODE_TEXTCONV || (opt == MODE_FILTERS && batch.is_some()) {
         return Err(Die::Fatal(msg::cat_file_not_supported(mode_name(opt))));
     }
     let use_mailmap = mailmap.get();
@@ -224,7 +227,46 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if opt == 0 {
         return show_typed(&mut repo, &args[0], &args[1]);
     }
+    if opt == MODE_FILTERS {
+        return filters(&mut repo, &args[0], path.as_deref());
+    }
     single(&mut repo, opt, &args[0])
+}
+
+/// `--filters`: the object named `name` (`<rev>:<path>`, or any object
+/// with `--path`), blobs converted to their work tree form for the path.
+fn filters(repo: &mut Repo, name: &str, path: Option<&str>) -> CmdResult {
+    let path = match path {
+        Some(p) => p.to_owned(),
+        None => {
+            // `<rev>:<path>`, `:<path>` or `:<stage>:<path>`.
+            let after = match name.strip_prefix(':') {
+                Some(rest) => match rest.as_bytes() {
+                    [b'0'..=b'3', b':', ..] => Some(&rest[2..]),
+                    _ => Some(rest),
+                },
+                None => name.split_once(':').map(|(_, p)| p),
+            };
+            match after {
+                Some(p) => p.to_owned(),
+                None => return Err(Die::Fatal(msg::path_required(name))),
+            }
+        }
+    };
+    let r = resolve_arg(repo, name)?;
+    let oid = repo.replaced(&r.oid);
+    let data = read_data(repo, &oid, name)?;
+    let data = if repo.odb.header(&oid).ok().flatten().map(|h| h.kind) == Some(ObjectKind::Blob) {
+        let conv = crate::convert::Converter::worktree(repo)?;
+        conv.to_worktree(path.as_bytes(), &oid, data)
+    } else {
+        data
+    };
+    let mut out = std::io::stdout().lock();
+    out.write_all(&data)
+        .and_then(|()| out.flush())
+        .map_err(|e| Die::Fatal(msg::unable_to_write_stdout(&crate::global::strerror(&e))))?;
+    Ok(0)
 }
 
 /// Whether a mailmap would change anything: `mailmap.file`,
