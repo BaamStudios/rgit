@@ -123,3 +123,53 @@ fn left_right_count() {
         .checks(Check::OUTPUT)
         .run();
 }
+
+/// `--fork-point`: a topic forked from earlier tips of `base` (rewound
+/// after each fork) finds the old tip through `base`'s reflog; HEAD is the
+/// default commit; refs without a reflog, non-refs and unknown names.
+#[test]
+fn fork_point() {
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    let mut fx = commit(fx, "E").git(["checkout", "-q", "-b", "base"]);
+    for n in 1..=3 {
+        fx = commit(fx, &format!("base {n}")).git(["checkout", "-q", "-B", "derived"]);
+        fx = commit(fx, &format!("derived {n}"))
+            .git(["tag", &format!("d{n}")])
+            .git(["checkout", "-q", "-B", "base", "main"]);
+    }
+    let mut fx = fx
+        .git(["checkout", "-q", "derived"])
+        .git([
+            "-c",
+            "core.logAllRefUpdates=false",
+            "branch",
+            "no-reflog",
+            "base",
+        ])
+        .git(["branch", "other", "main"])
+        .git(["tag", "t", "base"]);
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["base", "d1"][..],
+        &["base", "d2"],
+        &["base", "d3"],
+        &["base"],
+        &["refs/heads/base", "derived"],
+        &["no-reflog", "derived"],
+        &["other", "HEAD"],
+        &["main", "derived"],
+        &["t", "derived"],
+        &["nope"],
+        &["base", "nope"],
+        &["HEAD~1", "derived"],
+        &["base", "derived", "extra"],
+    ] {
+        let mut argv = vec!["merge-base", "--fork-point"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).checks(Check::OUTPUT).run();
+    }
+}

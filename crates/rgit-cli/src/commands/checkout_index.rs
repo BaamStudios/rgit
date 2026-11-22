@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 //! `git checkout-index` (Documentation/git-checkout-index.adoc): copy files
 //! from the index to the work tree. `-a`, `-f`, `-q`, `-n`, `-u`,
-//! `--prefix`, `--stdin`, `-z`, `--ignore-skip-worktree-bits`; `--temp`
-//! and `--stage` are not implemented yet.
+//! `--prefix`, `--stdin`, `-z`, `--ignore-skip-worktree-bits`, `--temp`
+//! (`.merge_file_XXXXXX` at the top of the work tree, names on stdout) and
+//! `--stage=<n>|all`.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use rgit_fs::{LockFile, LockOptions};
@@ -32,6 +33,14 @@ struct State<'a> {
     no_create: bool,
     update: bool,
     prefix: Vec<u8>,
+    /// `--temp`: write temporary files and print their names.
+    temp: bool,
+    /// `--stage`.
+    stage: Which,
+    /// The directory the command runs in, relative to the top (empty or
+    /// ending in `/`), for the paths printed with `--temp`.
+    cwd_prefix: Vec<u8>,
+    out: Vec<u8>,
     errors: bool,
     wrote_files: bool,
     /// Whether `-u` recorded new stat data in the in-memory index.
@@ -45,6 +54,13 @@ impl State<'_> {
     /// later request for the same path (`checkout-index -u b b`) finds the
     /// file up to date, as git does.
     fn checkout(&mut self, index: &mut Index, pos: usize) -> Result<(), Die> {
+        if self.temp {
+            let entry = index.entries()[pos].clone();
+            if let Some(name) = self.write_temp(&entry)? {
+                self.print_temp(&[Some(name)], entry.path());
+            }
+            return Ok(());
+        }
         let entry = &index.entries()[pos];
         let mut target = self.prefix.clone();
         target.extend_from_slice(entry.path());
@@ -113,18 +129,109 @@ impl State<'_> {
             self.errors = true;
             return Ok(());
         }
-        match index.position(path, Stage::MERGED) {
+        let stage = match self.stage {
+            Which::All => {
+                let entries: Vec<Entry> = index.entries()[range].to_vec();
+                return self.checkout_stages(&entries);
+            }
+            Which::Merged => Stage::MERGED,
+            Which::One(s) => s,
+        };
+        match index.position(path, stage) {
             Ok(pos) => self.checkout(index, pos),
             Err(_) => {
                 if !self.quiet {
-                    eprintln!("{}", umsg::unmerged(&lossy(path)));
+                    if stage == Stage::MERGED {
+                        eprintln!("{}", umsg::unmerged(&lossy(path)));
+                    } else {
+                        eprintln!("{}", msg::not_at_stage(&lossy(path), stage.get()));
+                    }
                 }
                 self.errors = true;
                 Ok(())
             }
         }
     }
+
+    /// `--stage=all`: the unmerged stages of one path (all entries of the
+    /// path, in stage order) to temporary files, one output line naming
+    /// them (`.` for a missing stage). A merged path prints nothing.
+    fn checkout_stages(&mut self, entries: &[Entry]) -> Result<(), Die> {
+        let mut names: [Option<String>; 3] = [None, None, None];
+        let mut any = false;
+        for e in entries {
+            let n = e.stage().get();
+            if n == 0 {
+                continue;
+            }
+            any = true;
+            names[usize::from(n) - 1] = self.write_temp(e)?;
+        }
+        if any {
+            self.print_temp(&names, entries[0].path());
+        }
+        Ok(())
+    }
+
+    /// Writes `entry` (converted like a checkout) to a new temporary file
+    /// at the top of the work tree and returns its name.
+    fn write_temp(&mut self, entry: &Entry) -> Result<Option<String>, Die> {
+        let blob = rgit_unpack::read_blob(self.repo.odb(), &entry.id)
+            .map_err(|e| Die::Error(e.to_string(), 128))?;
+        // Symbolic links become regular files holding the target.
+        let prefix = if entry.mode.is_symlink() {
+            ".merge_link_"
+        } else {
+            ".merge_file_"
+        };
+        let data = if entry.mode.is_file() {
+            self.wrote_files = true;
+            self.conv.to_worktree(entry.path(), &entry.id, blob)
+        } else {
+            blob
+        };
+        let fail = |e: std::io::Error| {
+            Die::Error(
+                umsg::unable_to_create_file(".merge_file_XXXXXX", &crate::global::strerror(&e)),
+                128,
+            )
+        };
+        let mut tmp = rgit_fs::TempFile::new_in(&self.root, prefix).map_err(fail)?;
+        tmp.file_mut().write_all(&data).map_err(fail)?;
+        let (file, path) = tmp.keep();
+        drop(file);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(Some(name))
+    }
+
+    /// `<name>[ <name> <name>]<TAB><path>`, the path relative to the
+    /// current directory and quoted like other path listings.
+    fn print_temp(&mut self, names: &[Option<String>], path: &[u8]) {
+        for (i, n) in names.iter().enumerate() {
+            if i > 0 {
+                self.out.push(b' ');
+            }
+            self.out
+                .extend_from_slice(n.as_deref().unwrap_or(".").as_bytes());
+        }
+        self.out.push(b'\t');
+        let rel = crate::quote::relative_to(path, &self.cwd_prefix);
+        crate::quote::write_quoted(&mut self.out, &rel, true);
+        self.out.push(b'\n');
+    }
 }
+
+/// Which stage `checkout-index` copies out (`--stage`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Merged,
+    One(Stage),
+    All,
+}
+
 
 /// `rgit_unpack` takes `/`-separated byte paths; this is the same
 /// conversion for `Path` joins here.
@@ -149,9 +256,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let update = Cell::new(false);
     let nul = Cell::new(false);
     let stdin = Cell::new(false);
-    let temp = Cell::new(false);
+    // -1: not given, 0: --no-temp, 1: --temp.
+    let temp = Cell::new(-1);
     let prefix = RefCell::new(None::<String>);
-    let stage = RefCell::new(None::<String>);
+    let stage = Cell::new(Which::Merged);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -174,11 +282,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('u', "index", &update, msg::HELP_INDEX),
             Opt::flag('z', None, &nul, msg::HELP_Z),
             Opt::flag(None, "stdin", &stdin, msg::HELP_STDIN),
-            Opt::flag(None, "temp", &temp, msg::HELP_TEMP),
+            Opt::bool(None, "temp", &temp, msg::HELP_TEMP),
             Opt::string(None, "prefix", &prefix, "string", msg::HELP_PREFIX),
-            Opt::string(None, "stage", &stage, "(1|2|3|all)", msg::HELP_STAGE)
-                .literal_argh()
-                .noneg(),
+            Opt::callback(None, "stage", Some("(1|2|3|all)"), msg::HELP_STAGE, |v, _| {
+                stage.set(match v.unwrap_or("") {
+                    "all" => Which::All,
+                    "1" => Which::One(Stage::BASE),
+                    "2" => Which::One(Stage::OURS),
+                    "3" => Which::One(Stage::THEIRS),
+                    _ => return Err(CallbackError::Fatal(msg::BAD_STAGE.into())),
+                });
+                Ok(())
+            })
+            .literal_argh()
+            .noneg(),
         ],
     );
     let args = parser.parse(argv)?.args;
@@ -189,9 +306,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if stdin.get() && !args.is_empty() {
         return Err(Die::Fatal(msg::MIX_STDIN.into()));
     }
-    if temp.get() || stage.borrow().is_some() {
-        return Err(Die::Fatal(msg::TEMP_UNSUPPORTED.into()));
+    let stage = stage.get();
+    if stage == Which::All && temp.get() == 0 {
+        return Err(Die::Fatal(msg::ALL_AND_NO_TEMP.into()));
     }
+    let temp = temp.get() == 1 || stage == Which::All;
 
     let repo = Repo::open(ctx, Mode::Required)?;
     let root = repo.work_tree()?;
@@ -215,6 +334,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         no_create: no_create.get(),
         update: update.get(),
         prefix: prefix.borrow().clone().unwrap_or_default().into_bytes(),
+        temp,
+        stage,
+        cwd_prefix: repo.prefix(),
+        out: Vec::new(),
         errors: false,
         wrote_files: false,
         refreshed: false,
@@ -247,13 +370,35 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         state.checkout_path(&mut index, &path)?;
     }
     if all.get() {
-        for pos in 0..index.len() {
+        // Only the entries below the current directory.
+        let under = repo.prefix();
+        let mut pos = 0;
+        while pos < index.len() {
             let e: &Entry = &index.entries()[pos];
-            if e.stage() != Stage::MERGED || (e.flags.skip_worktree && !ignore_skip.get()) {
+            if !e.path().starts_with(&under) || (e.flags.skip_worktree && !ignore_skip.get()) {
+                pos += 1;
                 continue;
             }
-            state.checkout(&mut index, pos)?;
+            match stage {
+                Which::All => {
+                    let range = index.path_range(e.path());
+                    let next = range.end;
+                    let entries: Vec<Entry> = index.entries()[range].to_vec();
+                    state.checkout_stages(&entries)?;
+                    pos = next;
+                    continue;
+                }
+                Which::Merged if e.stage() == Stage::MERGED => state.checkout(&mut index, pos)?,
+                Which::One(s) if e.stage() == s => state.checkout(&mut index, pos)?,
+                _ => {}
+            }
+            pos += 1;
         }
+    }
+    if !state.out.is_empty() {
+        let mut o = std::io::stdout().lock();
+        let _ = o.write_all(&state.out);
+        let _ = o.flush();
     }
     if state.wrote_files && state.conv.skipped_filter() {
         eprintln!("warning: {}", crate::messages::read_tree::ATTRIBUTES_NOT_APPLIED);

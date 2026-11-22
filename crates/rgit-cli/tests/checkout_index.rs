@@ -182,3 +182,85 @@ fn unmerged_entries() {
         fx.compare(&argv).checks(ALL).run();
     }
 }
+
+/// A merge leaving conflicts in `a` (stages 1-3), `b` (1, 2: deleted on
+/// the other side) and `d/c` (2, 3: added on both sides), next to the
+/// merged `m`, `sc` (executable) and `l` (symbolic link).
+fn conflicted() -> Fixture {
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("a", "base\n")
+        .write("b", "base\n")
+        .write("m", "m\n")
+        .write_executable("sc", "s\n");
+    #[cfg(unix)]
+    let fx = fx.symlink("m", "l");
+    let fx = fx
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "base"])
+        .git(["checkout", "-q", "-b", "side"])
+        .write("a", "side\n")
+        .write("d/c", "side\n")
+        .git(["rm", "-q", "b"])
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "side"])
+        .git(["checkout", "-q", "main"])
+        .write("a", "main\n")
+        .write("b", "main\n")
+        .write("d/c", "main\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "main"]);
+    if !fx.is_skipped() {
+        // Fails with the conflicts.
+        let _ = fx.git_output(["merge", "-q", "side"]);
+    }
+    fx
+}
+
+/// `--temp` and `--stage`: temporary file names are random, so they are
+/// replaced by a placeholder in the output (their contents are checked by
+/// the conformance script t2004).
+#[test]
+fn temp_and_stage() {
+    use rgit_difftest::Normalizer;
+    let checks = [Check::ExitCode, Check::Stdout, Check::Stderr];
+    let names = || Normalizer::regex(r"\.merge_(file|link)_[A-Za-z0-9]{6}", ".merge_${1}_X");
+    for args in [
+        &["--temp", "a"][..],
+        &["--temp", "-a"],
+        &["--temp", "l", "sc", "m"],
+        &["--stage=2", "--temp", "a"],
+        &["--stage=all", "a"],
+        &["--stage=all", "-a"],
+        &["--stage=all", "--temp", "-a", "--stage=3"],
+        &["--stage=1", "--temp", "-a"],
+        &["--stage=3", "-f", "a"],
+        &["--stage=2", "a"],
+        &["--stage=2", "sc"],
+        &["--stage=4", "a"],
+        &["--stage=all", "--no-temp", "a"],
+        &["--temp", "nope"],
+        &["--stage=all", "nope", "sc"],
+    ] {
+        let mut fx = conflicted();
+        if fx.is_skipped() {
+            return;
+        }
+        let mut argv = vec!["checkout-index"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).checks(checks).normalize(names()).run();
+    }
+    let mut fx = conflicted();
+    fx.compare(["checkout-index", "--stage=all", "-a"])
+        .in_dir("d")
+        .checks(checks)
+        .normalize(names())
+        .run();
+    let mut fx = conflicted();
+    fx.compare(["checkout-index", "--temp", "../m", "c"])
+        .in_dir("d")
+        .checks(checks)
+        .normalize(names())
+        .run();
+}

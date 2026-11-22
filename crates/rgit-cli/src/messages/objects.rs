@@ -81,6 +81,18 @@ pub fn could_not_read_from_stdin(err: &str) -> String {
     format!("could not read from stdin: {err}")
 }
 
-pub fn unable_to_write_object(kind: &str) -> String {
-    format!("unable to write {kind} object")
+/// `<path>: failed to insert into database` (after the object database's
+/// own error lines, when a file of the work tree cannot be written as a
+/// blob).
+pub fn failed_to_insert(path: &str) -> String {
+    format!("{path}: failed to insert into database")
+}
+
+/// The lines (to be printed after `error: `, joined into one string with
+/// `\nerror: `) for a blob of the work tree file `path` that the object
+/// database refused: its own lines, then [`failed_to_insert`].
+pub fn insert_failure(err: &rgit_odb::Error, path: &str) -> String {
+    let mut lines = err.git_lines();
+    lines.push(failed_to_insert(path));
+    lines.join("\nerror: ")
 }

@@ -36,3 +36,8 @@ pub fn unable_to_hash(path: &str) -> String {
 }
 
 pub const LINE_BADLY_QUOTED: &str = "line is badly quoted";
+
+/// `Unable to add <path> to database`; git names standard input `(null)`.
+pub fn unable_to_add_to_database(path: Option<&str>) -> String {
+    format!("Unable to add {} to database", path.unwrap_or("(null)"))
+}

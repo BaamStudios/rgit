@@ -119,6 +119,13 @@ pub enum Error {
     /// Some other store reported a problem (for example a pack backend).
     #[error(transparent)]
     Store(Box<dyn std::error::Error + Send + Sync>),
+    /// A new object cannot be created because the object directory is
+    /// not writable (`EACCES`).
+    #[error("{}", messages::insufficient_permission(.dir))]
+    InsufficientPermission {
+        /// The object directory, as the repository names it.
+        dir: PathBuf,
+    },
     /// An I/O error.
     #[error("{context}: {source}")]
     Io {
@@ -141,7 +148,10 @@ impl Error {
     /// Whether the error means "this copy of the object is damaged". The
     /// database then tries the other stores before giving up.
     pub fn is_corruption(&self) -> bool {
-        !matches!(self, Error::Config(_) | Error::Collision(_))
+        !matches!(
+            self,
+            Error::Config(_) | Error::Collision(_) | Error::InsufficientPermission { .. }
+        )
     }
 
     /// The lines git prints (each to be prefixed with `error: `) when it

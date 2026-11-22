@@ -684,7 +684,16 @@ fn update_path(
         .entries_for_path(path)
         .iter()
         .any(|e| e.stage().is_conflict());
-    match entry_for(repo, checker, root, path, old.as_ref(), false, false).map_err(Die::from)? {
+    let entry = match entry_for(repo, checker, root, path, old.as_ref(), false, false) {
+        Ok(e) => e,
+        Err(super::add::EntryError::Read(err)) => {
+            // Like `add -u`: the file's problem, then git's summary.
+            super::add::report_failure(path, &err);
+            return Err(fatal(crate::messages::add::UPDATING_FAILED.to_string()));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    match entry {
         Some(e) => {
             if unmerged {
                 // The resolution replaces the conflict stages.
@@ -1620,7 +1629,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     let commit_index = commit_index.as_ref().unwrap_or(&index);
-    let tree = super::write_tree::write_tree(&repo, commit_index, false, None)?;
+    let tree = super::write_tree::write_tree_or(&repo, commit_index, false, None, || {
+        Die::Error(msg::ERROR_BUILDING_TREES.into(), 1)
+    })?;
     if let Some(Err(e)) = forced_date {
         return Err(e);
     }

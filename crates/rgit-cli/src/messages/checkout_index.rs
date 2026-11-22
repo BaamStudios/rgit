@@ -21,6 +21,10 @@ pub const HELP_STAGE: &str = "copy out the files from named stage";
 pub const MIX_ALL: &str = "git checkout-index: don't mix '--all' and explicit filenames";
 pub const MIX_STDIN: &str = "git checkout-index: don't mix '--stdin' and explicit filenames";
 
-/// rgit's own: options that are not implemented yet.
-pub const TEMP_UNSUPPORTED: &str =
-    "rgit: checkout-index --temp and --stage are not implemented yet";
+pub const BAD_STAGE: &str = "stage should be between 1 and 3 or all";
+pub const ALL_AND_NO_TEMP: &str = "options '--stage=all' and '--no-temp' cannot be used together";
+
+/// `git checkout-index: <path> does not exist at stage <n>`.
+pub fn not_at_stage(path: &str, stage: u8) -> String {
+    format!("git checkout-index: {path} does not exist at stage {stage}")
+}

@@ -2,15 +2,15 @@
 //! `git read-tree` (Documentation/git-read-tree.adoc): `read-tree <tree-ish>`
 //! (replaces the index and primes the cache tree), `--empty`, and the one-
 //! and two-way merges `-m`/`--reset` with `-u`, `-i`, `-n` and
-//! `--index-output` through the unpack engine (`rgit-unpack`, #107).
-//! Not implemented yet: three-way merges (#158), `--prefix`, and several
-//! trees without `-m`.
+//! `--index-output` through the unpack engine (`rgit-unpack`, #107),
+//! `--prefix=<dir>/` and several trees without `-m` (an overlay, later
+//! trees win). Not implemented yet: three-way merges (#158).
 
 use std::path::{Path, PathBuf};
 
 use rgit_fs::{LockError, LockFile, LockOptions};
 use rgit_hash::ObjectId;
-use rgit_index::{AddOptions, CacheTree, Index, TreeNode, WriteOptions};
+use rgit_index::{AddOptions, CacheTree, Entry, Index, TreeNode, WriteOptions};
 use rgit_object::ObjectKind;
 use rgit_unpack::{Merge, Options, PathOptions, Worktree};
 use rgit_worktree::stat::smudge_racy_entries;
@@ -178,14 +178,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if empty.get() && !trees.is_empty() {
         return Err(Die::Fatal(msg::EMPTY_CONTRADICTS.into()));
     }
-    if mode == MODE_PREFIX {
-        return Err(Die::Fatal(msg::PREFIX_UNSUPPORTED.into()));
+    if mode == MODE_PREFIX && prefix.borrow().as_deref().is_some_and(|p| p.starts_with('/')) {
+        return Err(Die::Fatal(msg::PREFIX_SLASH.into()));
     }
-    if trees.len() > 2 {
+    if mode != MODE_NONE && mode != MODE_PREFIX && trees.len() > 2 {
         return Err(Die::Fatal(msg::THREE_WAY_UNSUPPORTED.into()));
-    }
-    if mode == MODE_NONE && trees.len() > 1 {
-        return Err(Die::Fatal(msg::OVERLAY_UNSUPPORTED.into()));
     }
 
     let index_path = repo.setup.cwd.join(repo.index_path());
@@ -193,8 +190,25 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let (old, old_mtime) = repo.read_index()?;
     let paths = path_options(&repo);
 
-    let index = if mode == MODE_NONE {
+    let index = if mode == MODE_NONE && trees.len() > 1 {
+        read_overlay(&repo, &old, &trees, paths)?
+    } else if mode == MODE_NONE {
         read_plain(&repo, &old, trees.first(), paths)?
+    } else if mode == MODE_PREFIX {
+        let tree = match trees[..] {
+            [t] => t,
+            [] => return Err(Die::Fatal(msg::NEED_TREE.into())),
+            _ => return Err(Die::Fatal(msg::PREFIX_TREES_UNSUPPORTED.into())),
+        };
+        let dir = prefix.borrow().clone().unwrap_or_default();
+        let (mut index, added) = read_prefix(&repo, &old, &tree, &dir, paths)?;
+        if dry_run.get() != 0 {
+            return Ok(0);
+        }
+        if update {
+            check_out_new(&repo, &mut index, &added, old_mtime)?;
+        }
+        index
     } else {
         let merge = match trees[..] {
             [t] => Merge::OneWay(t),
@@ -293,6 +307,149 @@ fn write_index(
         }
         None => index.write_locked(lock, &opts).map_err(|_| fail()),
     }
+}
+
+/// The entries of `tree` below `dir` (empty or ending in `/`), checked like
+/// paths that are checked out.
+fn entries_of(
+    repo: &Repo,
+    tree: &ObjectId,
+    dir: &[u8],
+    paths: PathOptions,
+) -> Result<Vec<Entry>, Die> {
+    let mut entries = rgit_unpack::tree_entries(repo.odb(), tree).map_err(unpack_failed)?;
+    if !dir.is_empty() {
+        for e in &mut entries {
+            let mut full = dir.to_vec();
+            full.extend_from_slice(e.path());
+            *e = Entry::new(full, e.stage(), e.mode, e.id);
+        }
+    }
+    for e in &entries {
+        if !rgit_unpack::verify_checkout_path(e.path(), e.mode, paths) {
+            return Err(unpack_failed(rgit_unpack::Error::InvalidPath(e.path().to_vec())));
+        }
+    }
+    Ok(entries)
+}
+
+/// Adds `e` like git's read-tree does when it binds trees: an entry that
+/// exists already is replaced, a file where the index has a directory is
+/// left out, a directory where the index has a file replaces that file.
+fn bind(index: &mut Index, e: Entry) -> Result<(), Die> {
+    let mut dir = e.path().to_vec();
+    dir.push(b'/');
+    let pos = index.position(&dir, rgit_index::Stage::MERGED).unwrap_or_else(|p| p);
+    if index
+        .entries()
+        .get(pos)
+        .is_some_and(|x| x.path().starts_with(&dir))
+    {
+        return Ok(());
+    }
+    let opts = AddOptions {
+        ok_to_replace: true,
+        skip_path_check: true,
+        ..AddOptions::default()
+    };
+    index.add(e, opts).map_err(|err| Die::Fatal(err.to_string()))
+}
+
+/// `read-tree <tree> <tree>...` without `-m`: the trees one over the other
+/// (a path takes the version of the last tree that has it).
+fn read_overlay(
+    repo: &Repo,
+    old: &Index,
+    trees: &[ObjectId],
+    paths: PathOptions,
+) -> Result<Index, Die> {
+    let mut index = old.clone();
+    index.retain(|_| false);
+    index.clear_resolve_undo();
+    index.set_cache_tree(None);
+    for tree in trees {
+        for e in entries_of(repo, tree, b"", paths)? {
+            bind(&mut index, e)?;
+        }
+    }
+    // A directory is valid where its tree exists already.
+    let cache = rgit_unpack::repair_cache_tree(&index, repo.odb());
+    index.set_cache_tree(Some(cache));
+    Ok(index)
+}
+
+/// `read-tree --prefix=<dir>/ <tree>`: the tree's entries added below
+/// `<dir>`; an entry that exists already is refused. Returns the index
+/// and the paths that were added.
+fn read_prefix(
+    repo: &Repo,
+    old: &Index,
+    tree: &ObjectId,
+    dir: &str,
+    paths: PathOptions,
+) -> Result<(Index, Vec<Vec<u8>>), Die> {
+    let mut dir = dir.as_bytes().to_vec();
+    if !dir.is_empty() && !dir.ends_with(b"/") {
+        dir.push(b'/');
+    }
+    let entries = entries_of(repo, tree, &dir, paths)?;
+    for e in &entries {
+        if !old.path_range(e.path()).is_empty() {
+            let shown = String::from_utf8_lossy(e.path()).into_owned();
+            return Err(Die::Error(msg::cannot_bind(&shown), 128));
+        }
+    }
+    let mut index = old.clone();
+    let added: Vec<Vec<u8>> = entries.iter().map(|e| e.path().to_vec()).collect();
+    for e in entries {
+        bind(&mut index, e)?;
+    }
+    // A directory is valid where its tree exists already (the tree read
+    // in, unchanged directories), the others are not.
+    let cache = rgit_unpack::repair_cache_tree(&index, repo.odb());
+    index.set_cache_tree(Some(cache));
+    Ok((index, added))
+}
+
+/// `--prefix` with `-u`: writes the added entries into the work tree and
+/// records their stat data.
+fn check_out_new(
+    repo: &Repo,
+    index: &mut Index,
+    added: &[Vec<u8>],
+    mtime: Option<rgit_index::Time>,
+) -> Result<(), Die> {
+    let root = repo.work_tree()?;
+    let checker = repo.checker(mtime)?;
+    let conv = crate::convert::Converter::checkout(repo, &*index)?;
+    let symlinks = checker.options().symlinks;
+    for path in added {
+        let Ok(pos) = index.position(path, rgit_index::Stage::MERGED) else {
+            continue;
+        };
+        let entry = index.entries()[pos].clone();
+        let data = if entry.mode.is_gitlink() {
+            Vec::new()
+        } else {
+            let blob = rgit_unpack::read_blob(repo.odb(), &entry.id)
+                .map_err(|e| Die::Error(e.to_string(), 128))?;
+            if entry.mode.is_file() {
+                conv.to_worktree(entry.path(), &entry.id, blob)
+            } else {
+                blob
+            }
+        };
+        match rgit_unpack::write_entry(&root, path, &entry, &data, symlinks) {
+            Ok(Some(meta)) => {
+                if let Some(e) = index.entry_mut(pos) {
+                    e.stat = rgit_worktree::stat::stat_from_metadata(&meta);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("error: {e}"),
+        }
+    }
+    Ok(())
 }
 
 /// `read-tree [<tree>]` without `-m`: the index becomes the tree (or empty)

@@ -114,14 +114,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .read_to_end(&mut data)
             .map_err(|e| Die::Fatal(msg::could_not_read_from_stdin(&crate::global::strerror(&e))))?;
         let data = filter(path.as_deref(), data)?;
-        let oid = hasher.hash(&data)?;
+        let oid = hasher.hash(&data, path.as_deref())?;
         let _ = writeln!(out, "{oid}");
     }
     for a in &args {
         let file = prefixed(&prefix, a);
         let data = read_file(&file)?;
         let data = filter(Some(path.as_deref().unwrap_or(&file)), data)?;
-        let oid = hasher.hash(&data)?;
+        let oid = hasher.hash(&data, Some(&file))?;
         let _ = writeln!(out, "{oid}");
     }
     if stdin_paths.get() {
@@ -138,7 +138,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let file = String::from_utf8_lossy(&name).into_owned();
             let data = read_file(&file)?;
             let data = filter(Some(&file), data)?;
-            let oid = hasher.hash(&data)?;
+            let oid = hasher.hash(&data, Some(&file))?;
             let _ = writeln!(out, "{oid}");
             let _ = out.flush();
         }
@@ -184,7 +184,9 @@ struct Hasher<'a> {
 }
 
 impl Hasher<'_> {
-    fn hash(&self, data: &[u8]) -> Result<rgit_hash::ObjectId, Die> {
+    /// Hash (and with `-w` write) `data`, read from `source` (`None` for
+    /// standard input).
+    fn hash(&self, data: &[u8], source: Option<&str>) -> Result<rgit_hash::ObjectId, Die> {
         if !self.literally && self.kind != ObjectKind::Blob && !passes_fsck(self.kind, self.hash, data) {
             return Err(Die::Fatal(msg::REFUSING_MALFORMED.into()));
         }
@@ -193,7 +195,7 @@ impl Hasher<'_> {
                 for line in e.git_lines() {
                     eprintln!("error: {line}");
                 }
-                Die::Fatal(msg::unable_to_write_object(self.kind.name()))
+                Die::Fatal(msg::unable_to_add_to_database(source))
             }),
             _ => rgit_hash::hash_object(self.hash, self.kind.name(), data)
                 .map_err(|e| Die::Fatal(e.to_string())),

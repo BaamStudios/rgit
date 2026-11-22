@@ -43,12 +43,18 @@ pub const EMPTY_CONTRADICTS: &str = "passing trees as arguments contradicts --em
 pub const UNABLE_TO_WRITE_INDEX: &str = "unable to write new index file";
 
 /// rgit's own: features of read-tree that are not implemented yet.
+pub const PREFIX_TREES_UNSUPPORTED: &str =
+    "rgit: read-tree --prefix with several trees is not implemented yet";
 pub const THREE_WAY_UNSUPPORTED: &str = "rgit: read-tree with three trees is not implemented yet";
-pub const PREFIX_UNSUPPORTED: &str = "rgit: read-tree --prefix is not implemented yet";
-pub const OVERLAY_UNSUPPORTED: &str =
-    "rgit: read-tree with several trees and without -m is not implemented yet";
 
 /// rgit's own: the work tree was written without running configured
 /// filter drivers (#112).
 pub const ATTRIBUTES_NOT_APPLIED: &str =
     "rgit: filter drivers are not applied yet; files were checked out unfiltered";
+
+pub const PREFIX_SLASH: &str = "Invalid prefix, prefix cannot start with '/'";
+
+/// `Entry '<path>' overlaps with '<path>'.  Cannot bind.` (`--prefix`).
+pub fn cannot_bind(path: &str) -> String {
+    format!("Entry '{path}' overlaps with '{path}'.  Cannot bind.")
+}

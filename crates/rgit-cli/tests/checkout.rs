@@ -78,6 +78,48 @@ fn checkout_paths() {
     fx.compare(["checkout", "HEAD", "b"]).run();
 }
 
+/// `--ignore-skip-worktree-bits` restores skip-worktree paths missing from
+/// the work tree (and keeps the bit); without it they are left alone.
+#[test]
+fn ignore_skip_worktree_bits() {
+    let fixture = || {
+        Fixture::new()
+            .rgit(env!("CARGO_BIN_EXE_rgit"))
+            .git(["init", "-q", "-b", "main"])
+            .write(".gitignore", "a\n")
+            .write("one/.gitignore", "b\n")
+            .write("two", "t\n")
+            .git(["add", "."])
+            .git([
+                "update-index",
+                "--skip-worktree",
+                ".gitignore",
+                "one/.gitignore",
+                "two",
+            ])
+            .remove(".gitignore")
+            .remove("one/.gitignore")
+    };
+    for args in [
+        &[
+            "checkout",
+            "--ignore-skip-worktree-bits",
+            ".gitignore",
+            "one/.gitignore",
+        ][..],
+        &["checkout", "--ignore-skip-worktree-bits", "."],
+        &["checkout", ".gitignore"],
+        &["restore", "--ignore-skip-worktree-bits", "one"],
+    ] {
+        let fx = fixture();
+        if fx.is_skipped() {
+            return;
+        }
+        let mut fx = fx;
+        fx.compare(args).run();
+    }
+}
+
 /// A commit whose subtree object is missing: `checkout`, `switch`,
 /// `reset --hard` and `read-tree` stop with "unable to read tree (<id>)"
 /// (t6030 "bisect fails if tree is broken").
