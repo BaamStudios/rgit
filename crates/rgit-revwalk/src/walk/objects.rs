@@ -55,12 +55,26 @@ impl<S: TreeSource + ?Sized> TreeSource for &mut S {
     }
 }
 
+/// Decides whether a path (and whether it is a tree) of a commit's tree
+/// is listed (path limiting).
+pub type PathFilter = Box<dyn Fn(&[u8], bool) -> bool>;
+
 /// Lists objects once each, skipping excluded ones.
-#[derive(Debug)]
 pub struct ObjectLister<S: TreeSource> {
     source: S,
     seen: HashSet<ObjectId>,
     excluded: HashSet<ObjectId>,
+    filter: Option<PathFilter>,
+}
+
+impl<S: TreeSource> std::fmt::Debug for ObjectLister<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObjectLister")
+            .field("seen", &self.seen.len())
+            .field("excluded", &self.excluded.len())
+            .field("filtered", &self.filter.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: TreeSource> ObjectLister<S> {
@@ -70,7 +84,24 @@ impl<S: TreeSource> ObjectLister<S> {
             source,
             seen: HashSet::new(),
             excluded: HashSet::new(),
+            filter: None,
         }
+    }
+
+    /// Path limiting for [`ObjectLister::list_commit_tree`]: only entries
+    /// the filter accepts (directories leading to accepted paths) are
+    /// listed.
+    pub fn set_filter(&mut self, filter: PathFilter) {
+        self.filter = Some(filter);
+    }
+
+    /// List the root tree `id` of a commit, honouring the path filter.
+    pub fn list_commit_tree(
+        &mut self,
+        id: &ObjectId,
+        out: &mut dyn FnMut(&ObjectId, &[u8]),
+    ) -> Result<(), S::Error> {
+        self.list(id, b"", out, true)
     }
 
     /// Exclude a single object (a blob or a tag).
@@ -117,6 +148,16 @@ impl<S: TreeSource> ObjectLister<S> {
         name: &[u8],
         out: &mut dyn FnMut(&ObjectId, &[u8]),
     ) -> Result<(), S::Error> {
+        self.list(id, name, out, false)
+    }
+
+    fn list(
+        &mut self,
+        id: &ObjectId,
+        name: &[u8],
+        out: &mut dyn FnMut(&ObjectId, &[u8]),
+        filtered: bool,
+    ) -> Result<(), S::Error> {
         if !self.take(id) {
             return Ok(());
         }
@@ -131,8 +172,14 @@ impl<S: TreeSource> ObjectLister<S> {
                 p.extend_from_slice(&item.name);
                 p
             };
+            if filtered
+                && let Some(f) = &self.filter
+                && !f(&path, item.kind == ItemKind::Tree)
+            {
+                continue;
+            }
             match item.kind {
-                ItemKind::Tree => self.list_tree(&item.id, &path, out)?,
+                ItemKind::Tree => self.list(&item.id, &path, out, filtered)?,
                 ItemKind::Blob => {
                     if self.take(&item.id) {
                         out(&item.id, &path);

@@ -850,6 +850,14 @@ impl<S: CommitSource> Walk<S> {
 
     /// `--no-walk`: the interesting tips themselves.
     fn prepare_no_walk(&mut self) -> Result<(), S::Error> {
+        if self.opts.prune {
+            // Path limiting still hides tips that change none of the paths.
+            for n in self.tips.clone() {
+                if self.nodes[n as usize].flags & SIMPLIFIED == 0 {
+                    self.simplify_parents(n)?;
+                }
+            }
+        }
         let mut seen = HashSet::new();
         let mut list: Vec<u32> = self
             .tips

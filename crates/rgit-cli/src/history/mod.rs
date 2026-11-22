@@ -7,8 +7,8 @@
 //! `rgit_revwalk::walk`; this module wires it to the repository and prints.
 
 mod decorate;
-pub mod graph;
 mod follow;
+pub mod graph;
 pub mod layout;
 pub mod mailmap;
 mod options;
@@ -269,11 +269,9 @@ fn path_filter(
     }
     let pathspec = paths::parse_pathspec(ctx, repo, paths)?;
     let decorations = opts.simplify_by_decoration.then(|| {
-        let filter = decorate::Filter {
-            clear: false,
-            ..Default::default()
-        };
-        Decorations::load(repo, &filter)
+        // The same decorations `log` shows (`--decorate-refs*`,
+        // `--clear-decorations`, `log.excludeDecoration`).
+        Decorations::load(repo, &opts.decorate_filter)
     });
     walk.prune = true;
     walk.rewrite_parents |= opts.parents || opts.children || opts.graph;
@@ -1719,7 +1717,12 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         p.sources = Some(map);
     }
     if let Some(mode) = opts.objects {
-        return run_objects(&mut p, &mut walk, &resolved, mode);
+        let pathspec = if resolved.paths.is_empty() {
+            None
+        } else {
+            Some(paths::parse_pathspec(ctx, repo, &resolved.paths)?)
+        };
+        return run_objects(&mut p, &mut walk, &resolved, mode, pathspec);
     }
     // `show` walks only for ranges, exclusions and `-<n>`.
     let single = |t: &options::Tip| {
@@ -1963,6 +1966,7 @@ fn run_objects(
     walk: &mut Walk<Commits<'_, '_>>,
     resolved: &Resolved,
     mode: ObjectsMode,
+    pathspec: Option<rgit_pathspec::Pathspec>,
 ) -> Result<i32, Die> {
     let repo = p.repo;
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
@@ -1971,6 +1975,16 @@ fn run_objects(
         shown.push(s);
     }
     let mut lister = ObjectLister::new(Trees(repo));
+    if let Some(ps) = &pathspec {
+        let ps = ps.clone();
+        lister.set_filter(Box::new(move |path, tree| {
+            if tree {
+                ps.dir_interest(path) != rgit_pathspec::DirInterest::None
+            } else {
+                ps.matches(path)
+            }
+        }));
+    }
     let edges = walk.edges();
     for e in &edges {
         if let Some(tree) = repo.tree_of(e) {
@@ -2037,7 +2051,7 @@ fn run_objects(
                 pending_done = true;
             }
             lister
-                .list_tree(&tree, b"", &mut |id, name| {
+                .list_commit_tree(&tree, &mut |id, name| {
                     count += 1;
                     if !counting {
                         p.object(id, name);
@@ -2053,7 +2067,7 @@ fn run_objects(
     }
     for tree in trees {
         lister
-            .list_tree(&tree, b"", &mut |id, name| {
+            .list_commit_tree(&tree, &mut |id, name| {
                 count += 1;
                 if !counting {
                     p.object(id, name);
