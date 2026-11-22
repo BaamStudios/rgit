@@ -466,6 +466,49 @@ fn set_head() {
     }
 }
 
+/// `show`, `prune` and `set-head -a` against protocol v0/v1 servers.
+#[test]
+fn protocol_v0_v1() {
+    let fx = fixture()
+        .git(["-C", "c", "remote", "add", "two", "../two"])
+        .git(["-C", "c", "fetch", "-q", "two"])
+        .git(["-C", "c", "update-ref", "refs/remotes/origin/gone", "HEAD"])
+        .git(["-C", "one", "branch", "new"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx;
+    for v in ["protocol.version=0", "protocol.version=1"] {
+        for args in [
+            &["remote", "show", "origin", "two"][..],
+            &["remote", "set-head", "two", "-a"],
+            &["remote", "set-head", "origin", "-a"],
+        ] {
+            let mut full = vec!["-c", v];
+            full.extend_from_slice(args);
+            same_in(&mut fx, "c", &full);
+        }
+    }
+    same_in(
+        &mut fx,
+        "c",
+        &["-c", "protocol.version=0", "remote", "prune", "origin"],
+    );
+    let mut fx = fx.git(["-C", "one", "checkout", "-q", "--detach"]);
+    same_in(
+        &mut fx,
+        "c",
+        &[
+            "-c",
+            "protocol.version=1",
+            "remote",
+            "set-head",
+            "origin",
+            "-a",
+        ],
+    );
+}
+
 #[test]
 fn show_and_prune() {
     let mut fx = fixture()

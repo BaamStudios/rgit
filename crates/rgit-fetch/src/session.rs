@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT
-//! A protocol v2 session with a remote `upload-pack`: connect, `ls-refs`,
-//! and `fetch` with the pack stored through index-pack.
+//! A session with a remote `upload-pack`: connect, list the refs, and
+//! fetch with the pack stored through index-pack.
+//!
+//! The client asks for the protocol version of `protocol.version`
+//! (default 2, or `GIT_TEST_PROTOCOL_VERSION` when the configuration does
+//! not say). The server decides: a v2 server answers with its capability
+//! advertisement and is asked with `ls-refs` and `fetch`; a v0/v1 server
+//! (or one that ignores the request) sends its ref advertisement, which is
+//! the ref list, and a fetch negotiates on the same connection. A v0/v1
+//! service ends after sending a pack, so a second fetch on a stateful
+//! connection connects again.
 
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -11,13 +20,14 @@ use std::sync::{Arc, mpsc};
 
 use rgit_config::{ConfigSet, Environment};
 use rgit_fs::TempFile;
-use rgit_hash::ObjectId;
+use rgit_hash::{HashKind, ObjectId};
 use rgit_pack::index_pack::{self as ip, IndexVersion, Input, ObjectDb, Options};
+use rgit_protocol::v0::{self, Advertisement};
 use rgit_protocol::v2::{
     Client, ConsecutiveNegotiator, FetchArgs, FetchOutcome, LsRefsArgs, Negotiator, RemoteRef,
 };
-use rgit_protocol::{Progress, ProgressStyle, ProtocolVersion};
-use rgit_transport::{ConnectOptions, Connection, IpVersion, Service, Settings};
+use rgit_protocol::{Capabilities, Packet, Progress, ProgressStyle, ProtocolVersion, Reader};
+use rgit_transport::{ConnectOptions, Connection, IpVersion, Service, Settings, Transport};
 
 use crate::repo::LocalRepo;
 use crate::{Error, Result, graph, messages};
@@ -48,14 +58,112 @@ pub fn protocol_name(url: &str) -> String {
     }
 }
 
-/// An open protocol v2 connection to `upload-pack`.
+fn parse_version(value: &[u8]) -> Option<ProtocolVersion> {
+    match value.trim_ascii() {
+        b"0" => Some(ProtocolVersion::V0),
+        b"1" => Some(ProtocolVersion::V1),
+        b"2" => Some(ProtocolVersion::V2),
+        _ => None,
+    }
+}
+
+/// The protocol version to ask for: `protocol.version`, else
+/// `GIT_TEST_PROTOCOL_VERSION`, else 2.
+pub fn protocol_version(config: &ConfigSet, env: &dyn Environment) -> Result<ProtocolVersion> {
+    if let Some(value) = config
+        .get("protocol.version")
+        .and_then(|e| e.value.as_deref())
+    {
+        return parse_version(value).ok_or_else(|| {
+            Error::fatal(messages::unknown_protocol_version(
+                &String::from_utf8_lossy(value),
+            ))
+        });
+    }
+    match env.var("GIT_TEST_PROTOCOL_VERSION") {
+        Some(v) if !v.is_empty() => {
+            let v = v.to_string_lossy();
+            parse_version(v.as_bytes())
+                .ok_or_else(|| Error::fatal(messages::unknown_test_protocol_version(&v)))
+        }
+        _ => Ok(ProtocolVersion::V2),
+    }
+}
+
+/// The protocol spoken on a session.
+enum Proto {
+    /// Protocol v2.
+    V2(Client<Box<dyn Connection>>),
+    /// Protocol v0/v1: the advertisement, and the connection if it can
+    /// still be used (a stateful one is used up by a fetch).
+    V0 {
+        adv: Advertisement,
+        client: Option<v0::Client<Box<dyn Connection>>>,
+    },
+}
+
+/// An open connection to `upload-pack`.
 pub struct Session {
-    client: Client<Box<dyn Connection>>,
+    proto: Proto,
     url: String,
+    transport: Box<dyn Transport>,
+    options: ConnectOptions,
+    program: &'static str,
+}
+
+/// Open a connection and read up to the version line of the response.
+fn open(
+    transport: &mut dyn Transport,
+    options: &ConnectOptions,
+    program: &'static str,
+) -> Result<(Reader<Box<dyn Connection>>, ProtocolVersion)> {
+    let read_any = Arc::new(AtomicBool::new(false));
+    let conn: Box<dyn Connection> = Box::new(Watched {
+        inner: transport.connect(options)?,
+        read_any: read_any.clone(),
+    });
+    let mut reader = Reader::new(conn, program);
+    let hung_up = |read_any: &AtomicBool, e: rgit_protocol::Error| match e {
+        // Nothing at all came back: the service failed to start (its own
+        // message is already on stderr).
+        rgit_protocol::Error::HungUp if !read_any.load(Ordering::Relaxed) => {
+            Error::fatal(messages::COULD_NOT_READ_REMOTE)
+        }
+        e => e.into(),
+    };
+    let stateless = reader.get_ref().is_stateless();
+    let first = reader.peek().map_err(|e| hung_up(&read_any, e))?;
+    if stateless && matches!(first, Some(Packet::Data(d)) if d.starts_with(b"# service=")) {
+        reader.read()?;
+        match reader.read()? {
+            Packet::Flush => {}
+            other => return Err(other.unexpected().into()),
+        }
+    }
+    if reader.peek().map_err(|e| hung_up(&read_any, e))?.is_none() {
+        return Err(Error::fatal(messages::COULD_NOT_READ_REMOTE));
+    }
+    let version = ProtocolVersion::read(&mut reader)?;
+    Ok((reader, version))
+}
+
+/// Connect again for another v0/v1 fetch.
+fn reconnect(
+    transport: &mut dyn Transport,
+    options: &ConnectOptions,
+    program: &'static str,
+) -> Result<(Advertisement, v0::Client<Box<dyn Connection>>)> {
+    let (mut reader, version) = open(transport, options, program)?;
+    if version == ProtocolVersion::V2 {
+        return Err(rgit_protocol::Error::Unexpected("version 2".into()).into());
+    }
+    let adv = v0::read_advertisement(&mut reader, version)?;
+    let client = v0::Client::new(reader, &adv);
+    Ok((adv, client))
 }
 
 impl Session {
-    /// Connect to `url` and read the capability advertisement. `program`
+    /// Connect to `url` and read the server's advertisement. `program`
     /// names the client in packet traces (`fetch`, `clone`).
     pub fn connect(
         url: &str,
@@ -65,6 +173,7 @@ impl Session {
         let protocol = protocol_name(url);
         rgit_remote::check_allowed(protocol.as_bytes(), settings.config, settings.env)
             .map_err(|e| Error::fatal(e.to_string()))?;
+        let version = protocol_version(settings.config, settings.env)?;
         let tsettings = Settings {
             env: settings.env,
             config: settings.config,
@@ -77,26 +186,29 @@ impl Session {
         };
         let mut options = ConnectOptions::new(Service::UploadPack);
         options.program = settings.upload_pack.clone();
-        options.protocol_version = ProtocolVersion::V2;
-        let read_any = Arc::new(AtomicBool::new(false));
-        let conn: Box<dyn Connection> = Box::new(Watched {
-            inner: transport.connect(&options)?,
-            read_any: read_any.clone(),
-        });
-        let client = match Client::connect(conn, program) {
-            Ok(c) => c,
-            // Nothing at all came back: the service failed to start (its
-            // own message is already on stderr).
-            Err(rgit_protocol::Error::HungUp | rgit_protocol::Error::NotV2(0))
-                if !read_any.load(Ordering::Relaxed) =>
-            {
-                return Err(Error::fatal(messages::COULD_NOT_READ_REMOTE));
+        options.protocol_version = version;
+        options.trace_name = Some(program.to_owned());
+        let (mut reader, answered) = open(transport.as_mut(), &options, program)?;
+        let proto = match answered {
+            ProtocolVersion::V2 => {
+                let caps = Capabilities::read_v2(&mut reader)?;
+                Proto::V2(Client::with_capabilities(reader, caps)?)
             }
-            Err(e) => return Err(e.into()),
+            v => {
+                let adv = v0::read_advertisement(&mut reader, v)?;
+                let client = v0::Client::new(reader, &adv);
+                Proto::V0 {
+                    adv,
+                    client: Some(client),
+                }
+            }
         };
         Ok(Session {
-            client,
+            proto,
             url: url.to_owned(),
+            transport,
+            options,
+            program,
         })
     }
 
@@ -105,9 +217,29 @@ impl Session {
         &self.url
     }
 
-    /// The protocol client (capabilities, object format).
-    pub fn client(&mut self) -> &mut Client<Box<dyn Connection>> {
-        &mut self.client
+    /// The protocol version the server answered with.
+    pub fn version(&self) -> ProtocolVersion {
+        match &self.proto {
+            Proto::V2(_) => ProtocolVersion::V2,
+            Proto::V0 { adv, .. } => adv.version,
+        }
+    }
+
+    /// The server's hash algorithm.
+    pub fn object_format(&self) -> HashKind {
+        match &self.proto {
+            Proto::V2(c) => c.object_format(),
+            Proto::V0 { adv, .. } => adv.format,
+        }
+    }
+
+    /// The server's capabilities (v2: the capability advertisement; v0/v1:
+    /// the capabilities of the first ref line).
+    pub fn capabilities(&self) -> &Capabilities {
+        match &self.proto {
+            Proto::V2(c) => c.capabilities(),
+            Proto::V0 { adv, .. } => &adv.caps,
+        }
     }
 
     /// `ls-refs` with `peel`, `symrefs` and `unborn` (if supported) and the
@@ -115,7 +247,16 @@ impl Session {
     pub fn ls_refs(&mut self, prefixes: &[String]) -> Result<Vec<RemoteRef>> {
         let mut args = LsRefsArgs::standard();
         args.ref_prefixes = prefixes.to_vec();
-        Ok(self.client.ls_refs(&args)?)
+        self.list_refs(&args)
+    }
+
+    /// The remote's refs: v2 `ls-refs` with `args`; v0/v1 the advertised
+    /// refs (all of them; the prefixes only narrow a v2 request).
+    pub fn list_refs(&mut self, args: &LsRefsArgs) -> Result<Vec<RemoteRef>> {
+        match &mut self.proto {
+            Proto::V2(c) => Ok(c.ls_refs(args)?),
+            Proto::V0 { adv, .. } => Ok(adv.refs.clone()),
+        }
     }
 
     /// Fetch `wants` and store the pack in `repo` (`objects/pack`, with a
@@ -147,6 +288,15 @@ impl Session {
             ..FetchArgs::default()
         };
         args.server_options.clone_from(&opts.server_options);
+
+        // A v0/v1 service that sent a pack has ended: connect again.
+        if let Proto::V0 { adv, client } = &mut self.proto {
+            if client.is_none() {
+                let (a, c) = reconnect(self.transport.as_mut(), &self.options, self.program)?;
+                *adv = a;
+                *client = Some(c);
+            }
+        }
 
         let odb = &repo.odb;
         let mut source = |id: &ObjectId| graph::commit_info(odb, id);
@@ -186,7 +336,7 @@ impl Session {
 
         let ip_opts = index_pack_options(repo);
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
-        let client = &mut self.client;
+        let proto = &mut self.proto;
         let (outcome, indexed) = std::thread::scope(|s| {
             let worker = s.spawn(move || {
                 let mut reader = ChannelReader {
@@ -207,11 +357,17 @@ impl Session {
                 )
             });
             let mut progress = Progress::new(io::stderr(), ProgressStyle::detect());
-            let outcome: rgit_protocol::Result<FetchOutcome> =
-                client.fetch(&args, negotiator, &mut progress, |data| {
-                    tx.send(data.to_vec())
-                        .map_err(|_| io::Error::other("index-pack stopped"))
-                });
+            let sink = |data: &[u8]| {
+                tx.send(data.to_vec())
+                    .map_err(|_| io::Error::other("index-pack stopped"))
+            };
+            let outcome: rgit_protocol::Result<FetchOutcome> = match proto {
+                Proto::V2(client) => client.fetch(&args, negotiator, &mut progress, sink),
+                Proto::V0 { client, .. } => {
+                    let c = client.as_mut().expect("connected above");
+                    c.fetch(&args, negotiator, &mut progress, sink)
+                }
+            };
             drop(tx);
             let indexed = match worker.join() {
                 Ok(r) => r,
@@ -220,6 +376,15 @@ impl Session {
             (outcome, indexed)
         });
         let outcome = outcome?;
+        // A stateful v0/v1 connection is used up after the pack.
+        if let Proto::V0 { client, .. } = &mut self.proto {
+            let stateless = client.as_ref().is_some_and(|c| c.is_stateless());
+            if outcome.packfile && !stateless {
+                if let Some(c) = client.take() {
+                    c.into_inner().close()?;
+                }
+            }
+        }
         if !outcome.packfile {
             return Ok(None);
         }
@@ -253,9 +418,21 @@ impl Session {
 
     /// End the session (flush on stateful connections) and wait for the
     /// remote side.
-    pub fn close(mut self) -> Result<()> {
-        self.client.close()?;
-        self.client.into_inner().close()?;
+    pub fn close(self) -> Result<()> {
+        match self.proto {
+            Proto::V2(mut client) => {
+                client.close()?;
+                client.into_inner().close()?;
+            }
+            Proto::V0 {
+                client: Some(mut client),
+                ..
+            } => {
+                client.close()?;
+                client.into_inner().close()?;
+            }
+            Proto::V0 { client: None, .. } => {}
+        }
         Ok(())
     }
 }

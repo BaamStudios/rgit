@@ -584,7 +584,15 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             ls.ref_prefixes.push("refs/tags/".into());
         }
     }
-    let refs: Vec<RemoteRef> = session.client().ls_refs(&ls).map_err(|e| fatal(&e))?;
+    let mut refs: Vec<RemoteRef> = session.list_refs(&ls).map_err(|e| fatal(&e))?;
+    // A v0/v1 server advertises every ref: keep what v2 would list.
+    if !ls.ref_prefixes.is_empty() {
+        refs.retain(|r| {
+            ls.ref_prefixes
+                .iter()
+                .any(|p| r.name.starts_with(p.as_bytes()))
+        });
+    }
 
     let remote_head = refs.iter().find(|r| r.name == b"HEAD");
     let head_target: Option<String> = remote_head
@@ -809,11 +817,18 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 (None, Some(t)) => Some(t.clone()),
                 (None, None) => None,
             };
-            if let Some(b) = branch {
-                set_head_symref(&git_dir, &b)?;
-                if !opts.bare {
-                    write_branch_config(&config_path, &origin, &b)?;
-                }
+            if let Some(b) = &branch {
+                set_head_symref(&git_dir, b)?;
+            }
+            // Without the remote's HEAD (protocol v0/v1), the branch the
+            // new repository was created with.
+            let branch = branch.or_else(|| {
+                let head = std::fs::read(git_dir.join("HEAD")).ok()?;
+                let target = head.strip_prefix(b"ref: ")?.trim_ascii_end();
+                Some(String::from_utf8_lossy(target).into_owned())
+            });
+            if let (Some(b), false) = (branch, opts.bare) {
+                write_branch_config(&config_path, &origin, &b)?;
             }
         }
         Some(Our::Branch(name, oid)) => {
