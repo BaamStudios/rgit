@@ -59,6 +59,7 @@ pub const CANNOT_SAVE_WORKTREE: &str = "Cannot save the current worktree state";
 pub const CANNOT_RECORD_WORKTREE: &str = "Cannot record working tree state";
 pub const CANNOT_SAVE_STATUS: &str = "Cannot save the current status";
 pub const CANNOT_REMOVE_WORKTREE: &str = "Cannot remove worktree changes";
+pub const NO_CHANGES_SELECTED: &str = "No changes selected";
 pub const STORE_NEEDS_ONE: &str = "\"git stash store\" requires one <commit> argument";
 pub const STORE_DEFAULT_MSG: &str = "Created via \"git stash store\".";
 pub const CLEAR_WITH_ARGS: &str = "git stash clear with arguments is unimplemented";

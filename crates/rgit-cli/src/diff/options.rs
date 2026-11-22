@@ -309,6 +309,14 @@ impl DiffOpts {
             self.format().patch = true;
         } else if let Some(v) = arg.strip_prefix("--inter-hunk-context=") {
             self.interhunk = Some(number(v, "--inter-hunk-context")?);
+        } else if arg == "--ignore-submodules"
+            || matches!(
+                arg.strip_prefix("--ignore-submodules="),
+                Some("none" | "untracked" | "dirty" | "all")
+            )
+        {
+            // Submodules are compared by their checked-out commit only,
+            // which is what `dirty` asks for (the patch modes use it).
         } else if let Some(v) = arg.strip_prefix("--src-prefix=") {
             self.src_prefix = Some(v.as_bytes().to_vec());
         } else if let Some(v) = arg.strip_prefix("--dst-prefix=") {

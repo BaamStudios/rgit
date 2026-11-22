@@ -43,6 +43,15 @@ pub(crate) struct CreateOptions {
     pub(crate) shown: Vec<String>,
     /// `--literal-pathspecs` and friends.
     pub(crate) globals: rgit_pathspec::GlobalFlags,
+    /// `-p`: the work tree state comes from selected hunks.
+    pub(crate) patch: Option<PatchSpec>,
+}
+
+/// `-p` with its `-U` and `--inter-hunk-context`.
+pub(crate) struct PatchSpec {
+    pub(crate) context: i32,
+    pub(crate) inter_hunk: i32,
+    pub(crate) auto_advance: bool,
 }
 
 /// The commits of a new entry.
@@ -64,9 +73,9 @@ pub(crate) fn push(ctx: &mut Context, args: &[String], kind: PushKind) -> CmdRes
     let keep_index = Cell::new(-1);
     let staged = Cell::new(false);
     let patch = Cell::new(false);
-    let auto_advance = Cell::new(false);
-    let unified = Cell::new(-1);
-    let inter_hunk = Cell::new(-1);
+    let auto_advance = Cell::new(-1);
+    let unified = Cell::new(crate::interactive::patch::UNSET);
+    let inter_hunk = Cell::new(crate::interactive::patch::UNSET);
     let quiet = Cell::new(0);
     let untracked = Cell::new(0);
     let message = RefCell::new(None);
@@ -76,7 +85,7 @@ pub(crate) fn push(ctx: &mut Context, args: &[String], kind: PushKind) -> CmdRes
         Opt::bool('k', "keep-index", &keep_index, msg::HELP_KEEP_INDEX),
         Opt::flag('S', "staged", &staged, msg::HELP_STAGED),
         Opt::flag('p', "patch", &patch, msg::HELP_PATCH),
-        Opt::flag(None, "auto-advance", &auto_advance, msg::HELP_AUTO_ADVANCE),
+        Opt::bool(None, "auto-advance", &auto_advance, msg::HELP_AUTO_ADVANCE),
         Opt::integer('U', "unified", &unified, msg::HELP_UNIFIED).noneg(),
         Opt::integer(None, "inter-hunk-context", &inter_hunk, msg::HELP_INTER_HUNK).noneg(),
         Opt::quiet(&quiet, msg::HELP_QUIET_MODE),
@@ -126,6 +135,13 @@ pub(crate) fn push(ctx: &mut Context, args: &[String], kind: PushKind) -> CmdRes
     };
     drop(parser);
     let fail_code = if kind == PushKind::Push { 128 } else { 1 };
+    crate::interactive::patch::check_options(
+        patch.get(),
+        unified.get(),
+        inter_hunk.get(),
+        auto_advance.get() == 0,
+        "--patch",
+    )?;
 
     let mut message = message.borrow().clone();
     match kind {
@@ -202,10 +218,21 @@ pub(crate) fn push(ctx: &mut Context, args: &[String], kind: PushKind) -> CmdRes
         pathspec,
         shown,
         globals: repository::pathspec_globals(ctx),
+        patch: patch.get().then(|| PatchSpec {
+            context: unified.get(),
+            inter_hunk: inter_hunk.get(),
+            auto_advance: auto_advance.get() != 0,
+        }),
     };
     let quiet = quiet.get() > 0;
     let git = Git::new(ctx, &repo)?;
-    match do_push(&mut repo, &git, &opts, keep_index.get() > 0, quiet, patch.get()) {
+    // With -p the index is kept unless --no-keep-index is given.
+    let keep = if patch.get() {
+        keep_index.get() != 0
+    } else {
+        keep_index.get() > 0
+    };
+    match do_push(&mut repo, &git, &opts, keep, quiet) {
         Ok(()) => Ok(0),
         Err(Failed) => Err(Die::Exit(fail_code)),
     }
@@ -254,7 +281,6 @@ fn do_push(
     opts: &CreateOptions,
     keep_index: bool,
     quiet: bool,
-    patch: bool,
 ) -> Result<(), Failed> {
     if refresh_index(repo).is_err() {
         eprintln!("error: {}", msg::COULD_NOT_WRITE_INDEX);
@@ -266,10 +292,6 @@ fn do_push(
         }
         return Err(Failed);
     };
-    if patch {
-        eprintln!("fatal: {}", msg::not_supported("--patch"));
-        return Err(Failed);
-    }
     // With -u/-a a pathspec that matches nothing is not an error.
     if !opts.pathspec.is_empty() && opts.untracked == Untracked::None {
         check_pathspec_matches(repo, opts)?;
@@ -474,6 +496,8 @@ pub(crate) fn create_stash(
             return Err(Failed);
         }
         i_tree
+    } else if let Some(spec) = &opts.patch {
+        patch_tree(repo, git, head, opts, spec)?
     } else {
         work_tree_state(repo, git, ps)?
     };
@@ -492,6 +516,52 @@ pub(crate) fn create_stash(
         head: head.commit,
         message,
     }))
+}
+
+/// `-p`: the tree of `HEAD` with the hunks the user selects.
+fn patch_tree(
+    repo: &Repo,
+    git: &Git,
+    head: &Head,
+    opts: &CreateOptions,
+    spec: &PatchSpec,
+) -> Result<ObjectId, Failed> {
+    use crate::interactive::{Mode as PatchMode, Options};
+    let tmp = TempIndex::new(repo, "index.stash");
+    let read = git
+        .cmd(&["read-tree", "HEAD"])
+        .index(&tmp.path)
+        .status()
+        .map_err(|_| Failed)?;
+    if read != 0 {
+        eprintln!("{}", msg::CANNOT_SAVE_WORKTREE);
+        return Err(Failed);
+    }
+    let mut po = Options::new(PatchMode::Stash);
+    po.index_file = Some(tmp.path.clone());
+    po.pathspec = opts.pathspec.clone();
+    po.top_relative = true;
+    po.set_context(spec.context, spec.inter_hunk);
+    po.auto_advance = spec.auto_advance;
+    crate::interactive::patch::run_with(git, repo, &po).map_err(report)?;
+    let (code, out) = git
+        .cmd(&["write-tree"])
+        .index(&tmp.path)
+        .output()
+        .map_err(|_| Failed)?;
+    let tree = (code == 0)
+        .then(|| hex_line(&out))
+        .flatten()
+        .and_then(|t| ObjectId::from_hex(repo.hash, t.as_bytes()).ok());
+    let Some(tree) = tree else {
+        eprintln!("{}", msg::CANNOT_SAVE_WORKTREE);
+        return Err(Failed);
+    };
+    if commit_parts(repo, &head.commit).map(|(t, _)| t) == Some(tree) {
+        eprintln!("{}", msg::NO_CHANGES_SELECTED);
+        return Err(Failed);
+    }
+    Ok(tree)
 }
 
 fn report(e: Die) -> Failed {
@@ -612,6 +682,42 @@ fn revert(
     keep_index: bool,
 ) -> Result<(), Failed> {
     let ps = &opts.pathspec;
+    if opts.patch.is_some() {
+        // The stashed hunks leave the work tree; the index stays unless
+        // --no-keep-index.
+        let (code, diff) = git
+            .cmd(&with_pathspec(
+                vec![
+                    "diff-tree".into(),
+                    "-p".into(),
+                    "-U1".into(),
+                    created.head.to_hex(),
+                    created.w.to_hex(),
+                ],
+                ps,
+            ))
+            .output()
+            .map_err(|_| Failed)?;
+        if code != 0 {
+            return Err(Failed);
+        }
+        if !diff.is_empty() {
+            match git.cmd(&["apply", "-R"]).stdin(diff).status() {
+                Ok(0) => {}
+                _ => {
+                    eprintln!("{}", msg::CANNOT_REMOVE_WORKTREE);
+                    return Err(Failed);
+                }
+            }
+        }
+        if !keep_index {
+            let _ = git
+                .cmd(&with_pathspec(vec!["reset".into(), "-q".into()], ps))
+                .status();
+        }
+        super::refresh_after(repo);
+        return Ok(());
+    }
     if opts.staged {
         let r = revert_staged(repo, git, created, opts);
         super::refresh_after(repo);
@@ -853,6 +959,7 @@ pub(crate) fn create(ctx: &mut Context, args: &[String]) -> CmdResult {
         pathspec: Vec::new(),
         shown: Vec::new(),
         globals: repository::pathspec_globals(ctx),
+        patch: None,
     };
     match create_stash(&repo, &git, &head, &opts) {
         Ok(Some(c)) => {
