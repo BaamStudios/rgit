@@ -30,7 +30,8 @@ fn helper_order() {
     assert_eq!(
         out(&c, Audience::Caller),
         "protocol=https\nhost=example.com:8080\npath=a/b.git\nusername=u\npassword=p\n\
-         oauth_refresh_token=tok\npassword_expiry_utc=99999999999\n"
+         oauth_refresh_token=tok\npassword_expiry_utc=99999999999\n\
+         wwwauth[]=Basic realm=x\nwwwauth[]=Bearer\n"
     );
 }
 
