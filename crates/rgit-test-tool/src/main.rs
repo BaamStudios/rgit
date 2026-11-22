@@ -35,6 +35,7 @@ const TOOLS: &[Tool] = &[
         cmd::parse_options::parse_options_flags,
     ),
     ("parse-subcommand", cmd::parse_options::parse_subcommand),
+    ("pkt-line", cmd::pkt_line::pkt_line),
     ("ref-store", cmd::ref_store::ref_store),
     ("sha1", cmd::sha::sha1),
     ("sha1-is-sha1dc", cmd::sha::sha1_is_sha1dc),
