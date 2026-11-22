@@ -565,11 +565,20 @@ struct Grepper<'a> {
     full_name: bool,
     quote_high: bool,
     attrs: Attrs<'a>,
+    /// Evaluates the `attr:` magic of the pathspec, when there is any.
+    spec_attrs: Option<RefCell<crate::attributes::PathspecAttrs<'a>>>,
 }
 
 impl Grepper<'_> {
     fn wanted(&self, path: &[u8]) -> bool {
-        self.pathspec.match_path(path).is_some() && within_depth(self.pathspec, path, self.max_depth)
+        let matched = match &self.spec_attrs {
+            Some(a) => self
+                .pathspec
+                .match_path_with(path, None, &mut |p, spec| a.borrow_mut().check(p, spec))
+                .is_some(),
+            None => self.pathspec.match_path(path).is_some(),
+        };
+        matched && within_depth(self.pathspec, path, self.max_depth)
     }
 
     /// The name shown for `path` (relative to the top), after `label`.
@@ -789,6 +798,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let split = args.dashdash.unwrap_or(args.rest.len());
     let work_tree = repo.setup.work_tree.clone();
     let exists = |repo: &Repo, arg: &str| -> bool {
+        // Pathspecs with magic are taken as they are.
+        if arg.starts_with(":(") || arg.starts_with(":!") || arg.starts_with(":^") {
+            return true;
+        }
         let Some(root) = &work_tree else {
             return false;
         };
@@ -895,6 +908,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let (index, _) = repo.read_index()?;
     let tree_source = crate::attributes::tree_source(ctx, &mut repo, None)?;
+    let spec_tree = crate::attributes::PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
     let repo = repo;
     let mut attrs = crate::attributes::open(&repo, &index, tree_source, false);
     let diff = attrs.id(b"diff");
@@ -918,6 +932,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             default_funcname: FuncName::Default,
             textconv: args.textconv,
         },
+        spec_attrs: spec_tree
+            .map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t))),
     };
 
     match target {
@@ -1183,6 +1199,7 @@ fn run_no_index(
             default_funcname: FuncName::Default,
             textconv: false,
         },
+        spec_attrs: None,
     };
     for path in files {
         if g.done() {

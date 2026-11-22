@@ -485,3 +485,47 @@ fn index_flags() {
         fx.compare(&argv).output_only().run();
     }
 }
+
+#[test]
+fn attribute_pathspecs() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .write("fileA", "content\n")
+        .write("fileSet", "content\n")
+        .write("fileUnset", "content\n")
+        .write("fileValue", "content\n")
+        .write("sub/fileSet", "content\n")
+        .write("sub/other", "content\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "files"]);
+    for args in [
+        &["content", "HEAD", "--", ":(attr:label)"][..],
+        &["-l", "content", ":(attr:label)"],
+    ] {
+        let mut argv = vec!["grep"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).output_only().run();
+    }
+    let mut fx = fx
+        .write(
+            ".gitattributes",
+            "fileSet label\nfileUnset -label\nfileValue label=foo\n",
+        )
+        .git(["add", ".gitattributes"])
+        .git(["commit", "-q", "-m", "attributes"]);
+    for args in [
+        &["-l", "content", "HEAD", ":(attr:label)"][..],
+        &["-l", "content", "HEAD", ":(attr:label)sub"],
+        &["-l", "content", "HEAD", ":(attr:-label)"],
+        &["-l", "content", "HEAD", ":(attr:label=foo)"],
+        &["-l", "content", "HEAD", ":(attr:label=bar)"],
+        &["-l", "^", "HEAD", ":(attr:!label)"],
+        &["-l", "content", ":(attr:label)"],
+        &["-l", "--cached", "content", ":(attr:!label)"],
+    ] {
+        let mut argv = vec!["grep"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).output_only().run();
+    }
+}
