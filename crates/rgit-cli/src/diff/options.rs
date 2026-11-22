@@ -92,6 +92,10 @@ pub struct DiffOpts {
     pub word_diff: Option<super::words::Mode>,
     /// `--word-diff-regex`, `--color-words=<regex>`.
     pub word_regex: Option<regex::bytes::Regex>,
+    /// `--color-moved[=<mode>]`: `Some(None)` without a mode.
+    pub color_moved: Option<Option<super::moved::Mode>>,
+    /// `--color-moved-ws=<modes>`.
+    pub color_moved_ws: Option<super::moved::MovedWs>,
 }
 
 /// How submodule changes are shown (`--submodule`, `diff.submodule`).
@@ -265,6 +269,11 @@ impl DiffOpts {
             "--name-only" => self.name_only = true,
             "--name-status" => self.name_status = true,
             "--check" => self.check = true,
+            "--color-moved" => self.color_moved = Some(None),
+            "--no-color-moved" => self.color_moved = Some(Some(super::moved::Mode::No)),
+            "--no-color-moved-ws" => {
+                self.color_moved_ws = Some(super::moved::MovedWs::default());
+            }
             "--word-diff" => {
                 if self.word_diff.is_none() {
                     self.word_diff = Some(super::words::Mode::Plain);
@@ -435,6 +444,14 @@ impl DiffOpts {
         {
             let re = ignore_regex(v).ok_or_else(|| usage_exit(msg::invalid_ignore_regex(v)))?;
             self.ignore_regex.push(re);
+        } else if let Some(v) = arg.strip_prefix("--color-moved=") {
+            let mode = super::moved::Mode::parse(v, false)
+                .ok_or_else(|| usage_exit(msg::bad_color_moved(v)))?;
+            self.color_moved = Some(Some(mode));
+        } else if let Some(v) = arg.strip_prefix("--color-moved-ws=") {
+            let ws = super::moved::MovedWs::parse(v)
+                .map_err(|reason| usage_exit(msg::bad_color_moved_ws(&reason, v)))?;
+            self.color_moved_ws = Some(ws);
         } else if let Some(v) = arg.strip_prefix("--word-diff=") {
             let mode =
                 super::words::Mode::parse(v).map_err(|_| usage_exit(msg::bad_word_diff(v)))?;

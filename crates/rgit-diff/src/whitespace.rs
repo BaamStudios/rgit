@@ -69,7 +69,7 @@ fn is_space(c: u8) -> bool {
 
 /// The key a line is compared by, or `None` when the line is compared
 /// as it is.
-pub(crate) fn key(line: &[u8], ws: &Whitespace) -> Option<Vec<u8>> {
+pub fn key(line: &[u8], ws: &Whitespace) -> Option<Vec<u8>> {
     if !ws.any() {
         return None;
     }

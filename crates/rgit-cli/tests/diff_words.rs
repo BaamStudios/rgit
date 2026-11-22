@@ -33,15 +33,11 @@ fn fixture() -> Fixture {
         .git(["init", "-q"])
         .write(".gitattributes", "*.c diff=cee\n");
     for (i, (old, _)) in CASES.iter().enumerate() {
-        fx = fx
-            .write(format!("f{i}"), old)
-            .write(format!("f{i}.c"), old);
+        fx = fx.write(format!("f{i}"), old).write(format!("f{i}.c"), old);
     }
     fx = fx.git(["add", "."]).git(["commit", "-q", "-m", "first"]);
     for (i, (_, new)) in CASES.iter().enumerate() {
-        fx = fx
-            .write(format!("f{i}"), new)
-            .write(format!("f{i}.c"), new);
+        fx = fx.write(format!("f{i}"), new).write(format!("f{i}.c"), new);
     }
     fx
 }

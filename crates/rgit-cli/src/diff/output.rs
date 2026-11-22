@@ -77,6 +77,9 @@ pub struct Output<'a> {
     /// The word regex came from the command line (it beats the diff
     /// driver's `wordRegex`).
     word_regex_cli: bool,
+    /// `--color-moved` / `diff.colorMoved` and `--color-moved-ws` /
+    /// `diff.colorMovedWS`.
+    color_moved: (super::moved::Mode, super::moved::MovedWs),
 }
 
 /// `diff.submodule` (an unknown value is warned about and ignored).
@@ -197,6 +200,16 @@ struct Loaded {
     mode: u32,
     oid: ObjectId,
     data: Vec<u8>,
+}
+
+/// A coloured patch that waits for --color-moved.
+struct Pending {
+    rule: WsRule,
+    highlight: u8,
+    old_data: Vec<u8>,
+    new_data: Vec<u8>,
+    new_symlink: bool,
+    old_symlink: bool,
 }
 
 fn is_file_mode(mode: u32) -> bool {
@@ -322,6 +335,54 @@ impl<'a> Output<'a> {
             (None, None)
         };
         let core = core_options(repo, opts, porcelain)?;
+        // diff.colorMoved / diff.colorMovedWS apply to the porcelain only.
+        let config_value = |key: &str| {
+            repo.filter(|_| porcelain)
+                .and_then(|r| r.config.get(key))
+                .map(|e| {
+                    (
+                        e.value.as_ref().map(|v| v.to_string()).unwrap_or_default(),
+                        e,
+                    )
+                })
+        };
+        let configured_mode = match config_value("diff.colormoved") {
+            Some((v, e)) => match super::moved::Mode::parse(&v, true) {
+                Some(m) => Some(m),
+                None => {
+                    crate::messages::print_error(msg::COLOR_MOVED_MUST_BE);
+                    return Err(Die::Fatal(crate::revisions::unable_to_parse(
+                        "diff.colormoved",
+                        e,
+                    )));
+                }
+            },
+            None => None,
+        };
+        let moved_mode = match opts.color_moved {
+            Some(Some(m)) => m,
+            Some(None) => configured_mode
+                .filter(|m| *m != super::moved::Mode::No)
+                .unwrap_or(super::moved::Mode::Zebra),
+            None => configured_mode.unwrap_or(super::moved::Mode::No),
+        };
+        let moved_ws = match opts.color_moved_ws {
+            Some(w) => w,
+            None => match config_value("diff.colormovedws") {
+                Some((v, e)) => match super::moved::MovedWs::parse(&v) {
+                    Ok(w) => w,
+                    Err(reason) => {
+                        crate::messages::print_error(&reason);
+                        return Err(Die::Fatal(crate::revisions::unable_to_parse(
+                            "diff.colormovedws",
+                            e,
+                        )));
+                    }
+                },
+                None => super::moved::MovedWs::default(),
+            },
+        };
+        let color_moved = (moved_mode, moved_ws);
         let word_diff = match opts.word_diff {
             None => None,
             Some(mode) => {
@@ -401,6 +462,7 @@ impl<'a> Output<'a> {
             ws_errors: std::cell::Cell::new(false),
             word_diff,
             word_regex_cli: opts.word_regex.is_some(),
+            color_moved,
             repo,
             convert: repo.is_some(),
             hash,
@@ -1037,6 +1099,12 @@ impl<'a> Output<'a> {
                     rgit_attr::State::Unspecified => Ok(base_rule),
                 }
             };
+            // With --color-moved the coloured patches wait until all
+            // patches are known: (offset in `out`, plain patch, settings).
+            let defer_moved = self.colors.is_some() && self.color_moved.0 != super::moved::Mode::No;
+            // (The contents are copied: a dirty submodule's text lives
+            // only for one pair.)
+            let mut pending: Vec<(usize, Vec<u8>, Pending)> = Vec::new();
             for (k, (p, o, n)) in items.iter().enumerate() {
                 if p.unmerged {
                     out.extend_from_slice(msg::UNMERGED_PATH.as_bytes());
@@ -1095,9 +1163,9 @@ impl<'a> Output<'a> {
                     irreversible_delete: self.irreversible_delete,
                     same_id_differs: p.dirty_submodule != 0,
                 };
-                let emit = |out: &mut Vec<u8>,
-                            old: Option<&PatchFile<'_>>,
-                            new: Option<&PatchFile<'_>>| {
+                let mut emit = |out: &mut Vec<u8>,
+                                old: Option<&PatchFile<'_>>,
+                                new: Option<&PatchFile<'_>>| {
                     let mut plain = Vec::new();
                     write_file_patch_extra(&mut plain, old, new, &self.patch, &abbrev, &extra);
                     let ws = WsContext {
@@ -1126,7 +1194,19 @@ impl<'a> Output<'a> {
                         };
                         w.patch(out, &plain);
                     } else if let Some(c) = &self.colors {
-                        super::color::patch(out, c, &plain, &ws);
+                        if defer_moved {
+                            let owned = Pending {
+                                rule: ws.rule,
+                                highlight: ws.highlight,
+                                old_data: ws.old_data.to_vec(),
+                                new_data: ws.new_data.to_vec(),
+                                new_symlink: ws.new_symlink,
+                                old_symlink: ws.old_symlink,
+                            };
+                            pending.push((out.len(), plain, owned));
+                        } else {
+                            super::color::patch(out, c, &plain, &ws, &[]);
+                        }
                     } else {
                         out.extend_from_slice(&plain);
                     }
@@ -1183,6 +1263,26 @@ impl<'a> Output<'a> {
                 } else {
                     emit(&mut out, of.as_ref(), nf.as_ref());
                 }
+            }
+            if let (Some(c), false) = (&self.colors, pending.is_empty()) {
+                let plains: Vec<Vec<u8>> = pending.iter().map(|(_, p, _)| p.clone()).collect();
+                let slots = super::moved::mark(&plains, self.color_moved.0, &self.color_moved.1);
+                let rest = std::mem::take(&mut out);
+                let mut at = 0;
+                for ((offset, plain, w), moved) in pending.iter().zip(&slots) {
+                    out.extend_from_slice(&rest[at..*offset]);
+                    at = *offset;
+                    let ws = WsContext {
+                        rule: w.rule,
+                        highlight: w.highlight,
+                        old_data: &w.old_data,
+                        new_data: &w.new_data,
+                        new_symlink: w.new_symlink,
+                        old_symlink: w.old_symlink,
+                    };
+                    super::color::patch(&mut out, c, plain, &ws, moved);
+                }
+                out.extend_from_slice(&rest[at..]);
             }
         }
         Ok((out, changed))

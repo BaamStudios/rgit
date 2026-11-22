@@ -42,6 +42,11 @@ pub struct DiffColors {
     pub old: String,
     pub new: String,
     pub whitespace: String,
+    /// `oldMoved`, `oldMovedAlternative`, `oldMovedDimmed`,
+    /// `oldMovedAlternativeDimmed`, in [`super::moved::Slot`] order.
+    pub old_moved: [String; 4],
+    /// The same for `newMoved...`.
+    pub new_moved: [String; 4],
 }
 
 impl DiffColors {
@@ -67,6 +72,18 @@ impl DiffColors {
             old: get(&["old"], "\x1b[31m")?,
             new: get(&["new"], "\x1b[32m")?,
             whitespace: get(&["whitespace"], "\x1b[41m")?,
+            old_moved: [
+                get(&["oldmoved"], "\x1b[1;35m")?,
+                get(&["oldmovedalternative"], "\x1b[1;34m")?,
+                get(&["oldmoveddimmed"], "\x1b[2m")?,
+                get(&["oldmovedalternativedimmed"], "\x1b[2;3m")?,
+            ],
+            new_moved: [
+                get(&["newmoved"], "\x1b[1;36m")?,
+                get(&["newmovedalternative"], "\x1b[1;33m")?,
+                get(&["newmoveddimmed"], "\x1b[2m")?,
+                get(&["newmovedalternativedimmed"], "\x1b[2;3m")?,
+            ],
         })
     }
 
@@ -168,7 +185,14 @@ fn whole(out: &mut Vec<u8>, color: &str, line: &[u8]) {
 
 /// Colour the patch of one file (`plain`, as written by
 /// `rgit_diff::write_file_patch_with`) into `out`.
-pub fn patch(out: &mut Vec<u8>, c: &DiffColors, plain: &[u8], ws: &WsContext<'_>) {
+pub fn patch(
+    out: &mut Vec<u8>,
+    c: &DiffColors,
+    plain: &[u8],
+    ws: &WsContext<'_>,
+    moved: &[Option<super::moved::Slot>],
+) {
+    let mut nth = 0;
     let blank_from = blank_at_eof_from(ws);
     let mut in_header = true;
     let mut new_line = 0usize;
@@ -190,11 +214,22 @@ pub fn patch(out: &mut Vec<u8>, c: &DiffColors, plain: &[u8], ws: &WsContext<'_>
         }
         in_header = false;
         let sign = line.first().copied().unwrap_or(b' ');
-        let (color, kind) = match sign {
+        let (mut color, kind) = match sign {
             b'+' => (&c.new, HIGHLIGHT_NEW),
             b'-' => (&c.old, HIGHLIGHT_OLD),
             _ => (&c.context, HIGHLIGHT_CONTEXT),
         };
+        if sign == b'+' || sign == b'-' {
+            if let Some(Some(slot)) = moved.get(nth) {
+                let set = if sign == b'+' {
+                    &c.new_moved
+                } else {
+                    &c.old_moved
+                };
+                color = &set[*slot as usize];
+            }
+            nth += 1;
+        }
         match sign {
             b'@' => {
                 let end = line[2..]
@@ -279,7 +314,13 @@ mod tests {
             new_symlink: false,
             old_symlink: false,
         };
-        patch(&mut out, &DiffColors::defaults(), plain.as_bytes(), &ws);
+        patch(
+            &mut out,
+            &DiffColors::defaults(),
+            plain.as_bytes(),
+            &ws,
+            &[],
+        );
         show(&out)
     }
 
