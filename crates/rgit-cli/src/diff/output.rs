@@ -18,6 +18,8 @@ use rgit_config::ConfigSet;
 
 use super::collect::{GITLINK_MODE, Pair, Side, TREE_MODE, type_bits};
 use super::color::{DiffColors, WsContext};
+use super::driver::{DiffAttr, Drivers};
+use super::external;
 use super::options::SubmoduleFormat;
 use super::options::{DiffOpts, Formats, usage_exit};
 use super::stat::{self, FileStat, StatKind, StatLayout};
@@ -98,6 +100,20 @@ pub struct Output<'a> {
     /// `--color-moved` / `diff.colorMoved` and `--color-moved-ws` /
     /// `diff.colorMovedWS`.
     color_moved: (super::moved::Mode, super::moved::MovedWs),
+    /// Diff drivers (the `diff` attribute).
+    drivers: Drivers,
+    /// Run textconv filters (`--textconv`).
+    pub textconv: bool,
+    /// External diff programs are allowed (`--ext-diff`): with the
+    /// program of `GIT_EXTERNAL_DIFF` / `diff.external`, if any.
+    pub external: Option<Option<external::Program>>,
+    /// `-a`: no file is binary.
+    pub text: bool,
+    /// `--quiet`.
+    pub quiet: bool,
+    /// Output was written to `--output` already (by external diff
+    /// programs): the rest is appended.
+    output_started: std::cell::Cell<bool>,
 }
 
 /// `diff.submodule` (an unknown value is warned about and ignored).
@@ -246,6 +262,17 @@ struct Loaded {
     mode: u32,
     oid: ObjectId,
     data: Vec<u8>,
+    /// The output of the textconv filter, if one ran.
+    conv: Option<Vec<u8>>,
+    /// The textconv filter failed (fatal when the pair is shown).
+    conv_failed: bool,
+}
+
+impl Loaded {
+    /// The contents shown in patches.
+    fn shown(&self) -> &[u8] {
+        self.conv.as_deref().unwrap_or(&self.data)
+    }
 }
 
 /// A coloured patch that waits for --color-moved.
@@ -612,6 +639,15 @@ impl<'a> Output<'a> {
                 .as_ref()
                 .map(|(s, p)| (*s, p.as_bytes().to_vec())),
             output: opts.output.as_ref().map(|o| cwd.join(o)),
+            drivers: Drivers::default(),
+            textconv: opts.textconv.unwrap_or(false),
+            external: opts
+                .ext_diff
+                .unwrap_or(false)
+                .then(|| external::global(repo.map(|r| &r.config))),
+            text: opts.text,
+            quiet: opts.quiet,
+            output_started: std::cell::Cell::new(false),
             repo,
             convert: repo.is_some(),
             hash,
@@ -737,6 +773,8 @@ impl<'a> Output<'a> {
                 mode: side.mode,
                 oid,
                 data: format!("Subproject commit {}\n", oid.to_hex()).into_bytes(),
+                conv: None,
+                conv_failed: false,
             });
         }
         if side.file.is_some() {
@@ -761,6 +799,8 @@ impl<'a> Output<'a> {
                 mode: side.mode,
                 oid,
                 data,
+                conv: None,
+                conv_failed: false,
             });
         }
         let data = if is_file_mode(side.mode) {
@@ -777,6 +817,8 @@ impl<'a> Output<'a> {
             mode: side.mode,
             oid: side.oid,
             data,
+            conv: None,
+            conv_failed: false,
         })
     }
 
@@ -1030,13 +1072,18 @@ impl<'a> Output<'a> {
         // ignored, from every format (not `--ignore-blank-lines` alone).
         let d = &self.patch.diff;
         let check = d.whitespace.any() || !d.ignore_regex.0.is_empty();
-        let need = f.needs_content() || f.summary || check;
+        let textconv = self.textconv && (f.patch || self.quiet);
+        let need = f.needs_content()
+            || f.summary
+            || check
+            || textconv
+            || (self.quiet && self.external.is_some());
         let mut loaded: Vec<(Option<Loaded>, Option<Loaded>)> = Vec::with_capacity(pairs.len());
         let mut keep = Vec::with_capacity(pairs.len());
         for p in &pairs {
             let has_file = p.old.iter().chain(p.new.iter()).any(|s| s.file.is_some());
             let load = !p.unmerged && (need || (self.porcelain && has_file));
-            let (o, n) = if load {
+            let (mut o, mut n) = if load {
                 (
                     p.old
                         .as_ref()
@@ -1047,6 +1094,14 @@ impl<'a> Output<'a> {
             } else {
                 (None, None)
             };
+            if textconv && load {
+                if let Some(l) = o.as_mut() {
+                    self.apply_textconv(&p.old_path, l)?;
+                }
+                if let Some(l) = n.as_mut() {
+                    self.apply_textconv(&p.path, l)?;
+                }
+            }
             // (Standard input has no id: its contents decide.)
             let same = matches!((&o, &n), (Some(o), Some(n)) if o.mode == n.mode
                 && same_contents(o, n));
@@ -1082,7 +1137,15 @@ impl<'a> Output<'a> {
                 items.push((p, o, n));
             }
         }
-        let changed = !items.is_empty();
+        // Whether each pair counts as a change: textconv output that is
+        // the same on both sides shows no patch and no change.
+        let mut item_changed: Vec<bool> = items
+            .iter()
+            .map(|(p, o, n)| !textconv_equal(p, o, n))
+            .collect();
+        if self.quiet {
+            self.external_quiet(&items, &mut item_changed)?;
+        }
         let mut out = Vec::new();
 
         if f.raw {
@@ -1146,9 +1209,10 @@ impl<'a> Output<'a> {
                     let od = o.as_ref().map_or(&[][..], |l| &l.data[..]);
                     let nd = n.as_ref().map_or(&[][..], |l| &l.data[..]);
                     let same = matches!((o, n), (Some(o), Some(n)) if same_contents(o, n));
-                    if (is_binary(od) || is_binary(nd)) && same {
+                    let binary = self.pair_binary(p, o.as_ref(), n.as_ref(), false)?;
+                    if binary && same {
                         StatKind::BinarySame
-                    } else if is_binary(od) || is_binary(nd) {
+                    } else if binary {
                         StatKind::Binary {
                             old_size: od.len(),
                             new_size: nd.len(),
@@ -1287,7 +1351,10 @@ impl<'a> Output<'a> {
             }
         }
         if f.patch || f.check {
-            if f.patch && changed && (f.raw || f.numstat || f.stat || f.shortstat || f.summary) {
+            if f.patch
+                && !items.is_empty()
+                && (f.raw || f.numstat || f.stat || f.shortstat || f.summary)
+            {
                 out.push(b'\n');
             }
             let abbrev = |id: &ObjectId| self.abbrev(id, self.index_abbrev);
@@ -1351,6 +1418,33 @@ impl<'a> Output<'a> {
             // only for one pair.)
             let mut pending: Vec<(usize, Vec<u8>, Pending)> = Vec::new();
             for (k, (p, o, n)) in items.iter().enumerate() {
+                let idx = k;
+                let attr = if p.unmerged || self.external.is_some() || o.is_some() || n.is_some() {
+                    self.diff_attr(&p.old_path)?
+                } else {
+                    DiffAttr::Unspecified
+                };
+                if let Some(prog) = self.external_program(&attr) {
+                    // The program writes to our output: what we have so
+                    // far goes first (patches waiting for --color-moved
+                    // keep their place).
+                    if pending.is_empty() {
+                        self.write_out(&out);
+                        out.clear();
+                    }
+                    item_changed[idx] =
+                        self.run_external(&prog, p, o, n, idx, items.len(), false)?;
+                    continue;
+                }
+                if !item_changed[idx] {
+                    continue;
+                }
+                if o.iter().chain(n.iter()).any(|l| l.conv_failed) {
+                    self.write_out(&out);
+                    return Err(Die::Fatal(
+                        crate::messages::userdiff::UNABLE_TO_READ_FILES.into(),
+                    ));
+                }
                 if p.unmerged {
                     out.extend_from_slice(msg::UNMERGED_PATH.as_bytes());
                     let mut q = Vec::new();
@@ -1378,6 +1472,8 @@ impl<'a> Output<'a> {
                             mode: l.mode,
                             oid: l.oid,
                             data: d,
+                            conv: None,
+                            conv_failed: false,
                         };
                         Some(&dirty_data)
                     }
@@ -1387,13 +1483,13 @@ impl<'a> Output<'a> {
                     path: &p.old_path,
                     mode: l.mode,
                     oid: l.oid,
-                    data: &l.data,
+                    data: l.shown(),
                 });
                 let nf = n.as_ref().map(|l| PatchFile {
                     path: &p.path,
                     mode: l.mode,
                     oid: l.oid,
-                    data: &l.data,
+                    data: l.shown(),
                 });
                 let new_data = nf.as_ref().map_or(&[][..], |f| f.data);
                 let old_data = of.as_ref().map_or(&[][..], |f| f.data);
@@ -1407,12 +1503,15 @@ impl<'a> Output<'a> {
                     rewrite: p.is_rewrite().then(|| p.percent()),
                     irreversible_delete: self.irreversible_delete,
                     same_id_differs: p.dirty_submodule != 0,
+                    binary: Some(self.pair_binary(p, o.as_ref(), n, true)?),
                 };
+                let pair_opts = self.pair_options(&attr);
+                let popts = pair_opts.as_ref().unwrap_or(&self.patch);
                 let mut emit = |out: &mut Vec<u8>,
                                 old: Option<&PatchFile<'_>>,
                                 new: Option<&PatchFile<'_>>| {
                     let mut plain = Vec::new();
-                    write_file_patch_extra(&mut plain, old, new, &self.patch, &abbrev, &extra);
+                    write_file_patch_extra(&mut plain, old, new, popts, &abbrev, &extra);
                     let ws = WsContext {
                         rule,
                         highlight: if f.check { 0 } else { self.ws_highlight },
@@ -1532,6 +1631,7 @@ impl<'a> Output<'a> {
                 out.extend_from_slice(&rest[at..]);
             }
         }
+        let changed = item_changed.iter().any(|&c| c);
         let out = match &self.line_prefix {
             Some(prefix) if !out.is_empty() => {
                 let mut prefixed = Vec::with_capacity(out.len() + prefix.len() * 16);
@@ -1575,13 +1675,275 @@ impl<'a> Output<'a> {
     }
 }
 
+/// Both sides went through textconv (or one did) and show the same text:
+/// no patch and no change.
+fn textconv_equal(p: &Pair, o: &Option<Loaded>, n: &Option<Loaded>) -> bool {
+    match (o, n) {
+        (Some(o), Some(n)) => {
+            (o.conv.is_some() || n.conv.is_some())
+                && o.mode == n.mode
+                && !p.is_rename()
+                && o.shown() == n.shown()
+        }
+        _ => false,
+    }
+}
+
+/// Diff drivers: binary decisions, textconv, hunk-header patterns and
+/// external programs.
+impl Output<'_> {
+    /// What the `diff` attribute says about `path`.
+    fn diff_attr(&self, path: &[u8]) -> Result<DiffAttr, Die> {
+        let Some(repo) = self.repo else {
+            return Ok(DiffAttr::Unspecified);
+        };
+        let state = repo.converter()?.attr(path, b"diff");
+        self.drivers.resolve(&repo.config, &state)
+    }
+
+    /// Run the textconv filter of `path`'s driver on `l`.
+    fn apply_textconv(&self, path: &[u8], l: &mut Loaded) -> Result<(), Die> {
+        if !is_file_mode(l.mode) || type_bits(l.mode) == 0o120000 {
+            return Ok(());
+        }
+        let attr = self.diff_attr(path)?;
+        if let Some(cmd) = attr.textconv() {
+            match super::driver::run_textconv(cmd, &l.data) {
+                Ok(conv) => l.conv = Some(conv),
+                Err(()) => l.conv_failed = true,
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a pair is binary: by the `diff` attribute or the contents
+    /// of either side. In patches (`patch`) `-a` makes nothing binary, nor
+    /// is a side after textconv; the diffstat ignores both.
+    fn pair_binary(
+        &self,
+        p: &Pair,
+        o: Option<&Loaded>,
+        n: Option<&Loaded>,
+        patch: bool,
+    ) -> Result<bool, Die> {
+        if patch && self.text {
+            return Ok(false);
+        }
+        for (path, side) in [(&p.old_path, o), (&p.path, n)] {
+            let Some(l) = side else { continue };
+            if patch && l.conv.is_some() {
+                continue;
+            }
+            let forced = if self.repo.is_some() {
+                self.diff_attr(path)?.binary()
+            } else {
+                None
+            };
+            if forced.unwrap_or_else(|| is_binary(&l.data)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Patch options for a pair whose driver sets hunk-header patterns or
+    /// an algorithm; `None` to use the common ones.
+    fn pair_options(&self, attr: &DiffAttr) -> Option<PatchOptions> {
+        let d = attr.driver()?;
+        if d.funcname.is_none() && d.algorithm.is_none() {
+            return None;
+        }
+        let mut o = self.patch.clone();
+        o.diff.funcname = d.funcname.clone();
+        if let Some((a, minimal)) = d.algorithm {
+            o.diff.algorithm = a;
+            o.diff.minimal = minimal;
+        }
+        Some(o)
+    }
+
+    /// The external program for a pair (its driver's `command` first),
+    /// when external programs are allowed.
+    fn external_program(&self, attr: &DiffAttr) -> Option<external::Program> {
+        let global = self.external.as_ref()?;
+        if let Some(cmd) = attr.driver().and_then(|d| d.command.clone()) {
+            let d = attr.driver().expect("driver");
+            return Some(external::Program {
+                cmd,
+                trust_exit_code: d.trust_exit_code,
+            });
+        }
+        global.clone()
+    }
+
+    /// Run `prog` for pair number `idx` of `total`; returns whether it
+    /// counts as a change.
+    #[allow(clippy::too_many_arguments)]
+    fn run_external(
+        &self,
+        prog: &external::Program,
+        p: &Pair,
+        o: &Option<Loaded>,
+        n: &Option<Loaded>,
+        idx: usize,
+        total: usize,
+        quiet: bool,
+    ) -> Result<bool, Die> {
+        let sides = if p.unmerged {
+            None
+        } else {
+            Some((
+                self.external_side(&p.old, o, &p.old_path)?,
+                self.external_side(&p.new, n, &p.path)?,
+            ))
+        };
+        let rename = p.renamed.map(|c| {
+            let word = if c == b'C' { "copy" } else { "rename" };
+            let q = |path: &[u8]| {
+                let mut v = Vec::new();
+                quote_path(&mut v, path, self.quote_high);
+                String::from_utf8_lossy(&v).into_owned()
+            };
+            (
+                &p.path[..],
+                format!(
+                    "similarity index {}%\n{word} from {}\n{word} to {}\n",
+                    p.percent(),
+                    q(&p.old_path),
+                    q(&p.path)
+                ),
+            )
+        });
+        let cwd = if self.convert {
+            self.repo.and_then(|r| r.setup.work_tree.clone())
+        } else {
+            None
+        };
+        let call = external::Call {
+            path: &p.old_path,
+            sides,
+            rename,
+            counter: idx + 1,
+            total,
+        };
+        let stdout = match (&self.output, quiet) {
+            (Some(_), false) => self.output_handle(),
+            _ => None,
+        };
+        external::run(prog, &call, cwd.as_deref(), quiet, stdout)
+    }
+
+    /// The `--output` file, created by the first call and appended to
+    /// by later ones.
+    fn output_handle(&self) -> Option<std::fs::File> {
+        let path = self.output.as_ref()?;
+        let f = if self.output_started.replace(true) {
+            std::fs::OpenOptions::new().append(true).open(path)
+        } else {
+            std::fs::File::create(path)
+        };
+        f.ok()
+    }
+
+    /// Write `out` to the output (`--output` file or stdout).
+    fn write_out(&self, out: &[u8]) {
+        match self.output.is_some() {
+            true => {
+                if let Some(mut f) = self.output_handle() {
+                    let _ = f.write_all(out);
+                }
+            }
+            false => {
+                let mut o = std::io::stdout().lock();
+                let _ = o.write_all(out);
+                let _ = o.flush();
+            }
+        }
+    }
+
+    /// A side as the external program sees it: the work tree file when
+    /// it holds the contents, else the contents as they would be checked
+    /// out.
+    fn external_side<'x>(
+        &self,
+        s: &Option<Side>,
+        l: &Option<Loaded>,
+        path: &'x [u8],
+    ) -> Result<Option<external::ExtSide<'x>>, Die> {
+        let Some(s) = s.as_ref() else {
+            return Ok(None);
+        };
+        let data = l.as_ref().map(|l| l.data.clone()).unwrap_or_default();
+        let regular = is_file_mode(s.mode) && type_bits(s.mode) != GITLINK_MODE;
+        let mut in_worktree = s.file.is_some() && self.convert && regular;
+        let repo = self.repo.filter(|_| self.convert && regular);
+        let mut shown = data;
+        if let (Some(repo), false) = (repo, in_worktree) {
+            // git hands over the work tree file when it has the same
+            // contents.
+            if let Some(root) = &repo.setup.work_tree {
+                let full = root.join(external::os(path));
+                let meta = std::fs::symlink_metadata(&full).ok();
+                if meta.is_some_and(|m| m.is_file()) && type_bits(s.mode) != 0o120000 {
+                    if let Ok(raw) = std::fs::read(&full) {
+                        let conv = repo.converter()?;
+                        let opts = rgit_convert::Options::inspect(conv.config());
+                        let blob = conv.to_git(path, raw, opts)?;
+                        if rgit_hash::hash_object(self.hash, "blob", &blob).ok() == Some(s.oid) {
+                            in_worktree = true;
+                        }
+                    }
+                }
+            }
+            if !in_worktree && type_bits(s.mode) != 0o120000 {
+                shown = repo.converter()?.to_worktree(path, &s.oid, shown);
+            }
+        }
+        Ok(Some(external::ExtSide {
+            data: shown,
+            oid: s.oid,
+            mode: s.mode,
+            in_worktree,
+            path,
+        }))
+    }
+
+    /// `--quiet` with external programs: only programs that tell about
+    /// differences by their exit code are run.
+    fn external_quiet(
+        &self,
+        items: &[(Pair, Option<Loaded>, Option<Loaded>)],
+        changed: &mut [bool],
+    ) -> Result<(), Die> {
+        if self.external.is_none() {
+            return Ok(());
+        }
+        for (idx, (p, o, n)) in items.iter().enumerate() {
+            let attr = self.diff_attr(&p.old_path)?;
+            if let Some(prog) = self.external_program(&attr) {
+                changed[idx] = !prog.trust_exit_code
+                    || self.run_external(&prog, p, o, n, idx, items.len(), true)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Output<'_> {
     /// Write the output to stdout, then the warnings, and compute the
     /// exit code.
     pub fn finish(&self, out: &[u8], changed: bool, opts: &DiffOpts) -> i32 {
         let code = match &self.output {
             Some(path) => {
-                if std::fs::write(path, out).is_err() {
+                let written = if self.output_started.get() {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(path)
+                        .and_then(|mut f| f.write_all(out))
+                } else {
+                    std::fs::write(path, out)
+                };
+                if written.is_err() {
                     crate::messages::print_error(&msg::could_not_open_output(
                         &path.to_string_lossy(),
                     ));

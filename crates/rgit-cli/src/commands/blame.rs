@@ -414,8 +414,19 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     let lines = final_blob.lines();
     let mut ranges = Vec::new();
     let mut anchor = 0;
+    // `-L :<funcname>` uses the function lines of the path's diff driver.
+    let funcname = if cli.ranges.borrow().iter().any(|r| r.starts_with(':') || r.starts_with("^:")) {
+        match repo.converter()?.attr(&path, b"diff") {
+            rgit_attr::State::Value(v) => {
+                crate::diff::driver::load(&repo.config, &String::from_utf8_lossy(&v))?.funcname
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     for spec in cli.ranges.borrow().iter() {
-        match range::parse(spec, &lines, anchor, &path_str) {
+        match range::parse(spec, &lines, anchor, &path_str, funcname.as_ref()) {
             Ok(r) => {
                 anchor = r.1;
                 ranges.push(r);

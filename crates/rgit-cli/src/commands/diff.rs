@@ -49,6 +49,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         |a| usage_exit(format!("{}{}", msg::invalid_option(a), usage())),
     )?;
     let mut opts = parsed.opts;
+    opts.porcelain_drivers();
     let formats = opts.formats(true)?;
 
     let repo = Repo::open_gently(ctx)?;

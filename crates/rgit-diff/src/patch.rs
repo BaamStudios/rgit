@@ -148,6 +148,9 @@ pub struct PatchExtra {
     /// The contents differ although the object ids are equal (a dirty
     /// submodule): show them without an `index` line.
     pub same_id_differs: bool,
+    /// Whether the pair is binary, when the caller decided it (the `diff`
+    /// attribute, `--text`, textconv); `None` looks at the contents.
+    pub binary: Option<bool>,
 }
 
 /// Lines of a complete rewrite: `-` lines of the old, then `+` lines of
@@ -281,7 +284,10 @@ pub fn write_file_patch_extra(
     if new.is_none() && extra.irreversible_delete {
         return Stats::default();
     }
-    if !opts.text && (is_binary(old_data) || is_binary(new_data)) {
+    if extra
+        .binary
+        .unwrap_or_else(|| !opts.text && (is_binary(old_data) || is_binary(new_data)))
+    {
         messages::binary_files_differ(out, &a_shown, &b_shown);
         return Stats::default();
     }

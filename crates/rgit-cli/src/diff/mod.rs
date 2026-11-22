@@ -9,6 +9,8 @@ mod check;
 pub mod collect;
 pub mod color;
 mod dirstat;
+pub mod driver;
+pub mod external;
 pub mod moved;
 pub mod options;
 mod order;
