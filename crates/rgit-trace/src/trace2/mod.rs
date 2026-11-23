@@ -213,6 +213,17 @@ fn new_sid() -> String {
     }
 }
 
+/// The session id of this process: the trace2 `sid` while tracing, else a
+/// value of the same form made once per process (the `session-id`
+/// capability, `Documentation/gitprotocol-capabilities.adoc`).
+pub fn session_id() -> String {
+    if let Some(sid) = with_state(|s| s.sid.clone()) {
+        return sid;
+    }
+    static SID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SID.get_or_init(new_sid).clone()
+}
+
 /// Start tracing: read the settings (environment first, then `config`,
 /// which answers lower-case `trace2.*` keys from the system and global
 /// configuration), open the targets and write `version`, `start` and

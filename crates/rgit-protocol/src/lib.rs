@@ -10,6 +10,7 @@
 //! - [`capabilities`]: capability lists of protocol v0/v1 (behind the NUL of
 //!   the first ref line) and the v2 capability advertisement.
 //! - [`agent`]: the `agent=` value rgit sends.
+//! - [`session_id`]: the `session-id` capability and its trace2 values.
 //! - [`trace`]: `GIT_TRACE_PACKET` output through `rgit-trace`.
 //! - [`push`]: the `receive-pack` client of protocol v0 (ref
 //!   advertisement, commands, status report).
@@ -27,6 +28,7 @@ mod error;
 pub mod messages;
 pub mod pktline;
 pub mod push;
+pub mod session_id;
 pub mod sideband;
 pub mod trace;
 pub mod v0;

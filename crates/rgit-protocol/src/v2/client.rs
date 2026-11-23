@@ -46,6 +46,7 @@
 use std::io::{self, Read, Write};
 
 use rgit_hash::{HashKind, ObjectId};
+use rgit_trace::trace2;
 
 use crate::agent;
 use crate::capabilities::{Capabilities, ProtocolVersion};
@@ -388,6 +389,9 @@ impl<C: Duplex> Client<C> {
             let agent = format!("agent={}", self.agent);
             self.line(&agent)?;
         }
+        if let Some(sid) = crate::session_id::capability(&self.caps) {
+            self.line(&sid)?;
+        }
         if self.caps.contains("object-format") {
             let format = format!("object-format={}", self.format.name());
             self.line(&format)?;
@@ -522,6 +526,13 @@ impl<C: Duplex> Client<C> {
         let mut count = INITIAL_HAVES;
         let mut in_vain = 0usize;
         let mut seen_ack = false;
+        let mut region = Some(trace2::region("fetch-pack", "negotiation_v2", true));
+        let mut end_negotiation = |rounds: usize| {
+            if let Some(guard) = region.take() {
+                trace2::data_int("negotiation_v2", "total_rounds", rounds as i64, true);
+                drop(guard);
+            }
+        };
         loop {
             self.write_fetch_args(args)?;
             for id in &outcome.common {
@@ -544,6 +555,7 @@ impl<C: Duplex> Client<C> {
             outcome.rounds += 1;
 
             if done {
+                end_negotiation(outcome.rounds);
                 let first = self.first()?;
                 self.read_sections(first, &mut outcome, progress, &mut on_pack)?;
                 return Ok(outcome);
@@ -561,6 +573,7 @@ impl<C: Duplex> Client<C> {
                     Pkt::Flush if !ready => break,
                     Pkt::Delim if !ready => return Err(Error::NoSectionsWithoutReady),
                     Pkt::Delim => {
+                        end_negotiation(outcome.rounds);
                         let first = self.next()?;
                         self.read_sections(first, &mut outcome, progress, &mut on_pack)?;
                         return Ok(outcome);
