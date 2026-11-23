@@ -10,6 +10,11 @@ pub const RESOLVE_INDEX_FIRST: &str = "You need to resolve your current index fi
 /// Printed by porcelain commands after the grouped refusal messages.
 pub const ABORTING: &str = "Aborting";
 
+/// The directory of a removed submodule is not empty (`warning: `).
+pub fn unable_to_rmdir(path: &str, reason: &str) -> String {
+    format!("unable to rmdir '{path}': {reason}")
+}
+
 /// A tree that cannot be read (`fatal: `).
 pub fn failed_to_unpack(id: &str) -> String {
     format!("failed to unpack tree object {id}")

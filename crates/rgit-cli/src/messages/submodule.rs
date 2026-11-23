@@ -57,6 +57,10 @@ pub fn pathspec_in_submodule(spec: &str, path: &str) -> String {
     format!("Pathspec '{spec}' is in submodule '{path}'")
 }
 
+pub fn could_not_migrate(from: &str, to: &str, reason: &str) -> String {
+    format!("could not migrate git directory from '{from}' to '{to}': {reason}")
+}
+
 pub fn migrating(path: &str, from: &str, to: &str) -> String {
     format!("Migrating git directory of '{path}' from\n'{from}' to\n'{to}'")
 }
