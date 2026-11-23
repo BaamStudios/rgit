@@ -262,6 +262,25 @@ pub fn config(ctx: &Context, setup: &Setup) -> rgit_config::ConfigSet {
     set
 }
 
+/// The configuration outside a repository: system, global and `-c`.
+pub fn config_outside_repository(ctx: &Context) -> rgit_config::ConfigSet {
+    let env = SystemEnv::default();
+    let opts = rgit_config::LoadOptions {
+        env: &env,
+        repo: None,
+        includes: true,
+    };
+    let mut set = rgit_config::ConfigSet::new();
+    let _ = rgit_config::sources::load_standard(
+        opts,
+        None,
+        &command_line(ctx),
+        rgit_config::sources::ScopeFilter::default(),
+        &mut set,
+    );
+    set
+}
+
 /// The object database of the repository: packs, loose objects and
 /// alternates ([`rgit_odb::ObjectDatabase::open_for_repo`]). This is how
 /// commands read objects. Configuration warnings are printed; an invalid

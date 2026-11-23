@@ -28,28 +28,39 @@ const SYSTEM_ATTRIBUTES: &str = "/etc/gitattributes";
 
 /// The files outside the work tree and `core.ignoreCase`.
 pub fn options(repo: &crate::repo_objects::Repo) -> Options {
+    config_options(&repo.config, Some(&repo.setup.common_dir))
+}
+
+/// The files outside the work tree by `config`; `common_dir` adds
+/// `info/attributes`.
+fn config_options(config: &rgit_config::ConfigSet, common_dir: Option<&Path>) -> Options {
     let env = SystemEnv::default();
     let nosystem = std::env::var_os("GIT_ATTR_NOSYSTEM")
         .and_then(|v| rgit_config::value::parse_bool(Some(v.as_encoded_bytes())))
         .unwrap_or(false);
     let system = (!nosystem).then(|| shown(PathBuf::from(SYSTEM_ATTRIBUTES)));
-    let global = match repo.config.path("core.attributesfile", &env) {
+    let global = match config.path("core.attributesfile", &env) {
         Ok(Some(p)) => Some(p),
         _ => default_global(|k| std::env::var_os(k)),
     }
     .map(shown);
-    let info = Some(shown(repo.setup.common_dir.join("info").join("attributes")));
+    let info = common_dir.map(|d| shown(d.join("info").join("attributes")));
     Options {
         system,
         global,
         info,
-        ignore_case: repo
-            .config
+        ignore_case: config
             .bool("core.ignorecase")
             .ok()
             .flatten()
             .unwrap_or(false),
     }
+}
+
+/// The attributes outside a repository (`diff --no-index`): only the
+/// system and the global file apply (checked against the `git` binary).
+pub fn outside_repository(config: &rgit_config::ConfigSet) -> Attributes<'static> {
+    Attributes::new(&config_options(config, None), Source::None)
 }
 
 fn shown(p: PathBuf) -> (PathBuf, String) {

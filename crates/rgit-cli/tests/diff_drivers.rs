@@ -321,3 +321,77 @@ fn output_option() {
         .env("GIT_EXTERNAL_DIFF", "./ext")
         .run();
 }
+
+/// `diff.<driver>.cachetextconv` (t4042): the converted text of blobs is
+/// kept in `refs/notes/textconv/<driver>`; a cache written by git is
+/// used by rgit without running the filter, a changed command line
+/// invalidates it, and work-tree files are not cached.
+#[test]
+fn textconv_cache_matches_git() {
+    let helper = "#!/bin/sh\necho \"converted: $(cat \"$1\")\"\necho ran >>helper.out\n";
+    let with = |cmd: &'static str, args: &[&'static str]| -> Vec<&'static str> {
+        let mut v = vec!["-c", cmd, "-c", "diff.magic.cachetextconv=true"];
+        v.extend_from_slice(args);
+        v
+    };
+    let conv = "diff.magic.textconv=./helper";
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .write_executable("helper", helper)
+        .write("foo.bin", "foo content 1\n")
+        .write("bar.bin", "bar content 1\n")
+        .git(["add", "foo.bin", "bar.bin"])
+        .git(["commit", "-q", "-m", "one"])
+        .tick()
+        .write("foo.bin", "foo content 2\n")
+        .write("bar.bin", "bar content 2\n")
+        .git(["commit", "-q", "-a", "-m", "two"])
+        .write(".gitattributes", "*.bin diff=magic\n");
+    // The first run fills the cache (the same notes commit as git's).
+    fx = fx.same(with(conv, &["diff", "HEAD^", "HEAD"]));
+    // A cache git wrote is used: the helper does not run again.
+    fx = fx.same(with(conv, &["diff", "HEAD^", "HEAD"]));
+    fx = fx.same(with(
+        conv,
+        &[
+            "log",
+            "--no-walk",
+            "-p",
+            "refs/notes/textconv/magic",
+            "HEAD",
+        ],
+    ));
+    // A work-tree file is converted but not cached.
+    fx = fx.write("foo.bin", "foo content 3\n");
+    fx = fx.same(with(conv, &["diff"]));
+    // Another command line starts a new cache.
+    let _ = fx.same(with(
+        "diff.magic.textconv=sh ./helper",
+        &["diff", "HEAD^", "HEAD"],
+    ));
+}
+
+/// Outside a repository `diff --no-index` still applies diff drivers
+/// from the global attributes file (t4042 "caching is silently ignored
+/// outside repo").
+#[test]
+fn no_index_outside_repository_uses_global_attributes() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .write("attr", "* diff=test\n")
+        .write("one", "one\n")
+        .write("two", "two\n");
+    let work = fx.work_dir();
+    let attr = format!("core.attributesFile={}", work.join("attr").display());
+    let ceiling = work.parent().expect("parent").to_path_buf();
+    for extra in [&[][..], &["-c", "diff.test.cachetextconv=true"]] {
+        let mut argv = vec!["-c", attr.as_str(), "-c", "diff.test.textconv=tr a-z A-Z <"];
+        argv.extend_from_slice(extra);
+        argv.extend(["diff", "--no-index", "one", "two"]);
+        fx.compare(&argv)
+            .checks(Check::OUTPUT)
+            .env("GIT_CEILING_DIRECTORIES", &ceiling)
+            .run();
+    }
+}

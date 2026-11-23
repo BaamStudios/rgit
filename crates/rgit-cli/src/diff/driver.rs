@@ -26,6 +26,10 @@ use crate::messages::userdiff as msg;
 /// The settings of one driver.
 #[derive(Debug, Default)]
 pub struct Driver {
+    /// The driver's name.
+    pub name: String,
+    /// `diff.<driver>.cachetextconv`.
+    pub cache_textconv: bool,
     /// `diff.<driver>.binary`.
     pub binary: Option<bool>,
     /// The hunk-header patterns (configured, else built in).
@@ -128,6 +132,8 @@ pub fn load(config: &ConfigSet, name: &str) -> Result<Driver, Die> {
         builtin.map(|b| b.funcname())
     };
     Ok(Driver {
+        name: name.to_owned(),
+        cache_textconv: flag("cachetextconv")?.unwrap_or(false),
         binary: flag("binary")?,
         funcname,
         textconv: get("textconv"),
