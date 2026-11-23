@@ -139,3 +139,15 @@ pub fn unadvertised_object(hex: &str) -> String {
 
 /// `fetch --negotiate-only` against a server without `wait-for-done`.
 pub const NO_WAIT_FOR_DONE: &str = "server does not support wait-for-done";
+
+/// git: a received object fails `fetch.fsckObjects`.
+pub const FSCK_ERROR: &str = "fsck error in packed object";
+/// git: the last line of a fetch whose pack fails its checks.
+pub const INDEX_PACK_FAILED: &str = "index-pack failed";
+/// git: the last line of a clone whose pack fails its checks.
+pub const INVALID_INDEX_PACK_OUTPUT: &str = "fetch-pack: invalid index-pack output";
+
+/// git: a finding of `fetch.fsckObjects`.
+pub fn fsck_finding(id: &rgit_hash::ObjectId, finding: &dyn std::fmt::Display) -> String {
+    format!("object {id}: {finding}")
+}

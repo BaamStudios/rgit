@@ -474,6 +474,11 @@ pub fn fetch(
         tips: opts.negotiation_tips.clone(),
         negotiation,
         want_refs,
+        fsck: crate::session::FsckCheck::from_config(
+            &repo.config,
+            repo.hash,
+            crate::messages::INDEX_PACK_FAILED,
+        ),
     };
     let mut packs: Vec<ReceivedPack> = Vec::new();
     // `--refetch`: no negotiation, everything is sent again.

@@ -9,9 +9,12 @@
 //! objects`, `Writing objects` (`--all-progress`, or `<base-name>`
 //! output), the `Total` line.
 //!
-//! Not yet: `--include-tag`,
-//! `--shallow`, `--incremental`, `--local`, `--unpacked`, `--stdin-packs`,
-//! filters, bitmaps.
+//! Selection: `--include-tag`, `--reflog`, `--indexed-objects`, and
+//! leaving out objects with `--local`, `--incremental`, `--unpacked`,
+//! `--honor-pack-keep`, `--keep-pack=<name>`.
+//!
+//! Not yet: `--shallow`, `--stdin-packs`, the `delta` attribute, filters,
+//! bitmaps.
 
 use std::io::{BufRead, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -51,6 +54,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let stdout = Cell::new(false);
     let sparse = Cell::new(-1);
     let thin = Cell::new(false);
+    let include_tag = Cell::new(false);
+    let reflog = Cell::new(false);
+    let indexed_objects = Cell::new(false);
+    let incremental = Cell::new(false);
+    let unpacked = Cell::new(false);
+    let honor_pack_keep = Cell::new(false);
+    let keep_pack: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let keep_true_parents = Cell::new(false);
     let local = Cell::new(false);
     let path_walk = Cell::new(false);
     let use_bitmap = Cell::new(false);
@@ -91,8 +102,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .noneg(),
             Opt::unsigned(None, "max-pack-size", &max_pack_size, msg::H_MAX_PACK_SIZE),
             Opt::flag(None, "local", &local, msg::H_LOCAL),
-            Opt::callback(None, "incremental", None, msg::H_INCREMENTAL, reject("incremental"))
-                .noarg(),
+            Opt::flag(None, "incremental", &incremental, msg::H_INCREMENTAL),
             Opt::integer(None, "window", &window, msg::H_WINDOW),
             Opt::unsigned(None, "window-memory", &window_memory, msg::H_WINDOW_MEMORY),
             Opt::integer(None, "depth", &depth, msg::H_DEPTH),
@@ -102,22 +112,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::integer(None, "threads", &threads, msg::H_THREADS),
             Opt::flag(None, "non-empty", &non_empty, msg::H_NON_EMPTY),
             Opt::flag(None, "revs", &revs, msg::H_REVS),
-            Opt::callback(None, "unpacked", None, msg::H_UNPACKED, reject("unpacked"))
-                .noarg()
-                .noneg(),
+            Opt::flag(None, "unpacked", &unpacked, msg::H_UNPACKED).noneg(),
             Opt::flag(None, "all", &all, msg::H_ALL).noneg(),
-            Opt::callback(None, "reflog", None, msg::H_REFLOG, reject("reflog"))
-                .noarg()
-                .noneg(),
-            Opt::callback(
-                None,
-                "indexed-objects",
-                None,
-                msg::H_INDEXED_OBJECTS,
-                reject("indexed-objects"),
-            )
-            .noarg()
-            .noneg(),
+            Opt::flag(None, "reflog", &reflog, msg::H_REFLOG).noneg(),
+            Opt::flag(None, "indexed-objects", &indexed_objects, msg::H_INDEXED_OBJECTS).noneg(),
             Opt::callback(
                 None,
                 "stdin-packs",
@@ -127,8 +125,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             )
             .optional(None),
             Opt::flag(None, "stdout", &stdout, msg::H_STDOUT),
-            Opt::callback(None, "include-tag", None, msg::H_INCLUDE_TAG, reject("include-tag"))
-                .noarg(),
+            Opt::flag(None, "include-tag", &include_tag, msg::H_INCLUDE_TAG),
             Opt::callback(
                 None,
                 "keep-unreachable",
@@ -166,24 +163,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag(None, "thin", &thin, msg::H_THIN),
             Opt::flag(None, "path-walk", &path_walk, msg::H_PATH_WALK),
             Opt::callback(None, "shallow", None, msg::H_SHALLOW, reject("shallow")).noarg(),
-            Opt::callback(
-                None,
-                "honor-pack-keep",
-                None,
-                msg::H_HONOR_PACK_KEEP,
-                reject("honor-pack-keep"),
-            )
-            .noarg(),
-            Opt::callback(None, "keep-pack", Some("name"), msg::H_KEEP_PACK, reject("keep-pack")),
+            Opt::flag(None, "honor-pack-keep", &honor_pack_keep, msg::H_HONOR_PACK_KEEP),
+            Opt::string_list(None, "keep-pack", &keep_pack, "name", msg::H_KEEP_PACK),
             Opt::integer(None, "compression", &compression, msg::H_COMPRESSION),
-            Opt::callback(
-                None,
-                "keep-true-parents",
-                None,
-                msg::H_KEEP_TRUE_PARENTS,
-                reject("keep-true-parents"),
-            )
-            .noarg(),
+            // rgit's walk does not apply grafts: the true parents are kept
+            // anyway.
+            Opt::flag(None, "keep-true-parents", &keep_true_parents, msg::H_KEEP_TRUE_PARENTS),
             Opt::flag(None, "use-bitmap-index", &use_bitmap, msg::H_USE_BITMAP_INDEX),
             Opt::callback(
                 None,
@@ -237,7 +222,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     );
     let args = parser.parse(argv)?.args;
     // A thin pack needs the edge of the walk: `--thin` reads revisions.
-    if all.get() || thin.get() {
+    if all.get() || thin.get() || reflog.get() || indexed_objects.get() {
         revs.set(true);
     }
     if stdout.get() != args.is_empty() || args.len() > 1 {
@@ -313,6 +298,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 tips.push(Tip { id, exclude: false });
             }
         }
+        let mut extra = Vec::new();
+        if reflog.get() {
+            extra.extend(crate::housekeeping::reach::all_reflog_objects(&setup));
+        }
+        if indexed_objects.get() {
+            extra.extend(crate::housekeeping::reach::all_index_objects(&setup));
+        }
+        for id in extra {
+            if odb.contains(&id) {
+                tips.push(Tip { id, exclude: false });
+            }
+        }
         read_revs(&mut input, &repo, &mut tips)?;
         let sparse = match sparse.get() {
             -1 => config.bool("pack.usesparse").ok().flatten().unwrap_or(true),
@@ -338,6 +335,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         };
         (listed, bases)
     };
+    let mut listed = listed;
+    let skip = Skip {
+        local: local.get(),
+        packed: incremental.get() || unpacked.get(),
+        kept: honor_pack_keep.get(),
+        keep_packs: keep_pack.borrow().clone(),
+    };
+    if skip.any() {
+        skip.apply(&odb, &setup, &mut listed);
+    }
+    if include_tag.get() {
+        add_tags(&repo, &mut listed);
+    }
     if show_progress {
         show_enumerated(&listed, &bases);
     }
@@ -862,6 +872,111 @@ fn parents(repo: &Repo<'_>, id: &ObjectId) -> Option<Vec<ObjectId>> {
         .ok()?
         .parents()
         .ok()
+}
+
+/// Objects left out of the pack although listed.
+struct Skip {
+    /// `--local`: objects only found in alternate object directories.
+    local: bool,
+    /// `--incremental`, `--unpacked`: objects already in a pack.
+    packed: bool,
+    /// `--honor-pack-keep`: objects in a local pack with a `.keep` file.
+    kept: bool,
+    /// `--keep-pack=<name>`: objects in these packs (file names).
+    keep_packs: Vec<String>,
+}
+
+impl Skip {
+    fn any(&self) -> bool {
+        self.local || self.packed || self.kept || !self.keep_packs.is_empty()
+    }
+
+    fn apply(&self, odb: &ObjectDatabase, setup: &rgit_repo::Setup, listed: &mut Vec<ListedObject>) {
+        let local_packs = odb.packs().map(|p| p.set().packs()).unwrap_or_default();
+        let objects = rgit_odb::objects_dir(&setup.cwd.join(&setup.common_dir));
+        let alternates = if self.packed || self.local {
+            rgit_odb::resolve_alternates(&objects)
+        } else {
+            Vec::new()
+        };
+        let alt_packs: Vec<std::sync::Arc<rgit_pack::Pack>> = alternates
+                .iter()
+                .flat_map(|alt| rgit_pack::PackSet::open(alt.join("pack"), odb.hash_kind()).packs())
+                .collect();
+        let in_alternate = |id: &ObjectId| {
+            let hex = id.to_hex();
+            alt_packs.iter().any(|p| p.contains(id))
+                || alternates
+                    .iter()
+                    .any(|alt| alt.join(&hex[..2]).join(&hex[2..]).is_file())
+        };
+        let file_name = |p: &rgit_pack::Pack| {
+            p.path()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let mut dropped: Vec<std::sync::Arc<rgit_pack::Pack>> = Vec::new();
+        for p in &local_packs {
+            let name = file_name(p);
+            let kept = self.kept && p.path().with_extension("keep").exists();
+            if kept || self.keep_packs.contains(&name) {
+                dropped.push(p.clone());
+            }
+        }
+        listed.retain(|o| {
+            // Like git, an object the alternates have is borrowed even when
+            // there is a local copy.
+            if self.local && in_alternate(&o.id) {
+                return false;
+            }
+            if self.packed
+                && (local_packs.iter().any(|p| p.contains(&o.id))
+                    || alt_packs.iter().any(|p| p.contains(&o.id)))
+            {
+                return false;
+            }
+            !dropped.iter().any(|p| p.contains(&o.id))
+        });
+    }
+}
+
+/// `--include-tag`: annotated tags under `refs/tags/` whose target
+/// (through any further tags) is packed, with the tags in between.
+fn add_tags(repo: &Repo<'_>, listed: &mut Vec<ListedObject>) {
+    let mut have: std::collections::HashSet<ObjectId> = listed.iter().map(|o| o.id).collect();
+    let Ok(items) = repo.refs.common.iter(&IterOptions::prefix("refs/tags/")) else {
+        return;
+    };
+    for item in items {
+        let IterItem::Ref(r) = item else { continue };
+        let Some(mut id) = r.oid else { continue };
+        let mut chain = Vec::new();
+        let peeled = loop {
+            if chain.len() > 64 {
+                break None;
+            }
+            let Ok(Some(o)) = pw::ObjectSource::read(&repo.source, &id) else {
+                break None;
+            };
+            if o.kind != ObjectKind::Tag {
+                break Some(id);
+            }
+            chain.push(id);
+            match rgit_object::Tag::parse(repo.hash, &o.data).and_then(|t| t.object()) {
+                Ok(next) => id = next,
+                Err(_) => break None,
+            }
+        };
+        if chain.is_empty() || !peeled.is_some_and(|p| have.contains(&p)) {
+            continue;
+        }
+        for t in chain {
+            if have.insert(t) {
+                listed.push(ListedObject::new(t, ObjectKind::Tag));
+            }
+        }
+    }
 }
 
 /// The only object whose id starts with `hex`.

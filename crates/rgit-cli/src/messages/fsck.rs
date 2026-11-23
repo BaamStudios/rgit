@@ -101,6 +101,8 @@ pub fn checking_connectivity(n: usize) -> String {
 
 pub const CHECKING_OBJECT_DIRECTORY: &str = "Checking object directory";
 pub const CHECKING_OBJECT_DIRECTORIES: &str = "Checking object directories";
+/// git: progress meter over the packed objects.
+pub const CHECKING_OBJECTS: &str = "Checking objects";
 pub const CHECKING_REFS_CONSISTENCY: &str = "Checking references consistency";
 pub const CHECKING_REF_DATABASE: &str = "Checking ref database";
 

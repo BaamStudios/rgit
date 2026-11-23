@@ -437,3 +437,25 @@ fn tag_verdict_quirk() {
             .run();
     }
 }
+
+/// `--progress`: `Checking ref database`, `Checking object directories`
+/// (one step per fan-out directory with objects) and `Checking objects`
+/// (per pack); none of the object meters with `--connectivity-only`, and
+/// no meters with `--verbose` or `--no-progress`.
+#[test]
+fn progress_meters() {
+    let fx = history();
+    if fx.is_skipped() {
+        return;
+    }
+    let fx = fx.git(["repack", "-aq"]);
+    let mut fx = commit(fx, "c", "three\n");
+    for args in [
+        &["fsck", "--progress"][..],
+        &["fsck", "--progress", "--connectivity-only"],
+        &["fsck", "--progress", "--no-dangling", "--no-full"],
+        &["fsck", "--no-progress"],
+    ] {
+        fx.compare(args).checks(OUTPUT).run();
+    }
+}

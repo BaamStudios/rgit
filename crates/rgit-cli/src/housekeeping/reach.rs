@@ -110,26 +110,7 @@ pub fn roots(setup: &Setup, odb: &ObjectDatabase) -> Result<Roots, BadRef> {
                 IterItem::Broken(_) | IterItem::BadName(_) => {}
             }
         }
-        // Reflogs: the shared ones once, the per-worktree ones of each
-        // worktree.
-        let logs = FilesReflog::new(&wt.git_dir, &common, kind);
-        if let Ok(names) = logs.list() {
-            for name in names {
-                let per_worktree = rgit_refs::name::is_per_worktree(&name);
-                if linked && !per_worktree {
-                    continue;
-                }
-                if let Ok(Some(entries)) = logs.read(&name) {
-                    for e in entries {
-                        for id in [e.old, e.new] {
-                            if !id.is_null() {
-                                out.weak.push(id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        reflog_objects(&wt.git_dir, &common, kind, linked, &mut out.weak);
         // A rebase in progress keeps its original HEAD and autostash.
         for dir in ["rebase-merge", "rebase-apply"] {
             for file in ["orig-head", "autostash"] {
@@ -140,13 +121,7 @@ pub fn roots(setup: &Setup, odb: &ObjectDatabase) -> Result<Roots, BadRef> {
                 }
             }
         }
-        // The index of the worktree.
-        let index_path = if wt.current {
-            rgit_index::index_path(&wt.git_dir)
-        } else {
-            wt.git_dir.join("index")
-        };
-        index_objects(&index_path, kind, &mut out.weak);
+        index_objects(&worktree_index(&wt), kind, &mut out.weak);
     }
     if paranoia {
         if let Some((name, _)) = out.refs.iter().find(|(_, id)| !odb.contains(id)) {
@@ -156,6 +131,64 @@ pub fn roots(setup: &Setup, odb: &ObjectDatabase) -> Result<Roots, BadRef> {
         out.refs.retain(|(_, id)| odb.contains(id));
     }
     Ok(out)
+}
+
+/// The objects of every reflog entry of every worktree, without null
+/// ids (`rev-list --reflog`, `pack-objects --reflog`).
+pub fn all_reflog_objects(setup: &Setup) -> Vec<ObjectId> {
+    let kind = setup.format.object_format;
+    let common = setup.absolute_common_dir();
+    let mut out = Vec::new();
+    for wt in worktrees::list(setup, false) {
+        reflog_objects(&wt.git_dir, &common, kind, wt.id.is_some(), &mut out);
+    }
+    out
+}
+
+/// The objects named by the index of every worktree (`--indexed-objects`).
+pub fn all_index_objects(setup: &Setup) -> Vec<ObjectId> {
+    let kind = setup.format.object_format;
+    let mut out = Vec::new();
+    for wt in worktrees::list(setup, false) {
+        index_objects(&worktree_index(&wt), kind, &mut out);
+    }
+    out
+}
+
+fn worktree_index(wt: &worktrees::Worktree) -> PathBuf {
+    if wt.current {
+        rgit_index::index_path(&wt.git_dir)
+    } else {
+        wt.git_dir.join("index")
+    }
+}
+
+/// Reflogs: the shared ones once (from the main worktree), the
+/// per-worktree ones of each worktree.
+fn reflog_objects(
+    git_dir: &Path,
+    common: &Path,
+    kind: HashKind,
+    linked: bool,
+    out: &mut Vec<ObjectId>,
+) {
+    let logs = FilesReflog::new(git_dir, common, kind);
+    let Ok(names) = logs.list() else { return };
+    for name in names {
+        let per_worktree = rgit_refs::name::is_per_worktree(&name);
+        if linked && !per_worktree {
+            continue;
+        }
+        if let Ok(Some(entries)) = logs.read(&name) {
+            for e in entries {
+                for id in [e.old, e.new] {
+                    if !id.is_null() {
+                        out.push(id);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The objects an index file names.

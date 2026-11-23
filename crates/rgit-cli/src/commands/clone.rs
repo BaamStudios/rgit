@@ -1040,6 +1040,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             server_options: server_options.clone(),
             // A clone always keeps the pack.
             unpack_limit: None,
+            fsck: rgit_fetch::FsckCheck::from_config(
+                &repo.config,
+                repo.hash,
+                rgit_fetch::messages::INVALID_INDEX_PACK_OUTPUT,
+            ),
             ..deepen.clone()
         };
         packs.extend(
