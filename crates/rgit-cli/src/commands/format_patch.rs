@@ -10,7 +10,7 @@
 //! `--commit-list-format`.
 
 #[path = "format_patch/mail.rs"]
-mod mail;
+pub(crate) mod mail;
 #[path = "format_patch/options.rs"]
 mod options;
 

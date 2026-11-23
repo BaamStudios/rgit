@@ -28,6 +28,10 @@ pub enum Pretty {
     Raw,
     /// `reference`: `%C(auto)%h (%s, %ad)` with short dates by default.
     Reference,
+    /// `email`: the headers of a patch mail and the message.
+    Email,
+    /// `mboxrd`: `email` with `From ` lines of the body quoted.
+    Mboxrd,
     /// `format:<s>` (`terminator` false) or `tformat:<s>`.
     User {
         format: Vec<u8>,
@@ -76,6 +80,8 @@ impl Pretty {
             "fuller" => Pretty::Fuller,
             "raw" => Pretty::Raw,
             "reference" => Pretty::Reference,
+            "email" => Pretty::Email,
+            "mboxrd" => Pretty::Mboxrd,
             other => return Some(Err(PrettyError::Unsupported(other))),
         }))
     }
@@ -237,6 +243,13 @@ pub struct Entry<'a> {
     pub decoration: &'a [u8],
     /// `--show-signature`: lines shown after the name (may be empty).
     pub signature: &'a [u8],
+    /// `log -g`: the reflog entry the commit is shown for.
+    pub reflog: Option<&'a super::userformat::ReflogInfo>,
+    /// `email`/`mboxrd` as `log` writes them (a mail: `From <id>` line,
+    /// encoded headers, `[PATCH]`), not as `rev-list` does.
+    pub as_mail: bool,
+    /// The full commit id (the `From <id>` line of a mail).
+    pub full_id: String,
 }
 
 /// Settings shared by all entries.
@@ -258,6 +271,13 @@ pub struct Style {
 /// Append one entry. `first` is false for every entry after the first,
 /// which then gets the separator line of the multi-line formats.
 pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool) {
+    if matches!(style.pretty, Pretty::Email | Pretty::Mboxrd) {
+        if !first {
+            out.push(if style.zero { 0 } else { b'\n' });
+        }
+        write_email(out, style, e);
+        return;
+    }
     let lines = message_lines(e.commit.message());
     let color = style.commit_color.as_deref();
     if style.pretty == Pretty::Oneline {
@@ -273,7 +293,15 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
         out.extend_from_slice(e.decoration);
         out.push(b' ');
         out.extend_from_slice(e.signature);
-        out.extend_from_slice(&subject(&lines));
+        match e.reflog {
+            // Under `-g` the reflog entry takes the place of the subject.
+            Some(r) => {
+                out.extend_from_slice(r.selector.as_bytes());
+                out.extend_from_slice(b": ");
+                out.extend_from_slice(&r.message);
+            }
+            None => out.extend_from_slice(&subject(&lines)),
+        }
         out.push(if style.zero { 0 } else { b'\n' });
         return;
     }
@@ -293,6 +321,17 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
     out.extend_from_slice(e.decoration);
     out.push(b'\n');
     out.extend_from_slice(e.signature);
+    if let Some(r) = e.reflog {
+        out.extend_from_slice(b"Reflog: ");
+        out.extend_from_slice(r.selector.as_bytes());
+        out.extend_from_slice(b" (");
+        out.extend_from_slice(&r.name);
+        out.extend_from_slice(b" <");
+        out.extend_from_slice(&r.email);
+        out.extend_from_slice(b">)\nReflog message: ");
+        out.extend_from_slice(&r.message);
+        out.push(b'\n');
+    }
     let author = e.commit.author();
     let committer = e.commit.committer();
     match style.pretty {
@@ -375,6 +414,66 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
             push_expanded(out, line, style.tab_width.unwrap_or(8));
         }
         out.push(b'\n');
+    }
+}
+
+/// The `email` and `mboxrd` formats: for `log` a mail as `format-patch`
+/// starts it (`From <id> Mon Sep 17 00:00:00 2001`, `From:` and
+/// `Subject: [PATCH]` encoded as needed, an RFC 2822 `Date:`), for
+/// `rev-list` the plain headers after the `commit` line; then an empty
+/// line and the body.
+fn write_email(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>) {
+    let author = e.commit.author();
+    let (subject, body) = crate::commands::format_patch::mail::split_message(e.commit.message());
+    if e.as_mail {
+        out.extend_from_slice(b"From ");
+        out.extend_from_slice(e.full_id.as_bytes());
+        out.extend_from_slice(b" Mon Sep 17 00:00:00 2001\n");
+    } else {
+        out.extend_from_slice(b"commit ");
+        out.extend_from_slice(e.name.as_bytes());
+        out.push(b'\n');
+    }
+    if let Some(a) = author.as_ref() {
+        let (name, email) = match &style.mailmap {
+            Some(mm) => mm.map(a.name, a.email),
+            None => (a.name, a.email),
+        };
+        out.extend_from_slice(b"From: ");
+        if e.as_mail {
+            rgit_mail::write_address(out, name, email, "UTF-8", true);
+        } else {
+            out.extend_from_slice(name);
+            out.extend_from_slice(b" <");
+            out.extend_from_slice(email);
+            out.push(b'>');
+        }
+        out.push(b'\n');
+        let rfc = rgit_date::parse_date_mode("rfc2822", false).unwrap_or_default();
+        out.extend_from_slice(b"Date: ");
+        out.extend_from_slice(date(Some(a), &rfc, &style.date_ctx).as_bytes());
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b"Subject: ");
+    if e.as_mail {
+        out.extend_from_slice(b"[PATCH] ");
+        rgit_mail::write_text(out, &subject, "UTF-8", true);
+    } else {
+        rgit_mail::write_folded(out, &subject);
+    }
+    out.push(b'\n');
+    // A message that is not plain ASCII gets MIME headers.
+    if !e.commit.message().is_ascii() {
+        out.extend_from_slice(
+            b"MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\
+              Content-Transfer-Encoding: 8bit\n",
+        );
+    }
+    out.push(b'\n');
+    if style.pretty == Pretty::Mboxrd {
+        out.extend_from_slice(&crate::commands::format_patch::mail::mboxrd_escape(&body));
+    } else {
+        out.extend_from_slice(&body);
     }
 }
 

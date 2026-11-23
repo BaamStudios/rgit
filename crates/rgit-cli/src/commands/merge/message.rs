@@ -581,6 +581,9 @@ pub(super) fn squash_message(repo: &Repo, theirs: &[ObjectId], ours: Option<&Obj
             raw: &raw,
             decoration: &[],
             signature: &[],
+            reflog: None,
+            as_mail: false,
+            full_id: name.clone(),
         };
         pretty::write_entry(&mut out, &style, &entry, first);
         first = false;

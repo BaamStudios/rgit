@@ -82,6 +82,22 @@ pub struct Item<'a> {
     /// The column the output starts at (after the `--graph` lines), for
     /// `%<|(...)` and `%>|(...)`.
     pub column: usize,
+    /// The reflog entry the commit is shown for (`log -g`).
+    pub reflog: Option<&'a ReflogInfo>,
+}
+
+/// A reflog entry shown by `log -g` (the `%g*` placeholders).
+#[derive(Debug, Clone, Default)]
+pub struct ReflogInfo {
+    /// `%gD`: `<ref as given>@{<n or date>}`.
+    pub selector: String,
+    /// `%gd`: the same with the reference name shortened.
+    pub short_selector: String,
+    /// `%gn`, `%ge`: who made the update.
+    pub name: Vec<u8>,
+    pub email: Vec<u8>,
+    /// `%gs`: the reflog message.
+    pub message: Vec<u8>,
 }
 
 /// The largest width, indent or column a placeholder accepts (larger
@@ -562,10 +578,27 @@ impl<L: Lookup> Expander<'_, L> {
             }
             b'g' => {
                 // Reflog placeholders are empty unless walking reflogs.
-                return match body.get(1) {
-                    Some(b'd' | b'D' | b'n' | b'N' | b'e' | b'E' | b's') => 2,
-                    _ => 0,
+                let Some(&k) = body.get(1) else {
+                    return 0;
                 };
+                if !b"dDnNeEs".contains(&k) {
+                    return 0;
+                }
+                if let Some(r) = item.reflog {
+                    match k {
+                        b'd' => out.extend_from_slice(r.short_selector.as_bytes()),
+                        b'D' => out.extend_from_slice(r.selector.as_bytes()),
+                        b's' => out.extend_from_slice(&r.message),
+                        b'n' | b'e' => {
+                            out.extend_from_slice(if k == b'n' { &r.name } else { &r.email })
+                        }
+                        _ => {
+                            let (name, email) = self.s.mailmap.map(&r.name, &r.email);
+                            out.extend_from_slice(if k == b'N' { name } else { email });
+                        }
+                    }
+                }
+                return 2;
             }
             b'w' => return self.wrap(body, out),
             b'<' | b'>' => return self.padding(body, out),

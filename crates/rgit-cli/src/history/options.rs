@@ -30,6 +30,9 @@ pub enum Abbrev {
     Full,
 }
 
+/// The default `--show-linear-break` barrier.
+const LINEAR_BREAK: &str = "                    ..........";
+
 /// A set of references (`--all`, `--branches[=<pattern>]`, `--glob=...`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefSet {
@@ -131,6 +134,8 @@ pub struct Options {
     pub abbrev_commit: bool,
     /// `--[no-]expand-tabs[=<n>]`.
     pub tab_width: Option<usize>,
+    /// `--[no-]abbrev-commit` was given (else `log.abbrevCommit`).
+    abbrev_commit_given: bool,
     pub abbrev: Abbrev,
     /// `--pretty`/`--format`/`--oneline` as given (resolved with the
     /// configuration into `pretty`).
@@ -186,6 +191,13 @@ pub struct Options {
     /// `diff-tree` with a pretty format: plumbing diffs (full raw ids,
     /// recursive only when asked for).
     pub plumbing: bool,
+    /// `-g`, `--walk-reflogs`: walk the reflogs of the tips instead of
+    /// the history.
+    pub walk_reflogs: bool,
+    /// `--show-linear-break[=<barrier>]`.
+    pub linear_break: Option<String>,
+    /// `--source`: show the revision each commit was reached from.
+    pub source: bool,
     /// `--root`: root commits get a diff (else `log.showRoot`).
     pub root: bool,
     /// `--max-count-oldest`: the count limits the last commits.
@@ -318,6 +330,7 @@ impl Options {
             ancestry: Vec::new(),
             abbrev_commit: false,
             tab_width: None,
+            abbrev_commit_given: false,
             abbrev: Abbrev::Default,
             pretty_arg: None,
             pretty: None,
@@ -345,6 +358,9 @@ impl Options {
             combined_all_paths: false,
             show: false,
             plumbing: false,
+            walk_reflogs: false,
+            linear_break: None,
+            source: false,
             root: false,
             max_count_oldest: false,
             max_count_given: false,
@@ -547,10 +563,13 @@ impl Options {
                     o.order_given = true;
                 }
                 "--graph" => o.graph = true,
+                "-g" | "--walk-reflogs" => o.walk_reflogs = true,
                 "--root" if cmd == Command::Log => o.root = true,
                 "--no-graph" => o.graph = false,
                 "--expand-tabs" => o.tab_width = Some(8),
                 "--no-expand-tabs" => o.tab_width = Some(0),
+                "--source" if cmd == Command::Log => o.source = true,
+                "--show-linear-break" => o.linear_break = Some(LINEAR_BREAK.to_string()),
                 "--graph-indent" => o.graph_indent = Some(true),
                 "--no-graph-indent" => o.graph_indent = Some(false),
                 "--reverse" => o.walk.reverse = true,
@@ -670,8 +689,10 @@ impl Options {
                     }
                     o.walk.cherry_pick = true;
                 }
-                "--abbrev-commit" => o.abbrev_commit = true,
-                "--no-abbrev-commit" => o.abbrev_commit = false,
+                "--abbrev-commit" | "--no-abbrev-commit" => {
+                    o.abbrev_commit = a == "--abbrev-commit";
+                    o.abbrev_commit_given = true;
+                }
                 "--abbrev" => o.abbrev = Abbrev::Default,
                 "--no-abbrev" => o.abbrev = Abbrev::Full,
                 "--oneline" => {
@@ -744,6 +765,8 @@ impl Options {
                         o.ancestry.push(v.to_string());
                     } else if let Some(v) = a.strip_prefix("--expand-tabs=") {
                         o.tab_width = Some(parse_count(v)?);
+                    } else if let Some(v) = a.strip_prefix("--show-linear-break=") {
+                        o.linear_break = Some(v.to_string());
                     } else if let Some(v) = a.strip_prefix("--max-count-oldest=") {
                         o.walk.max_count = Some(parse_count(v)?);
                         o.max_count_oldest = true;
@@ -871,6 +894,12 @@ impl Options {
             }
         }
         if self.graph {
+            if self.linear_break.is_some() {
+                return Err(Die::Fatal(msg::cannot_be_used_together(
+                    "--show-linear-break",
+                    "--graph",
+                )));
+            }
             if self.walk.reverse {
                 return Err(Die::Fatal(msg::cannot_be_used_together(
                     "--graph",
@@ -978,6 +1007,14 @@ impl Options {
         self.pretty = arg.map(|a| parse_pretty(&a, config)).transpose()?;
         if cmd == Command::Log {
             self.apply_diff_merges_config(config)?;
+        }
+        // `log.abbrevCommit`, not for the raw format.
+        if cmd == Command::Log
+            && !self.abbrev_commit_given
+            && self.pretty != Some(Pretty::Raw)
+            && config.bool("log.abbrevCommit").ok().flatten() == Some(true)
+        {
+            self.abbrev_commit = true;
         }
         if cmd == Command::Log
             && !self.date_given

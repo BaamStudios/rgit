@@ -532,15 +532,22 @@ fn configured_abbrev(config: &rgit_config::ConfigSet, kind: HashKind) -> Option<
 
 /// `reflog [show]`.
 fn show(ctx: &mut Context, args: &[String]) -> CmdResult {
-    let o = match parse_show(args)? {
-        Ok(o) => o,
-        Err(done) => return done,
+    // Everything beyond the plain listing is `log -g` with the reflog's
+    // defaults in front.
+    let as_log = || {
+        let mut argv: Vec<String> = ["-g", "--abbrev-commit", "--pretty=oneline"]
+            .map(String::from)
+            .to_vec();
+        argv.extend(args.iter().cloned());
+        crate::history::main(ctx, crate::history::Command::Log, &argv)
     };
-    if !o.paths.is_empty() {
-        return Err(Die::Fatal(msg::not_supported("limiting to paths")));
-    }
-    if o.revs.len() > 1 {
-        return Err(Die::Fatal(msg::not_supported("showing several reflogs")));
+    let o = match parse_show(args) {
+        Ok(Ok(o)) => o,
+        Ok(Err(done)) => return done,
+        Err(_) => return as_log(),
+    };
+    if !o.paths.is_empty() || o.revs.len() > 1 {
+        return as_log();
     }
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::load_config(ctx, &setup)?;
@@ -550,16 +557,82 @@ fn show(ctx: &mut Context, args: &[String]) -> CmdResult {
     } else {
         None
     };
-    let refs = Refs::new(&setup);
-    let logs = refs.logs();
-    let kind = refs.kind;
     let arg = o.revs.first().cloned().unwrap_or_else(|| "HEAD".to_string());
-    let ambiguous = || Die::Fatal(msg::ambiguous_argument(&arg));
+    let WalkSource {
+        display,
+        entries,
+        start,
+        by_date,
+        ..
+    } = walk_source(&setup, &arg)?;
+    let refs = Refs::new(&setup);
+    let kind = refs.kind;
+    let date_ctx = DateContext::from_env();
+    let min_abbrev = o.abbrev.unwrap_or_else(|| configured_abbrev(&config, kind));
+    let object_dir = std::env::var_os("GIT_OBJECT_DIRECTORY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| refs.common_dir.join("objects"));
+    let objects = Objects::open(object_dir, kind);
+    let mut out = std::io::stdout().lock();
+    let mut shown = 0;
+    for (k, e) in entries.iter().rev().enumerate().skip(start) {
+        if o.max_count.is_some_and(|m| shown >= m) {
+            break;
+        }
+        // Like `log -g`, entries whose object is not a commit are skipped.
+        if objects.kind_of(&e.new) != Some(ObjectKind::Commit) {
+            continue;
+        }
+        let id = match min_abbrev {
+            Some(n) => objects.abbrev(&e.new, n),
+            None => e.new.to_hex(),
+        };
+        let label = if by_date {
+            show_date(e.time, e.tz, &DateMode::default(), &date_ctx)
+                .unwrap_or_else(|_| rgit_date::format_raw(e.time, e.tz))
+        } else {
+            k.to_string()
+        };
+        let id = match &color {
+            Some(c) => format!("{c}{id}{}", crate::color::RESET),
+            None => id,
+        };
+        let mut line = format!("{id} {display}@{{{label}}}: ").into_bytes();
+        line.extend_from_slice(&e.message);
+        line.push(b'\n');
+        if out.write_all(&line).is_err() {
+            break;
+        }
+        shown += 1;
+    }
+    Ok(0)
+}
+
+/// The reflog `log -g` and `reflog show` walk for the argument `arg`
+/// (`<ref>`, `<ref>@{<n>}`, `<ref>@{<date>}`, `@{-<n>}`, `@{<n>}`); the
+/// warnings of a date lookup are printed.
+pub(crate) struct WalkSource {
+    /// The name as given (`HEAD`, `master`, `refs/heads/master`).
+    pub display: String,
+    /// Its entries, oldest first.
+    pub entries: Vec<rgit_refs::reflog::Entry>,
+    /// Entries skipped from the newest (`@{<n>}`, `@{<date>}`).
+    pub start: usize,
+    /// The selector was a date: entries are named by their date.
+    pub by_date: bool,
+    /// The selector was a count: entries are named by their index.
+    pub by_index: bool,
+}
+
+pub(crate) fn walk_source(setup: &rgit_repo::Setup, arg: &str) -> Result<WalkSource, Die> {
+    let refs = Refs::new(setup);
+    let logs = refs.logs();
+    let ambiguous = || Die::Fatal(msg::ambiguous_argument(arg));
 
     // `<name>@{<selector>}`
     let (base, selector) = match arg.rfind("@{") {
         Some(p) if arg.ends_with('}') => (&arg[..p], Some(&arg[p + 2..arg.len() - 1])),
-        _ => (arg.as_str(), None),
+        _ => (arg, None),
     };
     let previous = selector
         .and_then(|s| s.strip_prefix('-'))
@@ -633,42 +706,11 @@ fn show(ctx: &mut Context, args: &[String]) -> CmdResult {
         }
     }
 
-    let min_abbrev = o.abbrev.unwrap_or_else(|| configured_abbrev(&config, kind));
-    let object_dir = std::env::var_os("GIT_OBJECT_DIRECTORY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| refs.common_dir.join("objects"));
-    let objects = Objects::open(object_dir, kind);
-    let mut out = std::io::stdout().lock();
-    let mut shown = 0;
-    for (k, e) in entries.iter().rev().enumerate().skip(start) {
-        if o.max_count.is_some_and(|m| shown >= m) {
-            break;
-        }
-        // Like `log -g`, entries whose object is not a commit are skipped.
-        if objects.kind_of(&e.new) != Some(ObjectKind::Commit) {
-            continue;
-        }
-        let id = match min_abbrev {
-            Some(n) => objects.abbrev(&e.new, n),
-            None => e.new.to_hex(),
-        };
-        let label = if by_date {
-            show_date(e.time, e.tz, &DateMode::default(), &date_ctx)
-                .unwrap_or_else(|_| rgit_date::format_raw(e.time, e.tz))
-        } else {
-            k.to_string()
-        };
-        let id = match &color {
-            Some(c) => format!("{c}{id}{}", crate::color::RESET),
-            None => id,
-        };
-        let mut line = format!("{id} {display}@{{{label}}}: ").into_bytes();
-        line.extend_from_slice(&e.message);
-        line.push(b'\n');
-        if out.write_all(&line).is_err() {
-            break;
-        }
-        shown += 1;
-    }
-    Ok(0)
+    Ok(WalkSource {
+        display,
+        entries,
+        start,
+        by_date,
+        by_index: selector.is_some() && !by_date,
+    })
 }

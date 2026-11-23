@@ -15,6 +15,7 @@ mod options;
 mod paths;
 pub mod pretty;
 pub(crate) mod recode;
+mod reflog_walk;
 mod tips;
 mod userformat;
 
@@ -734,6 +735,7 @@ pub fn walk_formatted(
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
         next: None,
+        reflog: None,
         diff: None,
         store: None,
         usage: None,
@@ -772,6 +774,7 @@ pub fn walk_formatted(
                 mark,
                 source: None,
                 column: 0,
+                reflog: None,
             };
             for fmt in formats {
                 let text = userformat::expand(fmt, settings, &item, &FormatLookup { p: &p })
@@ -837,6 +840,8 @@ struct Printer<'r, 'a> {
     signature_colors: Option<(String, String)>,
     /// The last signature check (`%G?` and friends ask repeatedly).
     signature_cache: std::cell::RefCell<Option<(ObjectId, std::rc::Rc<Check>)>>,
+    /// `-g`: the reflog entry of the commit being shown.
+    reflog: Option<userformat::ReflogInfo>,
 }
 
 /// The `reference` format.
@@ -981,6 +986,17 @@ impl Printer<'_, '_> {
         out
     }
 
+    /// `--source` / `%S`: the revision `id` was reached from; its parents
+    /// inherit it unless they already have one.
+    fn source_of(&mut self, id: &ObjectId, parents: &[ObjectId]) -> Option<String> {
+        let map = self.sources.as_mut()?;
+        let source = map.get(id).cloned()?;
+        for p in parents {
+            map.entry(*p).or_insert_with(|| source.clone());
+        }
+        Some(source)
+    }
+
     fn name(&self, id: &ObjectId, abbreviate: bool) -> String {
         if abbreviate {
             self.repo.abbrev(id, self.abbrev_len)
@@ -1093,7 +1109,13 @@ impl Printer<'_, '_> {
         if opts.timestamp {
             line.extend_from_slice(format!("{} ", walk.time(&id).unwrap_or(0)).as_bytes());
         }
-        let related: Vec<ObjectId> = if opts.parents {
+        let related: Vec<ObjectId> = if opts.parents && self.reflog.is_some() {
+            // A reflog walk shows the true parents.
+            match self.repo.read_commit(&id) {
+                Some((c, _)) => self.repo.parents(&id, &c),
+                None => Vec::new(),
+            }
+        } else if opts.parents {
             walk.parents(&id).unwrap_or_default().to_vec()
         } else if opts.children {
             walk.children(&id).to_vec()
@@ -1154,7 +1176,13 @@ impl Printer<'_, '_> {
                 } else {
                     Vec::new()
                 };
-                let base = self.name(&id, opts.abbrev_commit);
+                let mut base = self.name(&id, opts.abbrev_commit);
+                if opts.source {
+                    if let Some(src) = self.source_of(&id, &parents) {
+                        base.push('\t');
+                        base.push_str(&src);
+                    }
+                }
                 let commit_name = match (self.cmd, mark) {
                     (_, "") => base,
                     (Command::Log, m) => format!("{m} {base}"),
@@ -1176,6 +1204,9 @@ impl Printer<'_, '_> {
                     raw: &raw,
                     decoration: &decoration,
                     signature: &signature,
+                    reflog: self.reflog.as_ref(),
+                    as_mail: self.cmd == Command::Log,
+                    full_id: id.to_hex(),
                 };
                 if self.cmd == Command::RevList {
                     // rev-list ends every multi-line entry with an empty line
@@ -1732,6 +1763,7 @@ impl Printer<'_, '_> {
                     .graph
                     .as_ref()
                     .map_or(0, |g| layout::width(&g.clone().lines_to_commit().1)),
+            reflog: self.reflog.as_ref(),
         };
         let settings = self.user.as_ref().expect("user format settings");
         let expanded = userformat::expand(&fmt, settings, &item, &FormatLookup { p: self })
@@ -2386,6 +2418,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
         next: None,
+        reflog: None,
         diff: match log_diff(ctx, opts, cmd)? {
             Some(mut d) if !opts.full_diff && !resolved.paths.is_empty() => {
                 d.pathspec = paths::parse_pathspec(ctx, repo, &resolved.paths)?;
@@ -2421,12 +2454,17 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         let setup = repo.setup.clone();
         p.store = Some(crate::repo_objects::Repo::open(ctx, setup)?);
     }
-    if is_user && cmd == Command::Log {
+    if (is_user || opts.source) && cmd == Command::Log {
         let mut map = HashMap::new();
         for ((id, _, _), name) in resolved.commits.iter().zip(&resolved.sources) {
             map.entry(*id).or_insert_with(|| name.clone());
         }
         p.sources = Some(map);
+    }
+    if opts.walk_reflogs {
+        let mut scratch = opts.walk.clone();
+        let paths = path_filter(ctx, repo, opts, &resolved.paths, &mut scratch)?;
+        return reflog_walk::run_reflogs(&mut p, &walk, paths);
     }
     if let Some(mode) = opts.objects {
         let pathspec = if resolved.paths.is_empty() {
@@ -2494,6 +2532,8 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     }
     let (mut left, mut right, mut same) = (0usize, 0usize, 0usize);
     let mut shown = 0usize;
+    // `--show-linear-break`: the parents of the last commit shown.
+    let mut last_parents: Option<Vec<ObjectId>> = None;
     while let Some(s) = next_shown(&mut walk, &mut kept)? {
         if let Some(f) = &mut follow {
             if max_count.is_some_and(|m| shown >= m) {
@@ -2517,6 +2557,21 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
                 right += 1;
             }
             continue;
+        }
+        if let Some(barrier) = &opts.linear_break {
+            // A commit continues the line of the previous one when it is
+            // one of its parents.
+            let linear = last_parents.as_ref().is_none_or(|lp| lp.contains(&s.id));
+            if !linear {
+                p.out.push(b'\n');
+                p.out.extend_from_slice(barrier.as_bytes());
+                p.out.push(b'\n');
+            }
+            let parents = match repo.read_commit(&s.id) {
+                Some((c, _)) => repo.parents(&s.id, &c),
+                None => Vec::new(),
+            };
+            last_parents = Some(parents);
         }
         p.commit(&walk, &s)?;
     }
