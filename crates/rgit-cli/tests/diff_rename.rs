@@ -301,6 +301,47 @@ fn status_shows_staged_renames_like_git() {
 /// a different order when many of them tie.
 #[test]
 fn git_git_window_matches_git() {
+    git_git_window();
+}
+
+/// With `-C` the old side of an unmerged path is a copy source, like a
+/// modified file (t7060); `-M` leaves it alone.
+#[test]
+fn unmerged_paths_are_copy_sources() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .write("one", lines(40, "one"))
+        .git(["add", "one"])
+        .git(["commit", "-q", "-m", "one"])
+        .write("two", format!("changed\n{}", lines(40, "one")))
+        .write("three", lines(40, "one"))
+        .git(["add", "two", "three"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let blob = String::from_utf8(fx.git_stdout(["rev-parse", ":one"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+    fx = fx.git(["rm", "-q", "--cached", "one"]);
+    let info = format!("100644 {blob} 1\tone\n100644 {blob} 2\tone\n100644 {blob} 3\tone\n");
+    fx.compare(["update-index", "--index-info"])
+        .stdin(info)
+        .run();
+    for args in [
+        &["diff-index", "--cached", "-C", "--name-status", "HEAD"][..],
+        &["diff-index", "--cached", "-M", "--name-status", "HEAD"],
+        &["diff-index", "--cached", "-C", "-p", "HEAD"],
+        &["diff-index", "--cached", "-C", "-B", "--raw", "HEAD"],
+        &["diff", "--cached", "-C", "--stat"],
+        &["diff-index", "-C", "--name-status", "HEAD"],
+    ] {
+        fx.compare(args).run();
+    }
+}
+
+fn git_git_window() {
     let Ok(repo) = std::env::var("RGIT_RENAME_WINDOW_REPO") else {
         return;
     };

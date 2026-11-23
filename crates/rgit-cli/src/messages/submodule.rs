@@ -69,3 +69,7 @@ pub fn could_not_migrate(from: &str, to: &str, reason: &str) -> String {
 pub fn migrating(path: &str, from: &str, to: &str) -> String {
     format!("Migrating git directory of '{path}' from\n'{from}' to\n'{to}'")
 }
+
+pub fn gitfile_not_repo(path: &str) -> String {
+    format!("gitfile does not point to a valid repository: {path}")
+}

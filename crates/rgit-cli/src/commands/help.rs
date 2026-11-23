@@ -390,6 +390,9 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(128)
 }
 
+/// The man viewers of the help command: `man.viewer` in order, then
+/// `$GIT_MAN_VIEWER`, then `man`. A viewer that starts ends the search
+/// (its exit code is the result); one that cannot start is skipped.
 fn show_man(ctx: &Context, early: &EarlyConfig, page: &str) -> CmdResult {
     let viewers: Vec<String> = early
         .config
@@ -397,37 +400,158 @@ fn show_man(ctx: &Context, early: &EarlyConfig, page: &str) -> CmdResult {
         .filter_map(|e| e.value.as_ref().map(|v| v.to_string()))
         .collect();
     for tool in &viewers {
-        if let Some(cmd) = string(&early.config, &format!("man.{tool}.cmd")) {
-            let status = shell(&cmd, &[page]).envs(ctx.child_env()).status();
-            if let Ok(s) = status {
-                return Ok(exit_code(s));
-            }
-            continue;
+        if let Some(code) = try_man_viewer(ctx, early, tool, page) {
+            return Ok(code);
         }
-        let path = string(&early.config, &format!("man.{tool}.path"));
-        if tool == "man" {
-            return run_man(ctx, path.as_deref().unwrap_or("man"), page);
-        }
-        if path.is_some() {
-            eprintln!("warning: {}", msg::path_for_unsupported_man_viewer(tool));
-        }
-        eprintln!("warning: {}", msg::unknown_man_viewer(tool));
     }
-    run_man(ctx, "man", page)
+    if let Some(tool) = std::env::var("GIT_MAN_VIEWER").ok().filter(|v| !v.is_empty())
+        && let Some(code) = try_man_viewer(ctx, early, &tool, page)
+    {
+        return Ok(code);
+    }
+    if let Some(code) = exec_man(ctx, early, page) {
+        return Ok(code);
+    }
+    eprintln!("{}", msg::online_manual(page));
+    Err(Die::Fatal(msg::NO_MAN_VIEWER.into()))
 }
 
-fn run_man(ctx: &Context, prog: &str, page: &str) -> CmdResult {
-    match Command::new(prog).arg(page).envs(ctx.child_env()).status() {
-        Ok(s) if s.success() => Ok(0),
-        Ok(s) => {
-            eprintln!("{}", msg::online_manual(page));
-            Ok(exit_code(s))
+/// One man viewer: the supported ones (`man`, `woman`, `konqueror`, which
+/// take `man.<tool>.path`) or a `man.<tool>.cmd`. `None`: it did not
+/// handle the request.
+fn try_man_viewer(ctx: &Context, early: &EarlyConfig, tool: &str, page: &str) -> Option<i32> {
+    let cmd = string(&early.config, &format!("man.{tool}.cmd"));
+    if matches!(tool, "man" | "woman" | "konqueror") {
+        if cmd.is_some() {
+            eprintln!("warning: {}", msg::cmd_for_supported_man_viewer(tool));
         }
-        Err(_) => {
-            eprintln!("{}", msg::online_manual(page));
-            Err(Die::Fatal(msg::NO_MAN_VIEWER.into()))
+        return match tool {
+            "man" => exec_man(ctx, early, page),
+            "woman" => exec_woman(ctx, early, page),
+            _ => exec_konqueror(ctx, early, page),
+        };
+    }
+    if let Some(cmd) = cmd {
+        // Evaluated by the shell with the page appended.
+        let line = format!("{cmd} {}", shell_word(page));
+        let status = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(line)
+            .envs(ctx.child_env())
+            .status();
+        return status.ok().map(exit_code);
+    }
+    if string(&early.config, &format!("man.{tool}.path")).is_some() {
+        eprintln!("warning: {}", msg::path_for_unsupported_man_viewer(tool));
+    }
+    eprintln!("warning: {}", msg::unknown_man_viewer(tool));
+    None
+}
+
+/// `word` for a shell command line, quoted when it needs to be.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./+,:@".contains(&b));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// Run viewer `prog` with `args`; `None` (with a warning) when it cannot
+/// be started.
+fn exec_viewer(ctx: &Context, prog: &str, args: &[&str]) -> Option<std::process::ExitStatus> {
+    match Command::new(prog).args(args).envs(ctx.child_env()).status() {
+        Ok(s) => Some(s),
+        Err(e) => {
+            let err = crate::global::strerror(&e);
+            eprintln!("warning: {}", msg::failed_to_exec(prog, &err));
+            None
         }
     }
+}
+
+/// `man` (or `man.man.path`).
+fn exec_man(ctx: &Context, early: &EarlyConfig, page: &str) -> Option<i32> {
+    let path = string(&early.config, "man.man.path").unwrap_or_else(|| "man".into());
+    let status = exec_viewer(ctx, &path, &[page])?;
+    // man-db's "page not found": rgit installs no manual pages.
+    if status.code() == Some(16) {
+        eprintln!("{}", msg::online_manual(page));
+    }
+    Some(exit_code(status))
+}
+
+/// `woman`: emacs' woman mode through `emacsclient` (or `man.woman.path`),
+/// which must be version 22 or newer.
+fn exec_woman(ctx: &Context, early: &EarlyConfig, page: &str) -> Option<i32> {
+    // Its version line, from stdout and stderr together.
+    let version = || -> std::io::Result<Vec<u8>> {
+        let (mut reader, writer) = std::io::pipe()?;
+        let mut child = Command::new("emacsclient")
+            .arg("--version")
+            .envs(ctx.child_env())
+            .stdout(writer.try_clone()?)
+            .stderr(writer)
+            .spawn()?;
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut out)?;
+        let _ = child.wait();
+        Ok(out)
+    };
+    let output = match version() {
+        Ok(o) => o,
+        Err(e) => {
+            let err = crate::global::strerror(&e);
+            eprintln!("error: {}", msg::cannot_run("emacsclient", &err));
+            eprintln!("error: {}", msg::EMACSCLIENT_START_FAILED);
+            return None;
+        }
+    };
+    let text = String::from_utf8_lossy(&output);
+    // "emacsclient <major>...": the number as far as it goes (0 without).
+    let major = text.strip_prefix("emacsclient").map(|rest| {
+        let digits: String = rest
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse::<u64>().unwrap_or(0)
+    });
+    match major {
+        None => {
+            eprintln!("error: {}", msg::EMACSCLIENT_VERSION_UNPARSED);
+            return None;
+        }
+        Some(m) if m < 22 => {
+            eprintln!("error: {}", msg::emacsclient_too_old(m));
+            return None;
+        }
+        Some(_) => {}
+    }
+    let path = string(&early.config, "man.woman.path").unwrap_or_else(|| "emacsclient".into());
+    let form = format!("(woman \"{page}\")");
+    exec_viewer(ctx, &path, &["-e", &form]).map(exit_code)
+}
+
+/// `konqueror`: a new tab through `kfmclient` (`man.konqueror.path`, where
+/// `<dir>/konqueror` stands for `<dir>/kfmclient`); only with a display.
+fn exec_konqueror(ctx: &Context, early: &EarlyConfig, page: &str) -> Option<i32> {
+    if std::env::var_os("DISPLAY").is_none_or(|d| d.is_empty()) {
+        return None;
+    }
+    let path = match string(&early.config, "man.konqueror.path") {
+        Some(p) => match p.strip_suffix("/konqueror") {
+            Some(dir) => format!("{dir}/kfmclient"),
+            None => p,
+        },
+        None => "kfmclient".into(),
+    };
+    let url = format!("man:{page}(1)");
+    exec_viewer(ctx, &path, &["newTab", &url]).map(exit_code)
 }
 
 fn show_info(ctx: &Context, page: &str) -> CmdResult {

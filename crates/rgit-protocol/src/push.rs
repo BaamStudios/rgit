@@ -212,6 +212,69 @@ pub fn write_commands<W: Write>(
     Ok(())
 }
 
+/// The unsigned text of a push certificate (Documentation/
+/// gitprotocol-pack.adoc, "Push Certificate"): the header lines, the push
+/// options (`push-option <o>`), an empty line and the commands. The
+/// detached signature over it is appended before it is sent with
+/// [`write_push_cert`].
+pub fn push_cert_payload(
+    pusher: &[u8],
+    pushee: &str,
+    nonce: &str,
+    push_options: &[String],
+    commands: &[Command],
+) -> Vec<u8> {
+    let mut out = b"certificate version 0.1\npusher ".to_vec();
+    out.extend_from_slice(pusher);
+    out.extend_from_slice(format!("\npushee {pushee}\nnonce {nonce}\n").as_bytes());
+    for o in push_options {
+        out.extend_from_slice(format!("push-option {o}\n").as_bytes());
+    }
+    out.push(b'\n');
+    for c in commands {
+        out.extend_from_slice(
+            format!("{} {} {}\n", c.old.to_hex(), c.new.to_hex(), c.name).as_bytes(),
+        );
+    }
+    out
+}
+
+/// Write a signed push certificate in place of the command list: the
+/// `push-cert` line with `caps`, one packet per line of `cert` (payload
+/// and signature), `push-cert-end` and a flush packet; then the push
+/// options and their flush when `push_options` is `Some`.
+pub fn write_push_cert<W: Write>(
+    writer: &mut Writer<W>,
+    cert: &[u8],
+    caps: &[String],
+    push_options: Option<&[String]>,
+) -> Result<()> {
+    let mut first = b"push-cert\0".to_vec();
+    for cap in caps {
+        first.push(b' ');
+        first.extend_from_slice(cap.as_bytes());
+    }
+    writer.write_data(&first)?;
+    for line in cert.split_inclusive(|&b| b == b'\n') {
+        if line.ends_with(b"\n") {
+            writer.write_data(line)?;
+        } else {
+            let mut l = line.to_vec();
+            l.push(b'\n');
+            writer.write_data(&l)?;
+        }
+    }
+    writer.write_data(b"push-cert-end\n")?;
+    writer.flush_pkt()?;
+    if let Some(opts) = push_options {
+        for o in opts {
+            writer.write_data(o.as_bytes())?;
+        }
+        writer.flush_pkt()?;
+    }
+    Ok(())
+}
+
 /// The result for one ref in the server's report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefReport {
@@ -365,6 +428,50 @@ mod tests {
         let mut w = Writer::new(Vec::new(), "push");
         write_commands(&mut w, &[], &[], Some(&opts)).unwrap();
         assert_eq!(w.into_inner(), b"0000");
+    }
+
+    #[test]
+    fn push_certificate() {
+        let hash = HashKind::Sha1;
+        let cmds = [Command {
+            old: ObjectId::from_hex(hash, ZERO.as_bytes()).unwrap(),
+            new: ObjectId::from_hex(hash, A.as_bytes()).unwrap(),
+            name: "refs/heads/x".into(),
+        }];
+        let opts = ["foo".to_string()];
+        let payload = push_cert_payload(b"C <c@x> 1 +0000", "../dst", "n-1", &opts, &cmds);
+        assert_eq!(
+            payload,
+            format!(
+                "certificate version 0.1\npusher C <c@x> 1 +0000\npushee ../dst\nnonce n-1\n\
+                 push-option foo\n\n{ZERO} {A} refs/heads/x\n"
+            )
+            .into_bytes()
+        );
+        let mut cert = payload.clone();
+        cert.extend_from_slice(b"-----BEGIN-----\n\nabc\n-----END-----\n");
+        let mut w = Writer::new(Vec::new(), "push");
+        write_push_cert(&mut w, &cert, &["quiet".into()], Some(&opts)).unwrap();
+        let line = format!("{ZERO} {A} refs/heads/x\n");
+        let expect = pkts(&[
+            b"push-cert\0 quiet",
+            b"certificate version 0.1\n",
+            b"pusher C <c@x> 1 +0000\n",
+            b"pushee ../dst\n",
+            b"nonce n-1\n",
+            b"push-option foo\n",
+            b"\n",
+            line.as_bytes(),
+            b"-----BEGIN-----\n",
+            b"\n",
+            b"abc\n",
+            b"-----END-----\n",
+            b"push-cert-end\n",
+            b"",
+            b"foo",
+            b"",
+        ]);
+        assert_eq!(w.into_inner(), expect);
     }
 
     #[test]

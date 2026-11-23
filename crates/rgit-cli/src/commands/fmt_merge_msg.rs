@@ -127,23 +127,28 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let head = repo.resolve("HEAD");
     let head = head.and_then(|h| repo.peel_to(h, ObjectKind::Commit));
+    // Heads that are proper ancestors of HEAD are merged already and left
+    // out (checked against the `git` binary); with none left there is no
+    // message.
+    if let Some(ours) = &head {
+        heads.retain(|h| {
+            h.commit == *ours || !message::new_commits(&repo, &h.commit, Some(ours)).is_empty()
+        });
+    }
     let out = match message.into_inner() {
         Some(m) => {
             let mut out = m.into_bytes();
             if !out.ends_with(b"\n") {
                 out.push(b'\n');
             }
-            for h in &heads {
-                if let Some(t) = &h.tag_message {
-                    let body = rgit_commit::message::stripspace(t, None);
-                    // With -m, git appends the tag message without the
-                    // separating empty line.
-                    out.extend_from_slice(&body);
-                }
-            }
+            // With -m, git appends the tag message without the
+            // separating empty line.
+            let tags = message::tag_part(&repo, &heads);
+            out.extend_from_slice(tags.strip_prefix(b"\n").unwrap_or(&tags));
             out.extend_from_slice(&message::log_part(&repo, &heads, head.as_ref(), log));
             out
         }
+        None if heads.is_empty() => Vec::new(),
         None => {
             let into = match into_name.into_inner() {
                 Some(n) => n,

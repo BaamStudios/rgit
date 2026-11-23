@@ -12,7 +12,10 @@
 //! - Traditional patches: a name ends at a tab, else before a trailing
 //!   timestamp. When `-p` is not given, it is guessed from the first
 //!   traditional patch (0 when its new name has no `/`, else 1). Of two
-//!   different names the shorter wins, the new one on a tie. A timestamp
+//!   different names the shorter wins, the new one on a tie. In a
+//!   subdirectory, a new name that starts with the subdirectory (as it
+//!   is: `-p0`, or after its first component: `-p1`) is taken relative
+//!   to the top instead of the subdirectory. A timestamp
 //!   at the Unix epoch (in any time zone) marks a created or deleted file.
 //! - Without `-p`, a name with fewer components than the default is used
 //!   as it is; with an explicit `-p` it is an error.
@@ -32,6 +35,13 @@ pub struct ParseOptions {
     pub root: Vec<u8>,
     /// `--recount`: ignore the line counts of hunk headers.
     pub recount: bool,
+    /// The current directory relative to the top of the work tree
+    /// (ending in `/` unless empty): traditional names are taken relative
+    /// to it.
+    pub prefix: Vec<u8>,
+    /// Set when the guessed `-p` found the names of traditional patches
+    /// to already start with `prefix`: they are then relative to the top.
+    pub names_from_top: bool,
 }
 
 impl Default for ParseOptions {
@@ -41,6 +51,8 @@ impl Default for ParseOptions {
             p_explicit: false,
             root: Vec::new(),
             recount: false,
+            prefix: Vec::new(),
+            names_from_top: false,
         }
     }
 }
@@ -654,6 +666,27 @@ impl Parser<'_, '_> {
             if let Some(n) = probe {
                 self.opts.p_value = usize::from(n.contains(&b'/'));
                 self.opts.p_explicit = true;
+                // In a subdirectory, a new name that holds the directory
+                // (as it is or below one leading component) is relative
+                // to the top.
+                let prefix = &self.opts.prefix;
+                let named = second
+                    .as_ref()
+                    .filter(|s| !prefix.is_empty() && s.name != b"/dev/null");
+                if let Some(s) = named {
+                    let below_first = s
+                        .name
+                        .iter()
+                        .position(|&c| c == b'/')
+                        .map(|k| &s.name[k + 1..]);
+                    if s.name.starts_with(prefix) {
+                        self.opts.p_value = 0;
+                        self.opts.names_from_top = true;
+                    } else if below_first.is_some_and(|b| b.starts_with(prefix)) {
+                        self.opts.p_value = 1;
+                        self.opts.names_from_top = true;
+                    }
+                }
             }
         }
         let p_value = self.opts.p_value;
@@ -971,13 +1004,20 @@ impl Parser<'_, '_> {
 
     /// A creation must not need old lines, a deletion must not leave any.
     fn check_contents(&self, p: &FilePatch) -> Result<(), ParseError> {
+        // Traditional names are shown from the top of the work tree.
+        let shown = |name: &Option<Vec<u8>>| {
+            let name = name.as_deref().unwrap_or_default();
+            if p.is_git || self.opts.names_from_top {
+                lossy(name)
+            } else {
+                lossy(&[self.opts.prefix.as_slice(), name].concat())
+            }
+        };
         if p.is_new == Some(true) && p.deleted > 0 {
-            let name = p.new_name.as_deref().unwrap_or_default();
-            return Err(self.err(msg::new_depends_on_old(&lossy(name))));
+            return Err(self.err(msg::new_depends_on_old(&shown(&p.new_name))));
         }
         if p.is_delete == Some(true) && p.added > 0 {
-            let name = p.old_name.as_deref().unwrap_or_default();
-            return Err(self.err(msg::deleted_has_contents(&lossy(name))));
+            return Err(self.err(msg::deleted_has_contents(&shown(&p.old_name))));
         }
         Ok(())
     }

@@ -90,6 +90,26 @@ fn push_edge_cases() {
         .write("a", "changed\n")
         .same(["stash"])
         .same(["stash", "list"]);
+    // -u/-a with nothing untracked still record an (empty) untracked
+    // commit; a pathspec matching nothing saves nothing.
+    for args in [
+        &["stash", "-u"][..],
+        &["stash", "push", "-a"],
+        &["stash", "push", "-u", "--", "a"],
+        &["stash", "push", "-u", "--", "nomatch"],
+    ] {
+        base()
+            .write("a", "changed\n")
+            .same(args)
+            .same(["stash", "pop", "--index"]);
+    }
+    // core.safecrlf=true refuses to stash a file whose CR LF would be lost.
+    base()
+        .write(".gitattributes", "* text=auto\n")
+        .git(["add", ".gitattributes"])
+        .write("a", "a\r\nb\r\n")
+        .same(["-c", "core.safecrlf=true", "stash"])
+        .same(["stash", "list"]);
 }
 
 #[test]

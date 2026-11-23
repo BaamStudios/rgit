@@ -32,11 +32,11 @@ type V = Option<Version>;
 
 /// The result of [`resolve`]: the merge, its output and the paths whose
 /// index entries change.
-pub(super) type Resolved = (MergeResult, Vec<Line>, Vec<Vec<u8>>);
+pub(crate) type Resolved = (MergeResult, Vec<Line>, Vec<Vec<u8>>);
 
 /// A line of output, on standard error when `err`.
 #[derive(Debug, Clone)]
-pub(super) struct Line {
+pub(crate) struct Line {
     pub err: bool,
     pub text: String,
 }
@@ -51,7 +51,7 @@ impl Line {
 }
 
 /// Prints `lines` to their streams.
-pub(super) fn print(lines: &[Line]) {
+pub(crate) fn print(lines: &[Line]) {
     use std::io::Write as _;
     for l in lines {
         if l.err {
@@ -222,7 +222,7 @@ fn is_regular(v: Version) -> bool {
 /// The `resolve` strategy: the result (with conflict stages and the
 /// work-tree versions of conflicted paths in its tree), its output and the
 /// paths whose index entries change.
-pub(super) fn resolve(
+pub(crate) fn resolve(
     repo: &Repo,
     bases: &[ObjectId],
     head: &ObjectId,

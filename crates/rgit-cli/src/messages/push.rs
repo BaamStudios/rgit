@@ -51,6 +51,14 @@ pub const TAGS_WITH_ALL: &str = "options '--tags' and '--all/--branches' cannot 
 pub const EVERYTHING_UP_TO_DATE: &str = "Everything up-to-date";
 pub const NO_PUSH_OPTIONS: &str = "the receiving end does not support push options";
 pub const NO_ATOMIC: &str = "the receiving end does not support --atomic push";
+pub const NO_SIGNED: &str = "the receiving end does not support --signed push";
+pub const NO_SIGNED_IF_ASKED: &str =
+    "not sending a push certificate since the receiving end does not support --signed push";
+pub const FAILED_TO_SIGN_CERT: &str = "failed to sign the push certificate";
+pub const BAD_GPGSIGN: &str = "invalid value for 'push.gpgsign'";
+pub fn bad_signed(value: &str) -> String {
+    format!("bad signed argument: {value}")
+}
 pub const COULD_NOT_READ: &str = "Could not read from remote repository.\n\n\
 Please make sure you have the correct access rights\n\
 and the repository exists.";

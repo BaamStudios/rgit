@@ -646,7 +646,17 @@ impl<'c> Sequencer<'c> {
         } else {
             head_tree
         };
-        let result = self.merge(&repo, &base, &ours, &theirs, &base_label, &their_label)?;
+        let result = match self.merge(&repo, &base, &ours, &theirs, &base_label, &their_label) {
+            // The merge strategy failed to run.
+            Err(Fail::Printed) => {
+                self.write_file("MERGE_MSG", &message)?;
+                return Err(Fail::Error(match action {
+                    Action::Pick => msg::could_not_apply(&abbrev, &lossy(&subject)),
+                    Action::Revert => msg::could_not_revert(&abbrev, &lossy(&subject)),
+                }));
+            }
+            r => r?,
+        };
         if result.tree == empty_tree {
             repo.odb()
                 .write(ObjectKind::Tree, b"")
@@ -665,10 +675,13 @@ impl<'c> Sequencer<'c> {
             let _ = o.flush();
         }
         crate::commands::merge_tree::advise_submodules(self.ctx, &repo, &result)?;
-        self.write_file(
-            "AUTO_MERGE",
-            format!("{}\n", result.tree.to_hex()).as_bytes(),
-        )?;
+        // Only the built-in merge writes AUTO_MERGE.
+        if action == Action::Revert || self.opts.strategy.as_deref() != Some("resolve") {
+            self.write_file(
+                "AUTO_MERGE",
+                format!("{}\n", result.tree.to_hex()).as_bytes(),
+            )?;
+        }
 
         let help_env = match action {
             Action::Pick => std::env::var("GIT_CHERRY_PICK_HELP").ok(),
@@ -892,15 +905,14 @@ impl<'c> Sequencer<'c> {
         their_label: &str,
     ) -> Result<MergeResult, Fail> {
         let labels = (base_label, their_label);
-        merge_with(
-            repo,
-            self.opts.strategy.as_deref(),
-            &self.opts.xopts,
-            base,
-            ours,
-            theirs,
-            labels,
-        )
+        // revert merges with the built-in strategy even when told to use
+        // resolve (observed).
+        let strategy = self
+            .opts
+            .strategy
+            .as_deref()
+            .filter(|s| !(*s == "resolve" && self.opts.action == Action::Revert));
+        merge_with(repo, strategy, &self.opts.xopts, base, ours, theirs, labels)
     }
 
     /// Moves the index and work tree from the tree `old` to the merge
@@ -1337,6 +1349,25 @@ pub(crate) fn merge_with(
     let subtree = match strategy {
         None | Some("ort" | "recursive") => rgit_merge::Subtree::None,
         Some("subtree") => rgit_merge::Subtree::Guess,
+        Some("resolve") => {
+            use crate::commands::merge::resolve;
+            if let Some(x) = xopts.first() {
+                // The resolve strategy hands its options to `read-tree`,
+                // which rejects them with its usage; the step fails.
+                let _ = std::io::stdout().flush();
+                let mut ctx = crate::Context::default();
+                let args = ["read-tree".to_owned(), format!("--{x}")];
+                if let Err(e) = crate::commands::read_tree::run(&mut ctx, &args) {
+                    e.emit();
+                }
+                return Err(Fail::Printed);
+            }
+            let style = crate::commands::merge_file::config_style(&repo.config)?;
+            let (result, lines, _) =
+                resolve::resolve(repo, &[*base], ours, theirs, style).map_err(Fail::Die)?;
+            resolve::print(&lines);
+            return Ok(result);
+        }
         Some(s) => return Err(Fail::Die(Die::Fatal(msg::strategy_not_supported(s)))),
     };
     let mut opts = rgit_merge::Options {

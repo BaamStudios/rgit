@@ -21,7 +21,9 @@
 //!
 //! A remote group (`remotes.<group>`) pushes to each member in turn.
 //!
-//! Not yet: `--signed`, `--recurse-submodules`, thin packs and local
+//! `--signed[=if-asked]` (`push.gpgSign`) sends a signed push certificate.
+//!
+//! Not yet: `--recurse-submodules`, thin packs and local
 //! progress output. The `pre-push` hook runs unless `--no-verify` is given
 //! (#76).
 
@@ -75,6 +77,55 @@ struct Flags {
     lease_all: bool,
     /// `--force-if-includes` / `push.useForceIfIncludes`.
     if_includes: bool,
+    /// `--signed` / `push.gpgSign`.
+    signed: Signed,
+}
+
+/// Whether to send a push certificate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Signed {
+    No,
+    Yes,
+    IfAsked,
+}
+
+impl Signed {
+    /// `true`/`false` (git's boolean spellings) or `if-asked`.
+    fn parse(value: &str) -> Option<Signed> {
+        if value.eq_ignore_ascii_case("if-asked") {
+            return Some(Signed::IfAsked);
+        }
+        rgit_config::value::parse_bool(Some(value.as_bytes()))
+            .map(|b| if b { Signed::Yes } else { Signed::No })
+    }
+
+    /// `--signed[=<value>]` / `--no-signed` as given (`None`: neither),
+    /// else `push.gpgSign` when `use_config` (send-pack only validates it).
+    fn resolve(
+        cli: Option<Option<String>>,
+        config: &ConfigSet,
+        use_config: bool,
+    ) -> Result<Signed, Die> {
+        let configured = match config.get("push.gpgsign") {
+            Some(e) => {
+                let v = e.value.as_ref().map(|v| v.to_string());
+                match v {
+                    None => Signed::Yes,
+                    Some(v) => Signed::parse(&v)
+                        .ok_or_else(|| crate::comment::bad_entry(e, msg::BAD_GPGSIGN))?,
+                }
+            }
+            None => Signed::No,
+        };
+        match cli {
+            None if use_config => Ok(configured),
+            None => Ok(Signed::No),
+            Some(None) => Ok(Signed::Yes),
+            Some(Some(v)) => {
+                Signed::parse(&v).ok_or_else(|| Die::Fatal(msg::bad_signed(&v)))
+            }
+        }
+    }
 }
 
 /// `--force-with-lease` as given.
@@ -117,6 +168,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let ipv6 = Cell::new(false);
     let leases: RefCell<LeaseArgs> = RefCell::new(LeaseArgs::default());
     let if_includes = Cell::new(-1);
+    let signed_arg: RefCell<Option<Option<String>>> = RefCell::new(None);
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
     let reject = |name: &'static str| {
         let unsupported = &unsupported;
@@ -191,7 +243,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "signed",
                 Some("(yes|no|if-asked)"),
                 msg::H_SIGNED,
-                reject("signed"),
+                |v, unset| {
+                    *signed_arg.borrow_mut() = Some(match (unset, v) {
+                        (true, _) => Some("false".to_owned()),
+                        (false, v) => v.map(str::to_owned),
+                    });
+                    Ok(())
+                },
             )
             .literal_argh()
             .optional(None),
@@ -439,6 +497,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .unwrap_or(false),
             v => v > 0,
         },
+        signed: Signed::resolve(signed_arg.take(), &config, true)?,
     };
     let push = Push {
         ctx,
@@ -599,6 +658,63 @@ struct Push<'a> {
 }
 
 impl Push<'_> {
+    /// The signed push certificate for `out`'s commands. A failure to sign
+    /// is fatal; the connection is dropped without a request.
+    fn push_cert(
+        &self,
+        session: &send::Session,
+        out: &Outgoing<'_>,
+        nonce: &str,
+        pushee: &str,
+    ) -> Result<Vec<u8>, Die> {
+        use rgit_ident::ident::{IdentConfig, Resolver, Role, Strictness};
+        let icfg = IdentConfig::from_config(self.config).map_err(|p| {
+            p.print();
+            Die::Exit(rgit_options::EXIT_FATAL)
+        })?;
+        let env = SystemEnv::default();
+        // The committer identity, stamped with the current time (git
+        // ignores GIT_COMMITTER_DATE here).
+        let (name, email) = Resolver::new(&icfg, &env)
+            .name_email(Role::Committer, Strictness::Strict)
+            .map_err(|e| {
+                eprint!("{}", e.stderr_text());
+                Die::Exit(rgit_options::EXIT_FATAL)
+            })?;
+        let (time, tz) = rgit_ident::ident::now();
+        let pusher = rgit_ident::ident::Ident {
+            name,
+            email,
+            time,
+            tz,
+        };
+        let options: &[String] = if session.adv.caps.contains("push-options") {
+            &out.request.push_options
+        } else {
+            &[]
+        };
+        let mut cert = rgit_protocol::push::push_cert_payload(
+            &pusher.to_bstring(),
+            pushee,
+            nonce,
+            options,
+            &out.commands,
+        );
+        let settings = crate::signing::Settings::from_config(self.config)?;
+        let ident = String::from_utf8_lossy(&pusher.name_email()).into_owned();
+        let signed = crate::signing::signing_key(&settings, &crate::signing::Sign::Default, &ident)
+            .and_then(|k| crate::signing::sign_buffer(&settings, &cert, &k));
+        match signed {
+            Ok(sig) => cert.extend_from_slice(&sig),
+            Err(crate::signing::SignError::Die(d)) => return Err(d),
+            Err(crate::signing::SignError::Failed) => {
+                eprintln!("fatal: {}", msg::FAILED_TO_SIGN_CERT);
+                return Err(Die::Exit(rgit_options::EXIT_FATAL));
+            }
+        }
+        Ok(cert)
+    }
+
     /// Push advice is shown without the "Disable this message" line.
     fn hint(&self, advice: Advice, text: &str) -> Result<(), Die> {
         self.advisor
@@ -713,6 +829,21 @@ impl Push<'_> {
             eprintln!("error: {}", msg::failed_to_push(&display));
             return Ok(1);
         }
+        // The nonce the server asks to be signed (`push-cert=<nonce>`).
+        let nonce = match (f.signed, session.adv.caps.value("push-cert")) {
+            (Signed::No, _) => None,
+            (_, Some(n)) => Some(n.to_owned()),
+            (Signed::Yes, None) => {
+                // Before the connection is dropped (the server then
+                // reports the hang-up), like git.
+                eprintln!("fatal: {}", msg::NO_SIGNED);
+                return Err(Die::Exit(rgit_options::EXIT_FATAL));
+            }
+            (Signed::IfAsked, None) => {
+                eprintln!("warning: {}", msg::NO_SIGNED_IF_ASKED);
+                None
+            }
+        };
 
         self.apply_leases(&mut list);
         check_refs(&mut list, &objects);
@@ -771,7 +902,11 @@ impl Push<'_> {
                 thin: f.thin,
                 pack: crate::commands::pack_objects::config_options(self.config)?,
                 progress: f.progress,
+                cert: None,
             };
+            if let Some(nonce) = &nonce {
+                out.cert = Some(self.push_cert(&session, &out, nonce, &display)?);
+            }
             (out.objects, out.bases) = match send::pack_objects(&out, &session.adv) {
                 Ok(o) => o,
                 Err(e) => {
@@ -1079,6 +1214,7 @@ pub fn run_send_pack(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let push_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let leases: RefCell<LeaseArgs> = RefCell::new(LeaseArgs::default());
     let if_includes = Cell::new(-1);
+    let signed_arg: RefCell<Option<Option<String>>> = RefCell::new(None);
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
     let reject = |name: &'static str| {
         let unsupported = &unsupported;
@@ -1108,7 +1244,13 @@ pub fn run_send_pack(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "signed",
                 Some("(yes|no|if-asked)"),
                 msg::H_SIGNED,
-                reject("signed"),
+                |v, unset| {
+                    *signed_arg.borrow_mut() = Some(match (unset, v) {
+                        (true, _) => Some("false".to_owned()),
+                        (false, v) => v.map(str::to_owned),
+                    });
+                    Ok(())
+                },
             )
             .literal_argh()
             .optional(None),
@@ -1251,6 +1393,7 @@ pub fn run_send_pack(ctx: &mut Context, argv: &[String]) -> CmdResult {
         leases: lease_list,
         lease_all: lease_args.all,
         if_includes: if_includes.get() > 0,
+        signed: Signed::resolve(signed_arg.take(), &config, false)?,
     };
     let push = Push {
         ctx,

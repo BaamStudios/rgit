@@ -123,6 +123,10 @@ pub enum Gen {
     BigRand,
     /// Edits near the start, long common tail (context 0 trimming).
     Tail,
+    /// More than 65533 lines in the search (cost limit 512): stretches of
+    /// dense edits between unchanged stretches of 18 to 45 lines, so that
+    /// the long-snake split points of the search come into play.
+    Huge,
 }
 
 impl Gen {
@@ -134,6 +138,7 @@ impl Gen {
             "big" => Gen::Big,
             "bigrand" => Gen::BigRand,
             "tail" => Gen::Tail,
+            "huge" => Gen::Huge,
             _ => panic!("unknown generator {s}"),
         }
     }
@@ -267,6 +272,42 @@ pub fn generate(kind: Gen, rng: &mut Rng) -> (Vec<u8>, Vec<u8>) {
                 b = edit_copy(rng, &b, &mut |r| {
                     format!("{}\n", r.below(alpha)).into_bytes()
                 });
+            }
+            (join(&a, rng), join(&b, rng))
+        }
+        Gen::Huge => {
+            let alpha = [300, 2000, 1_000_000][rng.below(3)];
+            let n = 34_000 + rng.below(8000);
+            let line = |r: &mut Rng| format!("{}\n", r.below(alpha)).into_bytes();
+            let a: Vec<Vec<u8>> = (0..n).map(|_| line(rng)).collect();
+            let mut b = Vec::with_capacity(n + n / 8);
+            let mut i = 0;
+            while i < n {
+                let dense = rng.chance(7, 10);
+                let len = if dense {
+                    10 + rng.below(110)
+                } else {
+                    18 + rng.below(28)
+                };
+                let end = (i + len).min(n);
+                while i < end {
+                    match if dense { rng.below(6) } else { 5 } {
+                        0 => i += 1 + rng.below(3),
+                        1 => {
+                            for _ in 0..1 + rng.below(4) {
+                                b.push(line(rng));
+                            }
+                        }
+                        2 => {
+                            let s = i.saturating_sub(1 + rng.below(4));
+                            b.extend_from_slice(&a[s..i]);
+                        }
+                        _ => {
+                            b.push(a[i].clone());
+                            i += 1;
+                        }
+                    }
+                }
             }
             (join(&a, rng), join(&b, rng))
         }

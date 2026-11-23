@@ -130,6 +130,28 @@ fn pick_clean() {
     );
 }
 
+/// `--strategy=resolve` merges with the resolve strategy; its options go
+/// to `read-tree`, which rejects them, and the step fails.
+#[test]
+fn pick_with_resolve() {
+    cases(
+        |fx| fx,
+        &[
+            &["cherry-pick", "--strategy=resolve", "base"],
+            &[
+                "cherry-pick",
+                "--strategy",
+                "resolve",
+                "base",
+                "unrelatedpick",
+            ],
+            &["cherry-pick", "--strategy=resolve", "-n", "unrelatedpick"],
+            &["cherry-pick", "--strategy=resolve", "-Xtheirs", "base"],
+            &["revert", "--strategy=resolve", "initial"],
+        ],
+    );
+}
+
 #[test]
 fn pick_empty() {
     cases(

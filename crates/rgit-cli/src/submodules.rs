@@ -267,6 +267,15 @@ pub fn worktree_state(
     if ignore == Ignore::All {
         return st;
     }
+    // A `.git` file that leads nowhere is fatal (as git).
+    if std::fs::metadata(dir.join(".git")).is_ok_and(|m| m.is_file())
+        && rgit_submodule::gitdir::git_dir_of(dir).is_some_and(|g| !g.join("HEAD").exists())
+    {
+        let dot_git = dir.join(".git");
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let shown = dot_git.strip_prefix(&cwd).unwrap_or(&dot_git);
+        crate::convert::die_now(&msg::gitfile_not_repo(&shown.display().to_string()));
+    }
     let Some(head) = crate::repository::submodule_head(dir, hash) else {
         return st;
     };

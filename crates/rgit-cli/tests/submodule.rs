@@ -130,6 +130,48 @@ fn diff_formats() {
     }
 }
 
+/// `ignore=all` (in .gitmodules or the config) also hides the recorded
+/// commits in the diffs of `log`, `show` and `diff-tree`.
+#[test]
+fn ignore_all_in_history_diffs() {
+    let mut fx = superproject().git([
+        "-C",
+        "super",
+        "config",
+        "-f",
+        ".gitmodules",
+        "submodule.adv.ignore",
+        "all",
+    ]);
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["log", "--oneline", "--name-only"][..],
+        &["log", "--stat", "--format=%s"],
+        &["log", "--raw", "--format=%s"],
+        &[
+            "log",
+            "--oneline",
+            "--name-only",
+            "--ignore-submodules=none",
+        ],
+        &[
+            "-c",
+            "submodule.both.ignore=all",
+            "log",
+            "--oneline",
+            "--name-only",
+        ],
+        &["show", "--stat", "--format=%s"],
+        &["diff-tree", "-r", "HEAD~1", "HEAD"],
+        &["diff-tree", "-r", "HEAD"],
+        &["log", "--oneline", "--", "adv"],
+    ] {
+        check(&mut fx, args);
+    }
+}
+
 #[test]
 fn mv_and_rm() {
     let mut fx = superproject().write("super/deep/.keep", "");

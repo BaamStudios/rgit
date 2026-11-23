@@ -99,12 +99,20 @@ fn same(fx: &mut Fixture, args: &[&str]) {
 
 #[test]
 fn series_on_standard_output() {
-    let mut fx = history();
+    let mut fx = history().write("order", "h\nf\n");
     if fx.is_skipped() {
         return;
     }
+    // -O takes its value from the next argument too (log as well).
     for args in [
-        &["--stdout", "--root", "main"][..],
+        &["log", "-p", "-3", "-O", "order"][..],
+        &["show", "-O", "order"],
+    ] {
+        fx.compare(args).checks(Check::OUTPUT).run();
+    }
+    for args in [
+        &["--stdout", "-O", "order", "-3"][..],
+        &["--stdout", "--root", "main"],
         &["--stdout", "-2"],
         &["--stdout", "-1", "main~1"],
         &["--stdout", "main~2"],

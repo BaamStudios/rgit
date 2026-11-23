@@ -314,6 +314,20 @@ fn other_worktree_dirs(repo: &Repo<'_>) -> Vec<std::path::PathBuf> {
     dirs
 }
 
+/// The refs a ref-set option (`--all`, `--branches`, `--tags`, `--glob`,
+/// ...) names, in order, with the objects they point to (tags not peeled),
+/// for `show`, which shows each of them without walking.
+pub(super) fn named_refs(
+    repo: &Repo<'_>,
+    opts: &Options,
+    set: &RefSet,
+    exclude: &[String],
+    hidden: Option<&str>,
+) -> Result<Vec<(String, ObjectId)>, Die> {
+    let hidden = hidden.map(|s| Hidden::new(repo, s));
+    ref_set(repo, opts, set, exclude, hidden.as_ref())
+}
+
 /// The refs of a ref set, in order.
 fn ref_set(
     repo: &Repo<'_>,

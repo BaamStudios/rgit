@@ -362,6 +362,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 quiet,
                 reflog: reflog.get(),
                 refuse_in_progress: false,
+                // Only `git checkout -b <name>`, as three words.
+                full_checkout: argv.len() != 3,
                 invalid_start: &invalid,
             },
         );
@@ -494,6 +496,7 @@ fn switch_or_guess(
                     quiet,
                     reflog: false,
                     refuse_in_progress: false,
+                    full_checkout: false,
                     invalid_start: &|s: &str| msg::not_a_commit_for_branch(s, name),
                 },
             )
