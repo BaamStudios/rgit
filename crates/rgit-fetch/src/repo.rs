@@ -41,12 +41,11 @@ pub struct LocalRepo {
 }
 
 /// The `reference-transaction` hook: called with the state and the
-/// `(old, new, name)` updates; an `Err` in the `prepared` state aborts the
+/// `(old, new, name)` updates; an `Err` in the `preparing` or `prepared`
+/// state aborts the
 /// transaction with that message.
-pub type TransactionHook = dyn Fn(
-    rgit_refs::HookState,
-    &[(rgit_hash::ObjectId, rgit_hash::ObjectId, String)],
-) -> std::result::Result<(), String>;
+pub type TransactionHook =
+    dyn Fn(rgit_refs::HookState, &[(String, String, String)]) -> std::result::Result<(), String>;
 
 impl LocalRepo {
     /// Open the repository described by `setup` with its configuration.

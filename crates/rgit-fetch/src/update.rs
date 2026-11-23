@@ -224,7 +224,7 @@ impl RefHooks for FetchHooks<'_> {
     fn reference_transaction(
         &mut self,
         state: rgit_refs::HookState,
-        updates: &[(ObjectId, ObjectId, String)],
+        updates: &[(String, String, String)],
     ) -> Result<(), String> {
         match self.transaction {
             Some(hook) if !updates.is_empty() => hook(state, updates),

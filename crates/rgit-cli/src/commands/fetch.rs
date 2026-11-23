@@ -516,7 +516,11 @@ pub fn run_with_reflog_action(
         let opts = rgit_hook::RunOptions::with_args([state.as_str()])
             .stdin(rgit_hook::Input::Data(&input));
         let outcome = hooks.run("reference-transaction", &opts)?;
-        if state == rgit_refs::HookState::Prepared && !outcome.ok() {
+        let can_abort = matches!(
+            state,
+            rgit_refs::HookState::Preparing | rgit_refs::HookState::Prepared
+        );
+        if can_abort && !outcome.ok() {
             return Err(crate::messages::hook::transaction_aborted_by_hook(
                 state.as_str(),
             ));

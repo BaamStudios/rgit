@@ -1221,6 +1221,8 @@ pub fn run_send_pack(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let flags = Flags {
         send_pack: true,
         verbose: verbose.get() > 0,
+        verbosity: verbose.get(),
+        thin: thin.get(),
         quiet: quiet.get() > 0,
         porcelain: false,
         dry_run: dry_run.get() > 0,
