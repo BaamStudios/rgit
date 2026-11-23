@@ -325,6 +325,15 @@ struct Am<'c> {
     sign: Option<crate::signing::Sign>,
 }
 
+/// What applying a patch did.
+enum Applied {
+    Yes,
+    /// Failed; the messages are printed.
+    No,
+    /// The three-way merge left `HEAD`'s tree as it was.
+    Already,
+}
+
 /// How a patch ended when it did not end in a commit.
 enum Stop {
     /// Failed; the message and hints are printed, exit 128.
@@ -676,20 +685,21 @@ impl<'c> Am<'c> {
     }
 
     /// Applies the patch to index and work tree; with `-3` falls back to
-    /// a three-way merge. `Ok(false)`: failed (messages printed).
-    fn apply_patch(&self, subject: &str) -> Result<bool, Stop> {
+    /// a three-way merge. `Applied::No`: failed (messages printed).
+    fn apply_patch(&self, subject: &str) -> Result<Applied, Stop> {
+        let yes_no = |ok: bool| if ok { Applied::Yes } else { Applied::No };
         if !self.cur.threeway {
             let (code, _) = self.run_self(&self.apply_args(&["--index"]), &[], false, false)?;
-            return Ok(code == 0);
+            return Ok(yes_no(code == 0));
         }
         let (code, _) = self.run_self(&self.apply_args(&["--index"]), &[], true, false)?;
         if code == 0 {
-            return Ok(true);
+            return Ok(Applied::Yes);
         }
         self.three_way(subject)
     }
 
-    fn three_way(&self, subject: &str) -> Result<bool, Stop> {
+    fn three_way(&self, subject: &str) -> Result<Applied, Stop> {
         let tmp = self.path("patch-merge-index");
         let _ = std::fs::remove_file(&tmp);
         let fake = format!("--build-fake-ancestor={}", tmp.to_string_lossy());
@@ -706,7 +716,7 @@ impl<'c> Am<'c> {
         )?;
         if code != 0 {
             eprintln!("error: {}", msg::NO_FAKE_ANCESTOR);
-            return Ok(false);
+            return Ok(Applied::No);
         }
         let env = [("GIT_INDEX_FILE", tmp.clone().into_os_string())];
         let tree_of_tmp = |am: &Am| -> Result<Option<ObjectId>, Die> {
@@ -719,7 +729,7 @@ impl<'c> Am<'c> {
             Ok(ObjectId::from_hex(repo.hash, hex.trim().as_bytes()).ok())
         };
         let Some(base) = tree_of_tmp(self)? else {
-            return Ok(false);
+            return Ok(Applied::No);
         };
         let repo = self.repo()?;
         let head = self.head()?;
@@ -753,10 +763,10 @@ impl<'c> Am<'c> {
         args.push(self.patch_arg());
         let (code, _) = self.run_self(&args, &env, false, false)?;
         if code != 0 {
-            return Ok(false);
+            return Ok(Applied::No);
         }
         let Some(theirs) = tree_of_tmp(self)? else {
-            return Ok(false);
+            return Ok(Applied::No);
         };
         let _ = std::fs::remove_file(&tmp);
         if !self.cur.quiet {
@@ -793,9 +803,13 @@ impl<'c> Am<'c> {
         }
         if !result.clean {
             eprintln!("error: {}", msg::FAILED_TO_MERGE);
-            return Ok(false);
+            return Ok(Applied::No);
         }
-        Ok(true)
+        if result.tree == head_tree {
+            out(msg::ALREADY_APPLIED);
+            return Ok(Applied::Already);
+        }
+        Ok(Applied::Yes)
     }
 
     // ------------------------------------------------------------------
@@ -964,8 +978,13 @@ impl<'c> Am<'c> {
             }
             if !patch_empty {
                 match self.apply_patch(&subject) {
-                    Ok(true) => {}
-                    Ok(false) | Err(Stop::Failed) => return self.fail_patch(n, &subject),
+                    Ok(Applied::Yes) => {}
+                    // The merge changed nothing: no commit.
+                    Ok(Applied::Already) => {
+                        self.next_patch()?;
+                        continue;
+                    }
+                    Ok(Applied::No) | Err(Stop::Failed) => return self.fail_patch(n, &subject),
                     Err(Stop::Die(d)) => return Err(d),
                 }
             }

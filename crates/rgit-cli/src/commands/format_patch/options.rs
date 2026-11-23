@@ -26,6 +26,14 @@ pub enum HeaderOp {
     NoAdd,
 }
 
+/// `--attach[=<boundary>]` / `--inline[=<boundary>]`.
+#[derive(Debug, Clone)]
+pub struct Attach {
+    /// `None` for the default boundary.
+    pub boundary: Option<String>,
+    pub inline: bool,
+}
+
 /// What the command line asked for; `None` leaves the configured value.
 #[derive(Debug, Default)]
 pub struct Options {
@@ -71,6 +79,21 @@ pub struct Options {
     /// `--pretty=mboxrd`.
     pub mboxrd: bool,
     pub default_prefix: bool,
+    /// `--attach`/`--inline`; `Some(None)` after `--no-attach`.
+    pub attach: Option<Option<Attach>>,
+    /// `--base=<commit>`; `Some(None)` after `--no-base`.
+    pub base: Option<Option<String>>,
+    /// `--commit-list-format=<spec>`; `Some(None)` after
+    /// `--no-commit-list-format`.
+    pub commit_list_format: Option<Option<String>>,
+    /// `--interdiff=<previous>`.
+    pub interdiff: Option<String>,
+    /// `--range-diff=<previous>`.
+    pub range_diff: Option<String>,
+    /// `--creation-factor=<percent>`.
+    pub creation_factor: Option<usize>,
+    /// `--progress`.
+    pub progress: bool,
     /// `-<n>`, `--max-count=<n>`.
     pub max_count: Option<String>,
     /// Other revision options, passed to the walk.
@@ -289,12 +312,27 @@ impl Options {
             ("max-count", Some(n)) => self.max_count = Some(n.to_string()),
             // Commits without changes are always included.
             ("always" | "no-always", None) => {}
-            ("no-attach" | "no-base" | "no-notes" | "no-progress" | "progress", None) => {}
-            (
-                "attach" | "inline" | "base" | "notes" | "interdiff" | "range-diff"
-                | "creation-factor" | "commit-list-format",
-                _,
-            ) => return Err(Die::Fatal(msg::not_supported(&format!("--{name}")))),
+            ("attach" | "inline", _) => {
+                self.attach = Some(Some(Attach {
+                    boundary: value.map(str::to_string),
+                    inline: name == "inline",
+                }));
+            }
+            ("no-attach", None) => self.attach = Some(None),
+            ("base", Some(_)) => self.base = Some(Some(v())),
+            ("no-base", None) => self.base = Some(None),
+            ("commit-list-format", Some(_)) => self.commit_list_format = Some(Some(v())),
+            ("no-commit-list-format", None) => self.commit_list_format = Some(None),
+            ("interdiff", Some(_)) => self.interdiff = Some(v()),
+            ("no-interdiff", None) => self.interdiff = None,
+            ("range-diff", Some(_)) => self.range_diff = Some(v()),
+            ("no-range-diff", None) => self.range_diff = None,
+            ("creation-factor", Some(n)) => self.creation_factor = Some(number(name, n)?),
+            ("no-creation-factor", None) => self.creation_factor = None,
+            ("progress", None) => self.progress = true,
+            ("no-progress", None) => self.progress = false,
+            ("no-notes", None) => {}
+            ("notes", _) => return Err(Die::Fatal(msg::not_supported(&format!("--{name}")))),
             _ => return Ok(false),
         }
         Ok(true)

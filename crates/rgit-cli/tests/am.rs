@@ -96,6 +96,19 @@ fn three_way_conflict_and_continue() {
     am(&mut fx, &["--quit"]);
 }
 
+/// HEAD already has the change of the first patch, made in a commit of
+/// its own: the three-way merge changes nothing and the patch is skipped.
+#[test]
+fn three_way_already_applied() {
+    let mut fx = base()
+        .write("f", "a\nB\nc\n")
+        .write("g", "new\n")
+        .git(["add", "f", "g"])
+        .git(["commit", "-q", "-m", "the same change"])
+        .tick();
+    am(&mut fx, &["-3", "series.mbox"]);
+}
+
 /// The base repository with `empty.mbox`, a mail without a patch.
 fn with_empty_mail() -> Fixture {
     let fx = base()

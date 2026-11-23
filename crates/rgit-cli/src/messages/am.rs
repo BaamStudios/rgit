@@ -42,6 +42,7 @@ pub const HELP_REBASING: &str = "(internal use for git-rebase)";
 pub const NOT_RESUMING: &str = "Resolve operation not in progress, we are not resuming.";
 pub const FORMAT_DETECTION_FAILED: &str = "Patch format detection failed.";
 pub const PATCH_IS_EMPTY: &str = "Patch is empty.";
+pub const ALREADY_APPLIED: &str = "No changes -- Patch already applied.";
 pub const NO_CHANGES: &str = "No changes - did you forget to use 'git add'?\n\
 If there is nothing left to stage, chances are that something else\n\
 already introduced the same changes; you might want to skip this patch.";
