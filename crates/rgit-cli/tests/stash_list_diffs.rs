@@ -50,6 +50,8 @@ fn list_with_diffs() {
             &["stash", "list", "--numstat"],
             &["stash", "list", "--format=%gd%n", "--stat"],
             &["stash", "list", "-p"],
+            &["stash", "list", "--format=%gd", "-p", "--cc"],
+            &["stash", "list", "--cc"],
         ],
     );
 }
