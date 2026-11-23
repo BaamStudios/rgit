@@ -46,6 +46,9 @@ fn is_base() {
         &mut fx,
         &[
             &["for-each-ref", "--format=%(refname):%(is-base:topic)"],
+            // Ties between refs whose history holds the base itself.
+            &["for-each-ref", "--format=%(refname):%(is-base:mid)"],
+            &["for-each-ref", "--format=%(refname):%(is-base:early)"],
             &[
                 "for-each-ref",
                 "--format=%(refname):%(is-base:topic)",
