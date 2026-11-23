@@ -175,6 +175,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     let jobs = Cell::new(-1);
     let ignored_i = Cell::new(0);
     let upload_pack: RefCell<Option<String>> = RefCell::new(None);
+    let recurse_submodules: RefCell<Option<String>> = RefCell::new(None);
     let server_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let refmap: RefCell<Option<Vec<String>>> = RefCell::new(None);
     let negotiation_restrict: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -266,10 +267,25 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::bool(None, "show-forced-updates", &ignored_i, msg::HELP_SHOW_FORCED),
             Opt::bool(None, "write-commit-graph", &ignored_i, msg::HELP_WRITE_COMMIT_GRAPH),
             Opt::flag(None, "stdin", &stdin, msg::HELP_STDIN),
+            Opt::string(
+                None,
+                "recurse-submodules",
+                &recurse_submodules,
+                "on-demand",
+                msg::HELP_RECURSE_SUBMODULES,
+            )
+            .optional(Some("yes")),
     ]);
     let mut parser = Parser::new(msg::USAGE, table);
     let rest = parser.parse(argv)?.args;
     drop(parser);
+    // Fetching inside submodules is not implemented (rgit #121); turning it
+    // off is accepted.
+    if let Some(v) = recurse_submodules.borrow().as_deref() {
+        if !matches!(v, "no" | "false" | "off" | "0") {
+            return Err(Die::Fatal(msg::recurse_submodules_unsupported(v)));
+        }
+    }
     let args = Args {
         verbose: verbose.get(),
         quiet: quiet.get(),
