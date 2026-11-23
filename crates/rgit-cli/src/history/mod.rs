@@ -165,7 +165,10 @@ struct DiffLimit {
     repo: crate::repository::Repo,
     opts: crate::diff::options::DiffOpts,
     pathspec: rgit_pathspec::Pathspec,
-    first_parent: bool,
+    /// How merges get their diff: none (never shown), against every
+    /// parent (`-m`: shown when one of them passes), against the first
+    /// parent, combined (always shown, like git) or the remerge diff.
+    merges: MergeDiff,
     /// `--root` / `log.showRoot`: root commits have a diff.
     show_root: bool,
 }
@@ -176,22 +179,64 @@ impl DiffLimit {
         let (commit, _) = history.read_commit(id).ok_or_else(bad)?;
         let parents = history.parents(id, &commit);
         let tree = commit.tree().map_err(|_| bad())?;
-        let old = match parents.len() {
-            0 if !self.show_root => return Ok(false),
-            0 => None,
-            1 => Some(history.tree_of(&parents[0]).ok_or_else(bad)?),
-            _ if self.first_parent => Some(history.tree_of(&parents[0]).ok_or_else(bad)?),
-            _ => return Ok(false),
-        };
+        let parent_tree = |p: &ObjectId| history.tree_of(p).ok_or_else(bad);
+        match parents.len() {
+            0 if !self.show_root => Ok(false),
+            0 => self.keeps_diff(None, &tree),
+            1 => self.keeps_diff(Some(parent_tree(&parents[0])?), &tree),
+            _ => match self.merges {
+                MergeDiff::Off => Ok(false),
+                MergeDiff::FirstParent => self.keeps_diff(Some(parent_tree(&parents[0])?), &tree),
+                MergeDiff::Separate => {
+                    for p in &parents {
+                        if self.keeps_diff(Some(parent_tree(p)?), &tree)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }
+                MergeDiff::Combined | MergeDiff::Dense => Ok(true),
+                MergeDiff::Remerge => {
+                    let [ours, theirs] = parents.as_slice() else {
+                        return Ok(false);
+                    };
+                    // As a patch: conflict headers of paths without a
+                    // content change count too (`--diff-filter=U`).
+                    let patch = crate::diff::options::Formats {
+                        patch: true,
+                        ..Default::default()
+                    };
+                    let bytes = crate::diff::remerge::diff(
+                        &self.repo,
+                        &self.opts,
+                        patch,
+                        &self.pathspec,
+                        [ours, theirs],
+                        &tree,
+                    )?;
+                    Ok(!bytes.is_empty())
+                }
+            },
+        }
+    }
+
+    /// Whether the diff of `tree` against `old` (none: the empty tree)
+    /// keeps a file pair after the diffcore transformations.
+    fn keeps_diff(&self, old: Option<ObjectId>, tree: &ObjectId) -> Result<bool, Die> {
         let mut w = crate::diff::collect::TreeDiff {
             repo: &self.repo,
             pathspec: &self.pathspec,
             recursive: true,
-            show_trees: false,
+            // `-t`: trees are pairs too (`--find-object=<tree>`).
+            show_trees: self.opts.show_trees,
             max_depth: None,
             pairs: Vec::new(),
         };
-        w.walk(old.as_ref(), Some(&tree), b"")?;
+        w.walk(old.as_ref(), Some(tree), b"")?;
+        if let (true, Some(old)) = (self.opts.copies_harder, &old) {
+            let files = crate::diff::collect::tree_files(&self.repo, old, &self.pathspec)?;
+            w.pairs = crate::diff::collect::with_unmodified(std::mem::take(&mut w.pairs), files);
+        }
         let formats = crate::diff::options::Formats {
             raw: true,
             ..Default::default()
@@ -1428,6 +1473,11 @@ impl Printer<'_, '_> {
                     {
                         bytes.insert(0, b'\n');
                     }
+                    // The line after the entry is there even when that
+                    // diff is empty (a diff limit can empty it).
+                    if bytes.is_empty() && !self.empty_format() {
+                        bytes.push(if self.opts.zero { 0 } else { b'\n' });
+                    }
                     return Ok(bytes);
                 }
                 MergeDiff::Remerge => return self.remerge_diff(d, id, &parents, &tree),
@@ -1455,6 +1505,14 @@ impl Printer<'_, '_> {
         let tree = commit.tree().map_err(|_| walk_error())?;
         let mut parts = Vec::new();
         for p in parents {
+            if let Some(limit) = &d.limit {
+                let old = self.repo.tree_of(&p).ok_or_else(walk_error)?;
+                if !limit.keeps_diff(Some(old), &tree)? {
+                    continue;
+                }
+                parts.push((p, self.diff_against(d, Some(p), &tree, walk_error)?));
+                continue;
+            }
             let bytes = self.diff_against(d, Some(p), &tree, walk_error)?;
             if !bytes.is_empty() {
                 parts.push((p, bytes));
@@ -1473,9 +1531,14 @@ impl Printer<'_, '_> {
         walk_error: impl Fn() -> Die,
     ) -> Result<Vec<u8>, Die> {
         let bytes = self.render_diff(d, old, tree, d.formats, &walk_error)?;
-        // An empty `--dirstat` (changes below its limit) or `--check`
-        // (no whitespace errors) still separates.
-        let quiet = d.formats.dirstat || d.formats.check;
+        // An empty `--dirstat` (changes below its limit), `--check` (no
+        // whitespace errors) or `--summary` alone (plain modifications)
+        // still separates.
+        let others = crate::diff::options::Formats {
+            summary: false,
+            ..d.formats
+        };
+        let quiet = d.formats.dirstat || d.formats.check || (d.formats.summary && !others.any());
         if bytes.is_empty() && !(quiet && self.has_changes(d, old, tree, &walk_error)?) {
             return Ok(bytes);
         }
@@ -1569,7 +1632,8 @@ impl Printer<'_, '_> {
             pairs: Vec::new(),
         };
         w.walk(old_tree.as_ref(), Some(tree), b"")?;
-        if let (true, Some(old)) = (follow.is_some() && diff_opts.copies_harder, &old_tree) {
+        // `--find-copies-harder` (`-C -C`): unmodified files are sources.
+        if let (true, Some(old)) = (diff_opts.copies_harder, &old_tree) {
             let files = crate::diff::collect::tree_files(&d.repo, old, pathspec)?;
             w.pairs = crate::diff::collect::with_unmodified(std::mem::take(&mut w.pairs), files);
         }
@@ -1662,9 +1726,6 @@ impl Printer<'_, '_> {
                 crate::diff::combined::raw(&d.repo, &files, abbrev, style, &mut bytes);
             }
             if d.formats.patch {
-                if !bytes.is_empty() {
-                    bytes.push(b'\n');
-                }
                 let opts = crate::diff::combined::PatchOptions {
                     dense: d.merges == MergeDiff::Dense,
                     all_paths: d.combined_all_paths,
@@ -1673,7 +1734,14 @@ impl Printer<'_, '_> {
                     diff: &out.patch.diff,
                     output: Some(&out),
                 };
-                crate::diff::combined::patch(&d.repo, &files, &opts, &mut bytes);
+                let mut patch = Vec::new();
+                crate::diff::combined::patch(&d.repo, &files, &opts, &mut patch);
+                // The line between the statistics and the patch is only
+                // there when the patch is (t4066).
+                if !patch.is_empty() && !bytes.is_empty() {
+                    bytes.push(b'\n');
+                }
+                bytes.extend_from_slice(&patch);
             }
         }
         // Always separated from the entry, even a one-line one, and also
@@ -2076,7 +2144,11 @@ fn textconv_blob(p: &Printer<'_, '_>, name: &str, data: Vec<u8>) -> Result<Vec<u
     }
 }
 
-fn show_objects(p: &mut Printer<'_, '_>, mut paths: Option<paths::PathFilter>) -> Result<i32, Die> {
+fn show_objects(
+    p: &mut Printer<'_, '_>,
+    mut paths: Option<paths::PathFilter>,
+    limit: Option<&DiffLimit>,
+) -> Result<i32, Die> {
     let repo = p.repo;
     let opts = p.opts;
     let mut shown = std::collections::HashSet::new();
@@ -2126,7 +2198,7 @@ fn show_objects(p: &mut Printer<'_, '_>, mut paths: Option<paths::PathFilter>) -
             match kind {
                 ObjectKind::Commit => {
                     if shown.insert(id) {
-                        show_commit(p, &id, &mut paths)?;
+                        show_commit(p, &id, &mut paths, limit)?;
                     }
                 }
                 ObjectKind::Tag => {
@@ -2177,8 +2249,16 @@ fn show_commit(
     p: &mut Printer<'_, '_>,
     id: &ObjectId,
     paths: &mut Option<paths::PathFilter>,
+    limit: Option<&DiffLimit>,
 ) -> Result<(), Die> {
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+    // `-S`, `-G`, `--find-object`, `--diff-filter`: a commit whose diff
+    // keeps nothing is not shown at all.
+    if let Some(limit) = limit {
+        if !limit.keeps(p.repo, id)? {
+            return Ok(());
+        }
+    }
     let opts = rgit_revwalk::walk::WalkOptions {
         no_walk: Some(rgit_revwalk::walk::NoWalk::Unsorted),
         prune: paths.is_some(),
@@ -2252,6 +2332,8 @@ struct LogDiff {
     /// The paths the diffs are limited to (the walk's, unless
     /// `--full-diff`).
     pathspec: rgit_pathspec::Pathspec,
+    /// The diff limit, for `-m` (only the parents that pass get an entry).
+    limit: Option<DiffLimit>,
 }
 
 /// The diff `log` shows after every commit: only when a diff format was
@@ -2262,23 +2344,34 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
         return Ok(None);
     }
     let mut d = opts.diff.clone();
+    let limiting = limits_commits(opts);
     // `-c`, `--cc`, `--dd` and `--remerge-diff` imply `-p`; `--diff-merges`
-    // only for merges.
+    // only for merges (for all commits when the commits are limited by
+    // their diff).
     let mut merges_only = false;
     if opts.merges_patch == MergesPatch::Merges && !opts.show && !d.no_output && !any_format(&d) {
         d.patch = true;
-        merges_only = true;
+        merges_only = !limiting;
     }
     if (opts.show || opts.merges_patch == MergesPatch::All) && !d.no_output {
         // `show` defaults to a patch.
         d.patch |= !any_format(&d);
     }
     let d = &d;
-    if !any_format(d) {
+    // `-m` with a diff limit names the parents that pass even without a
+    // diff format.
+    let separate = limiting
+        && opts.merges == Some(MergeDiff::Separate)
+        && !opts.walk.first_parent
+        && !d.no_output;
+    let formats = if any_format(d) {
+        d.formats(false)?
+    } else if separate {
+        crate::diff::options::Formats::default()
+    } else {
         return Ok(None);
-    }
-    let formats = d.formats(false)?;
-    if !formats.any() {
+    };
+    if !formats.any() && !separate {
         return Ok(None);
     }
     let mut diff_opts = d.clone();
@@ -2324,6 +2417,65 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
         combined_all_paths: opts.combined_all_paths,
         show_root,
         pathspec: rgit_pathspec::Pathspec::default(),
+        limit: None,
+    }))
+}
+
+/// `-S`, `-G`, `--find-object` or `--diff-filter` limit the commits of
+/// `log` and `show` to those whose diff keeps a change.
+fn limits_commits(opts: &Options) -> bool {
+    let d = &opts.diff;
+    !opts.plumbing
+        && (d.pickaxe.is_some() || !d.find_object.is_empty() || d.diff_filter.is_active())
+}
+
+/// `-S`, `-G`, `--find-object`, `--diff-filter` of `log` and `show`: the
+/// commits are limited to those whose diff keeps a change.
+fn commit_diff_limit(
+    ctx: &Context,
+    repo: &Repo<'_>,
+    cmd: Command,
+    opts: &Options,
+    paths: &[String],
+) -> Result<Option<DiffLimit>, Die> {
+    let d = &opts.diff;
+    if cmd != Command::Log || !limits_commits(opts) {
+        return Ok(None);
+    }
+    let mut drepo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    let mut dopts = d.clone();
+    // log is porcelain: the pickaxe sees textconv output.
+    dopts.textconv = Some(dopts.textconv.unwrap_or(true));
+    dopts.resolve_objects(&mut drepo)?;
+    // Option conflicts (`-G` with `-S`, ...) are fatal before the walk.
+    crate::diff::output::Output::new(
+        Some(&drepo),
+        drepo.hash,
+        &dopts,
+        crate::diff::options::Formats::default(),
+        true,
+    )?;
+    let show_root = opts.root
+        || drepo
+            .config
+            .bool("log.showRoot")
+            .ok()
+            .flatten()
+            .unwrap_or(true);
+    let merges = match opts.merges {
+        // Only the first parent is walked.
+        Some(MergeDiff::Separate) if opts.walk.first_parent => MergeDiff::FirstParent,
+        Some(m) => m,
+        None if opts.walk.first_parent => MergeDiff::FirstParent,
+        None if opts.show => MergeDiff::Dense,
+        None => MergeDiff::Off,
+    };
+    Ok(Some(DiffLimit {
+        show_root,
+        repo: drepo,
+        opts: dopts,
+        pathspec: paths::parse_pathspec(ctx, repo, paths)?,
+        merges,
     }))
 }
 
@@ -2524,42 +2676,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
                 .unwrap_or(true)
     });
     let ident_grep = !opts.grep.author.is_empty() || !opts.grep.committer.is_empty();
-    let d = &opts.diff;
-    let diff_limit = if cmd == Command::Log
-        && !opts.show
-        && (d.pickaxe.is_some() || !d.find_object.is_empty() || d.diff_filter.is_active())
-    {
-        let mut drepo = crate::repository::Repo::open(ctx, Mode::Required)?;
-        let mut dopts = d.clone();
-        // log is porcelain: the pickaxe sees textconv output.
-        dopts.textconv = Some(dopts.textconv.unwrap_or(true));
-        dopts.resolve_objects(&mut drepo)?;
-        // Option conflicts (`-G` with `-S`, ...) are fatal before the walk.
-        crate::diff::output::Output::new(
-            Some(&drepo),
-            drepo.hash,
-            &dopts,
-            crate::diff::options::Formats::default(),
-            true,
-        )?;
-        let show_root = opts.root
-            || drepo
-                .config
-                .bool("log.showRoot")
-                .ok()
-                .flatten()
-                .unwrap_or(true);
-        Some(DiffLimit {
-            show_root,
-            repo: drepo,
-            opts: dopts,
-            pathspec: paths::parse_pathspec(ctx, repo, &resolved.paths)?,
-            first_parent: opts.walk.first_parent
-                || matches!(opts.merges, Some(MergeDiff::FirstParent)),
-        })
-    } else {
-        None
-    };
+    let diff_limit = commit_diff_limit(ctx, repo, cmd, opts, &resolved.paths)?;
     let mut walk = Walk::new(
         Commits {
             repo,
@@ -2674,11 +2791,16 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         next: None,
         reflog: None,
         diff: match log_diff(ctx, opts, cmd)? {
-            Some(mut d) if !opts.full_diff && !resolved.paths.is_empty() => {
-                d.pathspec = paths::parse_pathspec(ctx, repo, &resolved.paths)?;
+            Some(mut d) => {
+                if !opts.full_diff && !resolved.paths.is_empty() {
+                    d.pathspec = paths::parse_pathspec(ctx, repo, &resolved.paths)?;
+                }
+                if d.merges == MergeDiff::Separate {
+                    d.limit = commit_diff_limit(ctx, repo, cmd, opts, &resolved.paths)?;
+                }
                 Some(d)
             }
-            d => d,
+            None => None,
         },
         store: None,
         usage: opts.disk_usage.map(|_| 0),
@@ -2750,8 +2872,14 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             )));
         }
         let mut scratch = opts.walk.clone();
-        let paths = path_filter(ctx, repo, opts, &resolved.paths, &mut scratch)?;
-        return show_objects(&mut p, paths);
+        // `--remerge-diff` turns history simplification off (t4069 13, 15).
+        let paths = if opts.merges == Some(MergeDiff::Remerge) {
+            None
+        } else {
+            path_filter(ctx, repo, opts, &resolved.paths, &mut scratch)?
+        };
+        let limit = commit_diff_limit(ctx, repo, cmd, opts, &resolved.paths)?;
+        return show_objects(&mut p, paths, limit.as_ref());
     }
     if bisecting {
         return run_bisect(&mut p, &mut walk);
