@@ -205,3 +205,11 @@ pub fn invalid_disk_usage(value: &str) -> String {
 }
 
 pub const Z_UNSUPPORTED: &str = "-z option used with unsupported option";
+/// `log -g` with `--graph` (and other history limiting).
+pub const REFLOG_HISTORY_LIMITING: &str =
+    "cannot combine --walk-reflogs with history-limiting options";
+
+/// `log -g` with a range or an exclusion.
+pub fn cannot_walk_reflogs(name: &str) -> String {
+    format!("cannot walk reflogs for {name}")
+}
