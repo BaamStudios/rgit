@@ -167,6 +167,69 @@ pub fn signature_block(out: &mut Vec<u8>, signature: &[u8]) {
     out.push(b'\n');
 }
 
+/// A patch as the prerequisite patch ids of `--base` see it: per file
+/// the `diff --git` line, the mode lines and always a `---`/`+++` pair
+/// (also for renames, mode changes and empty files, whose patches have
+/// none), without the similarity, rename, copy and index lines. (Found
+/// by comparing the ids git writes with `git patch-id --stable` of
+/// constructed patches.)
+pub fn patch_id_text(patch: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(patch.len());
+    let lines: Vec<&[u8]> = patch.split_inclusive(|&b| b == b'\n').collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let Some(names) = line.strip_prefix(b"diff --git ") else {
+            out.extend_from_slice(line);
+            i += 1;
+            continue;
+        };
+        out.extend_from_slice(line);
+        i += 1;
+        // Both names: halves of the line unless a rename or copy says.
+        let names = names.strip_suffix(b"\n").unwrap_or(names);
+        let half = names.len().saturating_sub(1) / 2;
+        let mut old = names[..half].to_vec();
+        let mut new = names[(half + 1).min(names.len())..].to_vec();
+        let (mut created, mut deleted, mut has_lines) = (false, false, false);
+        while i < lines.len() && !lines[i].starts_with(b"diff --git ") {
+            let l = lines[i];
+            if l.starts_with(b"--- ") || l.starts_with(b"@@") || l.starts_with(b"Binary files") {
+                has_lines = true;
+                break;
+            }
+            if let Some(p) = l
+                .strip_prefix(b"rename from ")
+                .or_else(|| l.strip_prefix(b"copy from "))
+            {
+                old = [b"a/", p.trim_ascii_end()].concat();
+            } else if let Some(p) = l
+                .strip_prefix(b"rename to ")
+                .or_else(|| l.strip_prefix(b"copy to "))
+            {
+                new = [b"b/", p.trim_ascii_end()].concat();
+            } else if l.starts_with(b"new file mode ") {
+                created = true;
+                out.extend_from_slice(l);
+            } else if l.starts_with(b"deleted file mode ") {
+                deleted = true;
+                out.extend_from_slice(l);
+            } else if l.starts_with(b"old mode ") || l.starts_with(b"new mode ") {
+                out.extend_from_slice(l);
+            }
+            i += 1;
+        }
+        if !has_lines {
+            out.extend_from_slice(b"--- ");
+            out.extend_from_slice(if created { b"/dev/null" } else { &old[..] });
+            out.extend_from_slice(b"\n+++ ");
+            out.extend_from_slice(if deleted { b"/dev/null" } else { &new[..] });
+            out.push(b'\n');
+        }
+    }
+    out
+}
+
 /// `<id>` for a message id given on the command line.
 pub fn angle(id: &str) -> String {
     let id = id.trim();
@@ -229,6 +292,22 @@ mod tests {
         assert_eq!(b, b"trailing\n\tx\n");
         let (s, _) = split_message_with(b"one  \n two\n\nbody\n", b'\n');
         assert_eq!(s, b"one\n two");
+    }
+
+    #[test]
+    fn patch_id_texts() {
+        assert_eq!(
+            patch_id_text(
+                b"diff --git a/g b/h\nsimilarity index 100%\nrename from g\nrename to h\n\
+                  diff --git a/m b/m\nold mode 100644\nnew mode 100755\n\
+                  diff --git a/e b/e\nnew file mode 100644\nindex 0000000..e69de29\n\
+                  diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n"
+            ),
+            b"diff --git a/g b/h\n--- a/g\n+++ b/h\n\
+              diff --git a/m b/m\nold mode 100644\nnew mode 100755\n--- a/m\n+++ b/m\n\
+              diff --git a/e b/e\nnew file mode 100644\n--- /dev/null\n+++ b/e\n\
+              diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n"
+        );
     }
 
     #[test]

@@ -325,3 +325,169 @@ fn errors() {
         same(&mut fx, args);
     }
 }
+
+/// `argv` (global options, then the command) with the signature, the
+/// message-id time and the default `--attach` boundary (the version,
+/// too) normalized.
+fn same_raw(fx: &mut Fixture, argv: &[&str]) {
+    let boundary = regex::Regex::new(r"------------[0-9][^\n\x22]*").unwrap();
+    fx.compare(argv)
+        .checks(Check::OUTPUT)
+        .normalize_stdout(volatile())
+        .normalize_stdout(Normalizer::new("boundary version", move |s| {
+            boundary
+                .replace_all(s, "------------<VERSION>")
+                .into_owned()
+        }))
+        .run();
+}
+
+fn with_config<'a>(config: &'a str, args: &[&'a str]) -> Vec<&'a str> {
+    let mut argv = vec!["-c", config, "format-patch"];
+    argv.extend_from_slice(args);
+    argv
+}
+
+#[test]
+fn attachments() {
+    let mut fx = history();
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["--stdout", "--attach", "-3"][..],
+        &["--stdout", "--inline=XYZ", "-2"],
+        &["--stdout", "--attach=B", "--cover-letter", "-2"],
+        &["--stdout", "--attach=B", "-p", "-1"],
+        &["--stdout", "--attach=B", "--numstat", "-1"],
+        &[
+            "--stdout",
+            "--inline",
+            "--attach=Z",
+            "--numbered-files",
+            "-1",
+        ],
+        &["--stdout", "--attach=", "-s", "--to=t@e", "--thread", "-2"],
+        &["--stdout", "--attach=B", "--no-attach", "-1"],
+        &["--stdout", "--attach=B", "main..side"],
+    ] {
+        let mut argv = vec!["format-patch"];
+        argv.extend_from_slice(args);
+        same_raw(&mut fx, &argv);
+    }
+    for config in ["format.attach", "format.attach=", "format.attach=QQ"] {
+        same_raw(&mut fx, &with_config(config, &["--stdout", "-1"]));
+        same_raw(
+            &mut fx,
+            &with_config(config, &["--stdout", "--inline", "-1"]),
+        );
+    }
+    fx.compare([
+        "format-patch",
+        "-o",
+        "out",
+        "--signature=s",
+        "--attach=B",
+        "--cover-letter",
+        "-2",
+    ])
+    .checks([
+        Check::ExitCode,
+        Check::Stdout,
+        Check::Stderr,
+        Check::Worktree,
+    ])
+    .run();
+}
+
+#[test]
+fn base_tree_information() {
+    let mut fx = history();
+    if fx.is_skipped() {
+        return;
+    }
+    fx = fx
+        .git(["branch", "up", "main~3"])
+        .git(["branch", "-q", "--set-upstream-to=up"]);
+    for args in [
+        &["--stdout", "--base=main~3", "-1"][..],
+        &["--stdout", "--base=main~3", "--cover-letter", "-1"],
+        &["--stdout", "--base=main~2", "--attach=B", "-1"],
+        &["--stdout", "--base=main~2", "--no-signature", "-1"],
+        &["--stdout", "--base=HEAD", "-2"],
+        &["--stdout", "--base=HEAD~1", "-2"],
+        &["--stdout", "--base=nonexistent", "-2"],
+        &["--stdout", "--base=auto", "-2"],
+        &["--stdout", "--base=auto", "--root", "HEAD"],
+        &["--stdout", "--base=side", "-1"],
+        &["--stdout", "--base=main~3", "-1", "side"],
+    ] {
+        let mut argv = vec!["format-patch"];
+        argv.extend_from_slice(args);
+        same_raw(&mut fx, &argv);
+    }
+    same_raw(
+        &mut fx,
+        &with_config("format.useAutoBase=true", &["--stdout", "-2"]),
+    );
+    same_raw(
+        &mut fx,
+        &with_config("format.useAutoBase=true", &["--stdout", "--no-base", "-2"]),
+    );
+    fx = fx.git(["branch", "--unset-upstream"]);
+    for config in [
+        "format.useAutoBase=true",
+        "format.useAutoBase=whenAble",
+        "format.useAutoBase=bogus",
+    ] {
+        same_raw(&mut fx, &with_config(config, &["--stdout", "-2"]));
+    }
+}
+
+#[test]
+fn interdiff_and_commit_list() {
+    let mut fx = history();
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["--stdout", "--interdiff=HEAD~1", "-1"][..],
+        &["--stdout", "--interdiff=HEAD~2", "-2", "-v3"],
+        &["--stdout", "--interdiff=HEAD", "-1"],
+        &[
+            "--stdout",
+            "--interdiff=HEAD~1",
+            "--base=HEAD~3",
+            "-v2",
+            "-1",
+        ],
+        &[
+            "--stdout",
+            "--interdiff=HEAD~1",
+            "--cover-letter",
+            "-v1",
+            "-1",
+        ],
+        &["--stdout", "--interdiff=HEAD~1", "-v2.2", "-1"],
+        &["--stdout", "--interdiff=HEAD~1", "--no-cover-letter", "-2"],
+        &["--stdout", "--interdiff=nonexistent", "-1"],
+        &["--stdout", "--commit-list-format=modern", "-3"],
+        &["--stdout", "--commit-list-format=shortlog", "-3"],
+        &["--stdout", "--commit-list-format=log:%h %s (%an)", "-3"],
+        &[
+            "--stdout",
+            "--commit-list-format=[%(count)/%(total)] %%(count) %s",
+            "-2",
+        ],
+        &["--stdout", "--commit-list-format=log:", "-2"],
+        &[
+            "--stdout",
+            "--commit-list-format=x",
+            "--no-cover-letter",
+            "-2",
+        ],
+        &["--stdout", "--progress", "--no-binary", "-2"],
+    ] {
+        same(&mut fx, args);
+    }
+}

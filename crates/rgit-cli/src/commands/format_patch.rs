@@ -5,9 +5,10 @@
 //! standard output, with an optional cover letter.
 //!
 //! Mail headers are written with `rgit_mail` (RFC 2047 encoding, quoting,
-//! folding). Not yet supported: `--attach`/`--inline`, `--base`,
-//! `--notes`, `--ignore-if-in-upstream`, `--interdiff`/`--range-diff`,
-//! `--commit-list-format`.
+//! folding). `--attach`/`--inline` write multipart mails, `--base` adds
+//! the base tree information, `--interdiff` and `--commit-list-format`
+//! fill the cover letter. Not yet supported: `--notes` (rgit #138) and
+//! `--range-diff` (rgit #140).
 
 #[path = "format_patch/mail.rs"]
 pub(crate) mod mail;
@@ -77,7 +78,16 @@ struct Settings {
     numbered_files: bool,
     output_dir: Option<String>,
     cover_letter: CoverLetter,
+    /// The cover letter was asked for or refused (command line or
+    /// `format.coverLetter`).
+    cover_explicit: bool,
     cover_mode: CoverMode,
+    /// The commit list of the cover letter.
+    commit_list: Option<String>,
+    /// `--attach`/`--inline`: the boundary and whether the patch is
+    /// inline.
+    attach: Option<(String, bool)>,
+    base: Base,
     to: Vec<String>,
     cc: Vec<String>,
     extra: Vec<String>,
@@ -104,6 +114,15 @@ enum CoverLetter {
     Yes,
     No,
     Auto,
+}
+
+/// `--base`, `format.useAutoBase`.
+#[derive(Clone, PartialEq, Eq)]
+enum Base {
+    None,
+    /// `--base=auto`; `true` for `whenAble` (no base without one).
+    Auto(bool),
+    Commit(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -260,10 +279,43 @@ fn settings(repo: &Repo, o: &Options) -> Result<Settings, Die> {
     let cover_letter = match o.cover_letter {
         Some(true) => CoverLetter::Yes,
         Some(false) => CoverLetter::No,
+        // A commit list format on the command line asks for one.
+        None if matches!(o.commit_list_format, Some(Some(_))) => CoverLetter::Yes,
         None => match bool_or_word(config, "format.coverletter", &["auto"])? {
             Some(Ok(true)) => CoverLetter::Yes,
             Some(Err(_)) => CoverLetter::Auto,
             _ => CoverLetter::No,
+        },
+    };
+    let cover_explicit = o.cover_letter.is_some() || config.get("format.coverletter").is_some();
+    let commit_list = match &o.commit_list_format {
+        Some(f) => f.clone(),
+        None => config_string(config, "format.commitlistformat")?,
+    };
+    let attach = match &o.attach {
+        Some(a) => a.as_ref().map(|a| {
+            (
+                a.boundary.clone().unwrap_or_else(rgit_version::version),
+                a.inline,
+            )
+        }),
+        None => match config.get("format.attach") {
+            None => None,
+            Some(e) => match &e.value {
+                None => Some((rgit_version::version(), false)),
+                Some(v) if v.is_empty() => None,
+                Some(v) => Some((String::from_utf8_lossy(v).into_owned(), false)),
+            },
+        },
+    };
+    let base = match &o.base {
+        Some(None) => Base::None,
+        Some(Some(b)) if b == "auto" => Base::Auto(false),
+        Some(Some(b)) => Base::Commit(b.clone()),
+        None => match bool_or_word(config, "format.useautobase", &["whenAble"])? {
+            Some(Ok(true)) => Base::Auto(false),
+            Some(Err(_)) => Base::Auto(true),
+            _ => Base::None,
         },
     };
     let cover_mode = match &o.cover_from_description {
@@ -397,7 +449,11 @@ fn settings(repo: &Repo, o: &Options) -> Result<Settings, Die> {
         numbered_files: o.numbered_files,
         output_dir,
         cover_letter,
+        cover_explicit,
         cover_mode,
+        commit_list,
+        attach,
+        base,
         to,
         cc,
         extra,
@@ -498,6 +554,9 @@ struct Patch {
     commit: Commit,
     diff: Vec<u8>,
     has_stat: bool,
+    /// With `--attach`: the diff before the patch (stat, summary) and
+    /// the patch, rendered apart.
+    parts: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 /// The branch whose description goes into the cover letter.
@@ -542,6 +601,27 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             o.diff.no_prefix = true;
         }
     }
+
+    // `--interdiff`: the tree of the previous version.
+    let interdiff_base = match &o.interdiff {
+        Some(prev) => match repo.resolve(&format!("{prev}^{{tree}}")) {
+            Some(t) => Some(t),
+            None => {
+                eprintln!("error: {}", msg::malformed_object_name(prev));
+                return Err(Die::Exit(rgit_options::EXIT_USAGE));
+            }
+        },
+        None => None,
+    };
+    if o.range_diff.is_some() {
+        return Err(Die::Fatal(msg::not_supported("--range-diff")));
+    }
+    // `--base`: the named commit, or the upstream for `auto`.
+    let base_start = match &s.base {
+        Base::None => None,
+        Base::Commit(name) => repo.resolve(&format!("{name}^{{commit}}")),
+        Base::Auto(_) => repo.resolve("@{upstream}^{commit}"),
+    };
 
     // A lone <since> must name a commit.
     let since = &o.revs;
@@ -687,11 +767,33 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if diff.is_empty() && !o.paths.is_empty() {
             continue;
         }
+        let parts = if s.attach.is_some() {
+            let head = diff_between(
+                parent_tree.as_ref(),
+                &tree,
+                Formats {
+                    patch: false,
+                    ..formats
+                },
+            )?;
+            let patch = diff_between(
+                parent_tree.as_ref(),
+                &tree,
+                Formats {
+                    patch: true,
+                    ..Formats::default()
+                },
+            )?;
+            Some((head, patch))
+        } else {
+            None
+        };
         patches.push(Patch {
             id,
             commit,
             diff,
             has_stat: formats.stat,
+            parts,
         });
     }
     if o.ignore_if_in_upstream && !patches.is_empty() {
@@ -746,11 +848,92 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     patches.reverse();
 
     let count = patches.len();
-    let cover = match s.cover_letter {
+    let mut cover = match s.cover_letter {
         CoverLetter::Yes => true,
         CoverLetter::No => false,
         CoverLetter::Auto => count > 1,
     };
+    // An interdiff goes into the cover letter of a longer series.
+    if o.interdiff.is_some() && count > 1 && !cover {
+        if s.cover_explicit {
+            return Err(Die::Fatal(msg::requires_cover_or_single("--interdiff")));
+        }
+        cover = true;
+    }
+    let list_format = if cover {
+        match s.commit_list.as_deref() {
+            None | Some("shortlog") => None,
+            Some("modern") => Some(MODERN_LIST.to_string()),
+            Some(spec) => match spec.strip_prefix("log:") {
+                Some(f) => Some(f.to_string()),
+                None if spec.contains('%') => Some(spec.to_string()),
+                None => return Err(Die::Fatal(msg::invalid_format_string(spec))),
+            },
+        }
+    } else {
+        None
+    };
+    let tip_tree = patches[count - 1]
+        .commit
+        .tree()
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    let interdiff = match &interdiff_base {
+        Some(prev) => {
+            let diff = diff_between(
+                Some(prev),
+                &tip_tree,
+                Formats {
+                    patch: true,
+                    ..Formats::default()
+                },
+            )?;
+            Some((msg::interdiff_header(previous_version(s.reroll.as_deref())), diff))
+        }
+        None => None,
+    };
+    // The stable patch id of a prerequisite commit: its patch against
+    // the first parent with full object names; merges have none.
+    let patch_id_of = |id: &ObjectId| -> Result<Option<ObjectId>, Die> {
+        let Some(Object::Commit(c)) = repo.read_object(id) else {
+            return Ok(None);
+        };
+        let parents = c.parents().unwrap_or_default();
+        if parents.len() > 1 {
+            return Ok(None);
+        }
+        let tree = c.tree().map_err(|e| Die::Fatal(e.to_string()))?;
+        let parent_tree = match parents.first() {
+            Some(p) => match repo.read_object(p) {
+                Some(Object::Commit(pc)) => Some(pc.tree().map_err(|e| Die::Fatal(e.to_string()))?),
+                _ => return Ok(None),
+            },
+            None => None,
+        };
+        let mut w = TreeDiff {
+            repo: &repo,
+            pathspec: &pathspec,
+            recursive: true,
+            show_trees: false,
+            max_depth: None,
+            pairs: Vec::new(),
+        };
+        w.walk(parent_tree.as_ref(), Some(&tree), b"")?;
+        let mut opts = o.diff.clone();
+        opts.full_index = true;
+        opts.no_prefix = false;
+        let only_patch = Formats {
+            patch: true,
+            ..Formats::default()
+        };
+        let out = Output::new(Some(&repo), repo.hash, &opts, only_patch, false)?;
+        let text = out.render(std::mem::take(&mut w.pairs))?.0;
+        if text.is_empty() {
+            return Ok(Some(ObjectId::null(repo.hash)));
+        }
+        Ok(crate::patch_id::of_text(&mail::patch_id_text(&text), repo.hash))
+    };
+    let base_block = base_info(ctx, &patch_id_of, &s.base, base_start, &patches)?;
+    let mut base_block = base_block.as_deref();
     let numbered = !s.keep_subject
         && match s.numbered {
             Numbered::Yes => true,
@@ -875,7 +1058,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
         let mut text = body;
         text.push(b'\n');
-        text.extend_from_slice(&shortlog(&patches));
+        match &list_format {
+            Some(f) => text.extend_from_slice(&commit_list(ctx, &patches, f)?),
+            None => text.extend_from_slice(&shortlog(&patches)),
+        }
         // The diffstat from the one commit the series is based on to its
         // tip; there is none for a series on several bases or a root.
         let mut bases: Vec<ObjectId> = Vec::new();
@@ -894,10 +1080,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 Some(Object::Commit(pc)) => pc.tree().ok(),
                 _ => None,
             };
-            let tip_tree = patches[count - 1]
-                .commit
-                .tree()
-                .map_err(|e| Die::Fatal(e.to_string()))?;
             let stat = diff_between(
                 base_tree.as_ref(),
                 &tip_tree,
@@ -909,6 +1091,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             )?;
             text.extend_from_slice(&stat);
             text.push(b'\n');
+        }
+        if let Some((header, diff)) = &interdiff {
+            text.extend_from_slice(header.as_bytes());
+            text.push(b'\n');
+            text.extend_from_slice(diff);
+        }
+        if let Some(block) = base_block.take() {
+            text.extend_from_slice(block);
         }
 
         // Like the series: 8-bit when any of its messages is.
@@ -956,6 +1146,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         None
     };
 
+    let mut progress = rgit_progress::Progress::start_delayed(
+        msg::GENERATING_PATCHES,
+        u64::try_from(count).unwrap_or(u64::MAX),
+        o.progress,
+    );
     for (i, p) in patches.iter().enumerate() {
         let n = s.start + i;
         let message = p.commit.message();
@@ -967,6 +1162,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             b' '
         };
         let (subject, mut body) = mail::split_message_with(message, sep);
+        // With `--attach` the message part starts with an empty line
+        // before a body or an in-body `From:`, not before a sign-off.
+        let mut blank_before_body = !body.is_empty();
         if let Some(conf) = &trailer_conf {
             body = signoff(message, &subject, &body, &me, conf);
         }
@@ -1015,6 +1213,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mut text = Vec::new();
         if let (Some(from), Some(author)) = (&s.from, &author_person) {
             if s.force_in_body_from || from != author {
+                blank_before_body = true;
                 text.extend_from_slice(b"From: ");
                 text.extend_from_slice(&author.plain());
                 text.extend_from_slice(b"\n\n");
@@ -1024,19 +1223,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             text.extend_from_slice(&mail::mboxrd_escape(&body));
         } else {
             text.extend_from_slice(&body);
-        }
-        if !subject.is_ascii() || !text.is_ascii() {
-            out.extend_from_slice(msg::mime_headers(&charset).as_bytes());
-        }
-        extra_headers(&mut out, &s);
-        out.push(b'\n');
-        out.extend_from_slice(&text);
-        if !p.diff.is_empty() {
-            out.extend_from_slice(if p.has_stat { b"---\n" } else { b"\n" });
-            out.extend_from_slice(&p.diff);
-        }
-        if let Some(sig) = &s.signature {
-            mail::signature_block(&mut out, sig);
         }
         let name = if s.numbered_files {
             n.to_string()
@@ -1054,11 +1240,57 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 s.filename_max,
             )
         };
+        if s.attach.is_none() && (!subject.is_ascii() || !text.is_ascii()) {
+            out.extend_from_slice(msg::mime_headers(&charset).as_bytes());
+        }
+        extra_headers(&mut out, &s);
+        if let Some((boundary, _)) = &s.attach {
+            out.extend_from_slice(msg::multipart_head(boundary).as_bytes());
+        }
+        // The message part has an empty line only before a body.
+        if s.attach.is_none() || blank_before_body {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(&text);
+        if !p.diff.is_empty() {
+            out.extend_from_slice(if p.has_stat { b"---\n" } else { b"\n" });
+            match (&s.attach, &p.parts) {
+                // The patch goes into a part of its own after the stat.
+                (Some((boundary, inline)), Some((head, patch))) if !head.is_empty() => {
+                    out.extend_from_slice(head);
+                    out.push(b'\n');
+                    out.extend_from_slice(msg::attachment_head(boundary, &name, *inline).as_bytes());
+                    out.extend_from_slice(patch);
+                }
+                _ => out.extend_from_slice(&p.diff),
+            }
+        }
+        if !cover && count == 1 {
+            if let Some((header, diff)) = &interdiff {
+                out.push(b'\n');
+                out.extend_from_slice(header.as_bytes());
+                out.push(b'\n');
+                for line in diff.split_inclusive(|&b| b == b'\n') {
+                    out.extend_from_slice(b"  ");
+                    out.extend_from_slice(line);
+                }
+            }
+        }
+        if let Some(block) = base_block.take() {
+            out.extend_from_slice(block);
+        }
+        if let Some((boundary, _)) = &s.attach {
+            out.extend_from_slice(msg::multipart_end(boundary).as_bytes());
+        } else if let Some(sig) = &s.signature {
+            mail::signature_block(&mut out, sig);
+        }
         if i > 0 {
             writer.separate();
         }
         writer.write(&name, &out)?;
+        progress.set(u64::try_from(i + 1).unwrap_or(u64::MAX));
     }
+    progress.stop();
     writer.finish()?;
     Ok(0)
 }
@@ -1109,6 +1341,137 @@ fn extra_headers(out: &mut Vec<u8>, s: &Settings) {
         }
         out.extend_from_slice(format!("{name}: {}\n", list.join(",\n    ")).as_bytes());
     }
+}
+
+/// `--commit-list-format=modern`.
+const MODERN_LIST: &str = "%w(72)[%(count)/%(total)] %s";
+
+/// The version a reroll count follows: `<n> - 1` for a positive whole
+/// number `<n>`.
+fn previous_version(reroll: Option<&str>) -> Option<u64> {
+    let r = reroll?;
+    let digits = r.strip_prefix('+').unwrap_or(r);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok().filter(|&n| n > 0).map(|n| n - 1)
+}
+
+/// `%(count)` and `%(total)` of a commit list format replaced by the
+/// position of the commit in the series and its length.
+fn series_placeholders(fmt: &str, count: usize, total: usize) -> String {
+    let mut out = String::with_capacity(fmt.len());
+    let mut rest = fmt;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        if let Some(r) = rest.strip_prefix("%(count)") {
+            out.push_str(&count.to_string());
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("%(total)") {
+            out.push_str(&total.to_string());
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("%%") {
+            out.push_str("%%");
+            rest = r;
+        } else {
+            out.push('%');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The cover letter's list of commits in a user format, one line each.
+fn commit_list(ctx: &Context, patches: &[Patch], fmt: &str) -> Result<Vec<u8>, Die> {
+    let total = patches.len();
+    let mut out = Vec::new();
+    for (i, p) in patches.iter().enumerate() {
+        let f = series_placeholders(fmt, i + 1, total);
+        let args = [
+            "--no-walk".to_string(),
+            "--no-abbrev".to_string(),
+            p.id.to_hex(),
+        ];
+        let (items, _) = crate::history::walk_formatted(ctx, &args, &[f.into_bytes()])?;
+        for item in items {
+            if let Some(text) = item.expanded.first() {
+                out.extend_from_slice(text);
+            }
+            out.push(b'\n');
+        }
+    }
+    out.push(b'\n');
+    Ok(out)
+}
+
+/// `a` is `b` or one of its ancestors.
+fn is_ancestor(ctx: &Context, a: &ObjectId, b: &ObjectId) -> Result<bool, Die> {
+    Ok(a == b || crate::diff::merge_bases(ctx, a, b)?.contains(a))
+}
+
+/// The base tree information block (`base-commit:` and the
+/// `prerequisite-patch-id:` lines, after an empty line), or `None`
+/// without `--base` (or with `whenAble` and no usable base).
+fn base_info(
+    ctx: &Context,
+    patch_id: &dyn Fn(&ObjectId) -> Result<Option<ObjectId>, Die>,
+    base: &Base,
+    start: Option<ObjectId>,
+    patches: &[Patch],
+) -> Result<Option<Vec<u8>>, Die> {
+    let when_able = matches!(base, Base::Auto(true));
+    let fail = |m: String| {
+        if when_able {
+            Ok(None)
+        } else {
+            Err(Die::Fatal(m))
+        }
+    };
+    let base_id = match base {
+        Base::None => return Ok(None),
+        Base::Commit(name) => match start {
+            Some(id) => id,
+            None => return Err(Die::Fatal(msg::unknown_commit(name))),
+        },
+        Base::Auto(_) => {
+            let Some(upstream) = start else {
+                return fail(msg::NO_UPSTREAM.to_string());
+            };
+            let tip = patches[patches.len() - 1].id;
+            match crate::diff::merge_bases(ctx, &upstream, &tip)?[..] {
+                [one] => one,
+                _ => return fail(msg::NO_EXACT_MERGE_BASE.to_string()),
+            }
+        }
+    };
+    for p in patches {
+        if !is_ancestor(ctx, &base_id, &p.id)? {
+            return fail(msg::BASE_NOT_ANCESTOR.to_string());
+        }
+    }
+    if patches.iter().any(|p| p.id == base_id) {
+        return fail(msg::BASE_IN_LIST.to_string());
+    }
+    // The commits between the base and the series, oldest first.
+    let mut args = vec![
+        "--topo-order".to_string(),
+        "--reverse".to_string(),
+        "--no-merges".to_string(),
+        format!("^{}", base_id.to_hex()),
+    ];
+    args.extend(patches.iter().map(|p| p.id.to_hex()));
+    let mut block = format!("\nbase-commit: {}\n", base_id.to_hex()).into_bytes();
+    for id in crate::history::walk_commits(ctx, &args)? {
+        if patches.iter().any(|p| p.id == id) {
+            continue;
+        }
+        if let Some(pid) = patch_id(&id)? {
+            block.extend_from_slice(format!("prerequisite-patch-id: {}\n", pid.to_hex()).as_bytes());
+        }
+    }
+    Ok(Some(block))
 }
 
 /// The cover letter's list of commits: per author (sorted by name), the

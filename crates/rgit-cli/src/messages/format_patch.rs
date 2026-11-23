@@ -129,6 +129,69 @@ pub fn not_supported(what: &str) -> String {
     format!("format-patch {what} is not supported by rgit yet")
 }
 
+pub const GENERATING_PATCHES: &str = "Generating patches";
+
+pub const NO_UPSTREAM: &str =
+    "failed to get upstream, if you want to record base commit automatically,
+please use git branch --set-upstream-to to track a remote branch.
+Or you could specify base commit by --base=<base-commit-id> manually";
+pub const NO_EXACT_MERGE_BASE: &str = "could not find exact merge base";
+pub const BASE_NOT_ANCESTOR: &str = "base commit should be the ancestor of revision list";
+pub const BASE_IN_LIST: &str = "base commit shouldn't be in revision list";
+
+pub fn unknown_commit(name: &str) -> String {
+    format!("unknown commit {name}")
+}
+
+pub fn malformed_object_name(name: &str) -> String {
+    format!("malformed object name '{name}'")
+}
+
+pub fn requires_cover_or_single(option: &str) -> String {
+    format!("{option} requires --cover-letter or single patch")
+}
+
+pub fn invalid_format_string(spec: &str) -> String {
+    format!("'{spec}' is not a valid format string")
+}
+
+/// The heading of an interdiff, against version `previous` when the
+/// reroll count names one.
+pub fn interdiff_header(previous: Option<u64>) -> String {
+    match previous {
+        Some(v) => format!("Interdiff against v{v}:"),
+        None => "Interdiff:".to_string(),
+    }
+}
+
+/// The headers of a `--attach`/`--inline` mail after the subject and
+/// the start of its first part (the message).
+pub fn multipart_head(boundary: &str) -> String {
+    format!(
+        "MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"------------{boundary}\"\n\n\
+         This is a multi-part message in MIME format.\n\
+         --------------{boundary}\n\
+         Content-Type: text/plain; charset=UTF-8; format=fixed\n\
+         Content-Transfer-Encoding: 8bit\n\n"
+    )
+}
+
+/// The start of the part that holds the patch, named `name`.
+pub fn attachment_head(boundary: &str, name: &str, inline: bool) -> String {
+    let disposition = if inline { "inline" } else { "attachment" };
+    format!(
+        "\n--------------{boundary}\n\
+         Content-Type: text/x-patch; name=\"{name}\"\n\
+         Content-Transfer-Encoding: 8bit\n\
+         Content-Disposition: {disposition}; filename=\"{name}\"\n\n"
+    )
+}
+
+/// The end of a multipart mail.
+pub fn multipart_end(boundary: &str) -> String {
+    format!("\n--------------{boundary}--\n\n\n")
+}
+
 /// The MIME headers of a patch whose text is in `charset`.
 pub fn mime_headers(charset: &str) -> String {
     format!(
