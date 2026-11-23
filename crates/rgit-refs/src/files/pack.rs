@@ -81,9 +81,11 @@ impl FilesStore {
             .collect();
         let packed = crate::packed::PackedRefs::from_refs(entries);
         let path = lock.lock_path().to_owned();
-        lock.write_all(&packed.serialize())
-            .and_then(|()| lock.commit())
-            .map_err(|source| TransactionError::Io { path, source })?;
+        let written = lock
+            .write_all(&packed.serialize())
+            .and_then(|()| lock.commit());
+        self.forget_packed();
+        written.map_err(|source| TransactionError::Io { path, source })?;
 
         if !prune {
             return Ok(());

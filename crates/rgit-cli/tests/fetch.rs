@@ -154,6 +154,41 @@ fn updates() {
     }
 }
 
+/// Nothing new on the remote (refs packed on both sides): no pack, the
+/// same summary and the same `FETCH_HEAD`; a tag deleted locally comes
+/// back by tag following without a transfer.
+#[test]
+fn up_to_date() {
+    let cases: &[&[&str]] = &[
+        &["fetch"],
+        &["fetch", "-q", "origin"],
+        &["fetch", "-v"],
+        &["fetch", "--tags"],
+        &["fetch", "--prune", "-v"],
+        &["fetch", "--dry-run", "-v"],
+        &["fetch", "origin", "main"],
+    ];
+    let setup = || {
+        fixture()
+            .git(["-C", "cl", "fetch", "-q"])
+            .git(["-C", "srv", "pack-refs", "--all"])
+            .git(["-C", "cl", "pack-refs", "--all"])
+    };
+    for args in cases {
+        let mut fx = setup();
+        if fx.is_skipped() {
+            return;
+        }
+        compare(&mut fx, "cl", args);
+    }
+    for args in [&["fetch"][..], &["fetch", "-v"], &["fetch", "--dry-run"]] {
+        let mut fx = setup()
+            .git(["-C", "cl", "tag", "-d", "v1"])
+            .git(["-C", "cl", "tag", "-d", "v3"]);
+        compare(&mut fx, "cl", args);
+    }
+}
+
 #[test]
 fn configuration() {
     let mut fx = fixture()

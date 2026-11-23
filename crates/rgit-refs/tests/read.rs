@@ -311,3 +311,38 @@ fn check_ref_format_matches_git() {
         }
     }
 }
+
+/// One store sees every rewrite of `packed-refs`, by git or by itself,
+/// although it keeps the parsed file between lookups.
+#[test]
+fn packed_refs_rewrites_are_seen() {
+    let Some(repo) = Repo::new() else { return };
+    let (a, _) = repo.twins("packed-cache");
+    setup(&repo, &a);
+    assert!(run_git(&repo, &a, &["pack-refs", "--all"], b"").ok);
+    let store = FilesStore::new(&a, HashKind::Sha1);
+    let value = |name: &str| store.resolve_oid(name).unwrap();
+    assert_eq!(value("refs/heads/z"), Some(repo.c[0]));
+    // git deletes a packed ref (rewrites packed-refs).
+    assert!(run_git(&repo, &a, &["update-ref", "-d", "refs/heads/z"], b"").ok);
+    assert_eq!(value("refs/heads/z"), None);
+    // git packs a changed value of the same size.
+    let c2 = repo.c[2].to_hex();
+    assert!(run_git(&repo, &a, &["update-ref", "refs/heads/aa", &c2], b"").ok);
+    assert!(run_git(&repo, &a, &["pack-refs", "--all"], b"").ok);
+    assert_eq!(value("refs/heads/aa"), Some(repo.c[2]));
+    // The store's own deletion of a packed ref.
+    let mut tx = rgit_refs::Transaction::new(&store);
+    tx.push(rgit_refs::RefUpdate::delete(
+        "refs/heads/aa",
+        HashKind::Sha1,
+        None,
+    ))
+    .unwrap();
+    tx.commit(&mut rgit_refs::NoHooks).unwrap();
+    assert_eq!(value("refs/heads/aa"), None);
+    assert!(!for_each_ref(&store, &IterOptions::default()).contains("refs/heads/aa"));
+    // packed-refs removed altogether.
+    std::fs::remove_file(a.join("packed-refs")).unwrap();
+    assert_eq!(value("refs/heads/a-b"), None);
+}

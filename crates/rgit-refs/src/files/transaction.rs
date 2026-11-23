@@ -113,6 +113,7 @@ impl PreparedTransaction for Prepared<'_> {
                     f.write_all(&packed.serialize())
                 })
                 .and_then(|()| std::fs::rename(&path, self.store.packed_refs_path()));
+            self.store.forget_packed();
             if let Err(source) = result {
                 if created {
                     let _ = std::fs::remove_file(&path);
