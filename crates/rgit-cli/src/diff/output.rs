@@ -138,6 +138,15 @@ pub struct Output<'a> {
     /// `--attr-source` / `GIT_ATTR_SOURCE` / `attr.tree`: the tree the
     /// `diff` attribute is read from (see [`crate::attributes::tree_source`]).
     pub attr_tree: Option<Option<ObjectId>>,
+    /// Outside a repository (`diff --no-index`): the configuration and the
+    /// system and global attributes, for diff drivers.
+    pub outside: Option<(
+        ConfigSet,
+        std::cell::RefCell<rgit_attr::Attributes<'static>>,
+    )>,
+    /// The textconv caches of the drivers that ran.
+    textconv_caches:
+        std::cell::RefCell<std::collections::HashMap<String, super::textconv_cache::Cache>>,
     /// Run textconv filters (`--textconv`).
     pub textconv: bool,
     /// External diff programs are allowed (`--ext-diff`): with the
@@ -305,6 +314,8 @@ struct Loaded {
     conv: Option<Vec<u8>>,
     /// The textconv filter failed (fatal when the pair is shown).
     conv_failed: bool,
+    /// Read from the object database (the textconv cache applies).
+    from_odb: bool,
 }
 
 impl Loaded {
@@ -710,6 +721,8 @@ impl<'a> Output<'a> {
             output: opts.output.as_ref().map(|o| cwd.join(o)),
             drivers: Drivers::default(),
             attr_tree: None,
+            outside: None,
+            textconv_caches: Default::default(),
             textconv: opts.textconv.unwrap_or(false),
             external: opts
                 .ext_diff
@@ -853,6 +866,7 @@ impl<'a> Output<'a> {
                 data: format!("Subproject commit {}\n", oid.to_hex()).into_bytes(),
                 conv: None,
                 conv_failed: false,
+                from_odb: false,
             });
         }
         if side.file.is_some() {
@@ -879,6 +893,7 @@ impl<'a> Output<'a> {
                 data,
                 conv: None,
                 conv_failed: false,
+                from_odb: false,
             });
         }
         let data = if is_file_mode(side.mode) {
@@ -899,6 +914,7 @@ impl<'a> Output<'a> {
             data,
             conv: None,
             conv_failed: false,
+            from_odb: self.repo.is_some() && is_file_mode(side.mode),
         })
     }
 
@@ -1229,14 +1245,6 @@ impl<'a> Output<'a> {
             } else {
                 (None, None)
             };
-            if textconv && load {
-                if let Some(l) = o.as_mut() {
-                    self.apply_textconv(&p.old_path, l)?;
-                }
-                if let Some(l) = n.as_mut() {
-                    self.apply_textconv(&p.path, l)?;
-                }
-            }
             // (Standard input has no id: its contents decide.)
             let same = matches!((&o, &n), (Some(o), Some(n)) if o.mode == n.mode
                 && same_contents(o, n));
@@ -1247,9 +1255,19 @@ impl<'a> Output<'a> {
                     && !is_binary(&o.data)
                     && !is_binary(&n.data)
                     && diff_text(&o.data, &n.data, d).hunks.is_empty());
-            keep.push(
-                !(self.porcelain && same && !p.is_rename() && p.dirty_submodule == 0) && !ignored,
-            );
+            let k =
+                !(self.porcelain && same && !p.is_rename() && p.dirty_submodule == 0) && !ignored;
+            // Pairs that drop out (e.g. only stat-dirty files) never run
+            // the textconv filter (t4042).
+            if textconv && load && k {
+                if let Some(l) = o.as_mut() {
+                    self.apply_textconv(&p.old_path, l)?;
+                }
+                if let Some(l) = n.as_mut() {
+                    self.apply_textconv(&p.path, l)?;
+                }
+            }
+            keep.push(k);
             loaded.push((o, n));
         }
         let mut items: Vec<(Pair, Option<Loaded>, Option<Loaded>)> = Vec::new();
@@ -1618,6 +1636,7 @@ impl<'a> Output<'a> {
                             data: d,
                             conv: None,
                             conv_failed: false,
+                            from_odb: false,
                         };
                         Some(&dirty_data)
                     }
@@ -1842,7 +1861,13 @@ impl Output<'_> {
     /// What the `diff` attribute says about `path`.
     fn diff_attr(&self, path: &[u8]) -> Result<DiffAttr, Die> {
         let Some(repo) = self.repo else {
-            return Ok(DiffAttr::Unspecified);
+            let Some((config, attrs)) = &self.outside else {
+                return Ok(DiffAttr::Unspecified);
+            };
+            let mut attrs = attrs.borrow_mut();
+            let id = attrs.id(b"diff");
+            let state = attrs.lookup(path, false).get(id).clone();
+            return self.drivers.resolve(config, &state);
         };
         let state = match self.attr_tree {
             Some(tree) => {
@@ -1877,11 +1902,14 @@ impl Output<'_> {
 
     /// Whether any diff driver has a textconv filter configured.
     fn any_textconv(&self) -> bool {
-        self.repo.is_some_and(|r| {
-            r.config.entries().iter().any(|e| {
-                let n = e.name.as_slice();
-                n.starts_with(b"diff.") && n.ends_with(b".textconv")
-            })
+        let config = match (self.repo, &self.outside) {
+            (Some(r), _) => &r.config,
+            (None, Some((c, _))) => c,
+            (None, None) => return false,
+        };
+        config.entries().iter().any(|e| {
+            let n = e.name.as_slice();
+            n.starts_with(b"diff.") && n.ends_with(b".textconv")
         })
     }
 
@@ -1891,11 +1919,38 @@ impl Output<'_> {
             return Ok(());
         }
         let attr = self.diff_attr(path)?;
-        if let Some(cmd) = attr.textconv() {
-            match super::driver::run_textconv(cmd, &l.data) {
-                Ok(conv) => l.conv = Some(conv),
-                Err(()) => l.conv_failed = true,
+        let Some(cmd) = attr.textconv() else {
+            return Ok(());
+        };
+        // `diff.<driver>.cachetextconv`: blobs of the object database.
+        let cache = match (self.repo, attr.driver()) {
+            (Some(repo), Some(d))
+                if d.cache_textconv && l.from_odb && l.oid != ObjectId::null(self.hash) =>
+            {
+                Some((repo, d.name.as_str()))
             }
+            _ => None,
+        };
+        if let Some((repo, name)) = cache {
+            let mut caches = self.textconv_caches.borrow_mut();
+            let c = caches
+                .entry(name.to_owned())
+                .or_insert_with(|| super::textconv_cache::Cache::open(repo, name, cmd));
+            if let Some(conv) = c.get(repo, &l.oid) {
+                l.conv = Some(conv);
+                return Ok(());
+            }
+        }
+        match super::driver::run_textconv(cmd, &l.data) {
+            Ok(conv) => {
+                if let Some((repo, name)) = cache {
+                    if let Some(c) = self.textconv_caches.borrow_mut().get_mut(name) {
+                        c.put(repo, &l.oid, &conv);
+                    }
+                }
+                l.conv = Some(conv);
+            }
+            Err(()) => l.conv_failed = true,
         }
         Ok(())
     }
@@ -1919,7 +1974,9 @@ impl Output<'_> {
                 continue;
             }
             // Symbolic links ignore diff drivers (t4011).
-            let forced = if self.repo.is_some() && type_bits(l.mode) != 0o120000 {
+            let forced = if (self.repo.is_some() || self.outside.is_some())
+                && type_bits(l.mode) != 0o120000
+            {
                 self.diff_attr(path)?.binary()
             } else {
                 None

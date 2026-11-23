@@ -289,8 +289,10 @@ impl PathspecItem {
     }
 
     /// Compares `pattern[..n]` with `text[..n]`: the prefix part exactly,
-    /// the rest case-insensitively for `icase`.
-    fn literal_eq(&self, text: &[u8], n: usize) -> bool {
+    /// the rest case-insensitively for `icase`. `n` must not exceed the
+    /// length of either.
+    #[must_use]
+    pub fn literal_eq(&self, text: &[u8], n: usize) -> bool {
         let p = &self.pattern[..n];
         let t = &text[..n];
         if !self.icase() {

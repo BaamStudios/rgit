@@ -3,6 +3,9 @@
 //! `diff-tree`) and their shared options (CLEANROOM.md: user-visible
 //! strings are reproduced verbatim and collected here).
 
+/// Reflog message of the textconv cache (`refs/notes/textconv/<driver>`).
+pub const NOTES_CACHE_REFLOG: &str = "update notes cache";
+
 pub const DIFF_FILES_USAGE: &str = "usage: git diff-files [-q] [-0 | -1 | -2 | -3 | -c | --cc] [<common-diff-options>] [<path>...]\n";
 
 pub const DIFF_INDEX_USAGE: &str = "usage: git diff-index [-m] [--cached] [--merge-base] [<common-diff-options>] <tree-ish> [<path>...]\n";

@@ -171,3 +171,55 @@ fn show_blob_with_textconv() {
         ],
     );
 }
+
+/// `:(icase)` pathspecs find directories whose case differs in tree
+/// diffs (t6131).
+#[test]
+fn icase_pathspec_in_tree_diff() {
+    let mut fx = rgit_fixture();
+    for p in ["foo/bar", "FOO/bar", "FOO/BAR"] {
+        fx = fx
+            .write(p, p)
+            .git(["add", p])
+            .git(["commit", "-q", "-m", p]);
+    }
+    compare_all(
+        &mut fx,
+        &[
+            &[
+                "diff",
+                "--name-only",
+                "HEAD^",
+                "HEAD",
+                "--",
+                ":(icase)foo/bar",
+            ],
+            &[
+                "diff",
+                "--name-only",
+                "HEAD~2",
+                "HEAD",
+                "--",
+                ":(icase)foo/bar",
+            ],
+            &[
+                "diff-tree",
+                "-r",
+                "--name-only",
+                "HEAD~2",
+                "HEAD",
+                "--",
+                ":(icase)foo/BAR",
+            ],
+            &[
+                "diff-tree",
+                "--name-only",
+                "HEAD~2",
+                "HEAD",
+                "--",
+                ":(icase)foo/bar",
+            ],
+            &["log", "--format=%s", "--", ":(icase)fOO/bar"],
+        ],
+    );
+}

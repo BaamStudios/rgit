@@ -166,7 +166,8 @@ fn join(base: &[u8], name: &[u8]) -> Vec<u8> {
 fn leads_to(ps: &Pathspec, dir: &[u8]) -> bool {
     ps.items().iter().filter(|i| !i.is_exclude()).any(|i| {
         let lit = &i.pattern()[..i.nowildcard_len()];
-        lit.len() > dir.len() && lit.starts_with(dir) && lit[dir.len()] == b'/'
+        // `:(icase)` compares case-insensitively (t6131).
+        lit.len() > dir.len() && i.literal_eq(dir, dir.len()) && lit[dir.len()] == b'/'
     })
 }
 

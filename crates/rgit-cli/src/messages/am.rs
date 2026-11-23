@@ -59,6 +59,8 @@ pub const HG_MARK: &str = "# HG changeset patch";
 /// The subject of the message Pine keeps its folder data in (skipped).
 pub const PINE_INTERNAL_DATA: &str = "DON'T DELETE THIS MESSAGE -- FOLDER INTERNAL DATA";
 pub const NUL_IN_MESSAGE: &str = "a NUL byte in commit log message not allowed.";
+/// The label of the constructed base in conflict markers.
+pub const FAKE_ANCESTOR_LABEL: &str = "constructed fake ancestor";
 pub const NO_FAKE_ANCESTOR: &str = "could not build fake ancestor";
 pub const FAILED_TO_MERGE: &str = "Failed to merge in the changes.";
 pub const MOVED_HEAD: &str =

@@ -80,6 +80,8 @@ fn apply_back_end() {
             "git rebase --apply -C1 main",
             "git rebase --apply --ignore-whitespace main",
             "git rebase --apply main; git status",
+            // The fake ancestor is labelled in diff3 markers (t6427).
+            "git -c merge.conflictstyle=diff3 rebase --apply main",
             "git rebase --apply main; git rebase --skip",
             "git rebase --apply main; git rebase --abort",
             "git rebase --apply main; git checkout --theirs f; git add f; git rebase --continue",

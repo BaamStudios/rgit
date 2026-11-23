@@ -18,6 +18,7 @@ mod order;
 pub mod output;
 pub mod remerge;
 mod stat;
+mod textconv_cache;
 mod words;
 
 use rgit_pathspec::{ParseOptions, Pathspec};

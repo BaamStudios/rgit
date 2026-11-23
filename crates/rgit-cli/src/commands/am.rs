@@ -890,7 +890,7 @@ impl<'c> Am<'c> {
         let mut opts = rgit_merge::Options {
             branch1: b"HEAD".to_vec(),
             branch2: subject.as_bytes().to_vec(),
-            ancestor: b"constructed merge base".to_vec(),
+            ancestor: msg::FAKE_ANCESTOR_LABEL.as_bytes().to_vec(),
             style: crate::commands::merge_file::config_style(&repo.config)?,
             ..rgit_merge::Options::default()
         };

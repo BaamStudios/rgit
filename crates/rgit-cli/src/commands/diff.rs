@@ -656,6 +656,13 @@ fn run_no_index(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts, args: &[Str
     let mut out = Output::new(repo, hash, opts, formats, true)?;
     out.convert = false;
     out.streams = streams;
+    if repo.is_none() {
+        // Diff drivers still apply: the global and system attributes
+        // with the configuration outside a repository (t4042).
+        let config = crate::repo::config_outside_repository(ctx);
+        let attrs = crate::attributes::outside_repository(&config);
+        out.outside = Some((config, std::cell::RefCell::new(attrs)));
+    }
     out.set_color(opts)?;
     if repo.is_some() {
         out.mnemonic(opts, "1", "2");
