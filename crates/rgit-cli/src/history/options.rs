@@ -217,6 +217,8 @@ pub struct Options {
     exclude: Vec<String>,
     /// The paths after `--` (and after `--` on standard input).
     pub paths: Vec<String>,
+    /// `--merge`: `HEAD...<other>` limited to the conflicted paths.
+    pub merge: bool,
     /// `--` was given: the arguments before it are revisions.
     pub dashdash: bool,
     /// The only tip is the implicit `HEAD` of a command without revisions;
@@ -368,6 +370,7 @@ impl Options {
             max_count_oldest: false,
             max_count_given: false,
             bisect: false,
+            merge: false,
             bisect_vars: false,
             bisect_all: false,
             negate: false,
@@ -596,6 +599,7 @@ impl Options {
                 "--maximal-only" => o.maximal_only = true,
                 "--disk-usage" if cmd == Command::RevList => o.disk_usage = Some(false),
                 "--bisect" => o.bisect = true,
+                "--merge" => o.merge = true,
                 "--bisect-vars" if cmd == Command::RevList => o.bisect_vars = true,
                 "--bisect-all" if cmd == Command::RevList => o.bisect_all = true,
                 "--object-names" if cmd == Command::RevList => o.object_names = true,
@@ -724,6 +728,16 @@ impl Options {
                     o.max_count_given |= a == "--max-count";
                 }
                 "--skip" => o.walk.skip = parse_count(&value(&mut i, a)?)?,
+                // `-S <string>`, `-G <regex>`: the value may be separate.
+                "-S" | "-G" if cmd == Command::Log => {
+                    i += 1;
+                    let Some(v) = argv.get(i) else {
+                        return Err(crate::diff::options::usage_exit(
+                            crate::messages::diff::switch_requires_value(&a[1..]),
+                        ));
+                    };
+                    o.diff.parse_arg(&format!("{a}{v}"))?;
+                }
                 _ if crate::color::parse_arg(a).is_some() => {
                     if let Some(c) = crate::color::parse_arg(a) {
                         o.color = Some(c?);

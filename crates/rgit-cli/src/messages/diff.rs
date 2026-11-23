@@ -144,6 +144,11 @@ pub fn multiple_merge_bases(a: &str, b: &str, base: &str) -> String {
 pub const BAD_DIFF_ALGORITHM: &str =
     "error: option diff-algorithm accepts \"myers\", \"minimal\", \"patience\" and \"histogram\"\n";
 
+/// A one-letter option that needs a value was the last argument.
+pub fn switch_requires_value(switch: &str) -> String {
+    format!("error: switch `{switch}' requires a value\n")
+}
+
 /// An option that needs a value was the last argument.
 pub fn requires_value(option: &str) -> String {
     format!("error: option `{option}' requires a value\n")
