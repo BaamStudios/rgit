@@ -201,6 +201,24 @@ fn merge(
         ..MergeOptions::default()
     };
     crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);
+    // Merge attributes, drivers and `merge.renormalize` apply like in a
+    // merge.
+    let renormalize = repo
+        .config
+        .bool("merge.renormalize")
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    opts.renormalize = renormalize;
+    if let Ok(pm) = crate::commands::merge::attrs::RepoPathMerge::open(
+        &crate::Context::default(),
+        repo,
+        renormalize,
+        Some(&theirs),
+        None,
+    ) {
+        opts.path_merge = Some(pm);
+    }
     rgit_merge::merge_trees(repo.odb(), &base, &ours, &theirs, &opts)
         .map_err(|e| Die::Fatal(e.to_string()))
 }
