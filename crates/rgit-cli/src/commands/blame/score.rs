@@ -17,7 +17,12 @@
 //! such range is diffed against the whole parent version of the file (`-M`)
 //! or against other files of the parent (`-C`); the common block with the
 //! most alphanumeric characters, if it reaches the threshold, passes to the
-//! parent and the rest of the range is tried again.
+//! parent and the rest of the range is tried again. They look for the
+//! lines as they are in the final file.
+//!
+//! For an ignored commit (`--ignore-rev`) the changed lines are matched
+//! with parent lines by similarity ([`super::fuzzy`]): matched lines pass
+//! to the parent marked as ignored, the others stay marked as unblamable.
 
 use std::cell::{OnceCell, RefCell};
 use std::cmp::Reverse;
@@ -107,6 +112,8 @@ pub struct Node {
     tree: Option<ObjectId>,
     /// Committer time.
     pub time: i64,
+    /// Ignored (`--ignore-rev`).
+    ignored: bool,
     /// Reachable from an excluded revision.
     uninteresting: bool,
     /// Lines were blamed on it as a boundary commit.
@@ -135,16 +142,27 @@ pub struct Entry {
     pub num: usize,
     pub suspect: usize,
     pub s_lno: usize,
+    /// Passed on by an ignored commit (`--ignore-rev`).
+    pub ignored: bool,
+    /// Stayed with an ignored commit.
+    pub unblamable: bool,
 }
 
 impl Entry {
+    /// `next` (one line further in the final file) continues this entry
+    /// in the same suspect, with the same marks.
+    pub fn joins(&self, next: &Entry) -> bool {
+        let key = |e: &Entry, n: usize| (e.suspect, e.s_lno + n, e.ignored, e.unblamable);
+        key(self, self.num) == key(next, 0)
+    }
+
     /// Lines `from..to` of the suspect (within this entry).
     fn piece(&self, from: usize, to: usize) -> Entry {
         Entry {
             lno: self.lno + (from - self.s_lno),
             num: to - from,
-            suspect: self.suspect,
             s_lno: from,
+            ..*self
         }
     }
 }
@@ -168,6 +186,8 @@ pub struct Settings {
     pub copies: u8,
     /// The minimum score of a block copied from another file.
     pub copy_score: usize,
+    /// `--ignore-rev`, `--ignore-revs-file`, `blame.ignoreRevsFile`.
+    pub ignore: std::collections::HashSet<ObjectId>,
 }
 
 /// A block found by [`Scoreboard::best_match`]: `len` lines at `t` of the
@@ -203,6 +223,8 @@ pub struct Scoreboard<'r> {
     /// Line ids shared by all versions, and a scratch table that maps them
     /// to dense ids for one diff (stamp, id).
     interner: RefCell<rgit_diff::Interner>,
+    /// The final version of the file (`-M`/`-C` look for its lines).
+    pub final_blob: Option<Rc<Blob>>,
     dense: RefCell<(u32, Vec<(u32, u32)>)>,
 }
 
@@ -241,6 +263,7 @@ impl<'r> Scoreboard<'r> {
             shallow,
             textconv: None,
             interner: RefCell::new(rgit_diff::Interner::new()),
+            final_blob: None,
             dense: RefCell::new((0, Vec::new())),
         }
     }
@@ -278,6 +301,7 @@ impl<'r> Scoreboard<'r> {
             parents: Some(parents),
             tree,
             time,
+            ignored: self.settings.ignore.contains(id),
             uninteresting: false,
             boundary: false,
             queued: false,
@@ -303,6 +327,7 @@ impl<'r> Scoreboard<'r> {
             parents: Some(parents),
             tree: None,
             time,
+            ignored: false,
             uninteresting: false,
             boundary: false,
             queued: false,
@@ -479,6 +504,9 @@ impl<'r> Scoreboard<'r> {
                 self.origins[o].previous = Some(po);
             }
             rest = self.pass_to_parent(o, po, rest)?;
+            if self.nodes[n].ignored && !rest.is_empty() {
+                rest = self.pass_ignored(o, po, rest)?;
+            }
             if rest.is_empty() {
                 break;
             }
@@ -757,6 +785,87 @@ impl<'r> Scoreboard<'r> {
         Ok(rest)
     }
 
+    /// The changed lines `rest` of an ignored commit: lines matched to a
+    /// line of the parent `po` (in the region they replace, else anywhere
+    /// if similar enough) pass there, marked as ignored; the others stay,
+    /// marked as unblamable.
+    fn pass_ignored(&mut self, o: usize, po: usize, rest: Vec<Entry>) -> Res<Vec<Entry>> {
+        let target = self.content(o)?;
+        let parent = self.content(po)?;
+        let blocks = self.common_blocks(&parent, 0..parent.len(), &target, 0..target.len());
+        // The changed regions: (target lines, parent lines).
+        let mut hunks: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+        let (mut t0, mut p0) = (0, 0);
+        for &(t, p, len) in &blocks {
+            if t > t0 || p > p0 {
+                hunks.push((t0..t, p0..p));
+            }
+            t0 = t + len;
+            p0 = p + len;
+        }
+        if t0 < target.len() || p0 < parent.len() {
+            hunks.push((t0..target.len(), p0..parent.len()));
+        }
+        let mut lines = super::fuzzy::Parent::new(&parent.lines());
+        // Where each target line of the changed regions goes, region by
+        // region (the parent lines remember what was matched before).
+        let mut to: HashMap<usize, Option<usize>> = HashMap::new();
+        for (tr, pr) in &hunks {
+            if !rest
+                .iter()
+                .any(|e| e.s_lno < tr.end && tr.start < e.s_lno + e.num)
+            {
+                continue;
+            }
+            let tl: Vec<&[u8]> = tr.clone().map(|i| target.line(i)).collect();
+            let found = lines.match_region(pr.clone(), &tl);
+            for (k, p) in found.into_iter().enumerate() {
+                to.insert(tr.start + k, p.map(|p| pr.start + p));
+            }
+            for t in tr.clone() {
+                if to[&t].is_none() {
+                    let p = lines.elsewhere(target.line(t), t);
+                    to.insert(t, p);
+                }
+            }
+        }
+        let mut passed = Vec::new();
+        let mut out = Vec::new();
+        for e in rest {
+            let mut run: Option<Entry> = None;
+            for t in e.s_lno..e.s_lno + e.num {
+                let mut line = e.piece(t, t + 1);
+                // Matched lines pass on as ignored, the others are
+                // unblamable (flags of earlier ignored commits stay).
+                match to.get(&t) {
+                    Some(&Some(p)) => {
+                        line.suspect = po;
+                        line.s_lno = p;
+                        line.ignored = true;
+                    }
+                    Some(None) => line.unblamable = true,
+                    None => {}
+                }
+                // Lines continuing the previous one join it.
+                match &mut run {
+                    Some(r) if r.joins(&line) => r.num += 1,
+                    _ => {
+                        if let Some(r) = run.replace(line) {
+                            if r.suspect == po { passed.push(r) } else { out.push(r) }
+                        }
+                    }
+                }
+            }
+            if let Some(r) = run {
+                if r.suspect == po { passed.push(r) } else { out.push(r) }
+            }
+        }
+        if !passed.is_empty() {
+            self.add(po, passed);
+        }
+        Ok(out)
+    }
+
     /// `-M`/`-C`: for each entry (suspecting `o`), the best block of lines
     /// that also appears in one of `candidates`; blocks scoring at least
     /// `min` pass to their candidate and the rest of the entry is tried
@@ -768,7 +877,12 @@ impl<'r> Scoreboard<'r> {
         candidates: &[usize],
         min: usize,
     ) -> Res<Vec<Entry>> {
-        let target = self.content(o)?;
+        // The lines as they are in the final file (they differ from the
+        // suspect's after an ignored commit or with -w).
+        let target = match &self.final_blob {
+            Some(b) => b.clone(),
+            None => self.content(o)?,
+        };
         let mut contents = Vec::with_capacity(candidates.len());
         for &c in candidates {
             contents.push(self.content(c)?);
@@ -779,7 +893,7 @@ impl<'r> Scoreboard<'r> {
         while !todo.is_empty() {
             let mut again = Vec::new();
             for e in todo {
-                let r = e.s_lno..e.s_lno + e.num;
+                let r = e.lno..e.lno + e.num;
                 let mut best: Option<Match> = None;
                 for (k, cand) in contents.iter().enumerate() {
                     if let Some(m) = self.best_match(cand, &target, r.clone())
@@ -793,15 +907,18 @@ impl<'r> Scoreboard<'r> {
                 }
                 match best {
                     Some(m) if m.score >= min => {
-                        if m.t > e.s_lno {
-                            again.push(e.piece(e.s_lno, m.t));
+                        // In the suspect's lines.
+                        let t = e.s_lno + (m.t - e.lno);
+                        let end = e.s_lno + e.num;
+                        if t > e.s_lno {
+                            again.push(e.piece(e.s_lno, t));
                         }
-                        let mut q = e.piece(m.t, m.t + m.len);
+                        let mut q = e.piece(t, t + m.len);
                         q.suspect = m.origin;
                         q.s_lno = m.p;
                         passed.push((m.origin, q));
-                        if m.t + m.len < r.end {
-                            again.push(e.piece(m.t + m.len, r.end));
+                        if t + m.len < end {
+                            again.push(e.piece(t + m.len, end));
                         }
                     }
                     _ => stays.push(e),

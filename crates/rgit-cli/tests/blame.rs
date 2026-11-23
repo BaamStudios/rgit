@@ -277,3 +277,88 @@ fn blame_moves_and_copies() {
         compare(&mut fx, "blame", args);
     }
 }
+
+/// `--ignore-rev`, `--ignore-revs-file`, `blame.ignoreRevsFile` and the
+/// marks of ignored and unblamable lines.
+#[test]
+fn blame_ignore_revs() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    if fx.is_skipped() {
+        return;
+    }
+    fx = fx
+        .write("f", "int a = 1;\nint b = 2;\nreturn a;\n")
+        .git(["add", "."]);
+    fx = commit(fx, "One", "one");
+    fx = fx.write("f", "int a = 1;\nint b = 2;\nint c = 3;\nreturn a + b;\n");
+    fx = commit(fx, "Two", "two");
+    // A formatting commit: reindented, a line split, an unrelated line.
+    fx = fx.write(
+        "f",
+        "    int a = 1;\n    int b =\n        2;\n    int c = 3;\nxyzzy\n    return a + b;\n",
+    );
+    fx = commit(fx, "Fmt", "format");
+    fx = fx.git(["tag", "fmt"]).write(
+        "f",
+        "    int a = 1;\n    int b =\n        2;\n    int c = 4;\nxyzzy\n    return a + b;\n",
+    );
+    fx = commit(fx, "Four", "four");
+    fx = fx.write("revs", "# formatting\n\n").write("bad", "nope\n");
+    let fmt = String::from_utf8_lossy(&fx.git_stdout(["rev-parse", "fmt"])).into_owned();
+    fx = fx.write("revs", format!("# formatting\n{}  # fmt\n", fmt.trim()));
+    let marks = [
+        "-c",
+        "blame.markIgnoredLines",
+        "-c",
+        "blame.markUnblamableLines",
+    ];
+    let cases: &[&[&str]] = &[
+        &["blame", "--ignore-rev", "fmt", "f"],
+        &["blame", "--ignore-rev", "fmt", "-p", "f"],
+        &["blame", "--ignore-revs-file", "revs", "-s", "f"],
+        &[
+            "blame",
+            "--ignore-revs-file",
+            "revs",
+            "--ignore-revs-file",
+            "",
+            "-s",
+            "f",
+        ],
+        &["-c", "blame.ignoreRevsFile=revs", "blame", "-s", "f"],
+        &["blame", "--ignore-rev", "nope", "f"],
+        &["blame", "--ignore-rev", "fmt^{tree}", "f"],
+        &["blame", "--ignore-revs-file", "missing", "f"],
+        &["blame", "--ignore-revs-file", "bad", "f"],
+        &[
+            "blame",
+            "--ignore-rev",
+            "fmt",
+            "--ignore-rev",
+            "HEAD",
+            "-M",
+            "f",
+        ],
+    ];
+    for args in cases {
+        fx.compare(args.iter()).checks(Check::OUTPUT).run();
+        let mut with: Vec<&str> = marks.to_vec();
+        with.extend_from_slice(args);
+        fx.compare(&with).checks(Check::OUTPUT).run();
+    }
+    for f in ["-b", "-c", "--root", "--line-porcelain", "--abbrev=41"] {
+        let mut with: Vec<&str> = marks.to_vec();
+        with.extend_from_slice(&[
+            "blame",
+            f,
+            "--ignore-rev",
+            "fmt",
+            "--ignore-rev",
+            "HEAD",
+            "f",
+        ]);
+        fx.compare(&with).checks(Check::OUTPUT).run();
+    }
+}

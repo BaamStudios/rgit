@@ -43,6 +43,9 @@ pub struct Format {
     /// `-t`.
     pub raw_time: bool,
     pub blank_boundary: bool,
+    /// `blame.markIgnoredLines`, `blame.markUnblamableLines`.
+    pub mark_ignored: bool,
+    pub mark_unblamable: bool,
     /// Minimum length of object names (full length for `-l`).
     pub abbrev: usize,
     pub date: DateMode,
@@ -141,9 +144,13 @@ pub fn coalesce(mut entries: Vec<Entry>) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::with_capacity(entries.len());
     for e in entries {
         // Where the previous entry would continue, in both files.
-        let next = out.last().map(|p| (p.suspect, p.lno + p.num, p.s_lno + p.num));
+        let next = out.last().map(|p| {
+            (p.suspect, p.lno + p.num, p.s_lno + p.num, p.ignored, p.unblamable)
+        });
         match out.last_mut() {
-            Some(p) if next == Some((e.suspect, e.lno, e.s_lno)) => p.num += e.num,
+            Some(p) if next == Some((e.suspect, e.lno, e.s_lno, e.ignored, e.unblamable)) => {
+                p.num += e.num
+            }
             _ => out.push(e),
         }
     }
@@ -275,6 +282,12 @@ impl Printer<'_, '_> {
                 } else if i == 0 && several.contains(&self.commit_of(e)) {
                     self.meta(e, false, out);
                 }
+                if e.unblamable && self.fmt.mark_unblamable {
+                    out.extend_from_slice(b"unblamable\n");
+                }
+                if e.ignored && self.fmt.mark_ignored {
+                    out.extend_from_slice(b"ignored\n");
+                }
                 out.push(b'\t');
                 push_line(out, self.final_lines.line(e.lno + i));
             }
@@ -309,6 +322,19 @@ impl Printer<'_, '_> {
             .map_or(0, |s| s.len())
     }
 
+    /// `*` for an unblamable line and `?` for an ignored one, if asked for.
+    fn mark(&self, e: &Entry) -> &'static str {
+        match (
+            e.unblamable && self.fmt.mark_unblamable,
+            e.ignored && self.fmt.mark_ignored,
+        ) {
+            (true, true) => "*?",
+            (true, false) => "*",
+            (false, true) => "?",
+            (false, false) => "",
+        }
+    }
+
     fn who(&self, info: &Info) -> String {
         if self.fmt.show_email {
             String::from_utf8_lossy(&info.author_mail).into_owned()
@@ -327,7 +353,8 @@ impl Printer<'_, '_> {
         let mut max_lno = 0;
         let mut max_slno = 0;
         let mut abbrev = fmt.abbrev.min(hex_len);
-        let mut boundary = false;
+        // The most characters put before an object name (`^`, `?`, `*`).
+        let mut extra = 0;
         let mut other_path = false;
         let mut seen = std::collections::HashSet::new();
         for e in entries {
@@ -339,7 +366,8 @@ impl Printer<'_, '_> {
             ));
             max_lno = max_lno.max(e.lno + e.num);
             max_slno = max_slno.max(e.s_lno + e.num);
-            boundary |= self.sb.nodes[n].boundary;
+            let caret = self.sb.nodes[n].boundary && !fmt.blank_boundary && !fmt.annotate;
+            extra = extra.max(usize::from(caret) + self.mark(e).len());
             if seen.insert(n) {
                 let info = &self.infos[&n];
                 author_w = author_w.max(UnicodeWidthStr::width(self.who(info).as_str()));
@@ -353,13 +381,10 @@ impl Printer<'_, '_> {
         if !fmt.raw_time {
             date_w = date_w.max(self.date_width());
         }
-        if boundary && !fmt.blank_boundary && !fmt.annotate {
-            abbrev += 1;
-        }
+        abbrev += extra;
         // Asking for more digits than a full name has shows boundary
         // commits in full after the caret; exactly full length drops one.
         let abbrev = abbrev.min(if fmt.abbrev > hex_len { hex_len + 1 } else { hex_len });
-        let full = abbrev.min(hex_len);
         let show_name = fmt.show_name.unwrap_or(other_path);
         let lno_w = digits(max_lno);
         let slno_w = digits(max_slno);
@@ -374,13 +399,15 @@ impl Printer<'_, '_> {
             for i in 0..e.num {
                 let lno = e.lno + i + 1;
                 let line = self.final_lines.line(e.lno + i);
+                let mark = self.mark(e);
+                let digits = (abbrev - mark.len()).min(hex_len);
                 if fmt.annotate {
                     // Padded to ten bytes, not columns.
                     let who = self.who(info);
                     let pad = " ".repeat(10usize.saturating_sub(who.len()));
                     let s = format!(
-                        "{}\t({pad}{who}\t{}\t{})",
-                        &hex[..full],
+                        "{mark}{}\t({pad}{who}\t{}\t{})",
+                        &hex[..digits],
                         self.date(info),
                         lno
                     );
@@ -405,13 +432,14 @@ impl Printer<'_, '_> {
                 if let Some(c) = color {
                     s.push_str(c);
                 }
+                s.push_str(mark);
                 if node.boundary && fmt.blank_boundary {
-                    s.push_str(&" ".repeat(abbrev));
+                    s.push_str(&" ".repeat(abbrev - mark.len()));
                 } else if node.boundary {
-                    s.push('^');
-                    s.push_str(&hex[..abbrev - 1]);
+                    s.insert(s.len() - mark.len(), '^');
+                    s.push_str(&hex[..(abbrev - mark.len() - 1).min(hex_len)]);
                 } else {
-                    s.push_str(&hex[..full]);
+                    s.push_str(&hex[..digits]);
                 }
                 if show_name {
                     let p = String::from_utf8_lossy(&origin.path);

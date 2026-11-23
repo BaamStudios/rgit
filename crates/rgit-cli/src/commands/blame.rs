@@ -8,6 +8,8 @@
 //! blamed: lines that differ from `HEAD` belong to a pseudo commit "Not
 //! Committed Yet" with the null object name.
 
+#[path = "blame/fuzzy.rs"]
+mod fuzzy;
 #[path = "blame/output.rs"]
 mod output;
 #[path = "blame/range.rs"]
@@ -293,9 +295,6 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     if rev.reverse {
         return Err(Die::Fatal(msg::REVERSE_NOT_SUPPORTED.into()));
     }
-    if !cli.ignore_rev.borrow().is_empty() || !cli.ignore_revs_file.borrow().is_empty() {
-        return Err(Die::Fatal(msg::IGNORE_REV_NOT_SUPPORTED.into()));
-    }
     if cli.revs_file.borrow().is_some() {
         return Err(Die::Fatal(msg::REVS_FILE_NOT_SUPPORTED.into()));
     }
@@ -340,6 +339,7 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             0 => DEFAULT_COPY_SCORE,
             n => n,
         },
+        ignore: ignored_revs(&mut repo, &config, &cli)?,
     };
 
     // Positive and negative revisions.
@@ -490,10 +490,13 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             num: b - a,
             suspect: final_origin,
             s_lno: a,
+            ignored: false,
+            unblamable: false,
         })
         .collect();
     drop(lines);
     let total: usize = entries.iter().map(|e| e.num).sum();
+    sb.final_blob = Some(final_blob.clone());
     sb.add(final_origin, entries);
     sb.run().map_err(score_error)?;
     // Progress appears after GIT_PROGRESS_DELAY seconds (default 2); only
@@ -576,6 +579,8 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
         },
         raw_time: cli.raw_time.get(),
         blank_boundary: cli.blank_boundary.get() || cfg_bool("blame.blankboundary").unwrap_or(false),
+        mark_ignored: cfg_bool("blame.markignoredlines").unwrap_or(false),
+        mark_unblamable: cfg_bool("blame.markunblamablelines").unwrap_or(false),
         abbrev,
         date,
         date_ctx,
@@ -647,6 +652,64 @@ fn coloring(
         }
         _ => Ok(Coloring::None),
     }
+}
+
+/// The commits to ignore: the files of `blame.ignoreRevsFile`, then those
+/// of `--ignore-revs-file` (an empty name forgets the files before), then
+/// `--ignore-rev`.
+fn ignored_revs(
+    repo: &mut Repo,
+    config: &rgit_config::ConfigSet,
+    cli: &Cli,
+) -> Result<std::collections::HashSet<ObjectId>, Die> {
+    let mut out = std::collections::HashSet::new();
+    let top = repo.setup.work_tree.clone();
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let add = |files: &mut Vec<std::path::PathBuf>, name: &str, base: Option<&std::path::Path>| {
+        if name.is_empty() {
+            files.clear();
+        } else {
+            let path = std::path::Path::new(name);
+            files.push(match base {
+                Some(b) if path.is_relative() => b.join(path),
+                _ => path.to_path_buf(),
+            });
+        }
+    };
+    for e in config.get_all("blame.ignorerevsfile") {
+        let name = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+        add(&mut files, &name, top.as_deref());
+    }
+    for name in cli.ignore_revs_file.borrow().iter() {
+        add(&mut files, name, None);
+    }
+    for f in files {
+        let data = std::fs::read(&f).map_err(|_| {
+            Die::Fatal(msg::cannot_open_revs_file(&f.to_string_lossy()))
+        })?;
+        for line in data.split(|&b| b == b'\n') {
+            let line = match line.iter().position(|&b| b == b'#') {
+                Some(i) => &line[..i],
+                None => line,
+            };
+            let line = line.trim_ascii();
+            if line.is_empty() {
+                continue;
+            }
+            let id = ObjectId::from_hex(repo.hash, line).map_err(|_| {
+                Die::Fatal(msg::invalid_object_name(&String::from_utf8_lossy(line)))
+            })?;
+            out.insert(id);
+        }
+    }
+    for rev in cli.ignore_rev.borrow().iter() {
+        let id = repo
+            .resolve(rev)
+            .and_then(|id| peel_commit(repo, id))
+            .ok_or_else(|| Die::Fatal(msg::cannot_find_ignored(rev)))?;
+        out.insert(id);
+    }
+    Ok(out)
 }
 
 /// The default minimum scores of `-M` and `-C` (blame-options.adoc).
