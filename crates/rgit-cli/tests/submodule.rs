@@ -199,3 +199,30 @@ fn mv_and_rm() {
         .checks(Check::OUTPUT)
         .run();
 }
+
+/// Removing a submodule together with `.gitmodules` leaves `.gitmodules`
+/// removed instead of staging an edited (empty) copy (#584).
+#[test]
+fn rm_submodule_with_gitmodules() {
+    let mut fx = superproject();
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["rm", "-f", "clean", ".gitmodules"][..],
+        &["rm", "-f", ".gitmodules", "clean"],
+        &["rm", "-f", "clean"],
+    ] {
+        fx.compare(args)
+            .in_dir("super")
+            .repo("super")
+            .checks([
+                Check::ExitCode,
+                Check::Stdout,
+                Check::Stderr,
+                Check::Index,
+                Check::Worktree,
+            ])
+            .run();
+    }
+}

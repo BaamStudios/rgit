@@ -351,13 +351,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         index.remove_path(p);
     }
     let cwd = std::fs::canonicalize(os_path(&root, &repo.prefix())).ok();
+    // `.gitmodules` removed in the same call stays removed: its sections are
+    // not edited and it is not staged again.
+    let gitmodules_removed = chosen
+        .iter()
+        .any(|p| p.as_slice() == rgit_submodule::GITMODULES.as_bytes());
     if let Some(gm) = &gitmodules {
         let mut changed = false;
         for p in &gitlinks {
             let dir = os_path(&root, p);
             if let Some(sub) = gm.by_path(p) {
                 crate::submodules::absorb_git_dir(&repo, &dir, &sub.name, None)?;
-                changed |= crate::submodules::remove_section(&repo, &sub.name)?;
+                if !gitmodules_removed {
+                    changed |= crate::submodules::remove_section(&repo, &sub.name)?;
+                }
             } else if root.join(rgit_submodule::GITMODULES).exists() {
                 eprintln!("warning: {}", msg::no_gitmodules_section(&lossy(p)));
             }
