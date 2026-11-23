@@ -2390,14 +2390,6 @@ fn user_settings(
 /// Run the walk and print the result.
 fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
     let mut resolved = tips::resolve(repo, opts)?;
-    if opts.merge {
-        let given = if resolved.paths.is_empty() {
-            rgit_pathspec::Pathspec::default()
-        } else {
-            paths::parse_pathspec(ctx, repo, &resolved.paths)?
-        };
-        resolved.paths = tips::merge_paths(repo, &given);
-    }
     if resolved.no_revisions && !opts.stdin && !opts.bisect {
         // Only paths: like no arguments at all.
         match cmd {
