@@ -96,3 +96,51 @@ fn file_named_head() {
         same(&mut fx, args);
     }
 }
+
+/// Ref-set options name single objects: each ref's object is shown once
+/// (annotated tags with their header), without walking (#545); with
+/// paths, commits that do not change them are left out.
+#[test]
+fn show_ref_sets() {
+    let mut fx = history()
+        .git(["branch", "old", "HEAD~2"])
+        .git(["tag", "-a", "-m", "second tag", "v0", "HEAD~2"])
+        .git(["update-ref", "refs/remotes/o/main", "HEAD~1"]);
+    for args in [
+        &["show", "--all"][..],
+        &["show", "--all", "--oneline", "--stat"],
+        &["show", "--branches", "-s"],
+        &["show", "--tags", "-s"],
+        &["show", "--remotes", "-s"],
+        &["show", "--glob=refs/tags/v*", "-s"],
+        &["show", "--exclude=refs/tags/*", "--all", "-s", "--oneline"],
+        &["show", "main", "--tags", "-s", "--oneline"],
+        &["show", "--all", "--not", "main", "-s", "--oneline"],
+        &["show", "--all", "-s", "--oneline", "--", "s"],
+        &["show", "side", "main", "-s", "--", "f"],
+        &["show", "HEAD^@", "-s", "--oneline"],
+    ] {
+        same(&mut fx, args);
+    }
+}
+
+/// Statistics of merges and the formats that may print nothing
+/// (`--dirstat`, `--check`) are separated like git does.
+#[test]
+fn merge_statistics_and_quiet_formats() {
+    let mut fx = history();
+    for args in [
+        &["show", "--oneline", "--stat"][..],
+        &["log", "--oneline", "--numstat", "--cc"],
+        &["log", "--oneline", "--summary", "-c"],
+        &["log", "--format=oneline", "--shortstat", "--cc"],
+        &["show", "--dirstat"],
+        &["show", "--oneline", "--dirstat"],
+        &["show", "--dirstat", "-p", "--oneline"],
+        &["log", "--dirstat"],
+        &["log", "--check"],
+        &["show", "--check", "--oneline"],
+    ] {
+        same(&mut fx, args);
+    }
+}

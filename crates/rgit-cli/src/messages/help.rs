@@ -68,6 +68,23 @@ pub fn unknown_man_viewer(tool: &str) -> String {
     format!("'{tool}': unknown man viewer.")
 }
 
+pub fn cmd_for_supported_man_viewer(tool: &str) -> String {
+    format!(
+        "'{tool}.cmd': cmd for supported man viewer.\nPlease consider using 'man.<tool>.path' instead."
+    )
+}
+
+pub fn failed_to_exec(path: &str, err: &str) -> String {
+    format!("failed to exec '{path}': {err}")
+}
+
+pub const EMACSCLIENT_START_FAILED: &str = "Failed to start emacsclient.";
+pub const EMACSCLIENT_VERSION_UNPARSED: &str = "Failed to parse emacsclient version.";
+
+pub fn emacsclient_too_old(major: u64) -> String {
+    format!("emacsclient version '{major}' too old (< 22).")
+}
+
 pub const NO_MAN_VIEWER: &str = "no man viewer handled the request";
 pub const NO_INFO_VIEWER: &str = "no info viewer handled the request";
 

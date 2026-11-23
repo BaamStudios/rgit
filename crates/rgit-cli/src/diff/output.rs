@@ -994,8 +994,23 @@ impl<'a> Output<'a> {
         // The command's pairs, to keep their names (`--no-index` shows
         // `/dev/null` for a missing side).
         let mut originals: Vec<Option<Pair>> = Vec::with_capacity(pairs.len());
+        // With copy detection the old side of an unmerged path is a copy
+        // source like a modified file's; the pair itself is not shown.
+        let unmerged_sources = self.core.detect == Detect::Copies;
+        let mut source_only = std::collections::HashSet::new();
         for (i, p) in pairs.into_iter().enumerate() {
             if p.unmerged {
+                if unmerged_sources && let Some(old) = &p.old {
+                    let one = side(i, &p.old_path, &p.old);
+                    let two = diffcore::Side {
+                        path: p.path.clone(),
+                        mode: old.mode,
+                        oid: ObjectId::null(self.hash),
+                        extra: (i, None),
+                    };
+                    input.push(diffcore::FilePair::new(one, Some(two)));
+                    source_only.insert(i);
+                }
                 unmerged.push((i, p));
                 originals.push(None);
                 continue;
@@ -1097,6 +1112,9 @@ impl<'a> Output<'a> {
                 diffcore::Status::Copied => Some(b'C'),
                 _ => None,
             };
+            if renamed.is_none() && source_only.contains(&anchor) {
+                continue;
+            }
             if renamed.is_none() {
                 if let Some(mut p) = originals.get_mut(anchor).and_then(Option::take) {
                     p.score = fp.score;
