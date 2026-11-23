@@ -445,3 +445,35 @@ fn external_index() {
         index.version()
     );
 }
+
+/// Resolve undo records written by rgit-index read back by git (and by
+/// rgit), also replacing the record of a path.
+#[test]
+fn resolve_undo_records() {
+    let kind = HashKind::Sha1;
+    let fx = repo(kind);
+    if fx.is_skipped() {
+        return;
+    }
+    let path = index_file(&fx);
+    let mut index = read(&path, kind);
+    let id = |s: &str| ObjectId::from_hex(kind, s.as_bytes()).unwrap();
+    let a = id("1111111111111111111111111111111111111111");
+    let b = id("2222222222222222222222222222222222222222");
+    index.record_resolve_undo(b"z", [Some((0o100644, a)), None, Some((0o100755, b))]);
+    index.record_resolve_undo(b"m", [None, Some((0o100644, b)), None]);
+    index.record_resolve_undo(b"z", [Some((0o100644, b)), Some((0o100644, a)), None]);
+    index
+        .write_file(&path, &LockOptions::new(), &WriteOptions::default())
+        .unwrap();
+    let got = String::from_utf8(fx.git_stdout(["ls-files", "--resolve-undo"])).unwrap();
+    assert_eq!(
+        got,
+        format!("100644 {b} 2\tm\n100644 {b} 1\tz\n100644 {a} 2\tz\n")
+    );
+    let mut back = read(&path, kind);
+    assert_eq!(back.resolve_undo_records().len(), 2);
+    back.remove_resolve_undo(b"m");
+    back.remove_resolve_undo(b"z");
+    assert!(back.resolve_undo_raw().is_none());
+}

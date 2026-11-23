@@ -336,8 +336,104 @@ impl Index {
         self.resolve_undo.as_deref()
     }
 
+    /// The records of the resolve undo extension (gitformat-index(5),
+    /// "Resolve undo"): per path the mode and id of stages 1-3 (`None` for
+    /// a missing stage), sorted by path. A damaged extension ends the list.
+    pub fn resolve_undo_records(&self) -> Vec<ResolveUndo> {
+        let kind = self.hash_kind();
+        let n = kind.byte_len();
+        let mut records = Vec::new();
+        let mut data = self.resolve_undo.as_deref().unwrap_or_default();
+        let take = |data: &mut &[u8]| -> Option<Vec<u8>> {
+            let nul = data.iter().position(|&b| b == 0)?;
+            let s = data[..nul].to_vec();
+            *data = &data[nul + 1..];
+            Some(s)
+        };
+        'parse: while !data.is_empty() {
+            let Some(path) = take(&mut data) else { break };
+            let mut modes = [0u32; 3];
+            for m in &mut modes {
+                let Some(v) = take(&mut data)
+                    .and_then(|s| String::from_utf8(s).ok())
+                    .and_then(|s| u32::from_str_radix(&s, 8).ok())
+                else {
+                    break 'parse;
+                };
+                *m = v;
+            }
+            let mut stages = [None; 3];
+            for (k, m) in modes.into_iter().enumerate() {
+                if m != 0 {
+                    let Some(id) = data
+                        .get(..n)
+                        .and_then(|b| ObjectId::from_bytes(kind, b).ok())
+                    else {
+                        break 'parse;
+                    };
+                    stages[k] = Some((m, id));
+                    data = &data[n..];
+                }
+            }
+            records.push(ResolveUndo { path, stages });
+        }
+        records
+    }
+
+    fn set_resolve_undo_records(&mut self, mut records: Vec<ResolveUndo>) {
+        if records.is_empty() {
+            self.resolve_undo = None;
+            return;
+        }
+        records.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut out = Vec::new();
+        for r in &records {
+            out.extend_from_slice(&r.path);
+            out.push(0);
+            for s in &r.stages {
+                out.extend_from_slice(format!("{:o}", s.map_or(0, |s| s.0)).as_bytes());
+                out.push(0);
+            }
+            for (_, id) in r.stages.iter().flatten() {
+                out.extend_from_slice(id.as_bytes());
+            }
+        }
+        self.resolve_undo = Some(out);
+    }
+
+    /// Records the conflict stages 1-3 of `path` in the resolve undo
+    /// extension, replacing an older record of the path.
+    pub fn record_resolve_undo(&mut self, path: &[u8], stages: [Option<(u32, ObjectId)>; 3]) {
+        let mut records = self.resolve_undo_records();
+        records.retain(|r| r.path != path);
+        records.push(ResolveUndo {
+            path: path.to_vec(),
+            stages,
+        });
+        self.set_resolve_undo_records(records);
+    }
+
+    /// Drops the resolve undo record of `path`.
+    pub fn remove_resolve_undo(&mut self, path: &[u8]) {
+        let mut records = self.resolve_undo_records();
+        let before = records.len();
+        records.retain(|r| r.path != path);
+        if records.len() != before {
+            self.set_resolve_undo_records(records);
+        }
+    }
+
     /// Drops the resolve undo extension.
     pub fn clear_resolve_undo(&mut self) {
         self.resolve_undo = None;
     }
+}
+
+/// One record of the resolve undo extension, see
+/// [`Index::resolve_undo_records`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveUndo {
+    pub path: Vec<u8>,
+    /// Mode and id of stages 1, 2 and 3.
+    pub stages: [Option<(u32, ObjectId)>; 3],
 }

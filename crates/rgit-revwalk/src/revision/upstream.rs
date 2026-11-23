@@ -168,8 +168,46 @@ impl Resolver<'_> {
         self.push_target_of(branch).ok()
     }
 
+    /// A push remote given as a URL names the one configured remote with
+    /// that URL (`url`, `pushurl`, or `url` after `pushInsteadOf`).
+    fn remote_for_url(&self, remote: String) -> String {
+        if self.config(&format!("remote.{remote}.url")).is_some() {
+            return remote;
+        }
+        let mut wanted = vec![remote.clone()];
+        for (name, value) in self.repo.config.entries_with_prefix("url.") {
+            if let Some(base) = name
+                .strip_prefix("url.")
+                .and_then(|n| n.strip_suffix(".pushinsteadof"))
+            {
+                if let Some(rest) = remote.strip_prefix(value.as_str()) {
+                    wanted.push(format!("{base}{rest}"));
+                }
+            }
+        }
+        // Several remotes with the URL leave it ambiguous.
+        let mut found: Vec<String> = Vec::new();
+        for (name, value) in self.repo.config.entries_with_prefix("remote.") {
+            let Some(rest) = name.strip_prefix("remote.") else {
+                continue;
+            };
+            let r = rest
+                .strip_suffix(".url")
+                .or_else(|| rest.strip_suffix(".pushurl"));
+            if let Some(r) = r.filter(|_| wanted.contains(&value)) {
+                if !found.iter().any(|f| f == r) {
+                    found.push(r.to_owned());
+                }
+            }
+        }
+        match &found[..] {
+            [one] => one.clone(),
+            _ => remote,
+        }
+    }
+
     fn push_target_of(&self, branch: &str) -> Result<PushTarget, Error> {
-        let remote = self.push_remote(branch);
+        let remote = self.remote_for_url(self.push_remote(branch));
         let src = format!("refs/heads/{branch}");
         let target = |dst: String, tracking: String| PushTarget {
             remote: remote.clone(),

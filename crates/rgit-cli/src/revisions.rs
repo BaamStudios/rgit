@@ -278,6 +278,15 @@ impl ConfigLookup for Config<'_> {
             .filter_map(|e| e.value.as_ref().map(|v| v.to_string()))
             .collect()
     }
+
+    fn entries_with_prefix(&self, prefix: &str) -> Vec<(String, String)> {
+        self.0
+            .entries()
+            .iter()
+            .filter(|e| e.name.starts_with(prefix.as_bytes()))
+            .filter_map(|e| Some((e.name.to_string(), e.value.as_ref()?.to_string())))
+            .collect()
+    }
 }
 
 /// The index, read on first use.

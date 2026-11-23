@@ -440,10 +440,14 @@ impl<'a> Loader<'a> {
             });
         };
         let mut via_hasconfig = false;
+        let mut matched = true;
         if let IncludeKind::If(cond) = kind {
             let cond = include::parse_condition(cond);
             via_hasconfig = matches!(cond, Condition::RemoteUrl(_));
-            if !self.condition_true(&cond, ctx)? {
+            matched = self.condition_true(&cond, ctx)?;
+            // A `hasconfig:remote.*.url` file is read even when it does not
+            // apply: remote URLs in it are an error either way (as in git).
+            if !matched && !(via_hasconfig && !ctx.scanning) {
                 return Ok(());
             }
         }
@@ -488,13 +492,14 @@ impl<'a> Loader<'a> {
             origin: Origin::File(path),
             scope: ctx.source.scope,
         });
+        let mut unused = ConfigSet::new();
         self.parse_into(
             &data,
             &source,
             ctx.depth + 1,
             ctx.in_hasconfig || via_hasconfig,
             ctx.scanning,
-            set,
+            if matched { set } else { &mut unused },
         )
     }
 
