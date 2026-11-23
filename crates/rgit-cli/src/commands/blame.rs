@@ -13,7 +13,7 @@ mod fuzzy;
 #[path = "blame/output.rs"]
 mod output;
 #[path = "blame/range.rs"]
-mod range;
+pub(crate) mod range;
 #[path = "blame/score.rs"]
 mod score;
 

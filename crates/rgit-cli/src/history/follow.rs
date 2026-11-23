@@ -34,9 +34,9 @@ use super::Repo;
 
 /// One file of a tree: mode and blob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Entry {
-    mode: u32,
-    id: ObjectId,
+pub struct Entry {
+    pub mode: u32,
+    pub id: ObjectId,
 }
 
 /// The `--follow` filter.
@@ -133,7 +133,11 @@ impl Follow {
 }
 
 /// The entry at `path` in `tree`.
-fn entry_at(repo: &Repo<'_>, tree: &ObjectId, path: &[u8]) -> Result<Option<Entry>, ObjectId> {
+pub(super) fn entry_at(
+    repo: &Repo<'_>,
+    tree: &ObjectId,
+    path: &[u8],
+) -> Result<Option<Entry>, ObjectId> {
     let mut tree = *tree;
     let mut parts = path.split(|&b| b == b'/').peekable();
     while let Some(name) = parts.next() {
@@ -167,7 +171,7 @@ fn entry_at(repo: &Repo<'_>, tree: &ObjectId, path: &[u8]) -> Result<Option<Entr
 }
 
 /// All files of `tree` (recursively) with their paths below `base`.
-fn files(
+pub(super) fn files(
     repo: &Repo<'_>,
     tree: Option<&ObjectId>,
     base: &[u8],

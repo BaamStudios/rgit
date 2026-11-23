@@ -174,7 +174,7 @@ pub struct Options {
     /// `--graph-lane-limit=<n>` (0: no limit).
     pub graph_lane_limit: usize,
     /// An ordering option was given (`--graph` implies `--topo-order`).
-    order_given: bool,
+    pub order_given: bool,
     /// Diff options (`log -p`, `--stat`, ...).
     pub diff: crate::diff::options::DiffOpts,
     /// `--diff-merges` and friends, when given.
@@ -228,6 +228,8 @@ pub struct Options {
     pub full_diff: bool,
     /// `--follow` / `--no-follow` (log); `None`: `log.follow`.
     pub follow: Option<bool>,
+    /// `log -L <range>:<file>`, in order.
+    pub line_ranges: Vec<String>,
     /// `--merge`: the commits of `HEAD...<other>` touching conflicted
     /// paths.
     pub merge: bool,
@@ -382,6 +384,7 @@ impl Options {
             simplify_by_decoration: false,
             full_diff: false,
             follow: None,
+            line_ranges: Vec::new(),
             hidden: None,
             single_worktree: false,
             ignore_missing: false,
@@ -733,6 +736,18 @@ impl Options {
                 }
                 "--skip" => o.walk.skip = parse_count(&value(&mut i, a)?)?,
                 // `-S <string>`, `-G <regex>`: the value may be separate.
+                "-L" if cmd == Command::Log => {
+                    i += 1;
+                    let Some(v) = argv.get(i) else {
+                        return Err(crate::diff::options::usage_exit(
+                            crate::messages::diff::switch_requires_value("L"),
+                        ));
+                    };
+                    o.line_ranges.push(v.clone());
+                }
+                _ if cmd == Command::Log && a.starts_with("-L") => {
+                    o.line_ranges.push(a[2..].to_string());
+                }
                 "-S" | "-G" if cmd == Command::Log => {
                     i += 1;
                     let Some(v) = argv.get(i) else {

@@ -206,6 +206,25 @@ pub fn invalid_disk_usage(value: &str) -> String {
     )
 }
 
+/// `log -L` with a malformed argument.
+pub fn line_log_bad_arg(arg: &str) -> String {
+    format!("-L argument not 'start,end:file' or ':funcname:file': {arg}")
+}
+
+/// `log -L` with a path the starting commit does not have.
+pub fn line_log_no_path(path: &str) -> String {
+    format!("There is no path {path} in the commit")
+}
+
+/// `log -L` with two starting commits.
+pub fn line_log_two_tips(a: &str, b: &str) -> String {
+    format!("More than one commit to dig from: {a} and {b}?")
+}
+
+pub const LINE_LOG_NO_COMMIT: &str = "No commit specified?";
+pub const LINE_LOG_PATHSPEC: &str = "-L<range>:<file> cannot be used with pathspec";
+pub const LINE_LOG_FORMAT: &str = "-L does not yet support the requested diff format";
+
 pub const Z_UNSUPPORTED: &str = "-z option used with unsupported option";
 /// `log -g` with `--graph` (and other history limiting).
 pub const REFLOG_HISTORY_LIMITING: &str =

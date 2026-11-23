@@ -10,6 +10,7 @@ mod decorate;
 mod follow;
 pub mod graph;
 pub mod layout;
+mod line_log;
 pub mod mailmap;
 mod options;
 mod paths;
@@ -155,6 +156,8 @@ struct Commits<'r, 'a> {
     mailmap: Option<mailmap::Mailmap>,
     /// `-S`, `-G`, `--find-object`, `--diff-filter`.
     diff_limit: Option<DiffLimit>,
+    /// `-L`: the line log decides what is TREESAME.
+    line_log: Option<std::rc::Rc<line_log::LineLog>>,
 }
 
 /// `log -S/-G/--find-object/--diff-filter`: only commits whose diff keeps
@@ -260,6 +263,9 @@ impl CommitSource for Commits<'_, '_> {
         })
     }
     fn treesame(&mut self, id: &ObjectId, parent: Option<&ObjectId>) -> Result<bool, ObjectId> {
+        if let Some(l) = &self.line_log {
+            return Ok(l.treesame(id, parent));
+        }
         match &mut self.paths {
             Some(p) => p.treesame(self.repo, id, parent),
             None => Ok(false),
@@ -326,6 +332,97 @@ fn follow_filter(
         path,
         (!plain).then_some(pathspec.clone()),
     )))
+}
+
+/// `log -L`: check the options and run the line log from the one commit
+/// given.
+fn setup_line_log(
+    ctx: &Context,
+    repo: &Repo<'_>,
+    opts: &Options,
+    resolved: &Resolved,
+) -> Result<line_log::LineLog, Die> {
+    if !resolved.paths.is_empty() {
+        return Err(Die::Fatal(msg::LINE_LOG_PATHSPEC.to_string()));
+    }
+    let d = &opts.diff;
+    if d.stat
+        || d.numstat
+        || d.shortstat
+        || d.dirstat.is_some()
+        || d.check
+        || d.compact_summary
+        || opts.full_diff
+    {
+        return Err(Die::Fatal(msg::LINE_LOG_FORMAT.to_string()));
+    }
+    let mut tip: Option<(ObjectId, &str)> = None;
+    let mut excluded = Vec::new();
+    for ((id, neg, _), name) in resolved.commits.iter().zip(&resolved.sources) {
+        if *neg {
+            excluded.push(*id);
+            continue;
+        }
+        match tip {
+            Some((t, n)) if t != *id => {
+                return Err(Die::Fatal(msg::line_log_two_tips(name, n)));
+            }
+            _ => tip = Some((*id, name)),
+        }
+    }
+    let Some((tip, _)) = tip else {
+        return Err(Die::Fatal(msg::LINE_LOG_NO_COMMIT.to_string()));
+    };
+    let rrepo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    let mut args = Vec::new();
+    for a in &opts.line_ranges {
+        let (range, path) = line_log::split_arg(a)?;
+        let path = rrepo
+            .prefix_path(path.as_bytes())
+            .map(|p| String::from_utf8_lossy(&p).into_owned())
+            .unwrap_or(path);
+        args.push((range, path));
+    }
+    let algorithm = match d.algorithm {
+        Some(a) => a,
+        None => repo
+            .config
+            .string("diff.algorithm")
+            .ok()
+            .flatten()
+            .and_then(|v| rgit_diff::Algorithm::parse(&v.to_string()))
+            .map_or(rgit_diff::Algorithm::Myers, |(a, _)| a),
+    };
+    let diff = rgit_diff::DiffOptions {
+        algorithm,
+        minimal: d.minimal.unwrap_or(false),
+        indent_heuristic: d.indent_heuristic.unwrap_or(true),
+        ..Default::default()
+    };
+    // Whitespace options hide changes from the patch but not from the
+    // walk (observed).
+    let display = (d.whitespace.any() || d.ignore_blank_lines).then(|| rgit_diff::DiffOptions {
+        whitespace: d.whitespace,
+        ignore_blank_lines: d.ignore_blank_lines,
+        ..diff.clone()
+    });
+    let funcname = move |path: &[u8]| -> Option<rgit_diff::FuncName> {
+        match rrepo.converter().ok()?.attr(path, b"diff") {
+            rgit_attr::State::Value(v) => {
+                crate::diff::driver::load(&rrepo.config, &String::from_utf8_lossy(&v))
+                    .ok()?
+                    .funcname
+            }
+            _ => None,
+        }
+    };
+    let settings = line_log::Settings {
+        diff,
+        display,
+        first_parent: opts.walk.first_parent,
+        funcname: Box::new(funcname),
+    };
+    line_log::LineLog::compute(repo, &args, tip, &excluded, &settings)
 }
 
 /// Set up path limiting (`<paths>`, `--simplify-by-decoration`) for the
@@ -416,6 +513,14 @@ fn run_main(ctx: &Context, cmd: Command, argv: &[String], show: bool) -> Result<
 }
 
 fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die> {
+    // `-L` shows patches unless another format (or none) is asked for.
+    if cmd == Command::Log
+        && !opts.line_ranges.is_empty()
+        && !opts.diff.no_output
+        && !any_format(&opts.diff)
+    {
+        opts.diff.patch = true;
+    }
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
@@ -655,6 +760,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
             paths,
             mailmap: None,
             diff_limit: None,
+            line_log: None,
         },
         walk_opts,
     );
@@ -748,6 +854,7 @@ pub fn walk_formatted(
             paths: None,
             mailmap: None,
             diff_limit: None,
+            line_log: None,
         },
         opts.walk.clone(),
     );
@@ -803,6 +910,8 @@ pub fn walk_formatted(
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
         follow: None,
+        line_log: None,
+        line_paths: std::cell::RefCell::new(None),
         next: None,
         reflog: None,
         diff: None,
@@ -894,6 +1003,9 @@ struct Printer<'r, 'a> {
     next: Option<graph::Next>,
     /// Diff output after every commit (`-p`, `--stat`, ...).
     diff: Option<LogDiff>,
+    /// `-L`: the line log, and the paths of the commit being shown.
+    line_log: Option<std::rc::Rc<line_log::LineLog>>,
+    line_paths: std::cell::RefCell<Option<rgit_pathspec::Pathspec>>,
     /// `--follow`: the path the commit being shown is followed by, and
     /// the path its parent had the file at when it was renamed or copied.
     follow: Option<(Vec<u8>, Option<Vec<u8>>)>,
@@ -1399,6 +1511,9 @@ impl Printer<'_, '_> {
         if d.merges_only && parents.len() < 2 {
             return Ok(Vec::new());
         }
+        if let Some(l) = &self.line_log {
+            return self.line_log_diff(d, l, id, &parents, &tree, walk_error);
+        }
         let old = match parents.len() {
             0 if !d.show_root => return Ok(Vec::new()),
             0 => None,
@@ -1434,6 +1549,91 @@ impl Printer<'_, '_> {
             },
         };
         self.diff_against(d, old, &tree, walk_error)
+    }
+
+    /// `-L`: the range-limited patches of commit `id` (merges have none),
+    /// and the other formats limited to the tracked files.
+    fn line_log_diff(
+        &self,
+        d: &LogDiff,
+        l: &line_log::LineLog,
+        id: &ObjectId,
+        parents: &[ObjectId],
+        tree: &ObjectId,
+        walk_error: impl Fn() -> Die,
+    ) -> Result<Vec<u8>, Die> {
+        if parents.len() > 1 {
+            return Ok(Vec::new());
+        }
+        let oneline = self.style.pretty == Pretty::Oneline || self.empty_format();
+        if d.formats.patch && l.patches(id).is_empty() && !oneline {
+            // A commit whose changes the whitespace options hide.
+            return Ok(b"\n".to_vec());
+        }
+        let mut bytes = Vec::new();
+        let other = crate::diff::options::Formats {
+            patch: false,
+            ..d.formats
+        };
+        let paths = l.paths(id);
+        if other.any() && !paths.is_empty() {
+            let items: Vec<Vec<u8>> = paths
+                .iter()
+                .map(|p| [b":(top,literal)".as_slice(), p].concat())
+                .collect();
+            let ps = rgit_pathspec::Pathspec::parse(items, &rgit_pathspec::ParseOptions::default())
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+            *self.line_paths.borrow_mut() = Some(ps);
+            let r = self.render_diff(d, parents.first().copied(), tree, other, &walk_error);
+            *self.line_paths.borrow_mut() = None;
+            bytes = r?;
+        }
+        if d.formats.patch && !l.patches(id).is_empty() {
+            if !bytes.is_empty() {
+                bytes.push(b'\n');
+            }
+            let o = &d.opts;
+            let (src, dst): (&[u8], &[u8]) = if o.no_prefix {
+                (b"", b"")
+            } else {
+                (
+                    o.src_prefix.as_deref().unwrap_or(b"a/"),
+                    o.dst_prefix.as_deref().unwrap_or(b"b/"),
+                )
+            };
+            let len = if o.full_index {
+                usize::MAX
+            } else {
+                match o.abbrev {
+                    Some(Some(0)) => usize::MAX,
+                    Some(Some(n)) => n.max(4),
+                    _ => self.abbrev_len,
+                }
+            };
+            let abbrev = |x: &ObjectId| self.repo.abbrev(x, len);
+            let null = abbrev(&ObjectId::null(self.repo.objects.hash_kind()));
+            let render = line_log::Render {
+                src_prefix: src,
+                dst_prefix: dst,
+                abbrev: &abbrev,
+                null,
+                indicators: [
+                    o.indicators[0].unwrap_or(b'+'),
+                    o.indicators[1].unwrap_or(b'-'),
+                    o.indicators[2].unwrap_or(b' '),
+                ],
+            };
+            line_log::write(&mut bytes, l.patches(id), &render);
+        }
+        if bytes.is_empty() {
+            return Ok(bytes);
+        }
+        let mut text = Vec::new();
+        if !oneline {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(&bytes);
+        Ok(text)
     }
 
     /// `-m`: the diff of merge `id` against each of its parents, for the
@@ -1556,9 +1756,11 @@ impl Printer<'_, '_> {
             }
             None => None,
         };
-        let (pathspec, diff_opts) = match &follow {
-            Some((ps, opts)) => (ps, opts),
-            None => (&d.pathspec, &d.opts),
+        let line_paths = self.line_paths.borrow();
+        let (pathspec, diff_opts) = match (&follow, line_paths.as_ref()) {
+            (Some((ps, opts)), _) => (ps, opts),
+            (None, Some(ps)) => (ps, &d.opts),
+            (None, None) => (&d.pathspec, &d.opts),
         };
         let mut w = crate::diff::collect::TreeDiff {
             repo: &d.repo,
@@ -2191,6 +2393,7 @@ fn show_commit(
         paths: paths.take(),
         mailmap: None,
         diff_limit: None,
+        line_log: None,
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
@@ -2491,8 +2694,21 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         walk_opts.reverse = false;
     }
     let mut follow = follow_filter(ctx, repo, cmd, opts, &resolved.paths)?;
+    let line_log = if opts.line_ranges.is_empty() || cmd != Command::Log {
+        None
+    } else {
+        let l = setup_line_log(ctx, repo, opts, &resolved)?;
+        walk_opts.prune = true;
+        if !opts.order_given {
+            walk_opts.order = rgit_revwalk::walk::Order::Topo;
+        }
+        walk_opts.rewrite_parents |= opts.parents || opts.children || opts.graph;
+        Some(std::rc::Rc::new(l))
+    };
     let max_count = walk_opts.max_count;
-    let paths = if follow.is_some() {
+    let paths = if line_log.is_some() {
+        None
+    } else if follow.is_some() {
         // `-n` counts the commits the filter shows.
         walk_opts.max_count = None;
         None
@@ -2568,6 +2784,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             paths,
             mailmap: (use_mailmap && ident_grep).then(|| mailmap::Mailmap::load(repo)),
             diff_limit,
+            line_log: line_log.clone(),
         },
         walk_opts,
     );
@@ -2671,6 +2888,8 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
         follow: None,
+        line_log: None,
+        line_paths: std::cell::RefCell::new(None),
         next: None,
         reflog: None,
         diff: match log_diff(ctx, opts, cmd)? {
@@ -2687,6 +2906,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         signature_colors,
         signature_cache: std::cell::RefCell::new(None),
     };
+    p.line_log = line_log;
     if opts.graph {
         let palette = p
             .style
