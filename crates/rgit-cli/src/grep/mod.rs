@@ -201,17 +201,10 @@ impl Printer {
         if binary && self.opts.skip_binary {
             return;
         }
-        let lines = if m.rules_out(src.data) {
+        let mut lines = if m.rules_out(src.data) {
             Vec::new()
         } else {
-            let mut l = split_lines(src.data);
-            if m.empty_line_at_end
-                && src.data.ends_with(b"\n")
-                && l.last().is_some_and(|last| !last.is_empty())
-            {
-                l.push(&src.data[src.data.len()..]);
-            }
-            l
+            split_lines(src.data)
         };
         let max = self.opts.max_count.unwrap_or(usize::MAX);
         let mut selected = vec![false; lines.len()];
@@ -225,6 +218,17 @@ impl Printer {
                 selected[i] = true;
                 count += 1;
             }
+        }
+        // git looks ahead only from a line that is neither selected nor
+        // after-context of a selected one.
+        let looks_ahead = match selected.iter().rposition(|s| *s) {
+            Some(l) => selected.len() - 1 > l + self.opts.after,
+            None => !selected.is_empty(),
+        };
+        if m.selects_eof_line() && count < max && src.data.ends_with(b"\n") && looks_ahead {
+            lines.push(&src.data[src.data.len()..]);
+            selected.push(true);
+            count += 1;
         }
         if hits.iter().any(|h| !h) {
             count = 0;
@@ -344,26 +348,28 @@ impl FileOut<'_, '_> {
     }
 
     /// Separators before line `i`: between files, and between groups.
-    fn begin(&mut self, i: usize) {
+    /// `shown`: the line is printed (with `-o` context and function lines
+    /// are not, but still put out the `--` that would precede them and do
+    /// not count as shown for the next one).
+    fn begin(&mut self, i: usize, shown: bool) {
         let ctx = self.p.context_mode();
-        if !self.started {
-            self.started = true;
-            if self.p.shown_any {
-                if self.p.opts.file_break {
+        match self.last {
+            None if self.p.shown_any && self.p.opts.file_break => self.p.out.push(b'\n'),
+            None if self.p.shown_any && ctx => self.group_sep(),
+            Some(l) if ctx && i > l + 1 => self.group_sep(),
+            _ => {}
+        }
+        if shown {
+            if !self.started {
+                self.started = true;
+                if self.p.opts.heading {
+                    self.p.name(self.src.name);
                     self.p.out.push(b'\n');
-                } else if ctx {
-                    self.group_sep();
                 }
             }
-            if self.p.opts.heading {
-                self.p.name(self.src.name);
-                self.p.out.push(b'\n');
-            }
-            self.p.shown_any = true;
-        } else if ctx && self.last.is_some_and(|l| i > l + 1) {
-            self.group_sep();
+            self.last = Some(i);
         }
-        self.last = Some(i);
+        self.p.shown_any = true;
     }
 
     fn group_sep(&mut self) {
@@ -391,8 +397,11 @@ impl FileOut<'_, '_> {
     /// line.
     fn line(&mut self, i: usize, sep: u8) {
         let text = self.lines[i];
-        if self.p.opts.only_matching {
+        // With `-v` the selected lines have no matches; git then shows
+        // whole lines.
+        if self.p.opts.only_matching && !self.m.invert {
             if sep != b':' {
+                self.begin(i, false);
                 return;
             }
             let mut from = 0;
@@ -400,7 +409,7 @@ impl FileOut<'_, '_> {
                 if s == e {
                     break;
                 }
-                self.begin(i);
+                self.begin(i, true);
                 let col = self.p.opts.column.then_some(s + 1);
                 self.prefix(i, sep, col);
                 self.p.colored(|c| &c.match_selected, &text[s..e]);
@@ -409,7 +418,7 @@ impl FileOut<'_, '_> {
             }
             return;
         }
-        self.begin(i);
+        self.begin(i, true);
         let col = (self.p.opts.column && sep == b':').then(|| self.m.column(text));
         self.prefix(i, sep, col);
         let Some(colors) = self.p.colors.clone() else {

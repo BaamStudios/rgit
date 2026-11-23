@@ -301,6 +301,12 @@ impl Repo {
         self.replace.as_ref().expect("loaded")
     }
 
+    /// [`Repo::replacements`] as an owned value, for lookups without a
+    /// mutable repository.
+    pub fn replacement_lookup(&mut self) -> Replacements {
+        Replacements(self.replacements().clone())
+    }
+
     /// The alternate object directories in lookup order (without the
     /// repository's own).
     pub fn alternate_dirs(&self) -> Vec<PathBuf> {
@@ -359,4 +365,26 @@ impl Repo {
 /// `<common dir>/objects`).
 pub fn objects_dir(setup: &Setup) -> PathBuf {
     rgit_odb::objects_dir(&setup.common_dir)
+}
+
+/// Replace refs: object to replacement.
+#[derive(Debug, Clone, Default)]
+pub struct Replacements(HashMap<ObjectId, ObjectId>);
+
+impl Replacements {
+    /// The replacement of `oid` (following chains), or `oid` itself.
+    pub fn get(&self, oid: &ObjectId) -> ObjectId {
+        chain(&self.0, oid)
+    }
+}
+
+fn chain(map: &HashMap<ObjectId, ObjectId>, oid: &ObjectId) -> ObjectId {
+    let mut cur = *oid;
+    for _ in 0..MAX_REPLACE_DEPTH {
+        match map.get(&cur) {
+            Some(next) => cur = *next,
+            None => break,
+        }
+    }
+    cur
 }
