@@ -60,6 +60,9 @@ pub(crate) struct Options {
     pub lost_found: bool,
     pub name_objects: bool,
     pub references: bool,
+    /// Progress meters (`--progress`, else stderr is a terminal; never
+    /// with `--verbose`).
+    pub progress: bool,
 }
 
 /// A reference from one object to another.
@@ -241,6 +244,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         lost_found: lost,
         name_objects: name_objects.get(),
         references: references.get(),
+        progress: !verbose.get()
+            && match progress.get() {
+                -1 => rgit_progress::stderr_is_terminal(),
+                v => v != 0,
+            },
     };
 
     let setup = repo::setup(ctx, Mode::Required)?;
@@ -262,7 +270,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if opts.verbose {
             eprintln!("{}", msg::CHECKING_REF_DATABASE);
         }
+        let meter = opts
+            .progress
+            .then(|| rgit_progress::Progress::start(msg::CHECKING_REF_DATABASE, 1, true));
         f.errors |= refs::verify(&repo, &f);
+        if let Some(mut m) = meter {
+            m.set(1);
+            m.stop();
+        }
     }
 
     objects::scan(&mut f, &repo);

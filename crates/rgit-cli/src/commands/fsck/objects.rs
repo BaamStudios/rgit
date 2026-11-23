@@ -75,17 +75,46 @@ pub(crate) fn scan(f: &mut Fsck, repo: &Repo) {
             }
         );
     }
+    // Like git, the meters follow the checks of object contents: none
+    // with --connectivity-only.
+    let progress = f.opts.progress && !f.opts.connectivity_only;
     for dir in &dirs {
         let store = LooseStore::new(dir, f.hash, LooseOptions::default());
+        // One step per fan-out directory, shown as its objects are read.
+        let mut meter = progress
+            .then(|| rgit_progress::Progress::start(msg::CHECKING_OBJECT_DIRECTORIES, 256, true));
         for (oid, path) in loose_ids(dir, f.hash) {
+            if let Some(m) = &mut meter {
+                m.set(u64::from(oid.as_bytes()[0]) + 1);
+            }
             scan_loose(f, &store, &oid, &path);
         }
-    }
-    for dir in &dirs {
-        let set = PackSet::open(dir.join("pack"), f.hash);
-        for pack in set.packs() {
-            scan_pack(f, &pack);
+        if let Some(mut m) = meter {
+            m.set(256);
+            m.stop();
         }
+    }
+    let packs: Vec<_> = dirs
+        .iter()
+        .flat_map(|dir| PackSet::open(dir.join("pack"), f.hash).packs())
+        .collect();
+    let total: u64 = packs.iter().map(|p| p.index().len() as u64).sum();
+    // The packed objects, counted pack by pack.
+    let mut meter = (progress && f.opts.full && total > 0)
+        .then(|| rgit_progress::Progress::start(msg::CHECKING_OBJECTS, total, true));
+    let mut done = 0u64;
+    if let Some(m) = &mut meter {
+        m.set(0);
+    }
+    for pack in &packs {
+        scan_pack(f, pack);
+        done += pack.index().len() as u64;
+        if let Some(m) = &mut meter {
+            m.set(done);
+        }
+    }
+    if let Some(m) = meter {
+        m.stop();
     }
     check_special_blobs(f, repo);
 }
