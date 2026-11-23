@@ -4,6 +4,12 @@
 //! Behaves as `git` when installed under that name; when invoked as
 //! `git-<cmd>` (e.g. `git-upload-pack`) it runs `<cmd>` directly.
 
+/// mimalloc instead of the system allocator (#596); feature `mimalloc`,
+/// on by default.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod abbrev;
 mod alias;
 mod argv;

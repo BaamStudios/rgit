@@ -44,6 +44,11 @@ cargo build --release
 ./target/release/rgit --version
 ```
 
+Release builds use fat LTO with one codegen unit, so they take a few minutes.
+The binary uses mimalloc as its allocator (needs a C compiler);
+`cargo build --release -p rgit-cli --no-default-features` builds it with the
+system allocator instead.
+
 To get the reference implementation and its documentation:
 
 ```sh

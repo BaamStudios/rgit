@@ -19,6 +19,14 @@ debug = false
 [profile.test]
 debug = "line-tables-only"
 
+# Release binaries (#592): whole-program optimisation across all crates.
+# Slower to build, faster to run. `panic` stays "unwind": main() turns a
+# panic on the command thread into exit code 101 and still flushes stdout,
+# waits for the pager and filter processes and writes the trace2 exit event.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 # Lints the MSRV bump to 1.88 (#237) newly enables. They only suggest let
 # chains and `is_multiple_of`; existing code is not rewritten wholesale.
 [workspace.lints.clippy]
