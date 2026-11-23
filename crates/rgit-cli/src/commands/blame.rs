@@ -8,6 +8,8 @@
 //! blamed: lines that differ from `HEAD` belong to a pseudo commit "Not
 //! Committed Yet" with the null object name.
 
+#[path = "blame/fuzzy.rs"]
+mod fuzzy;
 #[path = "blame/output.rs"]
 mod output;
 #[path = "blame/range.rs"]
@@ -64,8 +66,11 @@ struct Cli {
     color_by_age: Cell<bool>,
     revs_file: RefCell<Option<String>>,
     contents: RefCell<Option<String>>,
-    copies: Cell<i32>,
+    copies: Cell<u8>,
     moves: Cell<bool>,
+    /// The scores of `-C<num>` and `-M<num>` (0: default).
+    copy_score: Cell<usize>,
+    move_score: Cell<usize>,
     ranges: RefCell<Vec<String>>,
     /// `None`: default; `Some(0)`: full names.
     abbrev: Cell<Option<i64>>,
@@ -138,13 +143,19 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             Opt::flag(None, "color-by-age", &cli.color_by_age, msg::HELP_COLOR_BY_AGE),
             Opt::string('S', None, &cli.revs_file, "file", msg::HELP_REVS_FILE),
             Opt::string(None, "contents", &cli.contents, "file", msg::HELP_CONTENTS),
-            Opt::callback('C', None, Some("score"), msg::HELP_COPIES, |_, _| {
-                cli.copies.set(cli.copies.get() + 1);
+            Opt::callback('C', None, Some("score"), msg::HELP_COPIES, |v, _| {
+                cli.copies.set(cli.copies.get().saturating_add(1));
+                if let Some(v) = v {
+                    cli.copy_score.set(v.parse().unwrap_or(0));
+                }
                 Ok(())
             })
             .optional(None),
-            Opt::callback('M', None, Some("score"), msg::HELP_MOVES, |_, _| {
+            Opt::callback('M', None, Some("score"), msg::HELP_MOVES, |v, _| {
                 cli.moves.set(true);
+                if let Some(v) = v {
+                    cli.move_score.set(v.parse().unwrap_or(0));
+                }
                 Ok(())
             })
             .optional(None),
@@ -284,12 +295,6 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     if rev.reverse {
         return Err(Die::Fatal(msg::REVERSE_NOT_SUPPORTED.into()));
     }
-    if cli.copies.get() > 0 || cli.moves.get() {
-        return Err(Die::Fatal(msg::MOVE_COPY_NOT_SUPPORTED.into()));
-    }
-    if !cli.ignore_rev.borrow().is_empty() || !cli.ignore_revs_file.borrow().is_empty() {
-        return Err(Die::Fatal(msg::IGNORE_REV_NOT_SUPPORTED.into()));
-    }
     if cli.revs_file.borrow().is_some() {
         return Err(Die::Fatal(msg::REVS_FILE_NOT_SUPPORTED.into()));
     }
@@ -325,6 +330,16 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
         since: rev.since,
         diff,
         ignore_whitespace: cli.ignore_ws.get(),
+        moves: (cli.moves.get() || cli.copies.get() > 0).then_some(match cli.move_score.get() {
+            0 => DEFAULT_MOVE_SCORE,
+            n => n,
+        }),
+        copies: cli.copies.get().min(3),
+        copy_score: match cli.copy_score.get() {
+            0 => DEFAULT_COPY_SCORE,
+            n => n,
+        },
+        ignore: ignored_revs(&mut repo, &config, &cli)?,
     };
 
     // Positive and negative revisions.
@@ -475,10 +490,13 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             num: b - a,
             suspect: final_origin,
             s_lno: a,
+            ignored: false,
+            unblamable: false,
         })
         .collect();
     drop(lines);
     let total: usize = entries.iter().map(|e| e.num).sum();
+    sb.final_blob = Some(final_blob.clone());
     sb.add(final_origin, entries);
     sb.run().map_err(score_error)?;
     // Progress appears after GIT_PROGRESS_DELAY seconds (default 2); only
@@ -561,6 +579,8 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
         },
         raw_time: cli.raw_time.get(),
         blank_boundary: cli.blank_boundary.get() || cfg_bool("blame.blankboundary").unwrap_or(false),
+        mark_ignored: cfg_bool("blame.markignoredlines").unwrap_or(false),
+        mark_unblamable: cfg_bool("blame.markunblamablelines").unwrap_or(false),
         abbrev,
         date,
         date_ctx,
@@ -633,6 +653,68 @@ fn coloring(
         _ => Ok(Coloring::None),
     }
 }
+
+/// The commits to ignore: the files of `blame.ignoreRevsFile`, then those
+/// of `--ignore-revs-file` (an empty name forgets the files before), then
+/// `--ignore-rev`.
+fn ignored_revs(
+    repo: &mut Repo,
+    config: &rgit_config::ConfigSet,
+    cli: &Cli,
+) -> Result<std::collections::HashSet<ObjectId>, Die> {
+    let mut out = std::collections::HashSet::new();
+    let top = repo.setup.work_tree.clone();
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let add = |files: &mut Vec<std::path::PathBuf>, name: &str, base: Option<&std::path::Path>| {
+        if name.is_empty() {
+            files.clear();
+        } else {
+            let path = std::path::Path::new(name);
+            files.push(match base {
+                Some(b) if path.is_relative() => b.join(path),
+                _ => path.to_path_buf(),
+            });
+        }
+    };
+    for e in config.get_all("blame.ignorerevsfile") {
+        let name = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+        add(&mut files, &name, top.as_deref());
+    }
+    for name in cli.ignore_revs_file.borrow().iter() {
+        add(&mut files, name, None);
+    }
+    for f in files {
+        let data = std::fs::read(&f).map_err(|_| {
+            Die::Fatal(msg::cannot_open_revs_file(&f.to_string_lossy()))
+        })?;
+        for line in data.split(|&b| b == b'\n') {
+            let line = match line.iter().position(|&b| b == b'#') {
+                Some(i) => &line[..i],
+                None => line,
+            };
+            let line = line.trim_ascii();
+            if line.is_empty() {
+                continue;
+            }
+            let id = ObjectId::from_hex(repo.hash, line).map_err(|_| {
+                Die::Fatal(msg::invalid_object_name(&String::from_utf8_lossy(line)))
+            })?;
+            out.insert(id);
+        }
+    }
+    for rev in cli.ignore_rev.borrow().iter() {
+        let id = repo
+            .resolve(rev)
+            .and_then(|id| peel_commit(repo, id))
+            .ok_or_else(|| Die::Fatal(msg::cannot_find_ignored(rev)))?;
+        out.insert(id);
+    }
+    Ok(out)
+}
+
+/// The default minimum scores of `-M` and `-C` (blame-options.adoc).
+const DEFAULT_MOVE_SCORE: usize = 20;
+const DEFAULT_COPY_SCORE: usize = 40;
 
 /// `color.blame.repeatedLines` default: cyan.
 const REPEATED_COLOR: &str = "\x1b[36m";
