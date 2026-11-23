@@ -588,6 +588,33 @@ pub fn files_stage(
     Ok(pairs)
 }
 
+/// An unmerged path: its index stages 1 to 3 and its work tree file.
+pub struct Unmerged {
+    pub path: Vec<u8>,
+    pub stages: [Option<Side>; 3],
+    pub file: Option<Side>,
+}
+
+/// The unmerged paths of the index (for combined diffs and `-1`..`-3`).
+pub fn unmerged(index: &Index, ps: &Pathspec, wt: &WorkTree<'_>) -> Result<Vec<Unmerged>, Die> {
+    let mut out = Vec::new();
+    for ip in index_paths(index, ps) {
+        if ip.stage0.is_some() {
+            continue;
+        }
+        let mode = ip.stages[1]
+            .or(ip.stages[2])
+            .or(ip.stages[0])
+            .map(|e| e.mode.0);
+        out.push(Unmerged {
+            path: ip.path.to_vec(),
+            stages: ip.stages.map(|e| e.map(entry_side)),
+            file: wt.unmerged_file(ip.path, mode)?,
+        });
+    }
+    Ok(out)
+}
+
 /// Tree against index (`diff-index --cached`, `diff --cached`), or
 /// against the work tree when `wt` is given (`diff-index`, `diff <commit>`).
 pub fn index(

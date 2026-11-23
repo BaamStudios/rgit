@@ -89,6 +89,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut root = false;
     let mut no_commit_id = false;
     let mut merges: Option<&'static str> = None;
+    let mut all_paths = false;
     // Diff options as given, for `show` (with a pretty format).
     let mut diff_args: Vec<String> = Vec::new();
     let parsed = diff::parse_args(
@@ -112,6 +113,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
             "-m" => {
                 merges = Some("-m");
+                Ok(true)
+            }
+            "--remerge-diff" => {
+                merges = Some("--remerge-diff");
+                Ok(true)
+            }
+            "--combined-all-paths" => {
+                all_paths = true;
                 Ok(true)
             }
             "--merge-base" => {
@@ -152,6 +161,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         no_commit_id,
         merges,
         always: header.always,
+        all_paths,
     };
     if stdin {
         return run_stdin(ctx, opts, args, before, &flags, &header, &diff_args);
@@ -275,6 +285,8 @@ struct Single {
     no_commit_id: bool,
     merges: Option<&'static str>,
     always: bool,
+    /// `--combined-all-paths`.
+    all_paths: bool,
 }
 
 /// Whether `<a> <b>` is a commit followed by a path (the single-commit
@@ -369,12 +381,28 @@ impl Commits<'_> {
                         chunks.push(self.pair(Some(*t), &tree)?);
                     }
                 }
+                Some("--remerge-diff") => {
+                    if let [ours, theirs] = &parents[..] {
+                        let bytes = crate::diff::remerge::diff(
+                            repo,
+                            self.opts,
+                            self.formats,
+                            self.pathspec,
+                            [ours, theirs],
+                            &tree,
+                        )?;
+                        let changed = !bytes.is_empty();
+                        chunks.push((bytes, changed));
+                    }
+                }
                 Some(mode) => {
-                    // Formats other than raw and patch compare with the
-                    // first parent and come first.
+                    // Formats other than raw, patch and names compare with
+                    // the first parent and come first.
                     let others = Formats {
                         raw: false,
                         patch: false,
+                        name_only: false,
+                        name_status: false,
                         ..self.formats
                     };
                     let (mut bytes, mut changed) = (Vec::new(), false);
@@ -382,8 +410,9 @@ impl Commits<'_> {
                         (bytes, changed) =
                             self.pair_with(Some(parent_trees[0]), &tree, others)?;
                     }
-                    if self.formats.patch || self.formats.raw {
-                        let (b, c) = self.combined(&parent_trees, &tree, mode == "--cc");
+                    let f = self.formats;
+                    if f.patch || f.raw || f.name_only || f.name_status {
+                        let (b, c) = self.combined(&parent_trees, &tree, mode == "--cc")?;
                         if !bytes.is_empty() && !b.is_empty() {
                             bytes.push(b'\n');
                         }
@@ -398,34 +427,53 @@ impl Commits<'_> {
         Ok((chunks, combined))
     }
 
-    fn combined(&self, parent_trees: &[ObjectId], tree: &ObjectId, dense: bool) -> (Vec<u8>, bool) {
+    /// The combined diff (rename detection with `-M` pairs paths per
+    /// parent) and whether any path is left.
+    fn combined(
+        &self,
+        parent_trees: &[ObjectId],
+        tree: &ObjectId,
+        dense: bool,
+    ) -> Result<(Vec<u8>, bool), Die> {
         let repo = self.repo;
-        let files: Vec<_> = crate::diff::combined::collect(repo, parent_trees, tree, false)
-            .into_iter()
-            .filter(|f| self.pathspec.is_empty() || self.pathspec.matches(&f.path))
-            .collect();
-        let quote = repo.quote_path();
+        let out = Output::new(Some(repo), repo.hash, self.opts, self.formats, false)?;
+        let files = crate::diff::combined::collect(
+            repo,
+            &out,
+            self.pathspec,
+            parent_trees,
+            tree,
+            self.opts.show_trees,
+        )?;
+        let style = crate::diff::combined::PathStyle {
+            quote: repo.quote_path(),
+            nul: self.opts.nul,
+            all_paths: self.flags.all_paths,
+        };
         let mut bytes = Vec::new();
+        if self.formats.name_only || self.formats.name_status {
+            crate::diff::combined::names(&files, self.formats.name_status, style, &mut bytes);
+        }
         if self.formats.raw {
             let abbrev = match self.opts.abbrev {
                 Some(Some(n)) => Some(n),
                 Some(None) => Some(repo.default_abbrev()),
                 None => None,
             };
-            crate::diff::combined::raw(repo, &files, abbrev, quote, &mut bytes);
+            crate::diff::combined::raw(repo, &files, abbrev, style, &mut bytes);
         }
         if self.formats.patch {
-            let diff = rgit_diff::DiffOptions::default();
             let popts = crate::diff::combined::PatchOptions {
                 dense,
+                all_paths: self.flags.all_paths,
                 abbrev: repo.default_abbrev(),
-                quote,
-                diff: &diff,
+                quote: style.quote,
+                diff: &out.patch.diff,
             };
             crate::diff::combined::patch(repo, &files, &popts, &mut bytes);
         }
         let changed = !files.is_empty();
-        (bytes, changed)
+        Ok((bytes, changed))
     }
 }
 
@@ -513,8 +561,8 @@ impl Sink {
                     continue;
                 }
                 if !c.flags.no_commit_id {
-                    self.out
-                        .extend_from_slice(format!("{}\n", commit_id.to_hex()).as_bytes());
+                    self.out.extend_from_slice(commit_id.to_hex().as_bytes());
+                    self.out.push(if c.opts.nul { 0 } else { b'\n' });
                 }
                 self.out.extend_from_slice(&bytes);
             }

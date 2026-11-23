@@ -91,7 +91,7 @@ pub struct Output<'a> {
     /// driver's `wordRegex`).
     word_regex_cli: bool,
     /// `--line-prefix`.
-    line_prefix: Option<Vec<u8>>,
+    pub line_prefix: Option<Vec<u8>>,
     /// The signs of added, removed and context lines
     /// (`--output-indicator-*`).
     pub indicators: [u8; 3],
@@ -790,6 +790,12 @@ impl<'a> Output<'a> {
             std::fs::read(path)
         };
         res.map_err(|_| Die::Error(msg::read_failed(&path.to_string_lossy()), 1))
+    }
+
+    /// The contents of `side` at `path` (work tree files in their blob
+    /// form).
+    pub fn contents(&self, side: &Side, path: &[u8]) -> Result<Vec<u8>, Die> {
+        self.load(side, path).map(|l| l.data)
     }
 
     fn load(&self, side: &Side, path: &[u8]) -> Result<Loaded, Die> {

@@ -2,7 +2,9 @@
 //! `git diff` (Documentation/git-diff.adoc): work tree against index,
 //! `--cached`/`--staged [<commit>]`, `<commit>` against the work tree,
 //! `<commit> <commit>`, `A..B`, `A...B`, `--merge-base`, `<blob> <blob>`
-//! and `--no-index <path> <path>`. No combined diffs.
+//! `--no-index <path> <path>`, and combined diffs: `<merge> <parent>...`,
+//! `<merge>^!` and the work tree with unmerged paths (`-c`, `--cc`,
+//! `-0`..`-3`).
 
 use std::path::{Path, PathBuf};
 
@@ -29,9 +31,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut cached = false;
     let mut no_index = false;
     let mut merge_base = false;
+    let mut stage: Option<usize> = None;
+    let mut combined: Option<bool> = None;
     let parsed = diff::parse_args(
         &argv[1..],
         |a| match a {
+            "-c" => {
+                combined = Some(false);
+                Ok(true)
+            }
+            "--cc" => {
+                combined = Some(true);
+                Ok(true)
+            }
+            _ if diff::stage_option(a).is_some() => {
+                stage = diff::stage_option(a);
+                Ok(true)
+            }
             "--cached" | "--staged" => {
                 cached = true;
                 Ok(true)
@@ -97,6 +113,35 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         // A range is the only revision argument.
         if ranges && is_range(&mut repo, arg) {
             return Err(usage_exit(usage()));
+        }
+        // `<commit>^!`: the commit against its parents.
+        if let Some(c) = arg
+            .strip_suffix("^!")
+            .and_then(|c| repo.resolve(c))
+            .and_then(|c| repo.peel_to(c, ObjectKind::Commit))
+        {
+            if !revs.is_empty() {
+                return Err(usage_exit(usage()));
+            }
+            ranges = true;
+            let parents = match repo.read_object(&c) {
+                Some(rgit_object::Object::Commit(commit)) => commit.parents().unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            if parents.len() == 1 {
+                revs.push(parents[0]);
+                names.push(format!("{}^", &arg[..arg.len() - 2]));
+                revs.push(c);
+                names.push(arg[..arg.len() - 2].to_owned());
+            } else {
+                revs.push(c);
+                names.push(arg[..arg.len() - 2].to_owned());
+                for p in parents {
+                    revs.push(p);
+                    names.push(p.to_hex());
+                }
+            }
+            continue;
         }
         if let Some(r) = range(ctx, &mut repo, arg)? {
             if !revs.is_empty() {
@@ -200,6 +245,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     opts.resolve_objects(&mut repo)?;
     let repo = repo;
+    let mut unmerged = Vec::new();
+    if trees.len() > 2 && !cached {
+        // `<merge> <parent>...`: the combined diff.
+        page(ctx, Some(&repo), &opts)?;
+        let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true)?;
+        out.set_color(&opts)?;
+        let files = crate::diff::combined::collect(&repo, &out, &pathspec, &trees[1..], &trees[0], opts.show_trees)?;
+        let mut bytes = Vec::new();
+        crate::diff::combined::worktree_output(&repo, &out, &files, combined != Some(false), &mut bytes);
+        return Ok(out.finish(&bytes, !files.is_empty(), &opts));
+    }
     let (mut pairs, mnemonic) = match (trees.len(), cached) {
         (0, false) => {
             let root = repo.work_tree()?;
@@ -215,6 +271,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 dirty: Default::default(),
             };
             let mut pairs = collect::files(&index, &pathspec, &wt, false)?;
+            unmerged = collect::unmerged(&index, &pathspec, &wt)?;
             // --ita-visible-in-index: intent-to-add entries are empty files
             // in the index, so the work tree file is a modification.
             if opts.ita_invisible == Some(false) {
@@ -294,7 +351,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             };
             (pairs, None)
         }
-        _ => return Err(Die::Fatal(msg::not_supported("this form of diff"))),
+        _ => return Err(usage_exit(usage())),
     };
     crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, true)?;
     diff::attr_retain(&repo, &mut pairs, attr_filter)?;
@@ -304,12 +361,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     page(ctx, Some(&repo), &opts)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true)?;
     out.set_color(&opts)?;
-    out.combined_unmerged = trees.is_empty() && !cached;
     if let Some((s, d)) = mnemonic {
         out.mnemonic(&opts, s, d);
     }
-    let (bytes, changed) = out.render(pairs)?;
-    Ok(out.finish(&bytes, changed, &opts))
+    let how = diff::unmerged_as(stage, combined, formats.patch);
+    let (files, pairs) = crate::diff::combined::worktree(&repo, &out, &unmerged, pairs, how)?;
+    let mut bytes = Vec::new();
+    crate::diff::combined::worktree_output(&repo, &out, &files, combined != Some(false), &mut bytes);
+    let (rest, changed) = out.render(pairs)?;
+    bytes.extend_from_slice(&rest);
+    Ok(out.finish(&bytes, changed || !files.is_empty(), &opts))
 }
 
 /// `diff.autoRefreshIndex` (on by default): before comparing the index

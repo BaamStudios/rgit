@@ -66,8 +66,7 @@
 //!
 //! Not implemented yet: rename caching across a sequence of picks (a
 //! performance feature), some reports of directory rename splits when
-//! both sides renamed the same files, submodule merge resolutions
-//! suggested from merge commits in the submodule.
+//! both sides renamed the same files.
 
 mod engine;
 mod history;
@@ -190,6 +189,12 @@ pub trait PathMerge: std::fmt::Debug {
     /// (`merge.renormalize`).
     fn renormalize(&self, _path: &[u8], data: Vec<u8>) -> Vec<u8> {
         data
+    }
+    /// Merge commits in the submodule at `path`, reachable from its
+    /// references, that already contain both `ours` and `theirs` (the
+    /// earliest such ones), as `"<abbrev> <subject>"` lines.
+    fn submodule_merges(&self, _path: &[u8], _ours: &ObjectId, _theirs: &ObjectId) -> Vec<Vec<u8>> {
+        Vec::new()
     }
     /// Whether commit `ancestor` is an ancestor of (or equal to)
     /// `descendant` in the submodule at `path`; `None` when the

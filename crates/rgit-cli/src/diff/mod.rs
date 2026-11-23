@@ -16,6 +16,7 @@ pub mod moved;
 pub mod options;
 mod order;
 pub mod output;
+pub mod remerge;
 mod stat;
 mod words;
 
@@ -78,6 +79,33 @@ pub fn pathspec(ctx: &Context, repo: &Repo, args: &[String]) -> Result<Pathspec,
         })
         .collect();
     Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))
+}
+
+/// `-0`, `-1`/`--base`, `-2`/`--ours`, `-3`/`--theirs` of work tree
+/// diffs: the stage unmerged paths are compared with.
+pub fn stage_option(arg: &str) -> Option<usize> {
+    Some(match arg {
+        "-0" => 0,
+        "-1" | "--base" => 1,
+        "-2" | "--ours" => 2,
+        "-3" | "--theirs" => 3,
+        _ => return None,
+    })
+}
+
+/// How a work tree diff shows unmerged paths: a stage option wins, then
+/// `-c`/`--cc`; a patch is combined by default.
+pub fn unmerged_as(
+    stage: Option<usize>,
+    combined: Option<bool>,
+    patch: bool,
+) -> combined::UnmergedAs {
+    match (stage, combined) {
+        (Some(n), _) => combined::UnmergedAs::Stage(n),
+        (None, Some(_)) => combined::UnmergedAs::Combined,
+        (None, None) if patch => combined::UnmergedAs::Combined,
+        _ => combined::UnmergedAs::Default,
+    }
 }
 
 /// `--max-depth` cannot be combined with wildcards in the pathspec.

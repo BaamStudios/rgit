@@ -350,6 +350,84 @@ impl PathMerge for RepoPathMerge {
         Some(bases.contains(ancestor))
     }
 
+    fn submodule_merges(&self, path: &[u8], ours: &ObjectId, theirs: &ObjectId) -> Vec<Vec<u8>> {
+        use rgit_refs::RefStore;
+        let Some(odb) = self.submodule_odb(path) else {
+            return Vec::new();
+        };
+        let dir = self.root.join(String::from_utf8_lossy(path).as_ref());
+        let Some(git_dir) = rgit_submodule::gitdir::git_dir_of(&dir) else {
+            return Vec::new();
+        };
+        let store = rgit_refs::files::FilesStore::new(git_dir, self.hash);
+        let tips: Vec<ObjectId> = store
+            .iter(&rgit_refs::IterOptions::prefix(""))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|i| match i {
+                rgit_refs::IterItem::Ref(r) => r.oid,
+                _ => None,
+            })
+            .collect();
+        // The commits reachable from the references, parents first.
+        let mut parents: std::collections::HashMap<ObjectId, Vec<ObjectId>> =
+            std::collections::HashMap::new();
+        let mut order: Vec<ObjectId> = Vec::new();
+        let mut stack: Vec<(ObjectId, bool)> = tips.iter().rev().map(|t| (*t, false)).collect();
+        while let Some((id, done)) = stack.pop() {
+            if done {
+                order.push(id);
+                continue;
+            }
+            if parents.contains_key(&id) {
+                continue;
+            }
+            let Ok(info) = rgit_merge::read_commit(&*odb, &id) else {
+                continue;
+            };
+            stack.push((id, true));
+            for p in info.parents.iter().rev() {
+                if !parents.contains_key(p) {
+                    stack.push((*p, false));
+                }
+            }
+            parents.insert(id, info.parents);
+        }
+        // Which commits contain `ours` and `theirs`.
+        let mut reach: std::collections::HashMap<ObjectId, (bool, bool)> =
+            std::collections::HashMap::new();
+        for id in &order {
+            let mut r = (id == ours, id == theirs);
+            for p in &parents[id] {
+                if let Some(pr) = reach.get(p) {
+                    r = (r.0 || pr.0, r.1 || pr.1);
+                }
+            }
+            reach.insert(*id, r);
+        }
+        let both = |id: &ObjectId| reach.get(id) == Some(&(true, true));
+        // The earliest of them: no parent contains both.
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for id in &order {
+            if !both(id) || parents[id].iter().any(&both) || !seen.insert(*id) {
+                continue;
+            }
+            let Ok(Some(raw)) = odb.read(id) else {
+                continue;
+            };
+            let Ok(commit) = rgit_object::Commit::parse(self.hash, &raw.data) else {
+                continue;
+            };
+            let subject = commit.message().split(|&b| b == b'\n').next().unwrap_or_default();
+            let mut line = id.to_hex().as_bytes()[..7].to_vec();
+            line.push(b' ');
+            line.extend_from_slice(subject);
+            out.push(line);
+        }
+        out
+    }
+
     fn renormalize(&self, path: &[u8], data: Vec<u8>) -> Vec<u8> {
         let Some(c) = &self.converter else {
             return data;
