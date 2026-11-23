@@ -954,6 +954,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
                 keep_empty: !o.no_keep_empty,
                 quiet,
                 cousins: mode == RebaseMerges::RebaseCousins,
+                root_onto: root_onto.is_some(),
             },
         )?,
         None => todo::Todo::from_items(todo_list(

@@ -126,6 +126,8 @@ fn generated_lists() {
             "git rebase -i --rebase-merges=rebase-cousins C",
             "git rebase -i --rebase-merges=no-rebase-cousins C",
             "git rebase -i -r --root",
+            "git rebase -i -r --root --onto X",
+            "git rebase -r --root --onto X",
             "git rebase -i -r --onto A D",
             "git rebase -i -r HEAD",
             "git rebase -i -r --update-refs A",
