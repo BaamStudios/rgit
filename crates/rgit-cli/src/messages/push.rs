@@ -57,6 +57,9 @@ pub const NO_SIGNED_IF_ASKED: &str =
 pub const NEGOTIATION_FAILED: &str = "push negotiation failed; proceeding anyway with push";
 pub const FAILED_TO_SIGN_CERT: &str = "failed to sign the push certificate";
 pub const BAD_GPGSIGN: &str = "invalid value for 'push.gpgsign'";
+pub fn missing_value(key: &str) -> String {
+    format!("missing value for '{key}'")
+}
 pub fn bad_signed(value: &str) -> String {
     format!("bad signed argument: {value}")
 }
