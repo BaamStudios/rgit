@@ -22,6 +22,7 @@ use bstr::ByteSlice;
 use rgit_config::{ConfigSet, Environment};
 use rgit_fs::TempFile;
 use rgit_hash::{HashKind, ObjectId};
+use rgit_object::fsck::{MsgId, Severity};
 use rgit_pack::index_pack::{self as ip, IndexVersion, Input, ObjectDb, Options};
 use rgit_protocol::v0::{self, Advertisement};
 use rgit_protocol::v2::{
@@ -463,6 +464,10 @@ impl Session {
         let proto = &mut self.proto;
         let show_progress = !opts.no_progress;
         let unpack_limit = u64::from(opts.unpack_limit.unwrap_or(0));
+        let fsck_hook = opts.fsck.as_ref().map(|check| FsckHook {
+            hash: repo.hash,
+            check,
+        });
         let (outcome, indexed) = std::thread::scope(|s| {
             let worker = s.spawn(move || {
                 let mut meter =
@@ -480,7 +485,7 @@ impl Session {
                     },
                     &ip_opts,
                     Some(odb as &dyn ObjectDb),
-                    None,
+                    fsck_hook.as_ref().map(|h| h as &dyn ip::ObjectHook),
                     Some(&mut meter),
                 )
             });
@@ -525,7 +530,20 @@ impl Session {
         if !outcome.packfile {
             return Ok(None);
         }
-        let indexed = indexed?;
+        let indexed = match indexed {
+            Err(ip::Error::Hook(msg)) => {
+                // git: `fatal: fsck error in packed object`, then the
+                // caller's own line.
+                eprintln!("fatal: {msg}");
+                let failed = opts
+                    .fsck
+                    .as_ref()
+                    .map(|c| c.failed.clone())
+                    .unwrap_or_default();
+                return Err(Error::fatal(failed));
+            }
+            r => r?,
+        };
         // An empty pack (e.g. deepening to the current depth) is not kept.
         if indexed.objects().is_empty() {
             return Ok(None);
@@ -676,6 +694,154 @@ pub struct PackOptions {
     /// Refs asked for by name (`want-ref`, protocol v2 servers with
     /// `ref-in-want`) instead of by object.
     pub want_refs: Vec<String>,
+    /// Check every received object (`fetch.fsckObjects`,
+    /// `transfer.fsckObjects`).
+    pub fsck: Option<FsckCheck>,
+}
+
+/// Object checks of `fetch.fsckObjects` / `transfer.fsckObjects`, at the
+/// severities of `fetch.fsck.<msg-id>` (`fsck.<msg-id>` does not apply,
+/// as observed from git).
+#[derive(Debug, Clone)]
+pub struct FsckCheck {
+    /// Severities set by `fetch.fsck.<msg-id>`.
+    pub severities: Vec<(MsgId, Severity)>,
+    /// Objects not checked (`fetch.fsck.skipList`).
+    pub skip: HashSet<ObjectId>,
+    /// The last fatal line when an object fails (it differs between
+    /// fetch and clone).
+    pub failed: String,
+}
+
+impl FsckCheck {
+    /// The checks the configuration asks for; `failed` as in
+    /// [`FsckCheck::failed`].
+    pub fn from_config(
+        config: &rgit_config::ConfigSet,
+        hash: HashKind,
+        failed: &str,
+    ) -> Option<FsckCheck> {
+        let on = config
+            .bool("fetch.fsckobjects")
+            .ok()
+            .flatten()
+            .or_else(|| config.bool("transfer.fsckobjects").ok().flatten())
+            .unwrap_or(false);
+        if !on {
+            return None;
+        }
+        let mut severities = Vec::new();
+        let mut skip = HashSet::new();
+        for entry in config.entries() {
+            let name = String::from_utf8_lossy(&entry.name).into_owned();
+            let Some(key) = name.strip_prefix("fetch.fsck.") else {
+                continue;
+            };
+            if key == "skiplist" {
+                let path = entry.value.as_ref().map(|v| v.to_str_lossy().into_owned());
+                let data = path.and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
+                for line in data.split(|&b| b == b'\n') {
+                    let line = line
+                        .split(|&b| b == b'#')
+                        .next()
+                        .unwrap_or(&[])
+                        .trim_ascii();
+                    if let Ok(id) = ObjectId::from_hex(hash, line) {
+                        skip.insert(id);
+                    }
+                }
+                continue;
+            }
+            let Some(id) = MsgId::from_name(key) else {
+                continue;
+            };
+            let value = entry
+                .value
+                .as_ref()
+                .map(|v| String::from_utf8_lossy(v).to_ascii_lowercase());
+            let sev = match value.as_deref() {
+                Some("error") => Severity::Error,
+                Some("warn") => Severity::Warn,
+                Some("ignore") => Severity::Ignore,
+                _ => continue,
+            };
+            severities.push((id, sev));
+        }
+        Some(FsckCheck {
+            severities,
+            skip,
+            failed: failed.to_owned(),
+        })
+    }
+
+    fn severity(&self, id: MsgId) -> Severity {
+        self.severities
+            .iter()
+            .rev()
+            .find(|(i, _)| *i == id)
+            .map_or_else(|| id.default_severity(), |(_, s)| *s)
+    }
+}
+
+/// Runs [`FsckCheck`] on each object index-pack resolves.
+struct FsckHook<'a> {
+    hash: rgit_hash::HashKind,
+    check: &'a FsckCheck,
+}
+
+impl ip::ObjectHook for FsckHook<'_> {
+    fn object(
+        &self,
+        id: &ObjectId,
+        kind: rgit_pack::ObjectKind,
+        data: &[u8],
+    ) -> std::result::Result<(), String> {
+        if self.check.skip.contains(id) {
+            return Ok(());
+        }
+        let okind = match kind {
+            rgit_pack::ObjectKind::Commit => rgit_object::ObjectKind::Commit,
+            rgit_pack::ObjectKind::Tree => rgit_object::ObjectKind::Tree,
+            rgit_pack::ObjectKind::Blob => rgit_object::ObjectKind::Blob,
+            rgit_pack::ObjectKind::Tag => rgit_object::ObjectKind::Tag,
+        };
+        let mut failed = false;
+        let mut lines = Vec::new();
+        rgit_object::fsck::check_object(
+            okind,
+            self.hash,
+            data,
+            &rgit_object::fsck::Options::default(),
+            &mut |f| {
+                match self.check.severity(f.id) {
+                    Severity::Ignore => {}
+                    Severity::Warn | Severity::Info => {
+                        lines.push(format!("warning: {}", messages::fsck_finding(id, &f)));
+                    }
+                    Severity::Error | Severity::Fatal => {
+                        if let Some(c) = &f.cause {
+                            lines.push(format!("error: {c}"));
+                        }
+                        lines.push(format!("error: {}", messages::fsck_finding(id, &f)));
+                        failed = true;
+                        return rgit_object::fsck::Control::Stop;
+                    }
+                }
+                rgit_object::fsck::Control::Continue
+            },
+        );
+        if !lines.is_empty() {
+            let mut err = io::stderr().lock();
+            for l in lines {
+                let _ = writeln!(err, "{l}");
+            }
+        }
+        if failed {
+            Err(messages::FSCK_ERROR.to_string())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// The negotiation algorithm (`fetch.negotiationAlgorithm`).
