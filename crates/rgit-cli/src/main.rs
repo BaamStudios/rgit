@@ -12,6 +12,7 @@ mod autocorrect;
 mod cmdlist;
 mod color;
 mod column;
+mod columns;
 mod commands;
 mod comment;
 mod context;

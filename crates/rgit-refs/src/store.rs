@@ -236,6 +236,9 @@ pub struct ReflogUpdate {
 /// Phases reported to the `reference-transaction` hook (#76).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookState {
+    /// All updates are queued, nothing is locked yet; symbolic references
+    /// are not resolved.
+    Preparing,
     /// All references are locked and checked.
     Prepared,
     /// The transaction was committed.
@@ -248,6 +251,7 @@ impl HookState {
     /// The argument passed to the hook.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Preparing => "preparing",
             Self::Prepared => "prepared",
             Self::Committed => "committed",
             Self::Aborted => "aborted",
@@ -278,12 +282,13 @@ pub trait RefHooks {
     }
 
     /// The `reference-transaction` hook (#76). `updates` lists the
-    /// effective updates as `(old, new, name)`. Only the `prepared` state
-    /// can abort the transaction.
+    /// updates as `(old, new, name)` lines of the hook's input (object ids
+    /// in hex, `ref:<target>` for symbolic values). Only the `preparing`
+    /// and `prepared` states can abort the transaction.
     fn reference_transaction(
         &mut self,
         state: HookState,
-        updates: &[(ObjectId, ObjectId, String)],
+        updates: &[(String, String, String)],
     ) -> Result<(), String> {
         let _ = (state, updates);
         Ok(())
@@ -474,13 +479,42 @@ impl<'s> Transaction<'s> {
         }
     }
 
-    /// Releases all locks; nothing changes.
+    /// Releases all locks; nothing changes. A transaction that was not
+    /// prepared reports its queued updates to the hook.
     pub fn abort(mut self, hooks: &mut dyn RefHooks) {
+        if self.state == TransactionState::Open && !self.updates.is_empty() {
+            let lines = queued_hook_lines(&self.updates, self.store.hash_kind());
+            let _ = hooks.reference_transaction(HookState::Aborted, &lines);
+        }
         self.state = TransactionState::Closed;
         if let Some(p) = self.prepared.take() {
             p.abort(hooks);
         }
     }
+}
+
+/// The `reference-transaction` hook's lines for updates as queued (names
+/// not resolved; the old value as given, zero for none; `ref:<target>`
+/// for symbolic values).
+pub fn queued_hook_lines(updates: &[RefUpdate], hash: HashKind) -> Vec<(String, String, String)> {
+    let zero = || ObjectId::null(hash).to_hex();
+    updates
+        .iter()
+        .filter(|u| u.new.is_some())
+        .map(|u| {
+            let old = match &u.old {
+                Some(OldValue::Object(id)) => id.to_hex(),
+                Some(OldValue::Symbolic(t)) => format!("ref:{t}"),
+                _ => zero(),
+            };
+            let new = match &u.new {
+                Some(NewValue::Object(id)) => id.to_hex(),
+                Some(NewValue::Symbolic(t)) => format!("ref:{t}"),
+                None => zero(),
+            };
+            (old, new, u.name.clone())
+        })
+        .collect()
 }
 
 impl Drop for Transaction<'_> {

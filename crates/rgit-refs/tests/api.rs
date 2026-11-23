@@ -71,7 +71,7 @@ impl RefHooks for Recorder {
     fn reference_transaction(
         &mut self,
         state: HookState,
-        _updates: &[(ObjectId, ObjectId, String)],
+        _updates: &[(String, String, String)],
     ) -> Result<(), String> {
         self.states.push(state);
         if self.reject_prepared && state == HookState::Prepared {
@@ -103,7 +103,14 @@ fn commit_writes_loose_files_and_logs_head() {
     assert!(!hooks.reflogs[1].create);
     assert_eq!(hooks.reflogs[0].message, "first");
     assert!(hooks.reflogs[0].old.is_null());
-    assert_eq!(hooks.states, [HookState::Prepared, HookState::Committed]);
+    assert_eq!(
+        hooks.states,
+        [
+            HookState::Preparing,
+            HookState::Prepared,
+            HookState::Committed
+        ]
+    );
     assert!(lock_files(&d.0).is_empty());
 }
 
@@ -149,7 +156,14 @@ fn prepare_then_abort_prunes_directories() {
     tx.abort(&mut hooks);
     assert!(lock_files(&d.0).is_empty());
     assert!(!d.0.join("refs/heads/nested").exists());
-    assert_eq!(hooks.states, [HookState::Prepared, HookState::Aborted]);
+    assert_eq!(
+        hooks.states,
+        [
+            HookState::Preparing,
+            HookState::Prepared,
+            HookState::Aborted
+        ]
+    );
 }
 
 #[test]

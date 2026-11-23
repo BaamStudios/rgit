@@ -467,7 +467,7 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
     fn reference_transaction(
         &mut self,
         state: rgit_refs::HookState,
-        updates: &[(ObjectId, ObjectId, String)],
+        updates: &[(String, String, String)],
     ) -> Result<(), String> {
         let Some(hooks) = &self.transaction_hook else {
             return Ok(());
@@ -482,7 +482,11 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
         let opts = rgit_hook::RunOptions::with_args([state.as_str()])
             .stdin(rgit_hook::Input::Data(&input));
         let outcome = hooks.run("reference-transaction", &opts)?;
-        if state == rgit_refs::HookState::Prepared && !outcome.ok() {
+        let can_abort = matches!(
+            state,
+            rgit_refs::HookState::Preparing | rgit_refs::HookState::Prepared
+        );
+        if can_abort && !outcome.ok() {
             return Err(crate::messages::hook::transaction_aborted_by_hook(
                 state.as_str(),
             ));

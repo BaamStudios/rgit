@@ -66,3 +66,5 @@ pub fn problem(kind: Problem, paths: &[String], cached: bool, hints: bool) -> St
     }
     s
 }
+
+pub const HELP_SPARSE: &str = "allow updating entries outside of the sparse-checkout cone";

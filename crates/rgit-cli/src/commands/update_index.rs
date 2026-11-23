@@ -283,6 +283,16 @@ impl State<'_> {
                 }
                 Some(_) => return Err(Some(msg::missing_add(&shown))),
                 None if gitlink => return Ok(()),
+                // A tracked file replaced by a directory counts as gone.
+                None if !existing.is_empty() => {
+                    if !self.flag(Flag::Remove) {
+                        return Err(Some(msg::missing_remove(&shown)));
+                    }
+                    if !self.index.remove_path(path).is_empty() {
+                        self.changed = true;
+                    }
+                    return Ok(());
+                }
                 None => {
                     let tracked = !self.index.dir_range(path).is_empty();
                     return Err(Some(if tracked {

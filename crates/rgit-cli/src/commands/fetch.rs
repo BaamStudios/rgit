@@ -429,6 +429,9 @@ pub fn run_with_reflog_action(
             && config.bool("fetch.all").ok().flatten().unwrap_or(false)
     });
     let remotes = Remotes::from_config(&config).map_err(|e| Die::Fatal(e.to_string()))?;
+    for w in remotes.warnings() {
+        eprintln!("warning: {w}");
+    }
     let configured = remote_names(&config);
     let mut names: Option<Vec<String>> = None;
     if fetch_all {

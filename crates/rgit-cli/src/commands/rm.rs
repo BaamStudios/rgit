@@ -10,7 +10,8 @@
 //! `$GIT_DIR/modules/<name>`), and its section in `.gitmodules` is removed
 //! and staged.
 //!
-//! Not done yet: `--pathspec-from-file`, `--sparse`.
+//! `--pathspec-from-file`/`--pathspec-file-nul`; `--sparse` is accepted
+//! (sparse checkouts are not supported yet).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -66,6 +67,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let force = Cell::new(false);
     let recursive = Cell::new(false);
     let ignore_unmatch = Cell::new(false);
+    let sparse = Cell::new(false);
+    let from_file = RefCell::new(None::<String>);
+    let file_nul = Cell::new(false);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -75,10 +79,33 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('f', "force", &force, msg::HELP_FORCE),
             Opt::flag('r', None, &recursive, msg::HELP_R),
             Opt::flag(None, "ignore-unmatch", &ignore_unmatch, msg::HELP_IGNORE_UNMATCH),
+            Opt::flag(None, "sparse", &sparse, msg::HELP_SPARSE),
+            Opt::string(
+                None,
+                "pathspec-from-file",
+                &from_file,
+                "file",
+                crate::messages::reset::HELP_PATHSPEC_FROM_FILE,
+            ),
+            Opt::flag(
+                None,
+                "pathspec-file-nul",
+                &file_nul,
+                crate::messages::reset::HELP_PATHSPEC_FILE_NUL,
+            ),
         ],
     );
-    let args = parser.parse(argv)?.args;
+    let mut args = parser.parse(argv)?.args;
     drop(parser);
+    let from_file = from_file.into_inner();
+    if from_file.is_some() && !args.is_empty() {
+        return Err(Die::Fatal(crate::messages::reset::FROM_FILE_WITH_ARGS.to_owned()));
+    }
+    if file_nul.get() && from_file.is_none() {
+        return Err(Die::Fatal(
+            crate::messages::reset::FILE_NUL_WITHOUT_FROM_FILE.to_owned(),
+        ));
+    }
     let (dry_run, quiet, cached, force, recursive, ignore_unmatch) = (
         dry_run.get(),
         quiet.get(),
@@ -90,6 +117,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let mut repo = Repo::open(ctx, Mode::Required)?;
     let advisor = ctx.advisor(&repo.config)?;
+    if let Some(name) = &from_file {
+        args = super::restore::read_pathspec_file(&repo, name, file_nul.get())?
+            .into_iter()
+            .map(|p| String::from_utf8_lossy(&p).into_owned())
+            .collect();
+    }
     if args.is_empty() {
         return Err(Die::Fatal(msg::NO_PATHSPEC.to_string()));
     }

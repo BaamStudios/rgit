@@ -1365,6 +1365,10 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
             .map_err(|e| Die::Fatal(e.to_string()))?;
         for item in items {
             let IterItem::Ref(r) = item else { continue };
+            // A symbolic ref pointing nowhere is not listed.
+            if r.oid.is_none() {
+                continue;
+            }
             let short = &r.name[prefix.len()..];
             let shown = if prefix == "refs/remotes/" && all {
                 format!("remotes/{short}")

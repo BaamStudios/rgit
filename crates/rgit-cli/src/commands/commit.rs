@@ -64,7 +64,7 @@ use crate::wt_status::{self, Render};
 #[path = "commit/dry_run.rs"]
 mod dry_run;
 #[path = "commit/verbose.rs"]
-mod verbose;
+pub(crate) mod verbose;
 
 /// A piece of the message in command-line order.
 enum Piece {

@@ -501,6 +501,7 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
                     .message(reason.as_str()),
                 &mut hooks,
             )?;
+            prefer_symlink_head(repo, &store, &full);
             previous()?;
             let same = old_branch.as_deref() == Some(full.as_str());
             match &req.create {
@@ -756,6 +757,7 @@ pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool, reflog: bool) -
     tx.push(RefUpdate::symref_update("HEAD", full.as_str(), None).no_deref(true))
         .and_then(|()| tx.commit(&mut hooks))
         .map_err(|e| Die::Fatal(e.to_string()))?;
+    prefer_symlink_head(repo, &store, &full);
     let cancelled = crate::commands::reset::remove_branch_state(&repo.setup.git_dir, repo.hash);
     if reflog {
         let logs = rgit_refs::reflog::FilesReflog::new(
@@ -791,4 +793,15 @@ pub fn peel_commit(objects: &Objects, id: &ObjectId) -> Option<ObjectId> {
     objects
         .peel(id)
         .filter(|p| objects.kind(p) == Some(ObjectKind::Commit))
+}
+
+/// `core.preferSymlinkRefs`: `HEAD` just written as a symbolic reference
+/// becomes a symbolic link (with git's deprecation warning).
+fn prefer_symlink_head(repo: &Repo, store: &rgit_refs::files::FilesStore, target: &str) {
+    if matches!(repo.config.bool("core.prefersymlinkrefs"), Ok(Some(true))) {
+        crate::commands::update_ref::symrefs_as_symlinks(
+            store,
+            vec![("HEAD".to_owned(), target.to_owned())],
+        );
+    }
 }

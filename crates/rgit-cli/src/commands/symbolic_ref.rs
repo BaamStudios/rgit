@@ -46,7 +46,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         2 => {
             let setup = repo::setup(ctx, Mode::Required)?;
             let reason = reason.borrow().clone().unwrap_or_default();
-            return create_symref(&setup, &args[0], &args[1], &reason);
+            let config = crate::refs_support::load_config(ctx, &setup)?;
+            let symlinks = matches!(config.bool("core.prefersymlinkrefs"), Ok(Some(true)));
+            return create_symref(&setup, &args[0], &args[1], &reason, symlinks);
         }
         _ => return Err(parser.usage_error().into()),
     }
@@ -102,7 +104,13 @@ fn apply(store: &FilesStore, update: RefUpdate) -> CmdResult {
 }
 
 /// `symbolic-ref <name> <target>`.
-fn create_symref(setup: &rgit_repo::Setup, name: &str, target: &str, reason: &str) -> CmdResult {
+fn create_symref(
+    setup: &rgit_repo::Setup,
+    name: &str,
+    target: &str,
+    reason: &str,
+    symlinks: bool,
+) -> CmdResult {
     if name == "HEAD" && !target.starts_with("refs/") {
         return Err(Die::Fatal(refs_msg::HEAD_OUTSIDE_REFS.to_owned()));
     }
@@ -114,7 +122,11 @@ fn create_symref(setup: &rgit_repo::Setup, name: &str, target: &str, reason: &st
         .no_deref(true)
         .skip_name_check(true)
         .message(reason);
-    apply(&store, update)
+    let code = apply(&store, update)?;
+    if symlinks {
+        super::update_ref::symrefs_as_symlinks(&store, vec![(name.to_owned(), target.to_owned())]);
+    }
+    Ok(code)
 }
 
 /// `symbolic-ref --delete <name>`.

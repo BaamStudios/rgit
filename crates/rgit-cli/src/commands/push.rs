@@ -194,6 +194,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .transpose()
         .map_err(fatal)?;
     let remotes = Remotes::from_config(&config).map_err(fatal)?;
+    for w in remotes.warnings() {
+        eprintln!("warning: {w}");
+    }
 
     let (repo_arg, cli_specs): (Option<String>, &[String]) = match args.split_first() {
         Some((r, rest)) => (Some(r.clone()), rest),

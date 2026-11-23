@@ -187,7 +187,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let index_path = repo.setup.cwd.join(repo.index_path());
     let mut lock = LockFile::acquire(&index_path, &LockOptions::default()).map_err(lock_failed)?;
-    let (old, old_mtime) = repo.read_index()?;
+    // Without -m the old index does not matter (an empty file is fine).
+    let (old, old_mtime) = if mode == MODE_NONE {
+        let path = repo.setup.cwd.join(repo.index_path());
+        match std::fs::metadata(&path) {
+            Ok(m) if m.len() == 0 => (Index::new(repo.hash), None),
+            _ => repo.read_index()?,
+        }
+    } else {
+        repo.read_index()?
+    };
     let paths = path_options(&repo);
 
     let index = if mode == MODE_NONE && trees.len() > 1 {
