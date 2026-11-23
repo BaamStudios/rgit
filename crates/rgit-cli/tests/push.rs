@@ -241,3 +241,42 @@ fn push_over_ssh() {
         fx.compare(&args).env("GIT_SSH", &ssh).run();
     }
 }
+
+/// An object to send that is corrupt (its content does not match its id,
+/// t5504): the push ends with the refs rejected and exit code 1 instead
+/// of waiting for the server, which waits for the rest of the pack (#528).
+#[test]
+fn push_with_corrupt_object_ends() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx
+        .write("greetings", "hello\n")
+        .write("bye", "bye\n")
+        .git(["add", "greetings"])
+        .git(["commit", "-q", "-m", "greetings"])
+        .git(["init", "-q", "--bare", "dst.git"]);
+    let path = |hex: Vec<u8>| {
+        let hex = String::from_utf8_lossy(&hex).trim().to_string();
+        fx.work_dir()
+            .join(".git/objects")
+            .join(&hex[..2])
+            .join(&hex[2..])
+    };
+    let good = path(fx.git_stdout(["rev-parse", ":greetings"]));
+    let bad = path(fx.git_stdout(["hash-object", "-w", "bye"]));
+    std::fs::remove_file(fx.work_dir().join("bye")).unwrap();
+    std::fs::rename(&bad, &good).unwrap();
+    let rp = receive_pack(&fx);
+    fx.compare([
+        "push",
+        "--porcelain",
+        "--receive-pack",
+        &rp,
+        "dst.git",
+        "main:refs/heads/test",
+    ])
+    .only_exit_code()
+    .run();
+}

@@ -329,7 +329,7 @@ impl Connection for HttpConnection {
         Ok(())
     }
 
-    fn split(&mut self) -> (&mut (dyn Read + Send), &mut (dyn Write + Send)) {
+    fn split(&mut self) -> (&mut (dyn Read + Send), &mut dyn rgit_transport::WriteHalf) {
         (&mut self.response, &mut self.request)
     }
 
