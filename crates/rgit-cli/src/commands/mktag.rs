@@ -120,8 +120,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
 /// The `fsck.<msg-id>` severities, validated like git does.
 fn fsck_config(repo: &Repo) -> Result<HashMap<MsgId, Severity>, Die> {
+    Ok(fsck_levels(&repo.config)?
+        .into_iter()
+        .filter_map(|(key, sev)| Some((MsgId::from_name(&key)?, sev)))
+        .collect())
+}
+
+/// The `fsck.<msg-id>` severities by lower-case message id, validated like
+/// git does (also for the reference checks of `refs verify`).
+pub(crate) fn fsck_levels(config: &rgit_config::ConfigSet) -> Result<HashMap<String, Severity>, Die> {
     let mut out = HashMap::new();
-    for entry in repo.config.entries() {
+    for entry in config.entries() {
         let name = String::from_utf8_lossy(&entry.name).into_owned();
         let Some(key) = name.strip_prefix("fsck.") else {
             continue;
@@ -154,9 +163,7 @@ fn fsck_config(repo: &Repo) -> Result<HashMap<MsgId, Severity>, Die> {
         if FATAL_IDS.contains(&key) && sev != Severity::Error {
             return Err(Die::Fatal(msg::cannot_demote(key, &value)));
         }
-        if let Some(id) = MsgId::from_name(key) {
-            out.insert(id, sev);
-        }
+        out.insert(key.to_owned(), sev);
     }
     Ok(out)
 }

@@ -10,8 +10,7 @@
 //!   commands use ([`RefFormat`], [`SortKey`], [`RefValues`]).
 //!
 //! `%(describe)` runs `describe` for each object, `%(signature[:<part>])`
-//! checks commit signatures with [`crate::signing`]. Not yet:
-//! `%(is-base:...)`; it fails with an rgit message.
+//! checks commit signatures with [`crate::signing`].
 
 pub(crate) mod eval;
 pub(crate) mod format;
@@ -187,6 +186,12 @@ impl<'a> RefValues<'a> {
         atoms: impl IntoIterator<Item = &'f Atom>,
     ) -> Result<(), Die> {
         self.0.prepare(atoms)
+    }
+
+    /// Chooses the reference each `%(is-base:...)` marks among `refs` (the
+    /// listed references, in listing order).
+    pub(crate) fn choose_bases<'r>(&mut self, refs: impl IntoIterator<Item = (&'r str, ObjectId)>) {
+        self.0.choose_bases(refs);
     }
 
     fn item(name: &str, oid: ObjectId) -> RefItem {

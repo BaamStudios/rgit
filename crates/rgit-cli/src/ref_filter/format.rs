@@ -141,15 +141,14 @@ pub(crate) enum Kind {
     Else,
     End,
     AheadBehind(String),
+    /// `%(is-base:<committish>)`.
+    IsBase(String),
     Worktreepath,
     Rest,
     /// `%(describe[:<options>])`: the `git describe` arguments.
     Describe(Vec<String>),
     /// `%(signature[:<part>])` of a commit.
     Signature(SigPart),
-    /// Atoms rgit does not implement yet (`is-base`): an
-    /// error when used.
-    Unsupported(&'static str),
 }
 
 /// What `%(signature:<part>)` shows.
@@ -687,12 +686,12 @@ pub(crate) fn parse_atom(spec: &str) -> Result<Atom, FormatError> {
         "else" => no_args(Kind::Else)?,
         "end" => no_args(Kind::End)?,
         "ahead-behind" => match arg {
-            Some(a) => Kind::AheadBehind(a.to_owned()),
-            None => return Err(fatal(msg::expected_committish(name))),
+            Some(a) if !a.is_empty() => Kind::AheadBehind(a.to_owned()),
+            _ => return Err(fatal(msg::expected_committish(name))),
         },
         "is-base" => match arg {
-            Some(_) => Kind::Unsupported("is-base"),
-            None => return Err(fatal(msg::expected_committish(name))),
+            Some(a) if !a.is_empty() => Kind::IsBase(a.to_owned()),
+            _ => return Err(fatal(msg::expected_committish(name))),
         },
         "worktreepath" => Kind::Worktreepath,
         "rest" => no_args(Kind::Rest)?,

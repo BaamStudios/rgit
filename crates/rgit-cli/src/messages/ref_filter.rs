@@ -90,6 +90,15 @@ pub fn not_a_commit(oid: &str, kind: &str) -> String {
 
 pub const BAD_TAG: &str = "bad tag";
 
+/// A tag names an object of another type than its `type` header says.
+pub fn object_type_mismatch(oid: &str, actual: &str, claimed: &str) -> String {
+    format!("object {oid} is a {actual}, not a {claimed}")
+}
+
+pub fn bad_tag_pointer(target: &str, tag: &str) -> String {
+    format!("bad tag pointer to {target} in {tag}")
+}
+
 pub fn malformed_object_name(name: &str) -> String {
     format!("malformed object name {name}")
 }
@@ -122,11 +131,6 @@ pub fn behind(n: usize) -> String {
 
 pub fn ahead_behind(a: usize, b: usize) -> String {
     format!("ahead {a}, behind {b}")
-}
-
-/// rgit wording: an atom that is not implemented yet.
-pub fn atom_not_supported(atom: &str) -> String {
-    format!("rgit: %({atom}) is not supported yet")
 }
 
 pub fn could_not_read(oid: &str) -> String {

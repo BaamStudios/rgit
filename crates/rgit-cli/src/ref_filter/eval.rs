@@ -124,6 +124,10 @@ pub(crate) struct Env<'a> {
     worktrees: OnceCell<HashMap<String, String>>,
     remotes: OnceCell<Option<Remotes>>,
     bases: HashMap<String, ObjectId>,
+    /// `%(is-base:<name>)`: the commit of each name and the reference
+    /// chosen for it ([`Env::choose_bases`]).
+    is_bases: HashMap<String, ObjectId>,
+    is_base_of: HashMap<String, String>,
     /// References whose non-commit object was reported already.
     reported: std::cell::RefCell<std::collections::HashSet<String>>,
 }
@@ -143,6 +147,8 @@ impl<'a> Env<'a> {
             worktrees: OnceCell::new(),
             remotes: OnceCell::new(),
             bases: HashMap::new(),
+            is_bases: HashMap::new(),
+            is_base_of: HashMap::new(),
             reported: Default::default(),
         }
     }
@@ -156,20 +162,35 @@ impl<'a> Env<'a> {
         for atom in atoms {
             match &atom.kind {
                 Kind::AheadBehind(name) if !self.bases.contains_key(name) => {
-                    let id = self
-                        .repo
-                        .and_then(|r| r.revs.resolve(name))
-                        .and_then(|id| self.objects.peel(&id))
-                        .ok_or_else(|| Die::Fatal(msg::failed_to_find(name)))?;
+                    let id = self.base_commit(name)?;
                     self.bases.insert(name.clone(), id);
                 }
-                Kind::Unsupported(name) => {
-                    return Err(Die::Fatal(msg::atom_not_supported(name)));
+                Kind::IsBase(name) if !self.is_bases.contains_key(name) => {
+                    let id = self.base_commit(name)?;
+                    self.is_bases.insert(name.clone(), id);
                 }
                 _ => {}
             }
         }
         Ok(())
+    }
+
+    /// The commit `name` (of `%(ahead-behind:<name>)`, `%(is-base:<name>)`)
+    /// stands for; anything else is fatal.
+    fn base_commit(&self, name: &str) -> Result<ObjectId, Die> {
+        let id = self
+            .repo
+            .and_then(|r| r.revs.resolve(name))
+            .and_then(|id| self.objects.peel(&id))
+            .ok_or_else(|| Die::Fatal(msg::failed_to_find(name)))?;
+        match self.objects.kind(&id) {
+            Some(ObjectKind::Commit) => Ok(id),
+            Some(k) => {
+                eprintln!("error: {}", msg::not_a_commit(&id.to_hex(), k.name()));
+                Err(Die::Fatal(msg::failed_to_find(name)))
+            }
+            None => Err(Die::Fatal(msg::failed_to_find(name))),
+        }
     }
 
     /// `HEAD` of the current work tree.
@@ -339,6 +360,12 @@ impl<'a> Env<'a> {
                 let behind = count_only(self.objects, base, &tip);
                 return Ok(Value::text(format!("{ahead} {behind}")));
             }
+            Kind::IsBase(name) => {
+                return Ok(match self.is_base_of.get(name) {
+                    Some(r) if *r == it.name => Value::text(format!("({name})")),
+                    _ => Value::empty(),
+                });
+            }
             Kind::Worktreepath => {
                 return Ok(Value::text(
                     self.worktrees()
@@ -348,13 +375,9 @@ impl<'a> Env<'a> {
                         .into_bytes(),
                 ));
             }
-            Kind::Align { .. }
-            | Kind::If(_)
-            | Kind::Then
-            | Kind::Else
-            | Kind::End
-            | Kind::Rest
-            | Kind::Unsupported(_) => return Ok(Value::empty()),
+            Kind::Align { .. } | Kind::If(_) | Kind::Then | Kind::Else | Kind::End | Kind::Rest => {
+                return Ok(Value::empty());
+            }
             Kind::Objectname(a) if !deref => return Ok(Value::text(self.abbrev(&it.oid, *a))),
             _ => {}
         }
@@ -1409,12 +1432,22 @@ pub(crate) fn rstrip(name: &str, n: i64) -> String {
 }
 
 /// A walk source over the object database.
-struct Commits<'a>(&'a Objects);
+/// Commits for counting: an unreadable commit counts as one without
+/// parents and is remembered in `.1`.
+struct Commits<'a, 'm>(&'a Objects, &'m mut Vec<ObjectId>);
 
-impl CommitSource for Commits<'_> {
+impl CommitSource for Commits<'_, '_> {
     type Error = ();
     fn load(&mut self, id: &ObjectId) -> Result<CommitInfo, ()> {
-        let (kind, data) = self.0.read(id).ok_or(())?;
+        let Some((kind, data)) = self.0.read(id) else {
+            if !self.1.contains(id) {
+                self.1.push(*id);
+            }
+            return Ok(CommitInfo {
+                parents: Vec::new(),
+                time: 0,
+            });
+        };
         if kind != ObjectKind::Commit {
             return Err(());
         }
@@ -1429,13 +1462,132 @@ impl CommitSource for Commits<'_> {
     }
 }
 
-/// Commits reachable from `a` but not from `b`.
-pub(crate) fn count_only(objects: &Objects, a: &ObjectId, b: &ObjectId) -> usize {
-    let mut walk = Walk::new(Commits(objects), WalkOptions::default());
-    if walk.push(a, false).is_err() || walk.push(b, true).is_err() {
-        return 0;
+/// The first parent of commit `id`, `None` for a root or an unreadable
+/// commit.
+fn first_parent(objects: &Objects, id: &ObjectId) -> Option<ObjectId> {
+    let (kind, data) = objects.read(id)?;
+    if kind != ObjectKind::Commit {
+        return None;
     }
-    walk.collect_all().map(|v| v.len()).unwrap_or(0)
+    let commit = Commit::parse(objects.hash(), &data).ok()?;
+    commit.parents().ok()?.first().copied()
+}
+
+impl Env<'_> {
+    /// The commit `oid` peels to; a tag whose target is not of the type it
+    /// claims is reported (and gives `None`).
+    fn peel_reporting(&self, oid: ObjectId) -> Option<ObjectId> {
+        let mut cur = oid;
+        let (mut kind, mut data) = self.objects.read(&cur)?;
+        for _ in 0..64 {
+            if kind != ObjectKind::Tag {
+                break;
+            }
+            let tag = Tag::parse(self.objects.hash(), &data).ok()?;
+            let (next, claimed) = (tag.object().ok()?, tag.target_kind().ok()?);
+            let (next_kind, next_data) = self.objects.read(&next)?;
+            if next_kind != claimed {
+                eprintln!(
+                    "error: {}",
+                    msg::object_type_mismatch(&next.to_hex(), next_kind.name(), claimed.name())
+                );
+                eprintln!(
+                    "error: {}",
+                    msg::bad_tag_pointer(&next.to_hex(), &cur.to_hex())
+                );
+                return None;
+            }
+            (cur, kind, data) = (next, next_kind, next_data);
+        }
+        (kind == ObjectKind::Commit).then_some(cur)
+    }
+
+    /// Chooses the reference shown by each `%(is-base:<name>)`: the one
+    /// whose first-parent history meets the first-parent history of
+    /// `<name>` earliest (fewest commits of `<name>` not in it); ties go
+    /// to the earlier reference of `refs` (in listing order, before
+    /// sorting). References that are not commits take no part.
+    pub(crate) fn choose_bases<'r>(&mut self, refs: impl IntoIterator<Item = (&'r str, ObjectId)>) {
+        if self.is_bases.is_empty() {
+            return;
+        }
+        let tips: Vec<(&str, ObjectId)> = refs
+            .into_iter()
+            .filter_map(|(name, oid)| Some((name, self.peel_reporting(oid)?)))
+            .collect();
+        let mut chosen = HashMap::new();
+        for (base_name, base) in &self.is_bases {
+            // Position of each commit in the first-parent chain of the base.
+            let mut pos = HashMap::new();
+            let mut cur = Some(*base);
+            while let Some(c) = cur {
+                if pos.contains_key(&c) {
+                    break;
+                }
+                pos.insert(c, pos.len());
+                cur = first_parent(self.objects, &c);
+            }
+            // Where the first-parent chain of a commit meets that of the
+            // base, shared between the references.
+            let mut meets: HashMap<ObjectId, Option<usize>> = HashMap::new();
+            let mut best: Option<(usize, &str)> = None;
+            for (name, tip) in &tips {
+                let mut path = Vec::new();
+                let mut cur = Some(*tip);
+                let found = loop {
+                    let Some(c) = cur else { break None };
+                    if let Some(p) = pos.get(&c) {
+                        break Some(*p);
+                    }
+                    if let Some(m) = meets.get(&c) {
+                        break *m;
+                    }
+                    path.push(c);
+                    cur = first_parent(self.objects, &c);
+                };
+                for c in path {
+                    meets.insert(c, found);
+                }
+                if let Some(k) = found {
+                    if best.is_none_or(|(b, _)| k < b) {
+                        best = Some((k, name));
+                    }
+                }
+            }
+            if let Some((_, name)) = best {
+                chosen.insert(base_name.clone(), name.to_owned());
+            }
+        }
+        self.is_base_of = chosen;
+    }
+}
+
+/// Commits reachable from `a` but not from `b`. A missing commit counts
+/// and ends its line of history; it is reported like git does (three
+/// times, as git's reachability code tries to read it).
+pub(crate) fn count_only(objects: &Objects, a: &ObjectId, b: &ObjectId) -> usize {
+    let mut missing = Vec::new();
+    let count = {
+        let mut walk = Walk::new(Commits(objects, &mut missing), WalkOptions::default());
+        if walk.push(a, false).is_err() || walk.push(b, true).is_err() {
+            0
+        } else {
+            walk.collect_all().map(|v| v.len()).unwrap_or(0)
+        }
+    };
+    // Each missing commit is reported once per command.
+    static REPORTED: std::sync::Mutex<Vec<ObjectId>> = std::sync::Mutex::new(Vec::new());
+    let mut reported = REPORTED.lock().unwrap_or_else(|e| e.into_inner());
+    for id in missing {
+        if reported.contains(&id) {
+            continue;
+        }
+        reported.push(id);
+        for _ in 0..3 {
+            eprintln!("error: {}", msg::could_not_read(&id.to_hex()));
+        }
+    }
+    count
 }
 
 #[cfg(test)]

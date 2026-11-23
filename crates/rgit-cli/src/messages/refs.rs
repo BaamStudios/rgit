@@ -90,3 +90,74 @@ pub fn not_supported(sub: &str) -> String {
 pub fn rename_symref(name: &str) -> String {
     format!("refname {name} is a symbolic ref, renaming it is not supported")
 }
+
+// `git refs verify`.
+pub const USAGE_VERIFY: &str = "git refs verify [--strict] [--verbose]";
+pub const VERIFY_NO_ARGUMENTS: &str = "'git refs verify' takes no arguments";
+pub const HELP_VERBOSE: &str = "be verbose";
+pub const HELP_STRICT: &str = "enable strict checking";
+pub const CHECKING_CONSISTENCY: &str = "Checking references consistency";
+pub const INVALID_REFNAME_FORMAT: &str = "invalid refname format";
+pub const MISSES_LF: &str = "misses LF at the end";
+pub const TRAILING_WHITESPACE: &str = "has trailing whitespaces or newlines";
+pub const SYMLINK_REF: &str = "use deprecated symbolic link for symref";
+pub const UNEXPECTED_FILE_TYPE: &str = "unexpected file type";
+pub const NOT_REGULAR_SYMLINK: &str = "not a regular file but a symlink";
+pub const NOT_REGULAR: &str = "not a regular file";
+pub const FILE_IS_EMPTY: &str = "file is empty";
+
+pub fn checking(name: &str) -> String {
+    format!("Checking {name}")
+}
+
+pub fn checking_packed_refs(path: &str) -> String {
+    format!("Checking packed-refs file {path}")
+}
+
+pub fn packed_refs_line(n: usize) -> String {
+    format!("packed-refs line {n}")
+}
+
+pub fn trailing_garbage(garbage: &str) -> String {
+    format!("has trailing garbage: '{garbage}'")
+}
+
+pub fn invalid_referent(name: &str) -> String {
+    format!("points to invalid refname '{name}'")
+}
+
+pub fn non_ref_target(name: &str) -> String {
+    format!("points to non-ref target '{name}'")
+}
+
+pub fn bad_packed_header(line: &str) -> String {
+    format!("'{line}' does not start with '# pack-refs with: '")
+}
+
+pub fn packed_invalid_oid(line: &str) -> String {
+    format!("'{line}' has invalid oid")
+}
+
+pub fn packed_no_space(oid: &str, rest: &str) -> String {
+    format!("has no space after oid '{oid}' but with '{rest}'")
+}
+
+pub fn packed_bad_refname(name: &str) -> String {
+    format!("has bad refname '{name}'")
+}
+
+pub fn packed_invalid_peeled(text: &str) -> String {
+    format!("'{text}' has invalid peeled oid")
+}
+
+pub fn packed_peeled_garbage(garbage: &str) -> String {
+    format!("has trailing garbage after peeled oid '{garbage}'")
+}
+
+pub fn packed_not_terminated(line: &str) -> String {
+    format!("'{line}' is not terminated with a newline")
+}
+
+pub fn packed_unsorted(name: &str, previous: &str) -> String {
+    format!("refname '{name}' is less than previous refname '{previous}'")
+}
