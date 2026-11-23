@@ -36,6 +36,7 @@ use rgit_repo::init::{self as repo_init, InitOptions, Notice};
 use rgit_repo::{Setup, SetupOptions, StandardProtectedConfig};
 use rgit_transport::IpVersion;
 
+use crate::housekeeping::store;
 use crate::messages::clone as msg;
 use crate::prelude::*;
 use crate::refs_support::{self, Objects, UpdateHooks};
@@ -1599,10 +1600,16 @@ impl LocalCopy<'_> {
         if self.hardlink && std::fs::hard_link(src, dst).is_ok() {
             return Ok(());
         }
-        // A copy gets the default permissions, like a new file.
+        // A copy gets the default permissions, like a new file, but keeps
+        // the modification time, so that the age of loose objects (prune
+        // expiry, `gc --prune`) carries over.
         let copied = std::fs::File::open(src).and_then(|mut from| {
             let mut to = std::fs::File::create(dst)?;
-            std::io::copy(&mut from, &mut to).map(|_| ())
+            std::io::copy(&mut from, &mut to)?;
+            if let Ok(time) = from.metadata().and_then(|m| m.modified()) {
+                let _ = to.set_modified(time);
+            }
+            Ok(())
         });
         copied.map_err(|e| {
             Die::Fatal(msg::failed_to_copy(
@@ -1685,9 +1692,28 @@ fn dissociate(repo: &LocalRepo, tips: &[ObjectId], alternates_file: &Path) -> Re
     };
     let (_, data) = pw::write_pack(Vec::new(), hash, &ordered, &repo.odb, &packs, &opts)
         .map_err(|e| fatal(&e))?;
+    // The packs the local copy brought along are redundant now, like after
+    // `git repack -a -d` (packs with a `.keep` file stay).
+    let old: Vec<PathBuf> = store::local_packs(&repo.odb, &[])
+        .iter()
+        .filter(|p| !p.keep)
+        .map(store::LocalPack::base)
+        .collect();
     let pack = rgit_fetch::store_pack_stream(repo, &mut data.as_slice())
         .map_err(|e| fatal(&e))?;
     pack.release();
+    let objects = repo.objects_dir();
+    let pack_dir = objects.join("pack");
+    if !old.is_empty() {
+        store::remove_multi_pack_index(&pack_dir);
+    }
+    let new_base = pack.pack.as_ref().map(|p| p.with_extension(""));
+    for base in old.iter().filter(|b| Some(*b) != new_base.as_ref()) {
+        store::delete_pack(base);
+    }
+    store::remove_pack_garbage(&pack_dir);
+    let packs_now = store::local_packs(&repo.odb, &[]);
+    store::prune_packed(&objects, &objects, hash, &packs_now, false)?;
     match std::fs::remove_file(alternates_file) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

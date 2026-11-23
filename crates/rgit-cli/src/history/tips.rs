@@ -505,35 +505,8 @@ fn indexed_objects(repo: &Repo<'_>) -> Vec<(Vec<u8>, ObjectId)> {
 /// `--alternate-refs`: the ref tips of the repositories whose object
 /// directories are alternates of ours.
 fn alternate_refs(repo: &Repo<'_>) -> Vec<ObjectId> {
-    let kind = repo.objects.hash_kind();
     let objects = crate::revisions::objects_dir(repo.setup);
-    let Ok(text) = std::fs::read_to_string(objects.join("info/alternates")) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let dir = objects.join(line);
-        let Some(git_dir) = dir.parent() else {
-            continue;
-        };
-        let store = rgit_refs::files::FilesStore::new(git_dir, kind);
-        let Ok(items) = rgit_refs::RefStore::iter(&store, &rgit_refs::IterOptions::prefix("refs/"))
-        else {
-            continue;
-        };
-        for item in items {
-            if let rgit_refs::IterItem::Ref(r) = item
-                && let Some(id) = r.oid
-            {
-                out.push(id);
-            }
-        }
-    }
-    out
+    rgit_fetch::alternate_tips(repo.config, repo.objects.hash_kind(), &objects)
 }
 
 /// Resolve the starting points in command-line order. Without `--`, an

@@ -358,6 +358,7 @@ fn clone_over_smart_http_same_as_git() {
 fn clone_with_alternates_same_as_git() {
     let mut fx = source()
         .git(["clone", "-q", "--bare", "src", "ref.git"])
+        .git(["-C", "ref.git", "repack", "-q", "-a", "-d"])
         .git(["-C", "src", "commit", "-q", "--allow-empty", "-m", "two"])
         .write("notrepo/x", "x\n");
     if fx.is_skipped() {
@@ -404,6 +405,29 @@ fn clone_with_alternates_same_as_git() {
             ])
             .run();
     }
+    // A local --dissociate clone keeps a single pack, like the
+    // `repack -a -d` git runs (t5604 "clone, dissociate from partial
+    // reference and repack").
+    let work = fx.work_dir();
+    let home = fx.home_dir();
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
+        .args(["clone", "-q", "--bare", "--dissociate", "--reference=src"])
+        .args(["ref.git", "d1.git"])
+        .current_dir(&work)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CEILING_DIRECTORIES", &work)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let packs = std::fs::read_dir(work.join("d1.git/objects/pack"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".pack"))
+        .count();
+    assert_eq!(packs, 1);
+    assert!(!work.join("d1.git/objects/info/alternates").exists());
     // Objects that only the alternate has (#354).
     for (args, dir) in [
         (&["-C", "s1", "switch", "side"][..], "s1"),

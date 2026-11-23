@@ -49,7 +49,7 @@ pub mod update;
 
 pub use error::{Error, Result};
 pub use fetch::{FetchOptions, FetchResult, HeadWarning, fetch};
-pub use repo::LocalRepo;
+pub use repo::{LocalRepo, alternate_tips};
 pub use session::{
     ConnectSettings, PackOptions, ReceivedPack, Session, protocol_name, protocol_version,
     store_pack_stream,
