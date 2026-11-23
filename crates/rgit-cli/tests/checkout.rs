@@ -189,3 +189,28 @@ fn assume_unchanged_dirty_file_blocks_switch() {
         .git(["update-index", "--assume-unchanged", "f"]);
     fx.compare(["checkout", "main"]).run();
 }
+
+/// `checkout -b <name>` alone leaves the index and work tree as they are;
+/// with anything else on the command line (an empty
+/// `--pathspec-from-file`, `--no-track`, `--`, even `-b<name>` as one
+/// word) git checks out the tree and lists the local changes (#402).
+#[test]
+fn new_branch_shortcut_only_for_three_words() {
+    let cases: &[&[&str]] = &[
+        &["checkout", "-b", "x"],
+        &["checkout", "-bx"],
+        &["checkout", "-b", "x", "--"],
+        &["checkout", "-b", "x", "--no-track"],
+        &["checkout", "--no-quiet", "-b", "x"],
+        &["checkout", "-b", "x", "--pathspec-from-file=empty"],
+        &["switch", "-c", "x", "--no-guess"],
+    ];
+    for args in cases {
+        let fx = fixture().write("empty", "");
+        if fx.is_skipped() {
+            return;
+        }
+        let mut fx = fx;
+        fx.compare(*args).run();
+    }
+}

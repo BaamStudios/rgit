@@ -196,6 +196,10 @@ pub struct CreateOptions<'a> {
     pub reflog: bool,
     /// `switch`: refuse while an operation is in progress.
     pub refuse_in_progress: bool,
+    /// Update the index and work tree (and show the local changes) even
+    /// without a start point: git takes the shortcut for `checkout -b
+    /// <name>` only when nothing else is on the command line.
+    pub full_checkout: bool,
     /// The command's message for a start point that is not a commit.
     pub invalid_start: &'a dyn Fn(&str) -> String,
 }
@@ -258,7 +262,7 @@ pub fn create_and_switch(
                 start: start_name,
                 reset: nb.reset,
                 track: plan.map(|p| (p, opts.auto)),
-                start_given: nb.start.is_some(),
+                start_given: nb.start.is_some() || opts.full_checkout,
                 reflog: opts.reflog,
             }),
             force: opts.force,
@@ -366,6 +370,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         quiet,
         reflog: false,
         refuse_in_progress: true,
+        full_checkout: false,
         invalid_start: &msg::invalid_ref,
     };
     if let Some(name) = force_create.or(create.clone()) {
