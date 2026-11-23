@@ -260,6 +260,7 @@ pub fn worktree_output(
             },
             quote: style.quote,
             diff: &out.patch.diff,
+            output: Some(out),
         };
         patch(repo, files, &opts, bytes);
     }
@@ -436,6 +437,8 @@ pub struct PatchOptions<'a> {
     pub abbrev: usize,
     pub quote: bool,
     pub diff: &'a DiffOptions,
+    /// The diff attributes (binary, textconv) of the paths, if any.
+    pub output: Option<&'a super::output::Output<'a>>,
 }
 
 /// Appends the combined patch of `files`.
@@ -446,12 +449,25 @@ pub fn patch(repo: &Repo, files: &[File], opts: &PatchOptions<'_>, out: &mut Vec
 }
 
 fn file_patch(repo: &Repo, f: &File, opts: &PatchOptions<'_>, out: &mut Vec<u8>) {
-    let result = match &f.result_data {
+    let mut result = match &f.result_data {
         Some(d) => d.clone(),
         None => read(repo, f.result),
     };
-    let parents: Vec<Vec<u8>> = f.parents.iter().map(|s| read(repo, *s)).collect();
-    let binary = is_binary(&result) || parents.iter().any(|p| is_binary(p));
+    let mut parents: Vec<Vec<u8>> = f.parents.iter().map(|s| read(repo, *s)).collect();
+    let mut binary = is_binary(&result) || parents.iter().any(|p| is_binary(p));
+    if let Some(o) = opts.output {
+        // The path's diff attribute decides; textconv output is text.
+        let mut forced = None;
+        for data in std::iter::once(&mut result).chain(parents.iter_mut()) {
+            if let Ok((d, b)) = o.combined_view(&f.path, std::mem::take(data)) {
+                *data = d;
+                forced = forced.or(b);
+            }
+        }
+        if let Some(b) = forced {
+            binary = b;
+        }
+    }
     let r_lines = split_lines(&result);
     let n = r_lines.len();
     let all: u64 = (1u64 << f.parents.len()) - 1;

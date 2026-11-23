@@ -475,6 +475,7 @@ impl Commits<'_> {
                 abbrev: repo.default_abbrev(),
                 quote: style.quote,
                 diff: &out.patch.diff,
+                    output: Some(&out),
             };
             crate::diff::combined::patch(repo, &files, &popts, &mut bytes);
         }
