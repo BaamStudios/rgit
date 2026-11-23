@@ -493,8 +493,10 @@ pub(crate) fn create_stash(
     let i_commit = write_commit(repo, i_tree, &[head.commit], msg::index_on(&base).as_bytes())
         .map_err(report)?;
 
+    // With -u/-a the untracked commit is written even when there is
+    // nothing untracked (its tree is then empty), as git does.
     let mut u_commit = None;
-    if !untracked.is_empty() {
+    if opts.untracked != Untracked::None {
         let tmp = TempIndex::new(repo, "stash-untracked-index");
         let mut list = Vec::new();
         for p in &untracked {
@@ -629,11 +631,14 @@ fn work_tree_state(repo: &Repo, git: &Git, ps: &[String]) -> Result<ObjectId, Fa
         Ok(nul_split(&out))
     };
     let mut changed: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
-    changed.extend(names(vec![
+    let modified: std::collections::BTreeSet<Vec<u8>> = names(vec![
         "diff-files".into(),
         "--name-only".into(),
         "-z".into(),
-    ])?);
+    ])?
+    .into_iter()
+    .collect();
+    changed.extend(modified.iter().cloned());
     changed.extend(names(vec![
         "diff-index".into(),
         "--name-only".into(),
@@ -641,6 +646,9 @@ fn work_tree_state(repo: &Repo, git: &Git, ps: &[String]) -> Result<ObjectId, Fa
         "HEAD".into(),
     ])?);
     let (mut index, mtime) = repo.read_index().map_err(|_| Failed)?;
+    // Staged files whose work tree copy matches the index are kept as
+    // they are, not hashed again (no core.safecrlf warning for them).
+    changed.retain(|p| modified.contains(p) || index.get(p, Stage::MERGED).is_none());
     for p in &changed {
         if let Some(e) = index.get(p, Stage::MERGED) {
             if e.flags.intent_to_add {
@@ -671,7 +679,8 @@ fn work_tree_state(repo: &Repo, git: &Git, ps: &[String]) -> Result<ObjectId, Fa
         let entry = if is_dir {
             None
         } else {
-            match crate::commands::add::entry_for(repo, &checker, &root, &p, old.as_ref(), false, true)
+            // Not quiet: core.safecrlf warns (or refuses) as with add.
+            match crate::commands::add::entry_for(repo, &checker, &root, &p, old.as_ref(), false, false)
             {
                 Ok(e) => e,
                 Err(crate::commands::add::EntryError::Read(m)) => {
@@ -681,6 +690,7 @@ fn work_tree_state(repo: &Repo, git: &Git, ps: &[String]) -> Result<ObjectId, Fa
                 }
                 Err(crate::commands::add::EntryError::Fatal(d)) => {
                     report(d);
+                    eprintln!("{}", msg::CANNOT_SAVE_WORKTREE);
                     return Err(Failed);
                 }
             }

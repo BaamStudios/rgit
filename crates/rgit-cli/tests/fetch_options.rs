@@ -216,3 +216,27 @@ fn fetch_remote_head_and_worktrees_same_as_git() {
             .run();
     }
 }
+
+#[test]
+fn fetch_tag_into_branch_same_as_git() {
+    // A tag fetched into a branch: a fast-forward by the commits it
+    // points to, then refused because a branch needs a commit.
+    let mut fx = fixture().git(["-C", "c", "branch", "dst", "HEAD"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let cases: &[&[&str]] = &[
+        &["fetch", "origin", "anno:dst"],
+        &["fetch", "origin", "anno:newdst"],
+        &["fetch", "origin", "+anno:dst"],
+    ];
+    for argv in cases {
+        let path = server_path(&fx);
+        fx.compare(*argv)
+            .in_dir("c")
+            .repo("c")
+            .env("PATH", path)
+            .checks(CHECKS)
+            .run();
+    }
+}
