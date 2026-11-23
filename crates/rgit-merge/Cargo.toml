@@ -16,4 +16,5 @@ rgit-hash = { path = "../rgit-hash" }
 rgit-index = { path = "../rgit-index" }
 rgit-object = { path = "../rgit-object" }
 rgit-odb = { path = "../rgit-odb" }
+rgit-trace = { path = "../rgit-trace" }
 thiserror = "2.0.18"

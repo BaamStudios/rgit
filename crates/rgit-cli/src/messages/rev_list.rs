@@ -95,6 +95,8 @@ pub fn ambiguous_argument(arg: &str) -> String {
     )
 }
 
+pub const MERGE_PSEUDOREFS: &str = "--merge requires one of the pseudorefs MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD or REBASE_HEAD";
+
 pub const FOLLOW_ONE_PATHSPEC: &str = "--follow requires exactly one pathspec";
 
 pub fn follow_magic(words: &[&str]) -> String {

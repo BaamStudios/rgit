@@ -228,6 +228,9 @@ pub struct Options {
     pub full_diff: bool,
     /// `--follow` / `--no-follow` (log); `None`: `log.follow`.
     pub follow: Option<bool>,
+    /// `--merge`: the commits of `HEAD...<other>` touching conflicted
+    /// paths.
+    pub merge: bool,
     /// State while parsing: `--exclude-hidden=<section>` for the next
     /// `--all` or `--glob`.
     hidden: Option<String>,
@@ -378,6 +381,7 @@ impl Options {
             simplify_by_decoration: false,
             full_diff: false,
             follow: None,
+            merge: false,
             hidden: None,
             single_worktree: false,
             ignore_missing: false,
@@ -605,6 +609,7 @@ impl Options {
                     o.stdin_at = o.tips.len();
                 }
                 "--boundary" => o.walk.boundary = true,
+                "--merge" => o.merge = true,
                 "--left-right" => o.left_right = true,
                 "--left-only" => {
                     if o.walk.right_only {

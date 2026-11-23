@@ -1346,6 +1346,13 @@ impl Session<'_> {
                         eprintln!("error: {m}");
                         return Ok(Attempt::Failed);
                     }
+                    Err(e @ rgit_merge::Error::Collect(_)) => {
+                        let _ = std::io::stdout().flush();
+                        for line in e.collect_errors().into_iter().flatten() {
+                            eprintln!("error: {line}");
+                        }
+                        return Ok(Attempt::Failed);
+                    }
                     Err(e) => return Err(fatal(e.to_string())),
                 };
                 drop(commits);

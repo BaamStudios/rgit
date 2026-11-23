@@ -15,13 +15,14 @@ use rgit_diff::DiffOptions;
 use rgit_diff::merge::{self as text, Favor, MergeOptions};
 use rgit_hash::ObjectId;
 use rgit_object::{EntryMode, ObjectKind, Tree, TreeEntry, TreeIter};
+use rgit_trace::trace2;
 
 #[path = "renames.rs"]
 mod renames;
 
 use crate::{
-    ConflictedPath, Driver, DriverInput, Error, MergeResult, Message, MessageKind, Objects,
-    Options, Version, messages,
+    CollectCause, ConflictedPath, Driver, DriverInput, Error, MergeResult, Message, MessageKind,
+    Objects, Options, Version, messages,
 };
 
 const MODE_TREE: u32 = 0o040000;
@@ -91,12 +92,17 @@ pub(crate) fn merge(
         notes: renames::Notes::default(),
         extra_marker: 0,
         quiet_conflict: false,
+        binary_conflict: false,
+        dir_renames_found: false,
         rename_limit_needed: None,
     };
     // git reads the three trees before anything else.
     for t in [base, ours, theirs] {
         if let Err(Error::MissingTree(missing)) = read_tree(objects, t) {
-            return Err(Error::Collect(Box::new((missing, [*base, *ours, *theirs]))));
+            return Err(Error::Collect(Box::new((
+                CollectCause::Missing(missing),
+                [*base, *ours, *theirs],
+            ))));
         }
     }
     let tree = if ours == theirs || base == theirs {
@@ -104,12 +110,34 @@ pub(crate) fn merge(
     } else if base == ours {
         *theirs
     } else {
+        // The trace2 regions of git's ort strategy (category `merge`).
+        let region = |label| trace2::region("merge", label, true);
+        {
+            let _r = region("collect_merge_info");
+            if let Some(path) = find_duplicate(
+                objects,
+                &mut Vec::new(),
+                [Some(*base), Some(*ours), Some(*theirs)],
+            )? {
+                return Err(Error::Collect(Box::new((
+                    CollectCause::Duplicate(path),
+                    [*base, *ours, *theirs],
+                ))));
+            }
+        }
         let [base, ours, theirs] = if opts.renames {
+            let _r = region("renames");
             e.prepare_renames(base, ours, theirs)?
                 .unwrap_or([*base, *ours, *theirs])
         } else {
             [*base, *ours, *theirs]
         };
+        if e.dir_renames_found {
+            // git walks the trees a second time after directory renames.
+            drop(region("reset_maps"));
+            drop(region("collect_merge_info"));
+        }
+        let _r = region("process_entries");
         e.deferred = [
             deletes_changed_file(objects, Some(base), Some(ours), Some(theirs))?,
             deletes_changed_file(objects, Some(base), Some(theirs), Some(ours))?,
@@ -156,6 +184,10 @@ struct Engine<'a> {
     extra_marker: usize,
     /// Do not report a content conflict (rename/rename merges).
     quiet_conflict: bool,
+    /// Set when a content merge left a binary file unmerged.
+    binary_conflict: bool,
+    /// The rename detection found directory renames.
+    dir_renames_found: bool,
     rename_limit_needed: Option<usize>,
 }
 
@@ -320,7 +352,10 @@ impl Engine<'_> {
                     .labels
                     .get(&path)
                     .and_then(|p| (1..3).find(|&k| p[k] == path && p[3 - k] != path));
+                // A file only one side has is that side's.
                 let branch = match renamed_by {
+                    _ if of.is_some() && tf.is_none() => self.labels.ours,
+                    _ if of.is_none() && tf.is_some() => self.labels.theirs,
                     Some(1) => self.labels.ours,
                     Some(_) => self.labels.theirs,
                     None if of.is_some() => self.labels.ours,
@@ -426,6 +461,15 @@ impl Engine<'_> {
             self.conflict(path, stages);
             return Ok(());
         }
+        let case = match case {
+            Case::Take(_)
+                if self.notes.modify_delete.contains(&noted_path)
+                    && (o.is_none() != t.is_none()) =>
+            {
+                Case::ModifyDelete
+            }
+            c => c,
+        };
         self.merge_file_inner(dir, name, target, case, stages)?;
         if self.notes.location.contains(&noted_path) && !self.conflicted.contains(&path) {
             // Moved by a directory rename: a conflict even when clean.
@@ -784,8 +828,9 @@ impl Engine<'_> {
                     Favor::Theirs => return Ok((t.oid, true)),
                     _ => {}
                 }
-                let text = messages::binary(path, self.labels.ours, self.labels.theirs);
+                let text = messages::binary(path, &ours_label, &theirs_label);
                 self.message(vec![path.to_vec()], MessageKind::Binary, text);
+                self.binary_conflict = true;
                 Ok((o.oid, false))
             }
         }
@@ -891,6 +936,51 @@ pub(crate) fn read_tree(
         out.push((e.name.to_vec(), Version { mode, oid: e.oid }));
     }
     Ok(out)
+}
+
+/// The first path where one of the trees to merge (base, ours, theirs)
+/// has two entries of the same name, looking only into the directories
+/// the merge has to walk (those not resolved by one side being unchanged).
+fn find_duplicate(
+    objects: &dyn Objects,
+    prefix: &mut Vec<u8>,
+    trees: [Option<ObjectId>; 3],
+) -> Result<Option<Vec<u8>>, Error> {
+    let mut subdirs: BTreeMap<Vec<u8>, [Option<ObjectId>; 3]> = BTreeMap::new();
+    for (i, id) in trees.iter().enumerate() {
+        let Some(id) = id else { continue };
+        if trees[..i].contains(&Some(*id)) {
+            // Already looked at.
+            for dirs in subdirs.values_mut() {
+                let first = trees.iter().position(|t| *t == Some(*id)).unwrap_or(i);
+                dirs[i] = dirs[first];
+            }
+            continue;
+        }
+        let mut seen = HashSet::new();
+        for (name, v) in read_tree(objects, id)? {
+            if !seen.insert(name.clone()) {
+                return Ok(Some([prefix.as_slice(), &name].concat()));
+            }
+            if kind(v.mode) == Kind::Tree {
+                subdirs.entry(name).or_default()[i] = Some(v.oid);
+            }
+        }
+    }
+    for (name, [b, o, t]) in subdirs {
+        if o == t || b == o || b == t {
+            continue;
+        }
+        let len = prefix.len();
+        prefix.extend_from_slice(&name);
+        prefix.push(b'/');
+        let r = find_duplicate(objects, prefix, [b, o, t]);
+        prefix.truncate(len);
+        if let Some(p) = r? {
+            return Ok(Some(p));
+        }
+    }
+    Ok(None)
 }
 
 /// Calls `f` with every non-directory entry below tree `id`, in index

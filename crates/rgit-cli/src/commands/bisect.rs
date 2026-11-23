@@ -215,6 +215,29 @@ impl<'c> Bisect<'c> {
         Err(Die::Exit(1))
     }
 
+    /// A mark without a bisection: `You need to start by "git bisect
+    /// start"`, and when the standard input is a terminal the question
+    /// whether to start one (on the terminal). Whether to start it: any
+    /// answer but one starting with `n` or `N`.
+    fn offer_start(&self) -> Result<bool, Die> {
+        use std::io::{BufRead, IsTerminal};
+        let _ = writeln!(std::io::stderr().lock(), "{}", msg::NEED_START);
+        if !std::io::stdin().is_terminal() {
+            return Ok(false);
+        }
+        match std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+            Ok(mut tty) => {
+                let _ = tty.write_all(msg::START_FOR_YOU.as_bytes());
+            }
+            Err(_) => {
+                let _ = std::io::stderr().write_all(msg::START_FOR_YOU.as_bytes());
+            }
+        }
+        let mut answer = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut answer);
+        Ok(!answer.starts_with(['n', 'N']))
+    }
+
     /// The terms of this bisection (`BISECT_TERMS`), if written.
     pub fn read_terms(&self) -> Option<Terms> {
         let text = self.read("BISECT_TERMS")?;
@@ -723,7 +746,10 @@ impl<'c> Bisect<'c> {
             return usage_error(&msg::unknown_command(word));
         }
         if !self.is_bisecting() {
-            return self.need_start();
+            if !self.offer_start()? {
+                return Err(Die::Exit(1));
+            }
+            self.start(&[])?;
         }
         let outcome = self.mark(&terms, word, args)?;
         self.flush();
@@ -751,7 +777,7 @@ impl<'c> Bisect<'c> {
         for a in args {
             if word == "skip" && a.contains("..") {
                 let list = crate::history::walk_commits(self.ctx, std::slice::from_ref(a))
-                    .map_err(|_| Die::Error(msg::bad_rev_input(a), 1))?;
+                    .map_err(|_| Die::Fatal(crate::messages::rev_list::ambiguous_argument(a)))?;
                 ids.extend(list);
                 continue;
             }

@@ -118,11 +118,11 @@ pub enum Error {
     /// A tree to merge is missing.
     #[error("{}", messages::could_not_read(&.0.to_hex()))]
     MissingTree(ObjectId),
-    /// One of the trees to merge is missing (git's messages are
-    /// [`messages::could_not_read`], [`messages::collecting_failed`] and
-    /// this error's text).
+    /// The trees to merge could not be walked: one is missing or a tree
+    /// holds two entries of the same name. git reports
+    /// [`Error::collect_errors`] and then this error's text.
     #[error("{}", messages::FAILURE_TO_MERGE)]
-    Collect(Box<(ObjectId, [ObjectId; 3])>),
+    Collect(Box<(CollectCause, [ObjectId; 3])>),
     /// A blob to merge is missing.
     #[error("{}", messages::missing_blob(&.0.to_hex()))]
     MissingBlob(ObjectId),
@@ -143,6 +143,34 @@ pub enum Error {
     /// A custom merge driver failed (it could not run, or it was killed).
     #[error("{0}")]
     Driver(String),
+}
+
+/// Why the trees to merge could not be walked ([`Error::Collect`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectCause {
+    /// This tree is missing.
+    Missing(ObjectId),
+    /// A tree has two entries of this name (the path below the root).
+    Duplicate(Vec<u8>),
+}
+
+impl Error {
+    /// The `error:` lines git prints before the error's own text for an
+    /// [`Error::Collect`] (without the `error: ` prefix).
+    pub fn collect_errors(&self) -> Option<[String; 2]> {
+        let Error::Collect(c) = self else {
+            return None;
+        };
+        let (cause, trees) = &**c;
+        let first = match cause {
+            CollectCause::Missing(id) => messages::could_not_read(&id.to_hex()),
+            CollectCause::Duplicate(path) => messages::duplicate_entries(path),
+        };
+        Some([
+            first,
+            messages::collecting_failed(&trees.map(|t| t.to_hex())),
+        ])
+    }
 }
 
 /// The merge driver of a path (the `merge` attribute, gitattributes(5)

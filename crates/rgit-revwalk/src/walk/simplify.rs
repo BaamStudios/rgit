@@ -64,7 +64,11 @@ impl<S: CommitSource> Walk<S> {
             }
             self.node(p)?;
             let ts = self.source.treesame(&id, Some(p))?;
-            if ts && !self.opts.full_history {
+            // An excluded parent that is not a bottom only counts when no
+            // parent is relevant (observed with merges of side branches
+            // that start below the excluded tip).
+            let counts = self.relevant(p) || !parents[..count].iter().any(|q| self.relevant(q));
+            if ts && counts && !self.opts.full_history {
                 let node = &mut self.nodes[n as usize];
                 node.flags |= TREESAME;
                 if i > 0 && self.opts.show_pulls {

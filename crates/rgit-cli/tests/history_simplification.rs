@@ -200,7 +200,67 @@ fn follow_renames_and_copies() {
         &["log", "--format=%s", "--follow", "h", "k"],
         &["-c", "log.follow=true", "log", "--format=%s", "h"],
         &["-c", "log.follow=true", "log", "--format=%s", "h", "k"],
+        // The diffs show the followed file with its source.
+        &["log", "--format=%s", "--follow", "--name-status", "h"],
+        &["log", "--format=%s", "--follow", "--name-status", "k"],
+        &["log", "--format=%s", "--follow", "--stat", "-p", "k"],
+        &[
+            "log",
+            "--format=%s",
+            "--follow",
+            "--raw",
+            "--no-renames",
+            "h",
+        ],
+        &["log", "--format=%s", "--follow", "--full-diff", "h"],
     ] {
         fx.compare(args).run();
     }
+}
+
+#[test]
+fn log_merge_shows_commits_touching_conflicts() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("a", "0\n")
+        .write("b", "0\n")
+        .write("c", "0\n");
+    fx = commit(fx, "base");
+    fx = fx.git(["checkout", "-q", "-b", "side"]).write("a", "s\n");
+    fx = commit(fx, "s1");
+    fx = fx.write("b", "s\n");
+    fx = commit(fx, "s2");
+    fx = fx.write("c", "s\n");
+    fx = commit(fx, "s3");
+    fx = fx.git(["checkout", "-q", "main"]).write("a", "m\n");
+    fx = commit(fx, "m1");
+    fx = fx.write("c", "m\n");
+    fx = commit(fx, "m2");
+    fx = fx.write("d", "m\n");
+    fx = commit(fx, "m3");
+    let merge_args = [
+        &["log", "--merge", "--format=%s"][..],
+        &[
+            "log",
+            "--merge",
+            "--format=%s",
+            "--left-right",
+            "--boundary",
+        ],
+        &["log", "--merge", "--format=%s", "--", "b"],
+        &["log", "--merge", "--format=%s", "--", "a", "b"],
+        &["log", "--merge", "--format=%s", "-p"],
+        &["rev-list", "--merge", "HEAD"],
+    ];
+    for args in merge_args {
+        fx.compare(args).run();
+    }
+    // Conflicts in a and c.
+    assert!(!fx.git_output(["merge", "-q", "side"]).status.success());
+    for args in merge_args {
+        fx.compare(args).run();
+    }
+    fx = fx.git(["add", "a"]);
+    fx.compare(["log", "--merge", "--format=%s"]).run();
 }

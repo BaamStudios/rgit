@@ -277,13 +277,8 @@ fn merge_one(
 
 /// A merge error as git reports it.
 pub(crate) fn merge_failed(e: rgit_merge::Error) -> Die {
-    if let rgit_merge::Error::Collect(c) = &e {
-        let (missing, trees) = &**c;
-        eprintln!("error: {}", rgit_merge::messages::could_not_read(&missing.to_hex()));
-        eprintln!(
-            "error: {}",
-            rgit_merge::messages::collecting_failed(&trees.map(|t| t.to_hex()))
-        );
+    for line in e.collect_errors().into_iter().flatten() {
+        eprintln!("error: {line}");
     }
     Die::Fatal(e.to_string())
 }

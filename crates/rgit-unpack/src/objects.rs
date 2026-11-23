@@ -71,8 +71,16 @@ fn walk(
         Ok(Some(raw)) if raw.kind == ObjectKind::Tree => raw,
         _ => return Err(Error::MissingTree(*id)),
     };
+    // A broken tree can name an entry twice as a file (or submodule) and
+    // as a directory; git's tree walk sees only the first of them. (Two
+    // files of one name both reach the index, where git reports them.)
+    let mut seen = std::collections::HashMap::new();
     for item in TreeIter::new(odb.hash_kind(), &raw.data) {
         let e = item.map_err(|e| Error::CorruptTree(e.to_string()))?;
+        let is_tree = rgit_object::EntryMode::from_bits(e.mode_bits).is_tree();
+        if *seen.entry(e.name).or_insert(is_tree) != is_tree {
+            continue;
+        }
         let len = base.len();
         base.extend_from_slice(e.name);
         let mode = rgit_object::EntryMode::from_bits(e.mode_bits).canonical();
