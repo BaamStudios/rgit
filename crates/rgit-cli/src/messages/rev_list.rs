@@ -191,3 +191,17 @@ pub fn unknown_diff_merges(value: &str) -> String {
 pub fn not_a_blob(spec: &str) -> String {
     format!("mailmap is not a blob: {spec}")
 }
+
+pub fn unsupported_hidden_section(section: &str) -> String {
+    format!("unsupported section for hidden refs: {section}")
+}
+
+pub const EXCLUDE_HIDDEN_TWICE: &str = "--exclude-hidden= passed more than once";
+
+pub fn invalid_disk_usage(value: &str) -> String {
+    format!(
+        "invalid value for '--disk-usage=<format>': '{value}', the only allowed format is 'human'"
+    )
+}
+
+pub const Z_UNSUPPORTED: &str = "-z option used with unsupported option";
