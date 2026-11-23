@@ -72,3 +72,30 @@ fn paths() {
 fn subdirectory() {
     each("d", &[&["x"], &["-r", "e"], &["-r", "."]]);
 }
+
+/// Files already gone from the work tree are removed without the
+/// up-to-date checks, also when a leading directory became a file or a
+/// dangling symlink; intent-to-add entries leave the index with `--cached`.
+#[test]
+fn gone_and_intent_to_add() {
+    let cases: &[(&str, &[&str])] = &[("n", &["n"]), ("c", &["c", "b"])];
+    for (gone, args) in cases {
+        let mut fx = fixture().remove(gone);
+        let mut argv = vec!["rm"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).checks(STATE).run();
+    }
+    let mut fx = fixture().remove("d").write("d", "now a file\n");
+    fx.compare(["rm", "d/x"]).checks(STATE).run();
+    #[cfg(unix)]
+    {
+        let mut fx = fixture().remove("d").symlink("nowhere", "d");
+        fx.compare(["rm", "d/x"]).checks(STATE).run();
+    }
+    for args in [&["rm", "--cached", "ita"][..], &["rm", "ita"]] {
+        let mut fx = fixture()
+            .write("ita", "content\n")
+            .git(["add", "-N", "ita"]);
+        fx.compare(args).checks(STATE).run();
+    }
+}
