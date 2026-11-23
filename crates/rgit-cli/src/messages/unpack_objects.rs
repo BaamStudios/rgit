@@ -12,6 +12,7 @@ pub const UNRESOLVED: &str = "unresolved deltas left after unpacking";
 pub const TOO_LARGE: &str = "pack exceeds maximum allowed size";
 pub const UNEXPECTED_TYPE: &str = "object of unexpected type";
 pub const FSCK_ERROR: &str = "fsck error in packed object";
+pub const FSCK_ERROR_PACK: &str = "fsck error in pack objects";
 
 pub fn unknown_version(v: u32) -> String {
     format!("unknown pack file version {v}")

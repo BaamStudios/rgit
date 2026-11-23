@@ -407,6 +407,44 @@ impl ObjectHook for Checks {
     }
 }
 
+/// `.gitmodules` blobs of the pack (`--strict` / `--fsck-objects`).
+fn check_gitmodules(
+    checks: &Checks,
+    pack_file: &Path,
+    hash: HashKind,
+    indexed: &IndexedPack,
+    ids: &[ObjectId],
+) -> Result<(), Die> {
+    let idx = indexed.index_bytes(IndexVersion::default()).map_err(fail)?;
+    let data = std::fs::read(pack_file).map_err(|e| Die::Fatal(m::cannot_create(pack_file, &e)))?;
+    let pack = rgit_pack::Pack::from_bytes(idx, data, pack_file, hash).map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut cache = rgit_pack::DeltaBaseCache::default();
+    let mut failed = false;
+    for id in ids {
+        let Ok(Some(obj)) = pack.read(id, &mut cache) else {
+            continue;
+        };
+        if obj.kind != ObjectKind::Blob {
+            continue;
+        }
+        for (msg_id, text) in crate::commands::fsck::gitmodules::check(&obj.data) {
+            let finding = format!("{}: {text}", msg_id.name());
+            match checks.severity(msg_id) {
+                Severity::Ignore => {}
+                Severity::Warn | Severity::Info => eprintln!("warning: {}", m::fsck_finding(id, &finding)),
+                Severity::Error | Severity::Fatal => {
+                    eprintln!("error: {}", m::fsck_finding(id, &finding));
+                    failed = true;
+                }
+            }
+        }
+    }
+    if failed {
+        return Err(Die::Fatal(m::FSCK_ERROR.into()));
+    }
+    Ok(())
+}
+
 /// Removes a file on drop unless disarmed.
 struct RemoveOnDrop(Option<PathBuf>);
 
@@ -674,8 +712,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     {
         let queued = std::mem::take(&mut *checks.queued.lock().unwrap_or_else(|p| p.into_inner()));
         let in_pack: HashSet<ObjectId> = indexed.objects().iter().map(|o| o.id).collect();
+        let mut gitmodules_in_pack = Vec::new();
         for (id, f) in queued {
             if in_pack.contains(&id) {
+                if f == fsck::SpecialFile::Gitmodules && !gitmodules_in_pack.contains(&id) {
+                    gitmodules_in_pack.push(id);
+                }
                 continue;
             }
             let Some(db) = &odb else {
@@ -684,6 +726,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             if f == fsck::SpecialFile::Gitmodules && !db.contains(&id) && !missing_gitmodules.contains(&id) {
                 missing_gitmodules.push(id);
             }
+        }
+        if !gitmodules_in_pack.is_empty() {
+            let pack_file = match (&pack_tmp, &args.pack) {
+                (Some(t), _) => t.path().to_path_buf(),
+                (None, Some(p)) => PathBuf::from(p),
+                (None, None) => unreachable!("a pack was read"),
+            };
+            check_gitmodules(&checks, &pack_file, hash, &indexed, &gitmodules_in_pack)?;
         }
     }
 

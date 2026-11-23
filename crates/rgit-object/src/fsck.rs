@@ -88,9 +88,15 @@ msg_ids! {
     BadDateOverflow = "badDateOverflow", Error;
     BadEmail = "badEmail", Error;
     BadFilemode = "badFilemode", Info;
+    BadHeadTarget = "badHeadTarget", Error;
     BadName = "badName", Error;
     BadObjectSha1 = "badObjectSha1", Error;
     BadParentSha1 = "badParentSha1", Error;
+    BadRefContent = "badRefContent", Error;
+    BadReferentName = "badReferentName", Error;
+    BadRefFiletype = "badRefFiletype", Error;
+    BadRefName = "badRefName", Error;
+    BadRefOid = "badRefOid", Error;
     BadTagName = "badTagName", Info;
     BadTimezone = "badTimezone", Error;
     BadTree = "badTree", Error;
@@ -99,9 +105,21 @@ msg_ids! {
     DuplicateEntries = "duplicateEntries", Error;
     ExtraHeaderEntry = "extraHeaderEntry", Ignore;
     FullPathname = "fullPathname", Warn;
+    GitattributesBlob = "gitattributesBlob", Error;
+    GitattributesLarge = "gitattributesLarge", Error;
+    GitattributesLineLength = "gitattributesLineLength", Error;
+    GitattributesMissing = "gitattributesMissing", Error;
     GitattributesSymlink = "gitattributesSymlink", Info;
     GitignoreSymlink = "gitignoreSymlink", Info;
+    GitmodulesBlob = "gitmodulesBlob", Error;
+    GitmodulesLarge = "gitmodulesLarge", Error;
+    GitmodulesMissing = "gitmodulesMissing", Error;
+    GitmodulesName = "gitmodulesName", Error;
+    GitmodulesParse = "gitmodulesParse", Info;
+    GitmodulesPath = "gitmodulesPath", Error;
     GitmodulesSymlink = "gitmodulesSymlink", Error;
+    GitmodulesUpdate = "gitmodulesUpdate", Error;
+    GitmodulesUrl = "gitmodulesUrl", Error;
     HasDot = "hasDot", Warn;
     HasDotdot = "hasDotdot", Warn;
     HasDotgit = "hasDotgit", Warn;
@@ -122,6 +140,10 @@ msg_ids! {
     NulInCommit = "nulInCommit", Warn;
     NulInHeader = "nulInHeader", Fatal;
     NullSha1 = "nullSha1", Warn;
+    RefMissingNewline = "refMissingNewline", Info;
+    SymlinkRef = "symlinkRef", Info;
+    SymrefTargetIsNotARef = "symrefTargetIsNotARef", Info;
+    TrailingRefContent = "trailingRefContent", Info;
     TreeNotSorted = "treeNotSorted", Error;
     UnterminatedHeader = "unterminatedHeader", Fatal;
     ZeroPaddedDate = "zeroPaddedDate", Error;
@@ -179,12 +201,16 @@ pub struct Options {
     /// Longest allowed tree entry name for `largePathname`
     /// (`fsck.largePathname`, default 4096).
     pub max_pathname_len: usize,
+    /// Accept the group-writable file mode `100664` written by old git
+    /// versions (`git fsck` without `--strict`).
+    pub allow_group_writable: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
         Options {
             max_pathname_len: 4096,
+            allow_group_writable: false,
         }
     }
 }
@@ -376,6 +402,15 @@ pub fn check_tag(hash: HashKind, data: &[u8], report: &mut Report<'_>) {
     ) {
         return;
     }
+    // Signature headers (with their continuation lines) may follow.
+    for sig in [&b"gpgsig "[..], b"gpgsig-sha256 "] {
+        if rest.starts_with(sig) {
+            rest = next_line(rest);
+            while rest.first() == Some(&b' ') {
+                rest = next_line(rest);
+            }
+        }
+    }
     if !rest.is_empty() && rest[0] != b'\n' {
         report(Finding::new(
             MsgId::ExtraHeaderEntry,
@@ -557,7 +592,7 @@ pub fn check_tree(hash: HashKind, data: &[u8], options: &Options, report: &mut R
         has_bad_mode |= !matches!(
             e.mode_bits,
             0o100644 | 0o100755 | 0o120000 | 0o040000 | 0o160000
-        );
+        ) && !(options.allow_group_writable && e.mode_bits == 0o100664);
         if i > 0 {
             let prev = &entries[i - 1];
             if prev.name == name {
@@ -587,13 +622,13 @@ pub fn check_tree(hash: HashKind, data: &[u8], options: &Options, report: &mut R
         (has_dot, MsgId::HasDot, msg::HAS_DOT),
         (has_dotdot, MsgId::HasDotdot, msg::HAS_DOTDOT),
         (has_dotgit, MsgId::HasDotgit, msg::HAS_DOTGIT),
-        (has_large, MsgId::LargePathname, msg::LARGE_PATHNAME),
         (
             has_zero_pad,
             MsgId::ZeroPaddedFilemode,
             msg::ZERO_PADDED_FILEMODE,
         ),
         (has_bad_mode, MsgId::BadFilemode, msg::BAD_FILEMODE),
+        (has_large, MsgId::LargePathname, msg::LARGE_PATHNAME),
         (has_dups, MsgId::DuplicateEntries, msg::DUPLICATE_ENTRIES),
         (not_sorted, MsgId::TreeNotSorted, msg::TREE_NOT_SORTED),
     ];

@@ -27,6 +27,7 @@ pub mod fetch;
 pub mod fmt_merge_msg;
 pub mod for_each_ref;
 pub mod format_patch;
+pub mod fsck;
 pub mod grep;
 pub mod hash_object;
 pub mod help;
