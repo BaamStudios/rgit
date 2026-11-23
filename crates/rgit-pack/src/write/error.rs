@@ -47,6 +47,9 @@ pub enum WriteError {
         /// Its type.
         kind: ObjectKind,
     },
+    /// An object read for packing does not hash to its id (corrupt data,
+    /// for example a damaged delta in a pack).
+    Mismatch(ObjectId),
     /// More objects than a pack header can count.
     TooManyObjects,
     /// The trailing checksum hit a SHA-1 collision attack pattern.
@@ -80,6 +83,7 @@ impl fmt::Display for WriteError {
                 expected,
             } => m::wrong_object_type(f, id, found.name(), expected.name()),
             WriteError::Corrupt { id, kind } => m::bad_object_of_kind(f, id, kind.name()),
+            WriteError::Mismatch(id) => m::hash_mismatch(f, id),
             WriteError::TooManyObjects => m::too_many_objects(f),
             WriteError::Collision => m::trailer_collision(f),
         }

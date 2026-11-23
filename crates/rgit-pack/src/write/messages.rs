@@ -38,6 +38,14 @@ pub fn bad_object_of_kind(f: &mut fmt::Formatter<'_>, id: &ObjectId, kind: &str)
     write!(f, "bad {kind} object {id}")
 }
 
+/// rgit: an object's content does not match its id.
+pub fn hash_mismatch(f: &mut fmt::Formatter<'_>, id: &ObjectId) -> fmt::Result {
+    write!(
+        f,
+        "object {id} is corrupt: its content does not match its id"
+    )
+}
+
 /// rgit: the pack header counts objects in 32 bits.
 pub fn too_many_objects(f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "too many objects for one pack")

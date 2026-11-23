@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: MIT
-//! `git pack-objects` (Documentation/git-pack-objects.adoc), first part:
-//! `--stdout` packs from an object list or from `--revs`, without delta
-//! search (existing deltas are reused). See `rgit_pack::write`.
+//! `git pack-objects` (Documentation/git-pack-objects.adoc): packs from an
+//! object list or from `--revs`, to standard output or to
+//! `<base-name>-<hash>.{pack,idx,rev}`, with delta search (`--window`,
+//! `--depth`, `pack.*`), reuse of existing deltas and objects, and thin
+//! packs (`--thin`). See `rgit_pack::write`.
 //!
-//! Not yet: writing `<base-name>-<hash>.{pack,idx}` (needs the `.idx`
-//! writer from index-pack), progress output, `--include-tag`,
-//! `--shallow`, `--incremental`, `--local`, `--unpacked`, filters,
-//! bitmaps. `--thin` is accepted, but the pack is never thin (which is
-//! always valid).
+//! Not yet: progress meters (only the final "Total" line), `--include-tag`,
+//! `--shallow`, `--incremental`, `--local`, `--unpacked`, `--stdin-packs`,
+//! filters, bitmaps.
 
-use std::io::{BufRead, BufWriter, Write};
+use std::io::{BufRead, BufWriter, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 
 use rgit_config::ConfigSet;
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::ObjectKind;
 use rgit_odb::{ObjectDatabase, PrefixMatch};
+use rgit_pack::index_pack::IndexVersion;
 use rgit_pack::write::{self as pw, ListedObject, Tip, WriteOptions};
 use rgit_refs::files::FilesStore;
 use rgit_refs::name::{RefNameFlags, is_valid_refname};
@@ -29,18 +31,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let progress = Cell::new(false);
     let all_progress = Cell::new(false);
     let all_progress_implied = Cell::new(false);
-    let window = Cell::new(10);
-    let window_memory = Cell::new(0u64);
-    let depth = Cell::new(50);
+    let window = Cell::new(i32::MIN);
+    let window_memory = Cell::new(u64::MAX);
+    let depth = Cell::new(i32::MIN);
     let reuse_delta = Cell::new(true);
     let reuse_object = Cell::new(true);
     let ofs_delta = Cell::new(false);
-    let threads = Cell::new(0);
+    let threads = Cell::new(i32::MIN);
+    let index_version: RefCell<Option<String>> = RefCell::new(None);
+    let max_pack_size = Cell::new(u64::MAX);
     let non_empty = Cell::new(false);
     let revs = Cell::new(false);
     let all = Cell::new(false);
     let stdout = Cell::new(false);
-    let sparse = Cell::new(true);
+    let sparse = Cell::new(-1);
     let thin = Cell::new(false);
     let local = Cell::new(false);
     let path_walk = Cell::new(false);
@@ -71,23 +75,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 &all_progress_implied,
                 msg::H_ALL_PROGRESS_IMPLIED,
             ),
-            Opt::callback(
+            Opt::string(
                 None,
                 "index-version",
-                Some("<version>[,<offset>]"),
+                &index_version,
+                "<version>[,<offset>]",
                 msg::H_INDEX_VERSION,
-                reject("index-version"),
             )
             .literal_argh()
             .noneg(),
-            Opt::callback(
-                None,
-                "max-pack-size",
-                Some("n"),
-                msg::H_MAX_PACK_SIZE,
-                reject("max-pack-size"),
-            )
-            .noneg(),
+            Opt::unsigned(None, "max-pack-size", &max_pack_size, msg::H_MAX_PACK_SIZE),
             Opt::flag(None, "local", &local, msg::H_LOCAL),
             Opt::callback(None, "incremental", None, msg::H_INCREMENTAL, reject("incremental"))
                 .noarg(),
@@ -160,7 +157,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 reject("cruft-expiration"),
             )
             .optional(None),
-            Opt::flag(None, "sparse", &sparse, msg::H_SPARSE),
+            Opt::bool(None, "sparse", &sparse, msg::H_SPARSE),
             Opt::flag(None, "thin", &thin, msg::H_THIN),
             Opt::flag(None, "path-walk", &path_walk, msg::H_PATH_WALK),
             Opt::callback(None, "shallow", None, msg::H_SHALLOW, reject("shallow")).noarg(),
@@ -234,7 +231,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ],
     );
     let args = parser.parse(argv)?.args;
-    if all.get() {
+    // A thin pack needs the edge of the walk: `--thin` reads revisions.
+    if all.get() || thin.get() {
         revs.set(true);
     }
     if stdout.get() != args.is_empty() || args.len() > 1 {
@@ -243,22 +241,43 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some(opt) = unsupported.borrow().as_deref() {
         return Err(Die::Fatal(msg::not_supported(opt)));
     }
-    if !stdout.get() {
-        return Err(Die::Fatal(msg::not_supported("writing <base-name> pack files")));
+    if thin.get() && !stdout.get() {
+        return Err(Die::Fatal(msg::THIN_NOT_INDEXABLE.into()));
     }
-    let mut max_depth = depth.get().max(0) as u32;
-    if max_depth > pw::MAX_DEPTH {
-        eprintln!("warning: {}", msg::depth_too_large(depth.get(), pw::MAX_DEPTH));
-        max_depth = pw::MAX_DEPTH;
-    }
+    let idx_version = match index_version.borrow().as_deref() {
+        Some(v) => Some(parse_index_version(v)?),
+        None => None,
+    };
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let hash = setup.format.object_format;
     let config = repo::config(ctx, &setup);
-    let level = match compression.get() {
-        i32::MIN => config_compression(&config)?,
-        l => check_level(l as i64)?,
-    };
+    let mut opts = config_options(&config)?;
+    if compression.get() != i32::MIN {
+        opts.compression = check_level(compression.get() as i64)?;
+    }
+    if window.get() != i32::MIN {
+        opts.window = window.get().max(0) as usize;
+    }
+    if window_memory.get() != u64::MAX {
+        opts.window_memory = window_memory.get();
+    }
+    if threads.get() != i32::MIN {
+        opts.threads = threads.get().max(0) as usize;
+    }
+    if depth.get() != i32::MIN {
+        opts.max_depth = depth.get().max(0) as u32;
+    }
+    if opts.max_depth > pw::MAX_DEPTH {
+        eprintln!(
+            "warning: {}",
+            msg::depth_too_large(opts.max_depth, pw::MAX_DEPTH)
+        );
+        opts.max_depth = pw::MAX_DEPTH;
+    }
+    opts.ofs_delta = ofs_delta.get();
+    opts.reuse_object = reuse_object.get();
+    opts.reuse_delta = reuse_delta.get() && reuse_object.get();
 
     let odb = repo::odb_with_config(&setup, &config)?;
     let repo = Repo {
@@ -269,7 +288,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
-    let listed: Vec<ListedObject> = if revs.get() {
+    let (listed, bases): (Vec<ListedObject>, Vec<ListedObject>) = if revs.get() {
         let mut tips = Vec::new();
         if all.get() {
             for id in repo.refs.all() {
@@ -277,29 +296,300 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
         }
         read_revs(&mut input, &repo, &mut tips)?;
-        pw::enumerate(&repo.source, hash, &tips).map_err(|e| Die::Fatal(e.to_string()))?
+        let sparse = match sparse.get() {
+            -1 => config.bool("pack.usesparse").ok().flatten().unwrap_or(true),
+            v => v > 0,
+        };
+        let (listed, bases) = pw::enumerate_with_edges(&repo.source, hash, &tips, sparse)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
+        (listed, if thin.get() { bases } else { Vec::new() })
     } else {
-        let ids = read_object_list(&mut input, hash)?;
-        pw::describe(&repo.source, hash, &ids).map_err(|e| Die::Fatal(e.to_string()))?
+        let (list, edges) = read_object_list(&mut input, hash)?;
+        let ids: Vec<ObjectId> = list.iter().map(|(id, _)| *id).collect();
+        let mut listed =
+            pw::describe(&repo.source, hash, &ids).map_err(|e| Die::Fatal(e.to_string()))?;
+        for (o, (_, name_hash)) in listed.iter_mut().zip(&list) {
+            o.name_hash = *name_hash;
+        }
+        // Like git, edge objects serve as bases of a pack written to
+        // standard output, which may make it thin.
+        let bases = if stdout.get() {
+            edge_objects(&repo, &edges)
+        } else {
+            Vec::new()
+        };
+        (listed, bases)
     };
     let ordered = pw::pack_order(&listed);
     if ordered.is_empty() && non_empty.get() {
         return Ok(0);
     }
 
-    let opts = WriteOptions {
-        ofs_delta: ofs_delta.get(),
-        reuse_delta: reuse_delta.get() && reuse_object.get(),
-        reuse_object: reuse_object.get(),
-        compression: level,
-        max_depth,
-    };
-    let out = BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
     let packs = odb.packs().map(|p| p.set().packs()).unwrap_or_default();
-    let (_summary, mut out) = pw::write_pack(out, hash, &ordered, &repo.source, &packs, &opts)
-        .map_err(|e| Die::Fatal(e.to_string()))?;
-    out.flush().map_err(|e| Die::Fatal(e.to_string()))?;
+    let show_progress = !quiet.get() && (progress.get() || std::io::stderr().is_terminal());
+    let summaries = if stdout.get() {
+        let out = BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
+        let (summary, mut out) =
+            pw::write_thin_pack(out, hash, &ordered, &bases, &repo.source, &packs, &opts)
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+        out.flush().map_err(|e| Die::Fatal(e.to_string()))?;
+        vec![summary]
+    } else {
+        // At least 1 MiB, as git-pack-objects(1) says.
+        let limit = match max_pack_size.get() {
+            u64::MAX => config
+                .int64("pack.packsizelimit")
+                .map_err(|e| Die::Fatal(e.to_string()))?
+                .filter(|&v| v > 0)
+                .map(|v| v as u64),
+            0 => None,
+            v => Some(v),
+        }
+        .map(|v| v.max(1 << 20));
+        let files = PackFiles {
+            base: PathBuf::from(&args[0]),
+            hash,
+            index_version: match idx_version {
+                Some(v) => v,
+                None => config_index_version(&config)?,
+            },
+            rev: config
+                .bool("pack.writereverseindex")
+                .ok()
+                .flatten()
+                .unwrap_or(true),
+            max_pack_size: limit,
+        };
+        let summaries = files.write(&ordered, repo.source, &packs, &opts)?;
+        for s in &summaries {
+            println!("{}", s.checksum);
+        }
+        summaries
+    };
+    if show_progress {
+        let sum = |f: fn(&pw::PackSummary) -> u32| summaries.iter().map(f).sum::<u32>();
+        eprintln!(
+            "{}",
+            msg::total(
+                summaries.iter().map(|s| s.entries.len()).sum(),
+                sum(|s| s.deltas),
+                sum(|s| s.reused),
+                sum(|s| s.reused_deltas)
+            )
+        );
+    }
     Ok(0)
+}
+
+/// The pack settings from configuration: `pack.window`, `pack.depth`,
+/// `pack.windowMemory`, `pack.threads`, `pack.compression` (else
+/// `core.compression`) and `core.bigFileThreshold`. Also used by `push`.
+pub(crate) fn config_options(config: &ConfigSet) -> Result<WriteOptions, Die> {
+    let mut opts = WriteOptions {
+        compression: config_compression(config)?,
+        ..WriteOptions::default()
+    };
+    let int = |key: &str, wide: bool| -> Result<Option<i64>, Die> {
+        let v = if wide {
+            config.int64(key)
+        } else {
+            config.int(key)
+        };
+        v.map_err(|e| Die::Fatal(e.to_string()))
+    };
+    if let Some(v) = int("pack.window", false)? {
+        opts.window = v.max(0) as usize;
+    }
+    if let Some(v) = int("pack.depth", false)? {
+        opts.max_depth = v.max(0) as u32;
+    }
+    if let Some(v) = int("pack.windowmemory", true)? {
+        opts.window_memory = v.max(0) as u64;
+    }
+    if let Some(v) = int("pack.threads", false)? {
+        opts.threads = v.max(0) as usize;
+    }
+    if let Some(v) = int("core.bigfilethreshold", true)? {
+        opts.big_file_threshold = v.max(0) as u64;
+    }
+    Ok(opts)
+}
+
+/// `--index-version=<version>[,<offset>]`.
+fn parse_index_version(v: &str) -> Result<IndexVersion, Die> {
+    let bad = || Die::Fatal(msg::bad_index_version(v));
+    let (ver, off) = match v.split_once(',') {
+        Some((a, b)) => (a, Some(b)),
+        None => (v, None),
+    };
+    let version: u32 = ver.parse().map_err(|_| bad())?;
+    if version > 2 {
+        return Err(Die::Fatal(msg::unsupported_index_version(version as i64)));
+    }
+    let mut out = IndexVersion {
+        version,
+        ..IndexVersion::default()
+    };
+    if let Some(off) = off {
+        let parsed = match off.strip_prefix("0x") {
+            Some(h) => u64::from_str_radix(h, 16),
+            None => off.parse::<u64>(),
+        };
+        out.large_offset_limit = parsed.map_err(|_| bad())?;
+    }
+    Ok(out)
+}
+
+/// `pack.indexVersion` (default 2).
+fn config_index_version(config: &ConfigSet) -> Result<IndexVersion, Die> {
+    let mut v = IndexVersion::default();
+    if let Ok(Some(n)) = config.int("pack.indexversion") {
+        if !(1..=2).contains(&n) {
+            return Err(Die::Fatal(msg::bad_config_index_version(n)));
+        }
+        v.version = n as u32;
+    }
+    Ok(v)
+}
+
+/// Where and how `<base-name>` output is written.
+struct PackFiles {
+    base: PathBuf,
+    hash: HashKind,
+    index_version: IndexVersion,
+    /// Also write a `.rev` file (`pack.writeReverseIndex`).
+    rev: bool,
+    /// Split into packs of at most this size (`--max-pack-size`,
+    /// `pack.packSizeLimit`).
+    max_pack_size: Option<u64>,
+}
+
+impl PackFiles {
+    fn dir(&self) -> PathBuf {
+        match self.base.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        }
+    }
+
+    fn final_name(&self, checksum: &ObjectId, ext: &str) -> PathBuf {
+        let mut s = self.base.as_os_str().to_owned();
+        s.push(format!("-{checksum}.{ext}"));
+        PathBuf::from(s)
+    }
+
+    /// Write `<base>-<hash>.pack`, `.idx` and maybe `.rev`, read-only,
+    /// through temporary files in the same directory; with a size limit
+    /// possibly several packs.
+    fn write(
+        &self,
+        objects: &[ListedObject],
+        source: &ObjectDatabase,
+        packs: &[std::sync::Arc<rgit_pack::Pack>],
+        opts: &WriteOptions,
+    ) -> Result<Vec<pw::PackSummary>, Die> {
+        let dir = self.dir();
+        let mut temps = TempFiles(Vec::new());
+        let fatal = |e: pw::WriteError| Die::Fatal(e.to_string());
+        let mut written: Vec<(pw::PackSummary, PathBuf)> = Vec::new();
+        match self.max_pack_size {
+            None => {
+                let tmp_pack = dir.join(format!("tmp_pack_{}", std::process::id()));
+                let file =
+                    std::fs::File::create(&tmp_pack).map_err(|e| write_error(&tmp_pack, &e))?;
+                temps.0.push((tmp_pack.clone(), "pack"));
+                let out = BufWriter::with_capacity(1 << 16, file);
+                let (summary, out) =
+                    pw::write_pack(out, self.hash, objects, source, packs, opts).map_err(fatal)?;
+                let file = out
+                    .into_inner()
+                    .map_err(|e| write_error(&tmp_pack, e.error()))?;
+                file.sync_all().map_err(|e| write_error(&tmp_pack, &e))?;
+                written.push((summary, tmp_pack));
+            }
+            Some(limit) => {
+                let mut paths = Vec::new();
+                let mut open = || {
+                    let p = dir.join(format!("tmp_pack_{}_{}", std::process::id(), paths.len()));
+                    let f = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create_new(true)
+                        .open(&p)?;
+                    paths.push(p);
+                    Ok(f)
+                };
+                let result =
+                    pw::write_pack_files(&mut open, self.hash, objects, source, packs, opts, limit);
+                for p in &paths {
+                    temps.0.push((p.clone(), "pack"));
+                }
+                for ((summary, file), path) in result.map_err(fatal)?.into_iter().zip(paths) {
+                    file.sync_all().map_err(|e| write_error(&path, &e))?;
+                    written.push((summary, path));
+                }
+            }
+        }
+        // Per pack: the pack first and the index last, as readers look for
+        // the index.
+        let mut summaries = Vec::new();
+        for (n, (summary, tmp_pack)) in written.into_iter().enumerate() {
+            let indexed = summary.indexed(self.hash);
+            let mut files = vec![(tmp_pack, "pack")];
+            if self.rev {
+                let bytes = indexed.rev_bytes().map_err(|e| Die::Fatal(e.to_string()))?;
+                let tmp = dir.join(format!("tmp_rev_{}_{n}", std::process::id()));
+                temps.0.push((tmp.clone(), "rev"));
+                std::fs::write(&tmp, bytes).map_err(|e| write_error(&tmp, &e))?;
+                files.push((tmp, "rev"));
+            }
+            let bytes = indexed
+                .index_bytes(self.index_version)
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+            let tmp = dir.join(format!("tmp_idx_{}_{n}", std::process::id()));
+            temps.0.push((tmp.clone(), "idx"));
+            std::fs::write(&tmp, bytes).map_err(|e| write_error(&tmp, &e))?;
+            files.push((tmp, "idx"));
+            for (tmp, ext) in &files {
+                set_read_only(tmp);
+                let dest = self.final_name(&summary.checksum, ext);
+                std::fs::rename(tmp, &dest).map_err(|e| write_error(&dest, &e))?;
+                temps.0.retain(|(p, _)| p != tmp);
+            }
+            summaries.push(summary);
+        }
+        Ok(summaries)
+    }
+}
+
+fn write_error(path: &Path, e: &dyn std::fmt::Display) -> Die {
+    Die::Fatal(msg::unable_to_write(&path.display().to_string(), &e.to_string()))
+}
+
+/// Temporary files, removed when dropped unless cleared.
+struct TempFiles(Vec<(PathBuf, &'static str)>);
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        for (p, _) in &self.0 {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn set_read_only(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444));
+}
+
+#[cfg(not(unix))]
+fn set_read_only(path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut p = meta.permissions();
+        p.set_readonly(true);
+        let _ = std::fs::set_permissions(path, p);
+    }
 }
 
 /// `pack.compression`, else `core.compression`; `-1` is zlib's default.
@@ -330,24 +620,68 @@ fn read_line(input: &mut dyn BufRead) -> Result<Option<String>, Die> {
 }
 
 /// The object list: one id per line, optionally followed by a space and a
-/// path (a hint for delta search, unused here). Lines starting with `-`
-/// name objects the receiver has (used for thin packs); they are skipped.
-fn read_object_list(input: &mut dyn BufRead, hash: HashKind) -> Result<Vec<ObjectId>, Die> {
-    let mut ids = Vec::new();
+/// path (a hint for the delta search), with the name hash of that path.
+/// Lines `-<id>` name edge objects the receiver has (returned second): a
+/// pack written to standard output may use them as delta bases.
+#[allow(clippy::type_complexity)]
+fn read_object_list(
+    input: &mut dyn BufRead,
+    hash: HashKind,
+) -> Result<(Vec<(ObjectId, u32)>, Vec<ObjectId>), Die> {
+    let mut list = Vec::new();
+    let mut edges = Vec::new();
     let hex_len = hash.hex_len();
     while let Some(line) = read_line(input)? {
-        if line.starts_with('-') {
+        if let Some(rest) = line.strip_prefix('-') {
+            let id = rest
+                .as_bytes()
+                .get(..hex_len)
+                .and_then(|h| ObjectId::from_hex(hash, h).ok());
+            match id {
+                Some(id) => edges.push(id),
+                None => return Err(Die::Fatal(msg::expected_edge_id(&line))),
+            }
             continue;
         }
         let hex = line.as_bytes().get(..hex_len);
         let rest = line.as_bytes().get(hex_len..).unwrap_or(b"");
         let id = hex.and_then(|h| ObjectId::from_hex(hash, h).ok());
         match id {
-            Some(id) if rest.is_empty() || rest[0] == b' ' || rest[0] == b'\n' => ids.push(id),
+            Some(id) if rest.is_empty() || rest[0] == b' ' || rest[0] == b'\n' => {
+                let path = rest.strip_prefix(b" ").unwrap_or(b"");
+                let path = path.strip_suffix(b"\n").unwrap_or(path);
+                list.push((id, pw::name_hash(path)));
+            }
             _ => return Err(Die::Fatal(msg::expected_object_id(&line))),
         }
     }
-    Ok(ids)
+    Ok((list, edges))
+}
+
+/// The objects below the edge objects of an object list (commits stand for
+/// their tree): delta bases for a pack the receiver completes. Objects that
+/// cannot be read are left out.
+fn edge_objects(repo: &Repo<'_>, edges: &[ObjectId]) -> Vec<ListedObject> {
+    let mut out = Vec::new();
+    for id in edges {
+        match pw::ObjectSource::kind(&repo.source, id) {
+            Ok(Some(ObjectKind::Blob)) => out.push(ListedObject::new(*id, ObjectKind::Blob)),
+            Ok(Some(_)) => {
+                let Some(tree) = peel(repo, *id, Some(ObjectKind::Tree)) else {
+                    continue;
+                };
+                let tips = [Tip {
+                    id: tree,
+                    exclude: true,
+                }];
+                if let Ok((_, objects)) = pw::enumerate_with_edges(&repo.source, repo.hash, &tips, false) {
+                    out.extend(objects);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// What resolving revisions needs.
@@ -578,8 +912,11 @@ mod tests {
         let mut input: &[u8] = b"0123456789012345678901234567890123456789\n\
             1123456789012345678901234567890123456789 some/path\n\
             -2123456789012345678901234567890123456789\n";
-        let ids = read_object_list(&mut input, HashKind::Sha1).unwrap();
-        assert_eq!(ids.len(), 2);
+        let (list, edges) = read_object_list(&mut input, HashKind::Sha1).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(list[0].1, 0);
+        assert_eq!(list[1].1, pw::name_hash(b"some/path"));
         let mut bad: &[u8] = b"HEAD\n";
         assert!(read_object_list(&mut bad, HashKind::Sha1).is_err());
     }

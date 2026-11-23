@@ -370,6 +370,13 @@ impl rgit_pack::write::ObjectSource for ObjectDatabase {
     fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, rgit_pack::write::SourceError> {
         Ok(self.header(id)?.map(|h| h.kind))
     }
+
+    fn header(
+        &self,
+        id: &ObjectId,
+    ) -> Result<Option<(ObjectKind, u64)>, rgit_pack::write::SourceError> {
+        Ok(ObjectDatabase::header(self, id)?.map(|h| (h.kind, h.size)))
+    }
 }
 
 /// `index-pack` looks up objects (collision checks, thin pack bases)

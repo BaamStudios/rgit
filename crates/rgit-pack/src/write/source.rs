@@ -7,8 +7,7 @@
 //! packs of a repository; callers add loose objects and alternates by
 //! implementing the trait for their own store.
 
-use std::cell::RefCell;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rgit_hash::ObjectId;
 
@@ -32,6 +31,12 @@ pub trait ObjectSource {
         let _ = id;
         false
     }
+
+    /// The type and size of `id` (for ordering the delta search). The
+    /// default reads the whole object.
+    fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, SourceError> {
+        Ok(self.read(id)?.map(|o| (o.kind, o.data.len() as u64)))
+    }
 }
 
 impl<T: ObjectSource + ?Sized> ObjectSource for &T {
@@ -45,6 +50,10 @@ impl<T: ObjectSource + ?Sized> ObjectSource for &T {
 
     fn is_shallow(&self, id: &ObjectId) -> bool {
         (**self).is_shallow(id)
+    }
+
+    fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, SourceError> {
+        (**self).header(id)
     }
 }
 
@@ -66,6 +75,10 @@ impl<S: ObjectSource + ?Sized> ObjectSource for ShallowSource<'_, S> {
         self.inner.kind(id)
     }
 
+    fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, SourceError> {
+        self.inner.header(id)
+    }
+
     fn is_shallow(&self, id: &ObjectId) -> bool {
         self.shallow.contains(id)
     }
@@ -74,7 +87,7 @@ impl<S: ObjectSource + ?Sized> ObjectSource for ShallowSource<'_, S> {
 /// An [`ObjectSource`] over a [`PackSet`], with its own delta base cache.
 pub struct PackSetSource<'a> {
     set: &'a PackSet,
-    cache: RefCell<DeltaBaseCache>,
+    cache: Mutex<DeltaBaseCache>,
 }
 
 impl<'a> PackSetSource<'a> {
@@ -82,7 +95,7 @@ impl<'a> PackSetSource<'a> {
     pub fn new(set: &'a PackSet) -> PackSetSource<'a> {
         PackSetSource {
             set,
-            cache: RefCell::new(DeltaBaseCache::new(DEFAULT_DELTA_BASE_CACHE_LIMIT)),
+            cache: Mutex::new(DeltaBaseCache::new(DEFAULT_DELTA_BASE_CACHE_LIMIT)),
         }
     }
 
@@ -100,11 +113,15 @@ impl<'a> PackSetSource<'a> {
 
 impl ObjectSource for PackSetSource<'_> {
     fn read(&self, id: &ObjectId) -> Result<Option<Object>, SourceError> {
-        let mut cache = self.cache.borrow_mut();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         Ok(self.set.read(id, &mut cache, &mut |_| {})?)
     }
 
     fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, SourceError> {
+        Ok(self.header(id)?.map(|(kind, _)| kind))
+    }
+
+    fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, SourceError> {
         for pack in self.set.packs() {
             let Some(pos) = pack.index().lookup(id) else {
                 continue;
@@ -113,10 +130,11 @@ impl ObjectSource for PackSetSource<'_> {
                 .index()
                 .offset_at(pos)
                 .and_then(|offset| pack.object_info(offset));
-            if let Ok((kind, _)) = info {
-                return Ok(Some(kind));
+            if let Ok(info) = info {
+                return Ok(Some(info));
             }
         }
-        self.read(id).map(|o| o.map(|o| o.kind))
+        self.read(id)
+            .map(|o| o.map(|o| (o.kind, o.data.len() as u64)))
     }
 }

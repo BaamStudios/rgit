@@ -17,7 +17,7 @@
 //!
 //! Not yet: `--mirror`, `--force-with-lease`,
 //! `--force-if-includes`, `--signed`,
-//! `--recurse-submodules`, thin packs, remote groups and local progress
+//! `--recurse-submodules`, remote groups and local progress
 //! output. The `pre-push` hook runs unless `--no-verify` is given (#76).
 
 use std::io::IsTerminal;
@@ -54,6 +54,7 @@ struct Flags {
     set_upstream: bool,
     atomic: bool,
     progress: bool,
+    thin: bool,
     push_options: Vec<String>,
     receive_pack: Option<String>,
     ip: IpVersion,
@@ -320,6 +321,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             -1 => quiet.get() == 0 && std::io::stderr().is_terminal(),
             p => p > 0,
         },
+        thin: thin.get(),
         push_options: push_options.borrow().clone(),
         receive_pack: receive_pack
             .borrow()
@@ -629,8 +631,11 @@ impl Push<'_> {
                     &rgit_fetch::shallow::file_for(&self.setup.common_dir),
                     hash,
                 ),
+                bases: Vec::new(),
+                thin: f.thin,
+                pack: crate::commands::pack_objects::config_options(self.config)?,
             };
-            out.objects = match send::pack_objects(&out, &session.adv) {
+            (out.objects, out.bases) = match send::pack_objects(&out, &session.adv) {
                 Ok(o) => o,
                 Err(e) => {
                     send::finish_empty(session);
