@@ -96,14 +96,20 @@ impl Resolver<'_> {
             oid: None,
         };
         for (i, rule) in REF_RULES.iter().enumerate() {
-            if i == 0 && !full_name_syntax(name) {
-                continue;
-            }
             let full = apply_rule(rule, name);
             if !plausible_refname(&full) {
                 continue;
             }
-            let Some(v) = self.repo.refs.resolve(&full)? else {
+            // "If $GIT_DIR/<refname> exists, that is what you mean": any
+            // name may be a file directly below $GIT_DIR (gitrevisions(7)),
+            // but files there that are no references (config, index, ...)
+            // are simply no match.
+            let found = if i == 0 && !full_name_syntax(name) {
+                self.repo.refs.resolve(&full).ok().flatten()
+            } else {
+                self.repo.refs.resolve(&full)?
+            };
+            let Some(v) = found else {
                 continue;
             };
             let Some(oid) = v.oid else { continue };

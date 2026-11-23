@@ -689,3 +689,48 @@ fn reflog_dates_with_gap() {
     }
     finish(failures);
 }
+
+/// "If $GIT_DIR/<refname> exists, that is what you mean" holds for any
+/// name, not only upper-case pseudo-refs (`gitrevisions(7)`, t5619), and
+/// files there that are no references are no match.
+#[test]
+fn ref_files_directly_below_git_dir() {
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("a", "a\n")
+        .git(["add", "a"])
+        .git(["commit", "-q", "-m", "one"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let head = String::from_utf8(fx.git_stdout(["rev-parse", "HEAD"])).unwrap();
+    let fx = fx
+        .write(".git/foo", &head)
+        .write(".git/Mixed_Case-1", &head)
+        .write(".git/x/y", &head)
+        .write(".git/sym", "ref: refs/heads/main\n")
+        .write(".git/main", &head);
+    let p = Pair::new(&fx);
+    let dir = fx.work_dir();
+    let mut failures = Vec::new();
+    for name in [
+        "foo",
+        "Mixed_Case-1",
+        "x/y",
+        "sym",
+        "main",
+        "config",
+        "index",
+    ] {
+        p.check(&dir, &["rev-parse", "--verify", "-q", name], &mut failures);
+        p.check(&dir, &["rev-parse", name, "--"], &mut failures);
+        p.check(
+            &dir,
+            &["rev-parse", "--symbolic-full-name", name],
+            &mut failures,
+        );
+        p.check(&dir, &["log", "--oneline", "-1", name, "--"], &mut failures);
+    }
+    finish(failures);
+}

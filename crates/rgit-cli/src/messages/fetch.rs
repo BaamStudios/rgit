@@ -128,3 +128,13 @@ pub const HELP_RECURSE_SUBMODULES: &str = "control recursive fetching of submodu
 pub fn recurse_submodules_unsupported(value: &str) -> String {
     format!("rgit: fetch --recurse-submodules={value} is not supported yet")
 }
+
+/// `--set-upstream` with a tag as the merge candidate.
+pub const NO_UPSTREAM_FOR_TAG: &str = "not setting upstream for a remote tag";
+
+/// `--no-show-forced-updates` / `fetch.showForcedUpdates=false`
+/// (advice.fetchShowForcedUpdates).
+pub const FORCED_UPDATES_CHECK_DISABLED: &str =
+    "fetch normally indicates which branches had a forced update,
+but that check has been disabled; to re-enable, use '--show-forced-updates'
+flag or run 'git config fetch.showForcedUpdates true'";

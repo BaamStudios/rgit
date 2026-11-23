@@ -576,13 +576,13 @@ impl<'a> Resolver<'a> {
                     .map(|(_, r)| r)
             })
             .unwrap_or(name);
-        // Any all-caps name in the git directory (`REVERSE` written with
-        // `update-ref`, t4013) counts, like `rev-parse` sees it.
+        // Any well-formed name may also be a file directly below $GIT_DIR
+        // ("If $GIT_DIR/<refname> exists, that is what you mean").
         let pseudo = local.starts_with("refs/")
-            || (!local.is_empty()
-                && local
-                    .bytes()
-                    .all(|c| c.is_ascii_uppercase() || c == b'_' || c == b'-'));
+            || rgit_refs::name::is_valid_refname(
+                local.as_bytes(),
+                rgit_refs::name::RefNameFlags::ONELEVEL,
+            );
         let candidates = [
             pseudo.then(|| name.to_string()),
             Some(format!("refs/{name}")),

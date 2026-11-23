@@ -220,9 +220,9 @@ pub fn porcelain(lines: &[RefLine], hash: rgit_hash::HashKind) -> String {
             Status::RejectedNonFastForward
             | Status::RejectedTag
             | Status::Failed(_)
-            | Status::NotCommit(_) => ('!', null, l.new),
+            | Status::NotCommit(_) => ('!', l.old.unwrap_or(null), l.new),
             Status::UpToDate => ('=', l.new, l.new),
-            Status::FetchHead => continue,
+            Status::FetchHead => ('*', null, l.new),
         };
         if l.status == Status::UpToDate {
             continue;
@@ -285,6 +285,7 @@ mod tests {
             remote: Some(remote.into()),
             local: local.map(Into::into),
             new: oid('b'),
+            old: None,
             status,
         }
     }

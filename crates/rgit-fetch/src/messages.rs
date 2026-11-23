@@ -120,3 +120,13 @@ pub const LOG_FAST_FORWARD: &str = "fast-forward";
 pub const LOG_FORCED_UPDATE: &str = "forced-update";
 /// Reflog messages (after `<action>: `).
 pub const LOG_UPDATING_TAG: &str = "updating tag";
+
+/// `fetch.negotiationAlgorithm` with an unknown value.
+pub fn unknown_negotiation_algorithm(value: &str) -> String {
+    format!("unknown fetch negotiation algorithm '{value}'")
+}
+
+/// Protocol v0/v1: an object that is no advertised ref tip.
+pub fn unadvertised_object(hex: &str) -> String {
+    format!("Server does not allow request for unadvertised object {hex}")
+}

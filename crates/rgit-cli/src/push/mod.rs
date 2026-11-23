@@ -28,6 +28,11 @@ pub enum Status {
     RejectAlreadyExists,
     RejectFetchFirst,
     RejectNeedsForce,
+    /// `--force-with-lease`: the remote ref is not at the expected value.
+    RejectStale,
+    /// `--force-if-includes`: the remote-tracking tip was never part of
+    /// the local branch.
+    RejectRemoteUpdated,
     RemoteReject,
     RemoteFailure,
     AtomicFailed,
@@ -47,9 +52,11 @@ impl Status {
             Status::RejectAlreadyExists => 3,
             Status::RejectFetchFirst => 5,
             Status::RejectNeedsForce => 6,
-            Status::UpToDate => 9,
-            Status::RemoteReject => 10,
-            Status::RemoteFailure => 11,
+            Status::RejectStale => 7,
+            Status::RejectRemoteUpdated => 9,
+            Status::UpToDate => 10,
+            Status::RemoteReject => 11,
+            Status::RemoteFailure => 12,
             Status::AtomicFailed => 13,
         }
     }
@@ -141,7 +148,7 @@ impl Objects<'_> {
 /// The client-side checks (`git-push.adoc`, "PUSH RULES"): up to date,
 /// creations and deletions, tags, fast-forwards.
 pub fn check_refs(refs: &mut [PushRef], objects: &Objects<'_>) {
-    for r in refs.iter_mut() {
+    for r in refs.iter_mut().filter(|r| r.status == Status::None) {
         let (Some(old), Some(new)) = (r.old, r.new) else {
             continue;
         };
@@ -156,7 +163,7 @@ pub fn check_refs(refs: &mut [PushRef], objects: &Objects<'_>) {
         };
         let ff = have_old && commits.is_some_and(|(o, n)| objects.is_ancestor(&o, &n));
         if r.force {
-            r.forced_update = !ff;
+            r.forced_update |= !ff;
         } else if r.dst.starts_with("refs/tags/") {
             r.status = Status::RejectAlreadyExists;
         } else if !have_old {

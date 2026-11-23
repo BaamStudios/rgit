@@ -3,7 +3,8 @@
 //!
 //! - [`client`]: [`Client`] with `ls-refs` and `fetch` over a [`Duplex`]
 //!   connection, stateful or stateless.
-//! - [`negotiate`]: choosing `have` lines ([`ConsecutiveNegotiator`]).
+//! - [`negotiate`]: choosing `have` lines ([`ConsecutiveNegotiator`]);
+//!   [`skipping`]: the `skipping` algorithm ([`SkippingNegotiator`]).
 //!
 //! A transport asks for v2 by putting [`GIT_PROTOCOL_V2`] into the
 //! `GIT_PROTOCOL` environment variable of the server process (`file://`,
@@ -12,6 +13,7 @@
 
 pub mod client;
 pub mod negotiate;
+pub mod skipping;
 
 #[cfg(test)]
 mod tests;
@@ -20,6 +22,7 @@ pub use client::{
     Client, Duplex, FetchArgs, FetchOutcome, LsRefsArgs, Pipe, RemoteRef, ShallowInfo,
 };
 pub use negotiate::{CommitInfo, CommitSource, ConsecutiveNegotiator, Negotiator, NoopNegotiator};
+pub use skipping::SkippingNegotiator;
 
 /// The value of `GIT_PROTOCOL` / `Git-Protocol` that asks for protocol v2.
 pub const GIT_PROTOCOL_V2: &str = "version=2";

@@ -25,6 +25,9 @@ use rgit_remote::{Refspec, RefspecSet};
 use super::{PushRef, Status};
 use crate::messages::push as msg;
 
+/// The upstream (`branch.<name>.merge`) of a local branch.
+pub type Upstream<'a> = dyn Fn(&str) -> Option<String> + 'a;
+
 /// The local side.
 pub struct Local<'a> {
     /// Every ref (`refs/...`) with its value, sorted, plus `HEAD`.
@@ -35,6 +38,10 @@ pub struct Local<'a> {
     pub resolve: &'a dyn Fn(&str) -> Option<ObjectId>,
     /// The type of an object.
     pub kind: &'a dyn Fn(&ObjectId) -> Option<ObjectKind>,
+    /// `push.default=upstream`: the upstream (`branch.<name>.merge`) of a
+    /// local branch, the destination of a refspec naming that branch
+    /// without one.
+    pub upstream: Option<&'a Upstream<'a>>,
 }
 
 /// One problem found while matching: the `error:` text and an optional
@@ -162,7 +169,9 @@ pub fn match_refs(
                     };
                     src.to_string()
                 };
+                // A negative refspec also protects the remote ref itself.
                 if specs.is_excluded(src.as_bytes())
+                    || specs.is_excluded(r.name.as_bytes())
                     || local.refs.iter().any(|(n, _)| *n == src)
                     || out.iter().any(|o| o.dst == r.name)
                 {
@@ -205,6 +214,8 @@ fn explicit(
         let dst = spec.dst.as_ref().map(|d| d.to_string()).unwrap_or_default();
         return match dwim(&dst, remote_names()) {
             Ok(Some(full)) => Ok((None, None, full.to_owned())),
+            // A full name is sent as it is; the server decides.
+            Ok(None) if dst.starts_with("refs/") => Ok((None, None, dst)),
             Ok(None) => Err(MatchError::new(msg::unable_to_delete(&dst))),
             Err(()) => Err(MatchError::new(msg::dst_ambiguous(&dst))),
         };
@@ -232,9 +243,17 @@ fn explicit(
         None => {
             let mapped = base
                 .as_deref()
-                .and_then(|b| remote_push.and_then(|p| p.map_src(b.as_bytes())));
-            match (mapped, &base) {
-                (Some(m), _) => m.to_string(),
+                .and_then(|b| remote_push.and_then(|p| p.map_src(b.as_bytes())))
+                .map(|m| m.to_string());
+            let upstream = || {
+                let up = local.upstream?;
+                let b = src_ref
+                    .as_deref()
+                    .filter(|r| r.starts_with("refs/heads/"))?;
+                up(b)
+            };
+            match (mapped.or_else(upstream), &base) {
+                (Some(m), _) => m,
                 (None, Some(b)) => b.clone(),
                 (None, None) => display.clone(),
             }
@@ -292,6 +311,7 @@ mod tests {
             head: Some("refs/heads/main"),
             resolve: &resolve,
             kind: &kind,
+            upstream: None,
         };
         let remote: Vec<AdvertisedRef> = remote_refs
             .iter()

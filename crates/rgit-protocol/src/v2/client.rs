@@ -170,6 +170,8 @@ pub struct RemoteRef {
 pub struct FetchArgs {
     /// `want <oid>` lines, sent in this order (duplicates included).
     pub wants: Vec<ObjectId>,
+    /// `want-ref <ref>` lines (servers advertising `ref-in-want`).
+    pub want_refs: Vec<String>,
     /// `thin-pack`.
     pub thin_pack: bool,
     /// `no-progress`.
@@ -512,7 +514,7 @@ impl<C: Duplex> Client<C> {
                 });
             }
         }
-        if args.wants.is_empty() {
+        if args.wants.is_empty() && args.want_refs.is_empty() {
             return Ok(outcome);
         }
         if args.wants_shallow() && !self.supports_shallow() {
@@ -628,6 +630,9 @@ impl<C: Duplex> Client<C> {
         }
         for id in &args.wants {
             self.line(&format!("want {id}"))?;
+        }
+        for name in &args.want_refs {
+            self.line(&format!("want-ref {name}"))?;
         }
         Ok(())
     }

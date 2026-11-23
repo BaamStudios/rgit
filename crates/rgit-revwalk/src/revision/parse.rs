@@ -290,7 +290,7 @@ impl Resolver<'_> {
         let name = if name == "@" { "HEAD" } else { name };
         let found = self.expand_ref(name)?;
         if let Some(oid) = found.oid {
-            if self.opts.warn_ambiguous_refs && !flags.diagnose {
+            if self.opts.warn_ambiguous_refs && !flags.quiet && !flags.diagnose {
                 let ambiguous = found.count > 1
                     || (name.len() >= 4
                         && looks_hex(name)

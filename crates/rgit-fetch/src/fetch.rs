@@ -73,6 +73,10 @@ pub struct FetchOptions {
     pub deepen_not: Vec<String>,
     /// `--update-shallow`: accept refs whose history the server cut.
     pub update_shallow: bool,
+    /// `--no-show-forced-updates` (`fetch.showForcedUpdates=false`): a
+    /// forced update is not checked for being a fast-forward and is
+    /// reported as one.
+    pub no_show_forced_updates: bool,
 }
 
 impl FetchOptions {
@@ -108,12 +112,14 @@ pub struct FetchResult {
     pub entries: Vec<Entry>,
     /// The `followRemoteHEAD` warning (printed on standard output).
     pub head_warning: Option<HeadWarning>,
+    /// Something asked for could not be fetched (exit code 1).
+    pub failed: bool,
 }
 
 impl FetchResult {
     /// Exit code of `git fetch`: 1 if any ref was rejected or failed.
     pub fn exit_code(&self) -> i32 {
-        if self.lines.iter().any(|l| l.status.is_error()) {
+        if self.failed || self.lines.iter().any(|l| l.status.is_error()) {
             1
         } else {
             0
@@ -152,6 +158,8 @@ pub fn fetch(
     let shown_url = display_url(&url);
     let cmdline = !opts.refspecs.is_empty();
     let tag_opt = opts.tags.unwrap_or(remote.tag_opt);
+    // A bad `fetch.negotiationAlgorithm` fails before anything happens.
+    let negotiation = crate::session::Negotiation::from_config(&repo.config)?;
 
     let mut specs = if cmdline {
         let mut s = RefspecSet::default();
@@ -171,6 +179,9 @@ pub fn fetch(
     } else {
         remote.fetch.clone()
     };
+    // Whether anything is configured to fetch, not counting the tag
+    // refspec of `--tags` / `--prune-tags`.
+    let nothing_configured = specs.positive().next().is_none();
     let prune = opts.prune.or(remote.prune).unwrap_or_else(|| {
         repo.config
             .bool("fetch.prune")
@@ -214,16 +225,29 @@ pub fn fetch(
     }
     // Nothing to fetch configured: the merge refs of the current branch,
     // else the remote's HEAD.
-    if specs.positive().next().is_none() && merge_refs.is_empty() {
-        specs.items.push(parse_spec("HEAD")?);
+    if nothing_configured && merge_refs.is_empty() {
+        specs.items.insert(0, parse_spec("HEAD")?);
     }
     let head_mode = follow_remote_head(repo, &remote.name);
     let follow_head = !cmdline && remote.is_configured() && head_mode != "never";
 
-    let mut extra: Vec<String> = merge_refs
-        .iter()
-        .map(|m| m.to_str_lossy().into_owned())
-        .collect();
+    let mut extra: Vec<String> = Vec::new();
+    for m in &merge_refs {
+        let m = m.to_str_lossy();
+        if m.starts_with("refs/") {
+            extra.push(m.into_owned());
+        } else {
+            for rule in [
+                "{}",
+                "refs/{}",
+                "refs/tags/{}",
+                "refs/heads/{}",
+                "refs/remotes/{}",
+            ] {
+                extra.push(rule.replace("{}", &m));
+            }
+        }
+    }
     if tag_opt != TagOpt::NoTags {
         extra.push("refs/tags/".into());
     }
@@ -257,10 +281,24 @@ pub fn fetch(
             e.for_merge = true;
         }
     } else if !merge_refs.is_empty() {
+        // `branch.<name>.merge` may be a short name (`two`): it names the
+        // remote ref git's lookup rules find for it.
+        let names: Vec<&[u8]> = refs
+            .iter()
+            .filter(|r| r.oid.is_some())
+            .map(|r| r.name.as_slice())
+            .collect();
+        let merge_full: Vec<BString> = merge_refs
+            .iter()
+            .map(|m| {
+                rgit_remote::refspec::find_by_abbrev(m, &names)
+                    .map_or_else(|| m.clone(), |n| BString::from(*n))
+            })
+            .collect();
         for e in &mut entries {
-            e.for_merge = merge_refs.contains(&e.remote);
+            e.for_merge = merge_full.contains(&e.remote);
         }
-        for m in &merge_refs {
+        for m in &merge_full {
             if entries.iter().any(|e| &e.remote == m) {
                 continue;
             }
@@ -304,13 +342,54 @@ pub fn fetch(
         }
     }
 
+    // Protocol v0/v1: unless the server allows it, objects that are no
+    // advertised ref tip (peeled values do not count) cannot be asked for.
+    if session.version() != rgit_protocol::ProtocolVersion::V2 {
+        let caps = session.capabilities();
+        let allowed = caps.contains("allow-tip-sha1-in-want")
+            || caps.contains("allow-reachable-sha1-in-want");
+        if !allowed {
+            let before = entries.len();
+            entries.retain(|e| {
+                let refused = refmap::advertised(&refs, &e.remote).is_none()
+                    && !refs.iter().any(|r| r.oid == Some(e.oid))
+                    && !repo.has_object(&e.oid);
+                if refused {
+                    result
+                        .errors
+                        .push(messages::unadvertised_object(&e.oid.to_hex()));
+                }
+                !refused
+            });
+            result.failed |= entries.len() != before;
+        }
+    }
+
     // One `want` per ref whose object is missing, duplicates included
     // (as git sends them); deepening asks for every ref.
     let deepens = opts.deepens();
+    let ref_in_want = session.supports_ref_in_want();
     let mut wants: Vec<ObjectId> = Vec::new();
+    // A server with `ref-in-want` is asked for refs by name; their objects
+    // still count as wanted for tag following below.
+    let mut want_refs: Vec<String> = Vec::new();
+    let mut by_name: Vec<ObjectId> = Vec::new();
+    let mut by_id: Vec<ObjectId> = Vec::new();
     for e in &entries {
         if deepens || opts.refetch || !repo.has_object(&e.oid) {
             wants.push(e.oid);
+            if ref_in_want
+                && e.remote.starts_with(b"refs/")
+                && refmap::advertised(&refs, &e.remote).is_some()
+            {
+                let name = e.remote.to_str_lossy().into_owned();
+                if !want_refs.contains(&name) {
+                    want_refs.push(name);
+                }
+                by_name.push(e.oid);
+            } else {
+                by_id.push(e.oid);
+            }
         }
     }
     let follow_tags = tag_opt == TagOpt::Auto
@@ -344,6 +423,7 @@ pub fn fetch(
     }
 
     let advertised: Vec<ObjectId> = refs.iter().filter_map(|r| r.oid).collect();
+    wants.retain(|w| !by_name.contains(w) || by_id.contains(w));
     let pack_opts = PackOptions {
         no_progress: opts.no_progress,
         include_tag: follow_tags,
@@ -354,6 +434,8 @@ pub fn fetch(
         deepen_since: opts.deepen_since,
         deepen_not: opts.deepen_not.clone(),
         tips: opts.negotiation_tips.clone(),
+        negotiation,
+        want_refs,
     };
     let mut packs: Vec<ReceivedPack> = Vec::new();
     // `--refetch`: no negotiation, everything is sent again.
@@ -372,6 +454,7 @@ pub fn fetch(
         add_followed_tags(repo, &refs, seen, &mut tags, &mut more, true);
         entries.extend(tags);
         let tag_opts = PackOptions {
+            want_refs: Vec::new(),
             deepen: None,
             deepen_relative: false,
             deepen_since: None,
@@ -459,7 +542,7 @@ pub fn fetch(
         };
         let decided: Vec<Status> = entries
             .iter()
-            .map(|e| update::decide(repo, e, opts.force))
+            .map(|e| update::decide_with(repo, e, opts.force, !opts.no_show_forced_updates))
             .collect();
         atomic_failed = decided.iter().any(Status::is_error);
         let mut updates = Vec::new();
@@ -486,15 +569,15 @@ pub fn fetch(
                 atomic_write_failed = true;
             }
         }
-        if !atomic_failed {
-            for (name, old) in stale {
-                result.lines.push(RefLine {
-                    remote: None,
-                    local: Some(name),
-                    new: old,
-                    status: Status::Deleted,
-                });
-            }
+        // The summary lists the prunes also when the transaction failed.
+        for (name, old) in stale {
+            result.lines.push(RefLine {
+                remote: None,
+                local: Some(name),
+                new: old,
+                old: Some(old),
+                status: Status::Deleted,
+            });
         }
         for (e, status) in entries.iter().zip(decided) {
             let status = if atomic_write_failed && status.changes_ref() {
@@ -506,6 +589,7 @@ pub fn fetch(
                 remote: Some(e.remote.clone()),
                 local: e.local.clone(),
                 new: e.oid,
+                old: local_value(repo, e),
                 status,
             });
         }
@@ -521,6 +605,7 @@ pub fn fetch(
                     Ok(()) => Status::Deleted,
                     Err(e) => {
                         result.errors.push(e);
+                        result.failed = true;
                         continue;
                     }
                 }
@@ -529,6 +614,7 @@ pub fn fetch(
                 remote: None,
                 local: Some(name),
                 new: old,
+                old: Some(old),
                 status,
             });
         }
@@ -540,7 +626,8 @@ pub fn fetch(
         &entries[..]
     };
     for e in one_by_one {
-        let decided = update::decide(repo, e, opts.force);
+        let old = local_value(repo, e);
+        let decided = update::decide_with(repo, e, opts.force, !opts.no_show_forced_updates);
         let status = match (&e.local, opts.dry_run) {
             (Some(local), false) => {
                 update::apply(repo, local.as_bstr(), e.oid, decided, &opts.reflog_action)
@@ -551,6 +638,7 @@ pub fn fetch(
             remote: Some(e.remote.clone()),
             local: e.local.clone(),
             new: e.oid,
+            old,
             status,
         });
     }
@@ -561,7 +649,17 @@ pub fn fetch(
 
     if opts.write_fetch_head && !opts.dry_run && !atomic_failed {
         let path = repo.git_dir.join("FETCH_HEAD");
-        let text = display::fetch_head(&result.url, &entries);
+        // Only commits can be merged: a ref to a tree or blob (or a tag
+        // of one) is `not-for-merge` even when named on the command line.
+        let mut listed = entries.clone();
+        for e in listed.iter_mut().filter(|e| e.for_merge) {
+            let peeled = graph::peel(&repo.odb, &e.oid);
+            let kind = peeled.and_then(|p| repo.odb.header(&p).ok().flatten().map(|h| h.kind));
+            if kind.is_some_and(|k| k != rgit_object::ObjectKind::Commit) {
+                e.for_merge = false;
+            }
+        }
+        let text = display::fetch_head(&result.url, &listed);
         let written = if opts.append {
             use std::io::Write as _;
             std::fs::OpenOptions::new()
@@ -584,6 +682,11 @@ pub fn fetch(
     }
     result.entries = entries;
     Ok(result)
+}
+
+/// The current value of the local ref `e` updates.
+fn local_value(repo: &LocalRepo, e: &Entry) -> Option<ObjectId> {
+    repo.resolve(&e.local.as_ref()?.to_str_lossy())
 }
 
 fn rgit_transport_strerror(e: &std::io::Error) -> String {

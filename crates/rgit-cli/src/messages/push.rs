@@ -222,3 +222,26 @@ See the 'Note about fast-forwards' in 'git push --help' for details.";
 pub const HINT_NEEDS_FORCE: &str = "You cannot update a remote ref that points at a non-commit object,\n\
 or update a remote ref to make it point at a non-commit object,\n\
 without using the '--force' option.";
+
+/// `--atomic` with a remote group.
+pub const ATOMIC_ONE_REMOTE: &str = "--atomic can only be used when pushing to one remote";
+
+/// A member of a remote group failed.
+pub fn could_not_push_to(remote: &str) -> String {
+    format!("could not push to {remote}")
+}
+
+/// Status reason of a ref `--force-if-includes` refused.
+pub const REASON_REMOTE_UPDATED: &str = "remote ref updated since checkout";
+
+/// `--force-if-includes` refused a ref (advice.pushRefNeedsUpdate).
+pub const HINT_REF_NEEDS_UPDATE: &str = "Updates were rejected because the tip of the remote-tracking branch has\n\
+been updated since the last checkout. If you want to integrate the\n\
+remote changes, use 'git pull' before pushing again.\n\
+See the 'Note about fast-forwards' in 'git push --help' for details.";
+
+/// `--force-with-lease=<ref>:<expect>` with an `<expect>` that does not
+/// resolve (exit 129).
+pub fn cannot_parse_expected(expect: &str) -> String {
+    format!("cannot parse expected object name '{expect}'")
+}

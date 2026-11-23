@@ -8,6 +8,10 @@
 //! * at `exit(3)` (covers `std::process::exit`) through an `atexit` hook,
 //! * when one of SIGINT, SIGTERM, SIGHUP, SIGQUIT or SIGPIPE arrives.
 //!
+//! Directories (a clone in progress) can be registered too, with
+//! [`remove_dir_on_signal`]: they are removed recursively, or only emptied,
+//! when one of those signals arrives, never at exit.
+//!
 //! The signal handler may only call async-signal-safe functions, so it can
 //! neither allocate nor take a lock. Writers therefore publish an immutable
 //! snapshot of NUL-terminated paths through an atomic pointer. The handler
@@ -28,6 +32,9 @@ struct Entry {
     path: PathBuf,
     #[cfg(unix)]
     c_path: CString,
+    /// `None`: a file. `Some(keep)`: a directory removed on a signal,
+    /// itself too unless `keep`.
+    dir: Option<bool>,
 }
 
 struct Snapshot {
@@ -39,6 +46,9 @@ struct Snapshot {
     paths: Vec<CString>,
     #[cfg(not(unix))]
     paths: Vec<PathBuf>,
+    /// Directories to remove on a signal (`true`: only their contents).
+    #[cfg(unix)]
+    dirs: Vec<(CString, bool)>,
 }
 
 struct Inner {
@@ -61,6 +71,38 @@ pub(crate) struct Registration(u64);
 
 /// Adds `path` to the list of files removed on exit or fatal signal.
 pub(crate) fn register(path: &Path) -> Registration {
+    add(path, None)
+}
+
+/// Removes the directory `path` (with everything in it; with `keep`, only
+/// what is in it) when the process is killed by SIGINT, SIGTERM, SIGHUP,
+/// SIGQUIT or SIGPIPE while the returned guard lives. `path` should be
+/// absolute.
+pub fn remove_dir_on_signal(path: &Path, keep: bool) -> DirGuard {
+    DirGuard(Some(add(path, Some(keep))))
+}
+
+/// Keeps a directory registered with [`remove_dir_on_signal`]; dropping it
+/// (or calling [`DirGuard::disarm`]) unregisters the directory.
+#[derive(Debug)]
+pub struct DirGuard(Option<Registration>);
+
+impl DirGuard {
+    /// Stop watching the directory.
+    pub fn disarm(&mut self) {
+        if let Some(r) = self.0.take() {
+            unregister(r);
+        }
+    }
+}
+
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        self.disarm();
+    }
+}
+
+fn add(path: &Path, dir: Option<bool>) -> Registration {
     let mut inner = lock_inner();
     if !inner.hooks_installed {
         inner.hooks_installed = true;
@@ -73,6 +115,7 @@ pub(crate) fn register(path: &Path) -> Registration {
         path: path.to_owned(),
         #[cfg(unix)]
         c_path: to_cstring(path),
+        dir,
     });
     publish(&inner);
     Registration(id)
@@ -93,10 +136,10 @@ pub(crate) fn unregister(reg: Registration) {
 /// file.
 pub fn remove_registered_files() {
     let mut inner = lock_inner();
-    for e in &inner.entries {
+    for e in inner.entries.iter().filter(|e| e.dir.is_none()) {
         let _ = std::fs::remove_file(&e.path);
     }
-    inner.entries.clear();
+    inner.entries.retain(|e| e.dir.is_some());
     publish(&inner);
 }
 
@@ -109,9 +152,25 @@ fn publish(inner: &Inner) {
         #[cfg(unix)]
         pid: unsafe { libc::getpid() },
         #[cfg(unix)]
-        paths: inner.entries.iter().map(|e| e.c_path.clone()).collect(),
+        paths: inner
+            .entries
+            .iter()
+            .filter(|e| e.dir.is_none())
+            .map(|e| e.c_path.clone())
+            .collect(),
         #[cfg(not(unix))]
-        paths: inner.entries.iter().map(|e| e.path.clone()).collect(),
+        paths: inner
+            .entries
+            .iter()
+            .filter(|e| e.dir.is_none())
+            .map(|e| e.path.clone())
+            .collect(),
+        #[cfg(unix)]
+        dirs: inner
+            .entries
+            .iter()
+            .filter_map(|e| e.dir.map(|keep| (e.c_path.clone(), keep)))
+            .collect(),
     });
     let old = CURRENT.swap(Box::into_raw(snapshot), Ordering::SeqCst);
     while READERS.load(Ordering::SeqCst) != 0 {
@@ -121,6 +180,142 @@ fn publish(inner: &Inner) {
         // SAFETY: `old` came from `Box::into_raw` in an earlier `publish`, is
         // no longer reachable through CURRENT and no reader holds it.
         drop(unsafe { Box::from_raw(old) });
+    }
+}
+
+/// Removal of the registered directories from a signal handler.
+#[cfg(unix)]
+fn remove_dirs_from_snapshot() {
+    READERS.fetch_add(1, Ordering::SeqCst);
+    let snap = CURRENT.load(Ordering::SeqCst);
+    if !snap.is_null() {
+        // SAFETY: the snapshot stays alive while READERS is non-zero.
+        let snap = unsafe { &*snap };
+        if unsafe { libc::getpid() } == snap.pid {
+            for (p, keep) in &snap.dirs {
+                // SAFETY: `p` is a NUL-terminated path.
+                unsafe { tree::remove(p.as_ptr(), *keep) };
+            }
+        }
+    }
+    READERS.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Recursive removal with file descriptors only (no allocation on Linux,
+/// where the directory is read with `getdents64`).
+#[cfg(unix)]
+mod tree {
+    use libc::{c_char, c_int};
+
+    const FLAGS: c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+
+    /// Remove what is in `path`, and `path` itself unless `keep`.
+    pub(super) unsafe fn remove(path: *const c_char, keep: bool) {
+        unsafe {
+            let fd = libc::open(path, FLAGS);
+            if fd < 0 {
+                return;
+            }
+            clear(fd, 0);
+            libc::close(fd);
+            if !keep {
+                libc::rmdir(path);
+            }
+        }
+    }
+
+    /// Remove everything in the open directory `fd`.
+    unsafe fn clear(fd: c_int, depth: u32) {
+        if depth > 256 {
+            return;
+        }
+        // Read again from the start until a pass removes nothing: entries
+        // may be skipped while the directory changes.
+        for _ in 0..64 {
+            let mut removed = false;
+            unsafe {
+                libc::lseek(fd, 0, libc::SEEK_SET);
+                for_each_entry(fd, &mut |name| {
+                    if libc::unlinkat(fd, name, 0) == 0 {
+                        removed = true;
+                        return;
+                    }
+                    let sub = libc::openat(fd, name, FLAGS);
+                    if sub >= 0 {
+                        clear(sub, depth + 1);
+                        libc::close(sub);
+                    }
+                    if libc::unlinkat(fd, name, libc::AT_REMOVEDIR) == 0 {
+                        removed = true;
+                    }
+                });
+            }
+            if !removed {
+                break;
+            }
+        }
+    }
+
+    fn is_dot(name: *const c_char) -> bool {
+        // SAFETY: `name` is a NUL-terminated entry name.
+        unsafe {
+            *name == b'.' as c_char
+                && (*name.add(1) == 0 || (*name.add(1) == b'.' as c_char && *name.add(2) == 0))
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn for_each_entry(fd: c_int, f: &mut dyn FnMut(*const c_char)) {
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = unsafe { libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len()) };
+            if n <= 0 {
+                return;
+            }
+            let mut off = 0usize;
+            while off < n as usize {
+                // SAFETY: the kernel filled `buf` with `linux_dirent64`
+                // records: u64 inode, i64 offset, u16 record length, u8 type,
+                // then the NUL-terminated name.
+                let rec = unsafe { buf.as_ptr().add(off) };
+                let reclen =
+                    unsafe { std::ptr::read_unaligned(rec.add(16) as *const u16) } as usize;
+                let name = unsafe { rec.add(19) } as *const c_char;
+                if reclen == 0 {
+                    return;
+                }
+                off += reclen;
+                if !is_dot(name) {
+                    f(name);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    unsafe fn for_each_entry(fd: c_int, f: &mut dyn FnMut(*const c_char)) {
+        unsafe {
+            let dup = libc::dup(fd);
+            if dup < 0 {
+                return;
+            }
+            let dir = libc::fdopendir(dup);
+            if dir.is_null() {
+                libc::close(dup);
+                return;
+            }
+            loop {
+                let e = libc::readdir(dir);
+                if e.is_null() {
+                    break;
+                }
+                let name = (*e).d_name.as_ptr();
+                if !is_dot(name) {
+                    f(name);
+                }
+            }
+            libc::closedir(dir);
+        }
     }
 }
 
@@ -182,6 +377,7 @@ mod hooks {
 
     extern "C" fn on_signal(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut libc::c_void) {
         remove_from_snapshot();
+        super::remove_dirs_from_snapshot();
         let idx = SIGNALS.iter().position(|&s| s == sig);
         let prev = idx.and_then(|i| PREVIOUS.get().and_then(|p| p.0[i]));
         match prev {

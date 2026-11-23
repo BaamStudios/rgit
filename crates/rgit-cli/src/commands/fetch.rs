@@ -13,8 +13,9 @@
 //! `--dry-run`, `--[no-]write-fetch-head`, `-u`, `--upload-pack`, `-o`,
 //! `-4` / `-6`, `--[no-]progress`, `--porcelain`, `fetch.output`,
 //! `--[no-]auto-maintenance` / `--[no-]auto-gc`, `-j` / `fetch.parallel`
-//! (the remotes are still fetched one after another). Accepted and
-//! ignored: `-k`, `--show-forced-updates`, `--write-commit-graph`.
+//! (the remotes are still fetched one after another),
+//! `--[no-]show-forced-updates` / `fetch.showForcedUpdates`. Accepted and
+//! ignored: `-k`, `--write-commit-graph`.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
@@ -75,6 +76,7 @@ struct Args {
     deepen: Option<String>,
     unshallow: bool,
     update_shallow: bool,
+    show_forced_updates: i32,
 }
 
 impl Args {
@@ -99,6 +101,12 @@ impl Args {
         tri(&mut o, self.prune, "--prune", "--no-prune");
         tri(&mut o, self.prune_tags, "--prune-tags", "--no-prune-tags");
         tri(&mut o, self.progress, "--progress", "--no-progress");
+        tri(
+            &mut o,
+            self.show_forced_updates,
+            "--show-forced-updates",
+            "--no-show-forced-updates",
+        );
         let flags = [
             (self.force, "--force"),
             (self.dry_run, "--dry-run"),
@@ -174,6 +182,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     let stdin = Cell::new(false);
     let jobs = Cell::new(-1);
     let ignored_i = Cell::new(0);
+    let show_forced = Cell::new(-1);
     let upload_pack: RefCell<Option<String>> = RefCell::new(None);
     let recurse_submodules: RefCell<Option<String>> = RefCell::new(None);
     let server_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -264,7 +273,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::flag('6', "ipv6", &ipv6, msg::HELP_IPV6).noneg(),
             Opt::flag(None, "auto-maintenance", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
             Opt::flag(None, "auto-gc", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
-            Opt::bool(None, "show-forced-updates", &ignored_i, msg::HELP_SHOW_FORCED),
+            Opt::bool(None, "show-forced-updates", &show_forced, msg::HELP_SHOW_FORCED),
             Opt::bool(None, "write-commit-graph", &ignored_i, msg::HELP_WRITE_COMMIT_GRAPH),
             Opt::flag(None, "stdin", &stdin, msg::HELP_STDIN),
             Opt::string(
@@ -321,6 +330,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
         deepen: deepen.into_inner(),
         unshallow: unshallow.get(),
         update_shallow: update_shallow.get(),
+        show_forced_updates: show_forced.get(),
     };
     Ok((args, rest))
 }
@@ -496,7 +506,23 @@ pub fn run_with_reflog_action(
         }
     }
 
-    let repo = LocalRepo::open(&setup, config).map_err(|e| Die::Fatal(e.to_string()))?;
+    let mut repo = LocalRepo::open(&setup, config).map_err(|e| Die::Fatal(e.to_string()))?;
+    let hooks = crate::hooks::for_repo(ctx, &setup, &repo.config)?;
+    repo.transaction_hook = Some(Box::new(move |state, updates| {
+        let mut input = Vec::new();
+        for (old, new, name) in updates {
+            input.extend_from_slice(format!("{old} {new} {name}\n").as_bytes());
+        }
+        let opts = rgit_hook::RunOptions::with_args([state.as_str()])
+            .stdin(rgit_hook::Input::Data(&input));
+        let outcome = hooks.run("reference-transaction", &opts)?;
+        if state == rgit_refs::HookState::Prepared && !outcome.ok() {
+            return Err(crate::messages::hook::transaction_aborted_by_hook(
+                state.as_str(),
+            ));
+        }
+        Ok(())
+    }));
     if args.unshallow {
         if repo.shallow().is_empty() {
             return Err(Die::Fatal(msg::UNSHALLOW_COMPLETE.into()));
@@ -558,6 +584,16 @@ pub fn run_with_reflog_action(
         -1 => !quiet_mode && std::io::stderr().is_terminal(),
         p => p > 0,
     };
+    // `fetch.showForcedUpdates` / `--[no-]show-forced-updates`.
+    let show_forced_updates = match args.show_forced_updates {
+        -1 => repo
+            .config
+            .bool("fetch.showforcedupdates")
+            .ok()
+            .flatten()
+            .unwrap_or(true),
+        v => v > 0,
+    };
     let opts = FetchOptions {
         refspecs,
         tags: match args.tags {
@@ -592,6 +628,7 @@ pub fn run_with_reflog_action(
         deepen_since,
         deepen_not: args.shallow_exclude.clone(),
         update_shallow: args.update_shallow,
+        no_show_forced_updates: !show_forced_updates,
     };
     let env = SystemEnv::default();
     let connect = ConnectSettings {
@@ -612,6 +649,14 @@ pub fn run_with_reflog_action(
         verbose: args.verbose > 0 && !quiet_mode,
     };
     rgit_protocol::sideband::set_remote_colors(crate::color::remote_colors(&repo.config));
+    if !show_forced_updates
+        && ctx
+            .advisor(&repo.config)?
+            .enabled(Advice::FetchShowForcedUpdates)
+            .map_err(Die::Fatal)?
+    {
+        eprintln!("warning: {}", msg::FORCED_UPDATES_CHECK_DISABLED);
+    }
     let mut result =
         rgit_fetch::fetch(&repo, &remote, &opts, &connect).map_err(|e| Die::Fatal(e.to_string()))?;
     // Without FETCH_HEAD, refs stored nowhere are not listed.
@@ -904,6 +949,10 @@ fn set_upstream(
             .unwrap_or_default()
     };
     let merge = entry.remote.to_str_lossy().into_owned();
+    if merge.starts_with("refs/tags/") {
+        eprintln!("warning: {}", msg::NO_UPSTREAM_FOR_TAG);
+        return Ok(0);
+    }
     let Some(branch) = repo.current_branch() else {
         let short = display::pretty_ref(entry.remote.as_bstr());
         eprintln!("warning: {}", msg::upstream_detached(&short, &remote_name));

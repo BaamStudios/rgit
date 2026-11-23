@@ -69,6 +69,12 @@ fn describe(r: &PushRef, style: &Style<'_>) -> (char, String, Option<String>) {
         Status::RejectAlreadyExists => ('!', s("[rejected]"), Some(s("already exists"))),
         Status::RejectFetchFirst => ('!', s("[rejected]"), Some(s("fetch first"))),
         Status::RejectNeedsForce => ('!', s("[rejected]"), Some(s("needs force"))),
+        Status::RejectStale => ('!', s("[rejected]"), Some(s("stale info"))),
+        Status::RejectRemoteUpdated => (
+            '!',
+            s("[rejected]"),
+            Some(s(crate::messages::push::REASON_REMOTE_UPDATED)),
+        ),
         Status::AtomicFailed => ('!', s("[rejected]"), Some(s("atomic push failed"))),
         Status::RemoteReject => ('!', s("[remote rejected]"), r.remote_msg.clone()),
         Status::RemoteFailure => (
