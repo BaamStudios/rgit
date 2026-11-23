@@ -27,6 +27,9 @@ pub struct Style<'a> {
     pub quiet: bool,
     pub porcelain: bool,
     pub abbrev: &'a dyn Fn(&ObjectId) -> String,
+    /// Colour and reset for the flag and summary of failed refs
+    /// (`color.transport.rejected`, `color.transport.reset`).
+    pub rejected: Option<(String, String)>,
 }
 
 /// `refs/heads/x` → `x` (also `refs/tags/`, `refs/remotes/`).
@@ -96,7 +99,12 @@ fn line(r: &PushRef, style: &Style<'_>) -> String {
             Some(s) => format!("{} -> {}", prettify(s), prettify(&r.dst)),
             None => prettify(&r.dst).to_owned(),
         };
-        format!(" {flag} {summary:<SUMMARY_WIDTH$} {names}{reason}")
+        match &style.rejected {
+            Some((color, reset)) if r.status.is_error() => {
+                format!(" {color}{flag} {summary:<SUMMARY_WIDTH$}{reset} {names}{reason}")
+            }
+            _ => format!(" {flag} {summary:<SUMMARY_WIDTH$} {names}{reason}"),
+        }
     }
 }
 
@@ -166,6 +174,7 @@ mod tests {
             quiet: false,
             porcelain: false,
             abbrev: &ab,
+            rejected: None,
         };
         let r = pref(
             "refs/heads/main",

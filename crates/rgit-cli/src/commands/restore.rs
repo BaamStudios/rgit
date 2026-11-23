@@ -435,11 +435,32 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         failed |= !write(&mut index, path, entry, &data);
     }
     if !delayed.is_empty() {
+        let mut filtering = crate::switch_branch::progress().then(|| {
+            rgit_progress::Progress::start_delayed(
+                rgit_unpack::messages::PROGRESS_FILTERING,
+                delayed.len() as u64,
+                true,
+            )
+        });
+        let mut filtered = 0u64;
+        let mut filtered_bytes = 0u64;
+        if let Some(m) = &mut filtering {
+            m.throughput(0);
+        }
         let missing = conv.finish_delayed(&mut |path, data| {
+            if let Some(m) = &mut filtering {
+                filtered += 1;
+                filtered_bytes += data.len() as u64;
+                m.throughput(filtered_bytes);
+                m.set(filtered);
+            }
             if let Some((p, entry)) = delayed.iter().find(|(p, _)| *p == path) {
                 failed |= !write(&mut index, p, entry, &data);
             }
         });
+        if let Some(m) = filtering {
+            m.stop();
+        }
         for m in &missing {
             eprintln!("error: {m}");
         }

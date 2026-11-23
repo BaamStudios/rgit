@@ -682,6 +682,9 @@ fn anonymize(url: &str) -> String {
     }
 }
 
+/// Default colour of `color.push.error` and `color.transport.rejected`.
+const RED: &str = "\x1b[31m";
+
 struct Push<'a> {
     ctx: &'a Context,
     setup: &'a rgit_repo::Setup,
@@ -752,6 +755,19 @@ impl Push<'_> {
             }
         }
         Ok(cert)
+    }
+
+    /// `error: failed to push some refs to '<url>'`, in the colour of
+    /// `color.push.error` (default red) when `color.push` says so. Like
+    /// git, the reset follows the newline.
+    fn failed_to_push(&self, display: &str) {
+        let line = format!("error: {}\n", msg::failed_to_push(display));
+        if crate::color::want_stderr(self.config, "color.push") {
+            let c = crate::color::slot_or(self.config, "color.push.error", RED);
+            eprint!("{c}{line}{}", crate::color::RESET);
+        } else {
+            eprint!("{line}");
+        }
     }
 
     /// Push advice is shown without the "Disable this message" line.
@@ -865,7 +881,7 @@ impl Push<'_> {
                 eprintln!("fatal: {}", msg::REMOTE_HUNG_UP);
                 return Ok(255);
             }
-            eprintln!("error: {}", msg::failed_to_push(&display));
+            self.failed_to_push(&display);
             return Ok(1);
         }
         // The nonce the server asks to be signed (`push-cert=<nonce>`).
@@ -910,7 +926,7 @@ impl Push<'_> {
 
         let null = ObjectId::null(hash);
         if f.verify && !self.pre_push(url, &list, null)? {
-            eprintln!("error: {}", msg::failed_to_push(&display));
+            self.failed_to_push(&display);
             send::finish_empty(session);
             return Ok(1);
         }
@@ -1007,12 +1023,19 @@ impl Push<'_> {
 
         // Report.
         let abbrev = |id: &ObjectId| objects.abbrev(id);
+        let rejected = crate::color::want_stderr(self.config, "color.transport").then(|| {
+            (
+                crate::color::slot_or(self.config, "color.transport.rejected", RED),
+                crate::color::slot_or(self.config, "color.transport.reset", crate::color::RESET),
+            )
+        });
         let style = Style {
             url: &display,
             verbose: f.verbose,
             quiet: f.quiet,
             porcelain: f.porcelain,
             abbrev: &abbrev,
+            rejected,
         };
         let failed = output::print(&list, &style);
         if !f.dry_run {
@@ -1030,7 +1053,7 @@ impl Push<'_> {
         }
         if failed {
             if !f.send_pack {
-                eprintln!("error: {}", msg::failed_to_push(&display));
+                self.failed_to_push(&display);
                 self.rejection_hints(&list)?;
             }
             return Ok(1);

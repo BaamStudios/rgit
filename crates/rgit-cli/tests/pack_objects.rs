@@ -532,3 +532,102 @@ fn split_packs() {
         assert_eq!(total, list.lines().count(), "{args:?}");
     }
 }
+
+/// Stderr normalisers for the progress tests: the pack size and rate in
+/// `Writing objects`, and the delta counts of the `Total` line (the delta
+/// search need not find the same deltas as git, so delta bases may be
+/// written ahead at other places, and `Writing objects` may skip other
+/// counts).
+fn progress_normalizers() -> [rgit_difftest::Normalizer; 3] {
+    use rgit_difftest::Normalizer;
+    [
+        Normalizer::regex(r"Writing objects: +\d+% \(\d+/\d+\)\r", ""),
+        Normalizer::regex(
+            r", [0-9.]+ (bytes|KiB|MiB) \| [0-9.]+ (bytes|KiB|MiB)/s",
+            ", <SIZE> | <RATE>",
+        ),
+        Normalizer::regex(
+            r"Total (\d+) \(delta \d+\), reused (\d+) \(delta \d+\)",
+            "Total $1 (delta <D>), reused $2 (delta <D>)",
+        ),
+    ]
+}
+
+/// The progress meters: `Enumerating objects`, `Counting objects`,
+/// `Delta compression using up to N threads`, `Compressing objects`,
+/// `Writing objects` (with `--all-progress`, or for `<base-name>`
+/// output), and which of `-q`, `--progress`, `--all-progress` wins.
+#[test]
+fn progress_meters() {
+    let mut fx = history();
+    if fx.is_skipped() {
+        return;
+    }
+    let all = ["--all", "--stdout"];
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["-c", "pack.threads=2", "pack-objects", "--all-progress"],
+        vec!["-c", "pack.threads=1", "pack-objects", "--all-progress"],
+        vec!["-c", "pack.threads=2", "pack-objects", "--progress"],
+        vec![
+            "-c",
+            "pack.threads=2",
+            "pack-objects",
+            "--progress",
+            "--all-progress-implied",
+        ],
+        vec![
+            "-c",
+            "pack.threads=2",
+            "pack-objects",
+            "--all-progress",
+            "-q",
+        ],
+        vec!["-c", "pack.threads=2", "pack-objects", "-q", "--progress"],
+        vec![
+            "-c",
+            "pack.threads=2",
+            "pack-objects",
+            "--progress",
+            "--window=0",
+        ],
+    ];
+    for mut args in cases {
+        args.extend(all);
+        progress_case(&mut fx, &args);
+    }
+    progress_case(
+        &mut fx,
+        &[
+            "-c",
+            "pack.threads=3",
+            "pack-objects",
+            "--progress",
+            "--all",
+            "p",
+        ],
+    );
+    // Reused deltas are not searched again: they do not count.
+    let mut fx = fx.git(["repack", "-adq"]);
+    progress_case(
+        &mut fx,
+        &[
+            "-c",
+            "pack.threads=2",
+            "pack-objects",
+            "--all-progress",
+            "--all",
+            "--stdout",
+        ],
+    );
+}
+
+fn progress_case(fx: &mut Fixture, args: &[&str]) {
+    let mut cmp = fx
+        .compare(args)
+        .stdin("")
+        .checks([Check::ExitCode, Check::Stderr]);
+    for n in progress_normalizers() {
+        cmp = cmp.normalize_stderr(n);
+    }
+    cmp.run();
+}

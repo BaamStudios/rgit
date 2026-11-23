@@ -15,11 +15,12 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use rgit_hash::ObjectId;
+use rgit_progress::Progress;
 
 use super::encode::{DeltaIndex, create_delta};
 use super::pack::check_id;
@@ -75,6 +76,22 @@ pub(crate) struct SearchOptions {
     pub id_len: usize,
 }
 
+impl SearchOptions {
+    /// Whether `cand` counts towards the `Compressing objects` meter: an
+    /// object that may get a new delta. Like git, objects of up to
+    /// [`METER_MIN_SIZE`] bytes are not counted.
+    pub fn counted(&self, cand: &Candidate) -> bool {
+        cand.fixed_depth.is_none()
+            && !cand.base_only
+            && cand.size > METER_MIN_SIZE
+            && cand.size <= self.big_file_threshold
+    }
+}
+
+/// Objects up to this size are left out of the `Compressing objects`
+/// count (observed from git).
+const METER_MIN_SIZE: u64 = 50;
+
 /// One object taking part in the search.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Candidate {
@@ -126,6 +143,7 @@ pub(crate) fn search<S: ObjectSource + Sync + ?Sized>(
     packs: &[Arc<Pack>],
     mut cands: Vec<Candidate>,
     opts: &SearchOptions,
+    meter: Option<&Mutex<Progress>>,
 ) -> Result<Vec<(usize, Found)>, WriteError> {
     if opts.window == 0 || opts.max_depth == 0 {
         return Ok(Vec::new());
@@ -156,7 +174,7 @@ pub(crate) fn search<S: ObjectSource + Sync + ?Sized>(
         cache: DeltaBaseCache::new(THREAD_CACHE),
     };
     if pieces.len() <= 1 {
-        return search_piece(reader(), &cands, opts);
+        return search_piece(reader(), &cands, opts, meter);
     }
     std::thread::scope(|s| {
         let handles: Vec<_> = pieces
@@ -164,7 +182,7 @@ pub(crate) fn search<S: ObjectSource + Sync + ?Sized>(
             .map(|r| {
                 let piece = &cands[r.clone()];
                 let reader = reader();
-                s.spawn(move || search_piece(reader, piece, opts))
+                s.spawn(move || search_piece(reader, piece, opts, meter))
             })
             .collect();
         let mut out = Vec::new();
@@ -205,10 +223,16 @@ fn search_piece<S: ObjectSource + ?Sized>(
     mut reader: Reader<'_, S>,
     piece: &[Candidate],
     opts: &SearchOptions,
+    meter: Option<&Mutex<Progress>>,
 ) -> Result<Vec<(usize, Found)>, WriteError> {
     let mut out = Vec::new();
     let mut window: VecDeque<Slot> = VecDeque::with_capacity(opts.window + 1);
     for cand in piece {
+        if let Some(m) = meter {
+            if opts.counted(cand) {
+                m.lock().unwrap_or_else(|e| e.into_inner()).inc();
+            }
+        }
         let data = match reader.read(&cand.id) {
             Ok(d) => d,
             // Objects that are only bases (thin bases, and objects that keep
