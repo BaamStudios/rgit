@@ -357,8 +357,9 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
     let shallow = std::env::var_os("GIT_SHALLOW_FILE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| setup.common_dir.join("shallow"));
-    let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
+    objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -500,8 +501,9 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     opts.apply_grep_config(&config);
     let rev_opts = revisions::options(ctx, &config, kind)?;
     let shallow = setup.common_dir.join("shallow");
-    let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
+    objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -636,8 +638,9 @@ pub fn walk_formatted(
     opts.apply_config(Command::Log, &config)?;
     let rev_opts = revisions::options(ctx, &config, kind)?;
     let shallow = setup.common_dir.join("shallow");
-    let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
+    objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);

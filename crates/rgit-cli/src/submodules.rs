@@ -514,6 +514,105 @@ fn summary(
     }
 }
 
+/// `status.submoduleSummary`: `None` when off, `Some(None)` without a
+/// limit, else the number of commits to show.
+pub fn summary_limit(config: &rgit_config::ConfigSet) -> Option<Option<usize>> {
+    let e = config.get("status.submodulesummary")?;
+    let n: i64 = match rgit_config::value::parse_bool_or_int(e.value.as_ref().map(|v| &v[..])) {
+        Ok(rgit_config::BoolOrInt::Bool(true)) => -1,
+        Ok(rgit_config::BoolOrInt::Bool(false)) | Err(_) => 0,
+        Ok(rgit_config::BoolOrInt::Int(n)) => n,
+    };
+    match n {
+        0 => None,
+        n if n < 0 => Some(None),
+        n => Some(Some(n as usize)),
+    }
+}
+
+/// One block of the submodule summary of `status` and `commit`
+/// (`* <path> <old>...<new> (<count>):` and the commits, like `git
+/// submodule summary`) for the submodule at `path` going from `old` to
+/// `new` (`None`: added or deleted), at most `limit` commits.
+pub fn status_summary(
+    out: &mut Vec<u8>,
+    repo: &Repo,
+    path: &[u8],
+    old: Option<ObjectId>,
+    new: Option<ObjectId>,
+    limit: Option<usize>,
+) {
+    let git_dir = sub_git_dir(repo, path);
+    let present = |id: &ObjectId| {
+        git_dir.as_ref().is_some_and(|g| {
+            run_in(
+                g,
+                &["cat-file", "-e", &format!("{}^{{commit}}", id.to_hex())],
+            )
+            .is_some()
+        })
+    };
+    let short = |id: Option<&ObjectId>| -> String {
+        let Some(id) = id else {
+            return "0".repeat(7);
+        };
+        git_dir
+            .as_ref()
+            .filter(|_| present(id))
+            .and_then(|g| run_in(g, &["rev-parse", "--short", &id.to_hex()]))
+            .and_then(|o| String::from_utf8(o).ok())
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| id.to_hex_with_len(7))
+    };
+    out.extend_from_slice(b"* ");
+    out.extend_from_slice(path);
+    out.extend_from_slice(format!(" {}...{}", short(old.as_ref()), short(new.as_ref())).as_bytes());
+    let missing = [old, new].into_iter().flatten().find(|id| !present(id));
+    if let Some(id) = missing {
+        out.extend_from_slice(b":\n  ");
+        out.extend_from_slice(
+            msg::summary_missing_commit(&String::from_utf8_lossy(path), &id.to_hex()).as_bytes(),
+        );
+        out.extend_from_slice(b"\n\n");
+        return;
+    }
+    let (Some(g), Some(new)) = (git_dir, new) else {
+        out.extend_from_slice(b":\n\n");
+        return;
+    };
+    let range = match old {
+        Some(old) => format!("{}...{}", old.to_hex(), new.to_hex()),
+        None => new.to_hex(),
+    };
+    let count = run_in(&g, &["rev-list", "--first-parent", &range, "--"]).map_or(0, |o| {
+        o.split(|&b| b == b'\n').filter(|l| !l.is_empty()).count()
+    });
+    out.extend_from_slice(format!(" ({count}):\n").as_bytes());
+    let mut args = vec!["log".to_owned()];
+    if let Some(n) = limit {
+        args.push(format!("-{n}"));
+    }
+    args.extend(
+        [
+            "--left-right",
+            "--first-parent",
+            "--format=  %m %s",
+            &range,
+            "--",
+        ]
+        .map(str::to_owned),
+    );
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let Some(log) = run_in(&g, &args) {
+        out.extend_from_slice(&log);
+        if !log.is_empty() && !log.ends_with(b"\n") {
+            out.push(b'\n');
+        }
+    }
+    out.push(b'\n');
+}
+
 /// `path` relative to the directory `from` (both absolute and normalized).
 fn relative_path(from: &Path, to: &Path) -> std::path::PathBuf {
     let f: Vec<_> = from.components().collect();

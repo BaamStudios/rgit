@@ -7,8 +7,9 @@
 //! Details from the reference `git`: names of one commit are listed in
 //! reverse ref name order, except that `HEAD` comes first and takes the
 //! branch it points to along (`HEAD -> main`); annotated tags (also chains
-//! of them) decorate the commit they point to; `refs/replace/` refs never
-//! decorate.
+//! of them) decorate the commit they point to; a replace ref
+//! (`refs/replace/<id>`, `$GIT_REPLACE_REF_BASE`) decorates the object it
+//! replaces with `replaced` while replacements are in use.
 
 use std::collections::HashMap;
 
@@ -29,6 +30,8 @@ pub enum Kind {
     Remote,
     Tag,
     Stash,
+    /// A replaced object (`replaced`).
+    Grafted,
     Other,
 }
 
@@ -84,6 +87,7 @@ pub struct Colors {
     remote: String,
     tag: String,
     stash: String,
+    grafted: String,
 }
 
 impl Colors {
@@ -98,6 +102,7 @@ impl Colors {
             remote: slot("remoteBranch", "\x1b[1;31m")?,
             tag: slot("tag", "\x1b[1;33m")?,
             stash: slot("stash", "\x1b[1;35m")?,
+            grafted: slot("grafted", "\x1b[1;34m")?,
         })
     }
 
@@ -108,6 +113,7 @@ impl Colors {
             Kind::Remote => &self.remote,
             Kind::Tag => &self.tag,
             Kind::Stash => &self.stash,
+            Kind::Grafted => &self.grafted,
             Kind::Other => "",
         }
     }
@@ -198,7 +204,22 @@ impl Decorations {
             refs.push((name.to_string(), *id));
         });
         refs.sort();
+        let replace_base = std::env::var("GIT_REPLACE_REF_BASE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "refs/replace/".to_owned());
+        let replacing = repo.objects.replacing();
         for (name, id) in refs {
+            if let Some(hex) = name.strip_prefix(replace_base.as_str()) {
+                if replacing && let Ok(replaced) = ObjectId::from_hex_any(hex.as_bytes()) {
+                    d.map.entry(replaced).or_default().push(Name {
+                        kind: Kind::Grafted,
+                        shown: "replaced".into(),
+                        refname: name,
+                    });
+                }
+                continue;
+            }
             if name.starts_with("refs/replace/") || !wanted(&name) {
                 continue;
             }

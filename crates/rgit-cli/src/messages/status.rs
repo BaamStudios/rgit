@@ -76,6 +76,7 @@ pub const HINT_UNSTAGE_INITIAL: &str = "use \"git rm --cached <file>...\" to uns
 pub const HINT_UNSTAGE: &str = "use \"git restore --staged <file>...\" to unstage";
 pub const UNMERGED_HEADER: &str = "Unmerged paths:";
 pub const HINT_MARK_RESOLUTION: &str = "use \"git add <file>...\" to mark resolution";
+pub const HINT_MARK_RESOLUTION_RM_ONLY: &str = "use \"git rm <file>...\" to mark resolution";
 pub const HINT_MARK_RESOLUTION_RM: &str =
     "use \"git add/rm <file>...\" as appropriate to mark resolution";
 pub const UNSTAGED_HEADER: &str = "Changes not staged for commit:";
@@ -85,6 +86,8 @@ pub const HINT_RESTORE: &str =
     "use \"git restore <file>...\" to discard changes in working directory";
 pub const UNTRACKED_HEADER: &str = "Untracked files:";
 pub const IGNORED_HEADER: &str = "Ignored files:";
+pub const SUBMODULE_SUMMARY_STAGED: &str = "Submodule changes to be committed:";
+pub const SUBMODULE_SUMMARY_UNSTAGED: &str = "Submodules changed but not updated:";
 pub const HINT_INCLUDE_IGNORED: &str =
     "use \"git add -f <file>...\" to include in what will be committed";
 pub const HINT_INCLUDE: &str = "use \"git add <file>...\" to include in what will be committed";
@@ -144,6 +147,16 @@ pub fn different(up: &str) -> String {
     format!("Your branch and '{up}' refer to different commits.")
 }
 pub const HINT_AHEAD_BEHIND: &str = "use \"git status --ahead-behind\" for details";
+/// Behind the push destination `<remote> <branch>`.
+pub fn hint_pull_from(remote_branch: &str) -> String {
+    format!("use \"git pull {remote_branch}\" to update your local branch")
+}
+/// An unknown entry of `status.compareBranches` (`warning: `).
+pub fn compare_branches_ignored(value: &str) -> String {
+    format!(
+        "ignoring value '{value}' for status.compareBranches, only @{{upstream}} and @{{push}} are supported"
+    )
+}
 
 pub const HELP_COLUMN: &str = "list untracked files in columns";
 pub const HELP_VERBOSE: &str = "be verbose";

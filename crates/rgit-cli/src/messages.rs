@@ -284,12 +284,3 @@ pub fn abbrev_not_numeric(opt: &str) -> String {
 pub fn ignoring_git_dir(dir: &str, reason: &str) -> String {
     format!("ignoring git dir '{dir}': {reason}")
 }
-
-/// `--column=<bad>` and bad `column.*` values.
-pub fn column_unsupported(token: &str) -> String {
-    format!("unsupported option '{token}'")
-}
-
-pub fn column_bad_token(token: &str, key: &str) -> String {
-    format!("invalid {key} mode {token}")
-}

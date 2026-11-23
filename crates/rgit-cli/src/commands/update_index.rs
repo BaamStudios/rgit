@@ -621,6 +621,7 @@ impl State<'_> {
             .flatten()
             .unwrap_or(false);
         let opts = WriteOptions { skip_hash };
+        crate::hooks::index_changes(crate::hooks::IndexChange::SkipWorktree);
         match self
             .index
             .write_file(&path, &rgit_fs::LockOptions::default(), &opts)

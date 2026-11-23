@@ -12,5 +12,8 @@
 pub mod bisect;
 pub mod describe;
 pub mod name_rev;
+pub mod prio_queue;
 pub mod revision;
+
+pub use prio_queue::PrioQueue;
 pub mod walk;

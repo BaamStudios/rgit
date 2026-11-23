@@ -246,7 +246,7 @@ impl Repo {
                 .flatten()
                 .unwrap_or(true);
         let refs = Refs::new(&setup);
-        Ok(Repo {
+        let repo = Repo {
             setup,
             config,
             hash,
@@ -256,7 +256,9 @@ impl Repo {
             replace_enabled,
             replace: None,
             hook_context: crate::hooks::HookContext::new(ctx),
-        })
+        };
+        crate::hooks::watch_index(&repo);
+        Ok(repo)
     }
 
     /// The replacement of `oid` (following chains), or `oid` itself.

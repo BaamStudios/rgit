@@ -210,7 +210,9 @@ pub fn write_index(repo: &Repo, index: &Index, mut lock: LockFile) -> Result<(),
     index
         .write_locked(&mut lock, &WriteOptions { skip_hash })
         .map_err(|_| fail())?;
-    lock.commit().map_err(|_| fail())
+    lock.commit().map_err(|_| fail())?;
+    rgit_index::notify_written(&repo.setup.cwd.join(repo.index_path()));
+    Ok(())
 }
 
 /// The outcome of [`move_index`].
@@ -284,6 +286,7 @@ pub fn move_index_with(
     } else {
         local_changes(repo, &index, new, &checker)?
     };
+    crate::hooks::index_changes(crate::hooks::IndexChange::Workdir);
     write_index(repo, &index, lock)?;
     if !applied.errors.is_empty() {
         for e in &applied.errors {
@@ -406,9 +409,13 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
     let new_tree = commit_tree(repo, &new_oid)
         .ok_or_else(|| Die::Fatal(msg::unable_to_read_tree(&new_oid.to_hex())))?;
 
-    // `checkout -b <new>` without a start point leaves the index alone.
+    // `checkout -b <new>` without a start point leaves the index alone
+    // (`-B` goes through the merge and rewrites it).
     let skip_merge = !req.force
-        && req.create.as_ref().is_some_and(|c| !c.start_given)
+        && req
+            .create
+            .as_ref()
+            .is_some_and(|c| !c.start_given && !c.reset)
         && old_oid == Some(new_oid);
     let moved = if skip_merge {
         None
@@ -669,46 +676,79 @@ impl CommitSource for CommitReader<'_> {
     }
 }
 
-/// "Your branch is ..." for `branch` at `head`, on stdout.
+/// "Your branch is ..." for `branch` at `head`, on stdout: the
+/// comparisons of `status.compareBranches`, separated by blank lines.
 pub fn print_tracking(repo: &Repo, branch: &str, head: ObjectId) {
-    let Some(t) = crate::wt_status::tracking(repo, branch, Some(head)) else {
-        return;
-    };
+    let t = crate::wt_status::tracking(repo, branch, Some(head));
+    let items = crate::compare_branches::plan(
+        repo,
+        branch,
+        Some(head),
+        t.as_ref().map(|t| t.full.as_str()),
+        true,
+    );
     let hints = advisor(repo)
         .ok()
         .and_then(|a| a.enabled(Advice::StatusHints).ok())
         .unwrap_or(true);
-    let mut lines: Vec<String> = Vec::new();
-    match t.counts {
-        None => {
-            lines.push(wmsg::gone(&t.name));
-            if hints {
-                lines.push(wmsg::HINT_UNSET_UPSTREAM.into());
+    let push_shown = crate::compare_branches::has_push(&items);
+    let mut blocks: Vec<Vec<String>> = Vec::new();
+    for item in &items {
+        let mut lines: Vec<String> = Vec::new();
+        match item {
+            crate::compare_branches::Item::Upstream => {
+                let Some(t) = &t else {
+                    continue;
+                };
+                match t.counts {
+                    None => {
+                        lines.push(wmsg::gone(&t.name));
+                        if hints {
+                            lines.push(wmsg::HINT_UNSET_UPSTREAM.into());
+                        }
+                    }
+                    Some((0, 0)) => lines.push(wmsg::up_to_date(&t.name)),
+                    Some((a, 0)) => {
+                        lines.push(wmsg::ahead(&t.name, a));
+                        if hints && !push_shown {
+                            lines.push(wmsg::HINT_PUSH.into());
+                        }
+                    }
+                    Some((0, b)) => {
+                        lines.push(wmsg::behind(&t.name, b));
+                        if hints {
+                            lines.push(wmsg::HINT_PULL_FF.into());
+                        }
+                    }
+                    Some((a, b)) => {
+                        lines.extend(wmsg::diverged(&t.name, a, b));
+                        if hints {
+                            lines.push(msg::HINT_PULL_DIVERGED.into());
+                        }
+                    }
+                }
+            }
+            crate::compare_branches::Item::PushMissing => continue,
+            crate::compare_branches::Item::Push(p) => {
+                for (text, advice) in crate::compare_branches::push_lines(p) {
+                    if !advice {
+                        lines.push(text);
+                    } else if hints {
+                        lines.push(format!("  ({text})"));
+                    }
+                }
             }
         }
-        Some((0, 0)) => lines.push(wmsg::up_to_date(&t.name)),
-        Some((a, 0)) => {
-            lines.push(wmsg::ahead(&t.name, a));
-            if hints {
-                lines.push(wmsg::HINT_PUSH.into());
-            }
-        }
-        Some((0, b)) => {
-            lines.push(wmsg::behind(&t.name, b));
-            if hints {
-                lines.push(wmsg::HINT_PULL_FF.into());
-            }
-        }
-        Some((a, b)) => {
-            lines.extend(wmsg::diverged(&t.name, a, b));
-            if hints {
-                lines.push(msg::HINT_PULL_DIVERGED.into());
-            }
-        }
+        blocks.push(lines);
     }
     let mut o = std::io::stdout().lock();
-    for l in lines {
-        let _ = writeln!(o, "{l}");
+    for (i, block) in blocks.iter().enumerate() {
+        if i > 0 {
+            let _ = writeln!(o);
+        }
+        for l in block {
+            let _ = writeln!(o, "{l}");
+        }
     }
     let _ = o.flush();
 }

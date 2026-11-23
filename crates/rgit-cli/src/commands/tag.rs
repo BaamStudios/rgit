@@ -257,10 +257,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     match mode {
         b'l' => {
             let col = column.borrow().clone();
-            let mut mode = crate::column::Mode::from_config(&config, "tag")?;
+            let mut mode = crate::column::Mode::from_config(&config, Some("tag"))?;
             if let Some(spec) = &col {
                 mode.apply(spec).map_err(|t| {
-                    Die::Error(crate::messages::column_unsupported(&t), 129)
+                    Die::Error(crate::messages::column::unsupported_option(&t), 129)
                 })?;
                 if lines.get() != -1 && mode.active() {
                     return Err(fatal(msg::incompatible("--column", "-n")));

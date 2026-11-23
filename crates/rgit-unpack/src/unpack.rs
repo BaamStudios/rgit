@@ -20,7 +20,7 @@ use crate::objects::{Objects, read_blob, tree_entries};
 use crate::path::{PathOptions, verify_checkout_path};
 
 /// The trees to merge into the index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Merge {
     /// `read-tree -m <tree>` (or `--reset <tree>`): the index becomes
     /// `tree`; entries that do not change keep their stat data.
@@ -33,6 +33,16 @@ pub enum Merge {
         old: ObjectId,
         /// The tree to move to.
         new: ObjectId,
+    },
+    /// `read-tree -m <base>... <head> <remote>`: the "3-Way Merge" of
+    /// git-read-tree(1) with the trivial-merge rules of
+    /// Documentation/technical/trivial-merge.adoc; paths that do not
+    /// merge trivially stay as conflict stages 1-3.
+    ThreeWay {
+        /// The common ancestors (one or more).
+        bases: Vec<ObjectId>,
+        head: ObjectId,
+        remote: ObjectId,
     },
 }
 
@@ -68,6 +78,9 @@ pub struct Options<'a> {
     /// The index has no entries and no file (`git clone`, a first checkout):
     /// two-way case 3 then takes the new tree.
     pub initial_checkout: bool,
+    /// `--aggressive`: a three-way merge also resolves removals on one or
+    /// both sides and identical additions.
+    pub aggressive: bool,
     /// `core.protectNTFS`, `core.protectHFS`.
     pub paths: PathOptions,
     /// Ignored files that may be overwritten or removed (git uses the
@@ -330,9 +343,18 @@ pub fn plan(
     if !opts.reset && !opts.discard_unmerged && index.has_conflicts() {
         return Err(Error::Unmerged);
     }
-    let (old, new) = match *merge {
-        Merge::OneWay(t) => (None, tree_entries(odb, &t)?),
-        Merge::TwoWay { old, new } => (Some(tree_entries(odb, &old)?), tree_entries(odb, &new)?),
+    if let Merge::ThreeWay {
+        bases,
+        head,
+        remote,
+    } = merge
+    {
+        return three_way(odb, index, bases, head, remote, wt, opts);
+    }
+    let (old, new) = match merge {
+        Merge::OneWay(t) => (None, tree_entries(odb, t)?),
+        Merge::TwoWay { old, new } => (Some(tree_entries(odb, old)?), tree_entries(odb, new)?),
+        Merge::ThreeWay { .. } => unreachable!("handled above"),
     };
     let wt = if opts.index_only { None } else { wt };
     let mut u = Unpacker {
@@ -403,6 +425,193 @@ pub fn plan(
     }
     let tree = repair_cache_tree(&out, odb);
     out.set_cache_tree(Some(tree));
+    Ok(Plan {
+        index: out,
+        remove: u.remove,
+        update: u.update,
+    })
+}
+
+/// See [`Merge::ThreeWay`].
+fn three_way(
+    odb: &dyn Objects,
+    index: &Index,
+    bases: &[ObjectId],
+    head: &ObjectId,
+    remote: &ObjectId,
+    wt: Option<&Worktree<'_>>,
+    opts: &mut Options<'_>,
+) -> Result<Plan, Error> {
+    let base_lists: Vec<Vec<Entry>> = bases
+        .iter()
+        .map(|b| tree_entries(odb, b))
+        .collect::<Result<_, _>>()?;
+    let head_list = tree_entries(odb, head)?;
+    let remote_list = tree_entries(odb, remote)?;
+    // Directories of the head and remote trees (for the D/F check of the
+    // ALT cases).
+    let dirs_of = |list: &[Entry]| -> HashSet<Vec<u8>> {
+        let mut out = HashSet::new();
+        for e in list {
+            let p = e.path();
+            for (i, &b) in p.iter().enumerate() {
+                if b == b'/' {
+                    out.insert(p[..i].to_vec());
+                }
+            }
+        }
+        out
+    };
+    let files_of =
+        |list: &[Entry]| -> HashSet<Vec<u8>> { list.iter().map(|e| e.path().to_vec()).collect() };
+    let (head_dirs, remote_dirs) = (dirs_of(&head_list), dirs_of(&remote_list));
+    let (head_files, remote_files) = (files_of(&head_list), files_of(&remote_list));
+    // `path` clashes with a directory or a leading file of `list`.
+    let df = |path: &[u8], dirs: &HashSet<Vec<u8>>, files: &HashSet<Vec<u8>>| {
+        dirs.contains(path)
+            || path
+                .iter()
+                .enumerate()
+                .any(|(i, &b)| b == b'/' && files.contains(&path[..i]))
+    };
+    let wt = if opts.index_only { None } else { wt };
+    let mut u = Unpacker {
+        index,
+        wt,
+        opts,
+        result: Vec::new(),
+        update: Vec::new(),
+        remove: Vec::new(),
+        removed: HashSet::new(),
+        consumed: HashSet::new(),
+        rejection: Rejection::default(),
+    };
+    let groups: Vec<&[Entry]> = index
+        .entries()
+        .chunk_by(|a, b| a.path() == b.path())
+        .collect();
+    let mut gi = 0;
+    let mut bi = vec![0; base_lists.len()];
+    let (mut hi, mut ri) = (0, 0);
+    loop {
+        let mut heads: Vec<&[u8]> = Vec::new();
+        heads.extend(groups.get(gi).map(|g| g[0].path()));
+        for (k, l) in base_lists.iter().enumerate() {
+            heads.extend(l.get(bi[k]).map(Entry::path));
+        }
+        heads.extend(head_list.get(hi).map(Entry::path));
+        heads.extend(remote_list.get(ri).map(Entry::path));
+        let Some(path) = heads.into_iter().min().map(<[u8]>::to_vec) else {
+            break;
+        };
+        let group = take(&groups, &mut gi, |g| g[0].path(), &path);
+        let o: Vec<Option<&Entry>> = base_lists
+            .iter()
+            .enumerate()
+            .map(|(k, l)| take(l, &mut bi[k], Entry::path, &path))
+            .collect();
+        let a = take(&head_list, &mut hi, Entry::path, &path);
+        let b = take(&remote_list, &mut ri, Entry::path, &path);
+        let i = group.and_then(|g| g.iter().find(|e| e.stage() == Stage::MERGED));
+        let eq = |x: Option<&Entry>, y: Option<&Entry>| match (x, y) {
+            (Some(x), Some(y)) => same(x, y),
+            (None, None) => true,
+            _ => false,
+        };
+        let any_empty = o.iter().any(Option::is_none);
+        let all_empty = o.iter().all(Option::is_none);
+        let first_base = o.iter().flatten().next().copied();
+        let all_same = o.windows(2).all(|w| eq(w[0], w[1]));
+        let any_is = |x: Option<&Entry>| x.is_some() && o.iter().any(|e| eq(*e, x));
+        // The trivial result: Some(Some(e)) takes `e`, Some(None) removes
+        // the path, None leaves the stages.
+        let aggressive = u.opts.aggressive;
+        let result: Option<Option<&Entry>> = match (a, b) {
+            (None, None) if any_empty && all_empty => Some(None),
+            (None, Some(b)) if any_empty && !df(&path, &head_dirs, &head_files) => Some(Some(b)),
+            (Some(a), None) if any_empty && !df(&path, &remote_dirs, &remote_files) => {
+                Some(Some(a))
+            }
+            (Some(a), Some(b)) if same(a, b) => Some(Some(a)),
+            _ if all_empty => None,
+            (None, None) if aggressive => Some(None),
+            (None, Some(_)) if aggressive && all_same && any_is(b) => Some(None),
+            (Some(_), None) if aggressive && all_same && any_is(a) => Some(None),
+            (Some(_), Some(_)) if o.len() > 1 && any_is(a) && any_is(b) => None,
+            (Some(a), Some(_)) if any_is(b) => Some(Some(a)),
+            (Some(_), Some(b)) if any_is(a) => Some(Some(b)),
+            _ => None,
+        };
+        // The index must match the head (or the trivial result).
+        if let Some(i) = i {
+            let matches_head = a.is_some_and(|a| same(i, a));
+            let matches_result = matches!(result, Some(Some(r)) if same(i, r));
+            if !matches_head && !matches_result {
+                u.problem(Problem::WouldOverwrite, &path);
+                if !u.opts.show_all_errors {
+                    break;
+                }
+                continue;
+            }
+        }
+        let ok = match result {
+            Some(Some(r)) => match i {
+                Some(i) if same(i, r) => {
+                    u.keep(i);
+                    true
+                }
+                Some(i) => u.merged(r, Some(i))?,
+                None => {
+                    if a.is_some_and(|a| same(a, r)) {
+                        // Kept as it is in the head (no index entry).
+                        u.result.push(r.clone());
+                        true
+                    } else {
+                        u.merged(r, None)?
+                    }
+                }
+            },
+            Some(None) => match i {
+                Some(i) => u.deleted(i),
+                None => true,
+            },
+            None => {
+                let ok = i.is_none_or(|i| u.verify_uptodate(i));
+                for (stage, e) in [
+                    (Stage::BASE, first_base),
+                    (Stage::OURS, a),
+                    (Stage::THEIRS, b),
+                ] {
+                    if let Some(e) = e {
+                        u.result
+                            .push(Entry::new(e.path().to_vec(), stage, e.mode, e.id));
+                    }
+                }
+                ok
+            }
+        };
+        if !ok && !u.opts.show_all_errors {
+            break;
+        }
+    }
+    if !u.rejection.problems.is_empty() {
+        return Err(Error::Rejected(u.rejection));
+    }
+    let mut out = index.clone();
+    out.retain(|_| false);
+    out.set_cache_tree(None);
+    let add = AddOptions {
+        ok_to_replace: true,
+        skip_df_check: true,
+        skip_path_check: true,
+    };
+    for e in u.result {
+        out.add(e, add).map_err(|e| Error::Io(e.to_string()))?;
+    }
+    if !out.has_conflicts() {
+        let tree = repair_cache_tree(&out, odb);
+        out.set_cache_tree(Some(tree));
+    }
     Ok(Plan {
         index: out,
         remove: u.remove,

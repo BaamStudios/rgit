@@ -24,6 +24,7 @@
 
 pub mod advice;
 mod messages;
+pub mod width;
 
 pub use advice::{Advice, Advisor};
 

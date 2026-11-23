@@ -46,7 +46,7 @@ mod write;
 
 pub use entry::{Entry, Flags, Mode, Stage, Stat, Time, verify_path};
 pub use error::{AddError, Error, OrderError};
-pub use file::{INDEX_FILE_ENV, WriteError, index_path};
+pub use file::{INDEX_FILE_ENV, WriteError, index_path, notify_written, set_write_observer};
 pub use index::{AddOptions, Index};
 pub use read::ReadOptions;
 pub use tree::{CacheTree, TreeNode};

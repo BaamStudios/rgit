@@ -31,9 +31,56 @@ pub struct Objects {
     dir: PathBuf,
     count: OnceCell<u64>,
     shallow: HashSet<ObjectId>,
+    /// Replacements (`refs/replace/<id>`), see [`Objects::use_replace_refs`].
+    replace: std::collections::HashMap<ObjectId, ObjectId>,
+    replacing: bool,
 }
 
 impl Objects {
+    /// Read replaced objects through their replacements (git-replace(1)):
+    /// the refs under `refs/replace/` (`$GIT_REPLACE_REF_BASE`), unless
+    /// `disabled` (`--no-replace-objects`), `$GIT_NO_REPLACE_OBJECTS` or
+    /// `core.useReplaceRefs=false` turn that off.
+    pub fn use_replace_refs(&mut self, refs: &Refs, config: &ConfigSet, disabled: bool) {
+        if disabled
+            || std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_some()
+            || config.bool("core.useReplaceRefs").ok().flatten() == Some(false)
+        {
+            return;
+        }
+        self.replacing = true;
+        let base = std::env::var("GIT_REPLACE_REF_BASE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "refs/replace/".to_owned());
+        let kind = self.odb.hash_kind();
+        let mut map = std::collections::HashMap::new();
+        let _ = refs.for_each_ref(&base, &mut |name, target| {
+            if let Some(hex) = name.strip_prefix(base.as_str()) {
+                if let Ok(id) = ObjectId::from_hex(kind, hex.as_bytes()) {
+                    map.insert(id, *target);
+                }
+            }
+        });
+        self.replace = map;
+    }
+
+    /// Whether replace refs are in use (see [`Objects::use_replace_refs`]).
+    pub fn replacing(&self) -> bool {
+        self.replacing
+    }
+
+    /// `oid` after following its replacements.
+    fn replaced<'a>(&'a self, mut oid: &'a ObjectId) -> &'a ObjectId {
+        for _ in 0..16 {
+            match self.replace.get(oid) {
+                Some(next) if next != oid => oid = next,
+                _ => break,
+            }
+        }
+        oid
+    }
+
     /// The objects in `dir`; `shallow` is the repository's `shallow` file.
     pub fn new(dir: PathBuf, kind: HashKind, shallow: &std::path::Path) -> Objects {
         let odb = ObjectDatabase::open_with_packs(&dir, kind, LooseOptions::default());
@@ -47,6 +94,8 @@ impl Objects {
             dir,
             count: OnceCell::new(),
             shallow,
+            replace: std::collections::HashMap::new(),
+            replacing: false,
         }
     }
 }
@@ -68,14 +117,14 @@ impl ObjectLookup for Objects {
     }
 
     fn read(&self, oid: &ObjectId) -> Result<Option<(ObjectKind, Vec<u8>)>, LookupError> {
-        match self.odb.read(oid) {
+        match self.odb.read(self.replaced(oid)) {
             Ok(r) => Ok(r.map(|r| (r.kind, r.data))),
             Err(e) => Err(odb_error(e)),
         }
     }
 
     fn kind(&self, oid: &ObjectId) -> Result<Option<ObjectKind>, LookupError> {
-        match self.odb.header(oid) {
+        match self.odb.header(self.replaced(oid)) {
             Ok(h) => Ok(h.map(|h| h.kind)),
             Err(e) => Err(odb_error(e)),
         }

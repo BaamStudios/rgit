@@ -79,10 +79,16 @@ fn split_header(argv: &[String]) -> (Vec<String>, Header) {
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
-    if let Some(code) = diff::help(argv, &format!("usage: {}\n{}", msg::USAGE[0], dmsg::COMMON_OPTIONS)) {
+    let help = format!(
+        "usage: {}\n\n{}{}",
+        msg::USAGE[0],
+        msg::OPTIONS,
+        dmsg::COMMON_OPTIONS
+    );
+    if let Some(code) = diff::help(argv, &help) {
         return Ok(code);
     }
-    let usage = || usage_exit(format!("usage: {}\n{}", msg::USAGE[0], dmsg::COMMON_OPTIONS));
+    let usage = || usage_exit(help.clone());
     let (argv_rest, mut header) = split_header(&argv[1..]);
     let mut merge_base = false;
     let mut stdin = false;
