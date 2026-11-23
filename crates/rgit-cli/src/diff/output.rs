@@ -1983,6 +1983,10 @@ impl Output<'_> {
                 self.external_side(&p.new, n, &p.path)?,
             ))
         };
+        // Two different names without a rename (`--no-index`): the new
+        // name follows, without an extended header.
+        let renamed_names = (p.renamed.is_none() && !p.unmerged && p.old_path != p.path)
+            .then(|| (&p.path[..], String::new()));
         let rename = p.renamed.map(|c| {
             let word = if c == b'C' { "copy" } else { "rename" };
             let q = |path: &[u8]| {
@@ -2000,6 +2004,7 @@ impl Output<'_> {
                 ),
             )
         });
+        let rename = rename.or(renamed_names);
         let cwd = if self.convert {
             self.repo.and_then(|r| r.setup.work_tree.clone())
         } else {
@@ -2061,14 +2066,33 @@ impl Output<'_> {
         };
         let data = l.as_ref().map(|l| l.data.clone()).unwrap_or_default();
         let regular = is_file_mode(s.mode) && type_bits(s.mode) != GITLINK_MODE;
-        let mut in_worktree = s.file.is_some() && self.convert && regular;
+        // The file as the program (run at the top of the work tree) finds
+        // it: the path before --relative cut it; `--no-index` files as
+        // they were named.
+        let mut file = match &self.relative {
+            Some(prefix) if self.convert => {
+                let mut full = prefix.clone();
+                if !full.is_empty() && !full.ends_with(b"/") {
+                    full.push(b'/');
+                }
+                full.extend_from_slice(path);
+                full
+            }
+            _ => path.to_vec(),
+        };
+        let no_index_file = s.file.as_ref().filter(|_| !self.convert && regular);
+        if let Some(f) = no_index_file {
+            file = f.as_os_str().as_encoded_bytes().to_vec();
+        }
+        let mut in_worktree =
+            (s.file.is_some() && self.convert && regular) || no_index_file.is_some();
         let repo = self.repo.filter(|_| self.convert && regular);
         let mut shown = data;
         if let (Some(repo), false) = (repo, in_worktree) {
             // git hands over the work tree file when it has the same
             // contents.
             if let Some(root) = &repo.setup.work_tree {
-                let full = root.join(external::os(path));
+                let full = root.join(external::os(&file));
                 let meta = std::fs::symlink_metadata(&full).ok();
                 if meta.is_some_and(|m| m.is_file()) && type_bits(s.mode) != 0o120000 {
                     if let Ok(raw) = std::fs::read(&full) {
@@ -2091,6 +2115,7 @@ impl Output<'_> {
             mode: s.mode,
             in_worktree,
             path,
+            file,
         }))
     }
 

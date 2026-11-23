@@ -311,6 +311,45 @@ fn external_diff_of_rename() {
         .run();
 }
 
+/// The program gets the work tree file as git names it: with
+/// `--relative` the path from the top (it runs there), with `--no-index`
+/// the files as given, plus the new name when the names differ.
+#[test]
+fn external_diff_file_names() {
+    let fx = || {
+        Fixture::new()
+            .rgit(env!("CARGO_BIN_EXE_rgit"))
+            .git(["init", "-q"])
+            .write("sub/f", "a\n")
+            .write("top", "t\n")
+            .write_executable("ext", "#!/bin/sh\necho \"$# $1 $5 $8\"\n")
+            .write_executable("all", "#!/bin/sh\necho \"$*\"\n")
+            .git(["add", "."])
+            .git(["commit", "-q", "-m", "one"])
+            .write("sub/f", "b\n")
+            .write("top", "u\n")
+            .write("x", "same\n")
+            .write_executable("y", "same\n")
+    };
+    for (dir, argv) in [
+        ("", &["diff", "--relative=sub"][..]),
+        ("sub", &["diff", "--relative"]),
+        ("", &["diff", "--no-index", "x", "y"]),
+    ] {
+        // The program runs at the top of the work tree.
+        let prog = if argv.contains(&"--no-index") {
+            "./all"
+        } else {
+            "./ext"
+        };
+        fx().compare(argv)
+            .in_dir(dir)
+            .env("GIT_EXTERNAL_DIFF", prog)
+            .checks(Check::OUTPUT)
+            .run();
+    }
+}
+
 #[test]
 fn output_option() {
     let mut fx = fixture();
