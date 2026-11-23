@@ -54,7 +54,7 @@ pub(crate) mod attrs;
 #[path = "merge/message.rs"]
 pub(crate) mod message;
 #[path = "merge/resolve.rs"]
-mod resolve;
+pub(crate) mod resolve;
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

@@ -466,7 +466,7 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
         });
         opts.push_bisect_refs(&terms.new, &terms.old, has_new, has_old);
     }
-    if opts.has_no_tips() && !opts.stdin && !opts.bisect {
+    if opts.has_no_tips() && !opts.stdin && !opts.bisect && !opts.merge {
         match cmd {
             Command::RevList => {
                 let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
@@ -1415,8 +1415,21 @@ impl Printer<'_, '_> {
                 {
                     return self.combined_diff(d, &parents, &tree, walk_error);
                 }
-                // Other formats compare with the first parent.
-                MergeDiff::Combined | MergeDiff::Dense => Some(parents[0]),
+                // Other formats compare with the first parent; the
+                // statistics are separated even from a one-line entry.
+                MergeDiff::Combined | MergeDiff::Dense => {
+                    let first = Some(parents[0]);
+                    let mut bytes = self.diff_against(d, first, &tree, walk_error)?;
+                    let f = d.formats;
+                    if self.style.pretty == Pretty::Oneline
+                        && self.cmd != Command::RevList
+                        && (f.stat || f.numstat || f.shortstat || f.summary || f.dirstat || f.check)
+                        && self.has_changes(d, first, &tree, walk_error)?
+                    {
+                        bytes.insert(0, b'\n');
+                    }
+                    return Ok(bytes);
+                }
                 MergeDiff::Remerge => return self.remerge_diff(d, id, &parents, &tree),
             },
         };
@@ -1459,8 +1472,11 @@ impl Printer<'_, '_> {
         tree: &ObjectId,
         walk_error: impl Fn() -> Die,
     ) -> Result<Vec<u8>, Die> {
-        let bytes = self.render_diff(d, old, tree, d.formats, walk_error)?;
-        if bytes.is_empty() {
+        let bytes = self.render_diff(d, old, tree, d.formats, &walk_error)?;
+        // An empty `--dirstat` (changes below its limit) or `--check`
+        // (no whitespace errors) still separates.
+        let quiet = d.formats.dirstat || d.formats.check;
+        if bytes.is_empty() && !(quiet && self.has_changes(d, old, tree, &walk_error)?) {
             return Ok(bytes);
         }
         let mut text = Vec::new();
@@ -1475,6 +1491,24 @@ impl Printer<'_, '_> {
         }
         text.extend_from_slice(&bytes);
         Ok(text)
+    }
+
+    /// Whether `tree` differs from the tree of commit `old` (none: the
+    /// empty tree) in the paths the diff is limited to.
+    fn has_changes(
+        &self,
+        d: &LogDiff,
+        old: Option<ObjectId>,
+        tree: &ObjectId,
+        walk_error: impl Fn() -> Die,
+    ) -> Result<bool, Die> {
+        let names = crate::diff::options::Formats {
+            name_only: true,
+            ..Default::default()
+        };
+        Ok(!self
+            .render_diff(d, old, tree, names, walk_error)?
+            .is_empty())
     }
 
     /// The diff of `tree` against the tree of commit `old` (none: the
@@ -1612,7 +1646,6 @@ impl Printer<'_, '_> {
             if statistics.any() {
                 bytes = self.render_diff(d, Some(parents[0]), tree, statistics, &walk_error)?;
             }
-            let before_raw = bytes.len();
             if d.formats.raw {
                 // log and show abbreviate raw ids unless --full-index.
                 let abbrev = match d.opts.abbrev {
@@ -1625,7 +1658,7 @@ impl Printer<'_, '_> {
                 crate::diff::combined::raw(&d.repo, &files, abbrev, style, &mut bytes);
             }
             if d.formats.patch {
-                if statistics.any() || (d.formats.raw && bytes.len() > before_raw) {
+                if !bytes.is_empty() {
                     bytes.push(b'\n');
                 }
                 let opts = crate::diff::combined::PatchOptions {
@@ -2039,23 +2072,49 @@ fn textconv_blob(p: &Printer<'_, '_>, name: &str, data: Vec<u8>) -> Result<Vec<u
     }
 }
 
-fn show_objects(p: &mut Printer<'_, '_>) -> Result<i32, Die> {
+fn show_objects(p: &mut Printer<'_, '_>, mut paths: Option<paths::PathFilter>) -> Result<i32, Die> {
     let repo = p.repo;
     let opts = p.opts;
     let mut shown = std::collections::HashSet::new();
-    let args: Vec<String> = opts
-        .tips
-        .iter()
-        .filter_map(|t| match t {
-            options::Tip::Rev { arg, .. } => Some(arg.clone()),
-            options::Tip::Refs { .. } => None,
-        })
-        .collect();
-    for arg in &args {
-        let mut id = repo
-            .resolver
-            .resolve(arg)
-            .map_err(|_| Die::Fatal(msg::bad_revision(arg)))?;
+    // Ref sets (`--all`, `--tags`, ...) stand for the objects their refs
+    // point to, in ref order.
+    let mut items: Vec<(String, ObjectId)> = Vec::new();
+    for tip in &opts.tips {
+        match tip {
+            options::Tip::Rev { arg, .. } => match repo.resolver.resolve(arg) {
+                Ok(id) => items.push((arg.clone(), id)),
+                // `<rev>^@`: the parents of `<rev>`.
+                Err(_) if arg.ends_with("^@") => {
+                    let bad = || Die::Fatal(msg::bad_revision(arg));
+                    let base = repo
+                        .resolver
+                        .resolve(&format!("{}^{{commit}}", &arg[..arg.len() - 2]))
+                        .map_err(|_| bad())?;
+                    let (_, data) = repo.objects.read(&base).ok().flatten().ok_or_else(bad)?;
+                    let commit =
+                        Commit::parse(repo.objects.hash_kind(), &data).map_err(|_| bad())?;
+                    for parent in commit.parents().map_err(|_| bad())? {
+                        items.push((parent.to_hex(), parent));
+                    }
+                }
+                Err(_) => return Err(Die::Fatal(msg::bad_revision(arg))),
+            },
+            options::Tip::Refs {
+                set,
+                exclude,
+                hidden,
+                ..
+            } => items.extend(tips::named_refs(
+                repo,
+                opts,
+                set,
+                exclude,
+                hidden.as_deref(),
+            )?),
+        }
+    }
+    for (arg, id) in &items {
+        let mut id = *id;
         let mut name = arg.clone();
         loop {
             let bad = || Die::Fatal(msg::bad_object(&id.to_hex()));
@@ -2063,7 +2122,7 @@ fn show_objects(p: &mut Printer<'_, '_>) -> Result<i32, Die> {
             match kind {
                 ObjectKind::Commit => {
                     if shown.insert(id) {
-                        show_commit(p, &id)?;
+                        show_commit(p, &id, &mut paths)?;
                     }
                 }
                 ObjectKind::Tag => {
@@ -2108,24 +2167,32 @@ fn show_objects(p: &mut Printer<'_, '_>) -> Result<i32, Die> {
     Ok(0)
 }
 
-/// One commit of `show`.
-fn show_commit(p: &mut Printer<'_, '_>, id: &ObjectId) -> Result<(), Die> {
+/// One commit of `show`; with paths a commit that does not change them
+/// (TREESAME) is left out.
+fn show_commit(
+    p: &mut Printer<'_, '_>,
+    id: &ObjectId,
+    paths: &mut Option<paths::PathFilter>,
+) -> Result<(), Die> {
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
     let opts = rgit_revwalk::walk::WalkOptions {
         no_walk: Some(rgit_revwalk::walk::NoWalk::Unsorted),
+        prune: paths.is_some(),
         ..Default::default()
     };
     let commits = Commits {
         repo: p.repo,
         grep: None,
         patch_ids: None,
-        paths: None,
+        paths: paths.take(),
         mailmap: None,
         diff_limit: None,
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
-    if let Some(s) = walk.next_shown().map_err(walk_error)? {
+    let shown = walk.next_shown().map_err(walk_error);
+    *paths = walk.source_mut().paths.take();
+    if let Some(s) = shown? {
         p.commit(&walk, &s)?;
     }
     Ok(())
@@ -2266,6 +2333,8 @@ fn any_format(d: &crate::diff::options::DiffOpts) -> bool {
         || d.stat
         || d.shortstat
         || d.summary
+        || d.check
+        || d.dirstat.is_some()
 }
 
 /// The lane colours of `--graph` (`log.graphColors`, comma-separated
@@ -2655,19 +2724,30 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         };
         return run_objects(&mut p, &mut walk, &resolved, mode, pathspec);
     }
-    // `show` walks only for ranges, exclusions and `-<n>`.
-    let single = |t: &options::Tip| {
-        matches!(t, options::Tip::Rev { arg, negate: false }
-            if !arg.contains("..") && !arg.starts_with('^'))
+    // `show` walks only for ranges, exclusions and `-<n>`; ref sets such
+    // as `--all` name single objects too.
+    let single = |t: &options::Tip| match t {
+        options::Tip::Rev { arg, negate } => {
+            !negate && !arg.contains("..") && !arg.starts_with('^') && !arg.ends_with("^!")
+        }
+        options::Tip::Refs { set, negative, .. } => {
+            !negative
+                && !matches!(
+                    set,
+                    options::RefSet::Indexed | options::RefSet::AlternateRefs
+                )
+        }
     };
-    if opts.show && opts.walk.max_count.is_none() && opts.tips.iter().all(single) {
+    if opts.show && !opts.merge && opts.walk.max_count.is_none() && opts.tips.iter().all(single) {
         if opts.graph {
             return Err(Die::Fatal(msg::cannot_be_used_together(
                 "--no-walk",
                 "--graph",
             )));
         }
-        return show_objects(&mut p);
+        let mut scratch = opts.walk.clone();
+        let paths = path_filter(ctx, repo, opts, &resolved.paths, &mut scratch)?;
+        return show_objects(&mut p, paths);
     }
     if bisecting {
         return run_bisect(&mut p, &mut walk);

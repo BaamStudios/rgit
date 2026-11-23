@@ -331,6 +331,98 @@ fn help_pages() {
     }
 }
 
+/// The supported man viewers `woman` (emacsclient) and `konqueror`
+/// (kfmclient) with `man.<tool>.path`, `$GIT_MAN_VIEWER` and the
+/// warnings; every viewer is a stub that prints its arguments.
+#[test]
+fn man_viewers() {
+    let stub = |name: &str| {
+        format!(
+            "#!/bin/sh\necho \"{name}: $*\" >&2\ncase \"$1\" in --version) echo \"${{VER-emacsclient 29.1}}\";; esac\nexit ${{STUBEXIT:-0}}\n"
+        )
+    };
+    let mut fx = fixture()
+        .write_executable("bin/emacsclient", stub("emacsclient"))
+        .write_executable("bin/kfmclient", stub("kfmclient"))
+        .write_executable("bin/man", stub("man"))
+        .write_executable("bin/myemacs", stub("myemacs"))
+        .write_executable("konq/kfmclient", stub("konq-kfmclient"));
+    if fx.is_skipped() {
+        return;
+    }
+    // The runs happen in copies of the work tree: relative paths.
+    let path = format!("bin:{}", std::env::var("PATH").unwrap_or_default());
+    let myemacs = "man.woman.path=bin/myemacs";
+    let konq = "man.konqueror.path=konq/konqueror";
+    type Case<'a> = (Vec<&'a str>, Vec<(&'a str, &'a str)>);
+    let cases: Vec<Case> = vec![
+        (vec!["-c", "man.viewer=woman", "help", "log"], vec![]),
+        (
+            vec!["-c", "man.viewer=woman", "-c", myemacs, "help", "log"],
+            vec![],
+        ),
+        (
+            vec!["-c", "man.viewer=woman", "help", "log"],
+            vec![("VER", "emacsclient 21.4")],
+        ),
+        (
+            vec!["-c", "man.viewer=woman", "help", "log"],
+            vec![("VER", "foo")],
+        ),
+        (
+            vec!["-c", "man.viewer=woman", "help", "log"],
+            vec![("STUBEXIT", "3")],
+        ),
+        (vec!["-c", "man.viewer=konqueror", "help", "log"], vec![]),
+        (
+            vec!["-c", "man.viewer=konqueror", "help", "log"],
+            vec![("DISPLAY", ":9")],
+        ),
+        (
+            vec!["-c", "man.viewer=konqueror", "-c", konq, "help", "log"],
+            vec![("DISPLAY", ":9")],
+        ),
+        (
+            vec![
+                "-c",
+                "man.viewer=konqueror",
+                "-c",
+                "man.konqueror.path=/nonexistent/x",
+                "help",
+                "log",
+            ],
+            vec![("DISPLAY", ":9")],
+        ),
+        (
+            vec![
+                "-c",
+                "man.viewer=woman",
+                "-c",
+                "man.woman.cmd=myemacs",
+                "help",
+                "log",
+            ],
+            vec![],
+        ),
+        (
+            vec!["-c", "man.viewer=bogus", "help", "log"],
+            vec![("GIT_MAN_VIEWER", "woman")],
+        ),
+        (vec!["help", "log"], vec![("GIT_MAN_VIEWER", "bogus")]),
+        (
+            vec!["-c", "man.viewer=x", "-c", "man.x.cmd=echo", "help", "log"],
+            vec![],
+        ),
+    ];
+    for (args, env) in &cases {
+        let mut c = fx.compare(args).env("PATH", &path).env("DISPLAY", "");
+        for (k, v) in env {
+            c = c.env(k, v);
+        }
+        c.run();
+    }
+}
+
 #[test]
 fn dashed_name_of_a_non_builtin() {
     let rgit = env!("CARGO_BIN_EXE_rgit");
