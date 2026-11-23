@@ -7,7 +7,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
 use crate::command::Command;
 use crate::sigpipe::IgnoreSigpipe;
-use crate::{Connection, Error, Result, messages};
+use crate::{Connection, Error, Result, WriteHalf, messages};
 
 /// A running child process speaking the protocol on stdin/stdout. Its
 /// stderr is inherited, so ssh password prompts and remote messages reach
@@ -15,7 +15,7 @@ use crate::{Connection, Error, Result, messages};
 #[derive(Debug)]
 pub struct ChildConnection {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Stdin,
     stdout: ChildStdout,
     /// A service that exits early (a fake `--upload-pack`, a failing
     /// server) must not kill rgit with SIGPIPE: writes fail with EPIPE.
@@ -34,10 +34,36 @@ impl ChildConnection {
         };
         Ok(ChildConnection {
             child,
-            stdin,
+            stdin: Stdin(Some(stdin)),
             stdout,
             _sigpipe: IgnoreSigpipe::new(),
         })
+    }
+}
+
+/// The child's standard input, closed early by [`WriteHalf::close_write`].
+#[derive(Debug)]
+struct Stdin(Option<ChildStdin>);
+
+impl Write for Stdin {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &mut self.0 {
+            Some(s) => s.write(buf),
+            None => Err(io::ErrorKind::BrokenPipe.into()),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.0 {
+            Some(s) => s.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+impl WriteHalf for Stdin {
+    fn close_write(&mut self) {
+        self.0 = None;
     }
 }
 
@@ -82,7 +108,7 @@ impl Connection for ChildConnection {
         Ok(())
     }
 
-    fn split(&mut self) -> (&mut (dyn Read + Send), &mut (dyn Write + Send)) {
+    fn split(&mut self) -> (&mut (dyn Read + Send), &mut dyn WriteHalf) {
         (&mut self.stdout, &mut self.stdin)
     }
 

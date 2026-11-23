@@ -827,7 +827,7 @@ impl Connection for Watched {
     fn end_request(&mut self) -> rgit_transport::Result<()> {
         self.inner.end_request()
     }
-    fn split(&mut self) -> (&mut (dyn Read + Send), &mut (dyn Write + Send)) {
+    fn split(&mut self) -> (&mut (dyn Read + Send), &mut dyn rgit_transport::WriteHalf) {
         self.inner.split()
     }
     fn close(self: Box<Self>) -> rgit_transport::Result<()> {

@@ -128,6 +128,23 @@ pub trait Transport {
     fn connect(&mut self, options: &ConnectOptions) -> Result<Box<dyn Connection>>;
 }
 
+/// The write half of [`Connection::split`].
+pub trait WriteHalf: Write + Send {
+    /// End the service's input early, while its response can still be
+    /// read: it sees end of file (a pack that could not be completed).
+    /// Later writes fail. Stateless connections ignore it.
+    fn close_write(&mut self) {}
+}
+
+/// The request buffer of a stateless connection.
+impl WriteHalf for Vec<u8> {}
+
+impl WriteHalf for std::net::TcpStream {
+    fn close_write(&mut self) {
+        let _ = self.shutdown(std::net::Shutdown::Write);
+    }
+}
+
 /// A bidirectional stream to one remote service. See the
 /// [crate documentation](crate) for the request/response contract.
 pub trait Connection: Read + Write + Send {
@@ -143,7 +160,7 @@ pub trait Connection: Read + Write + Send {
     /// Separate read and write halves, for callers that read the response
     /// while still writing (e.g. `push` reading sideband progress while it
     /// sends the pack from another thread).
-    fn split(&mut self) -> (&mut (dyn Read + Send), &mut (dyn Write + Send));
+    fn split(&mut self) -> (&mut (dyn Read + Send), &mut dyn WriteHalf);
 
     /// Close the write side and wait for the remote service to finish
     /// (child process exit, end of the HTTP response). A service that

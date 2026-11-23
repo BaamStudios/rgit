@@ -275,7 +275,7 @@ impl Connection for TcpConnection {
         Ok(())
     }
 
-    fn split(&mut self) -> (&mut (dyn Read + Send), &mut (dyn Write + Send)) {
+    fn split(&mut self) -> (&mut (dyn Read + Send), &mut dyn crate::WriteHalf) {
         (&mut self.read, &mut self.write)
     }
 

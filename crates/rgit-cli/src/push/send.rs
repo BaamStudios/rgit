@@ -290,11 +290,25 @@ pub fn exchange(session: &mut Session, out: &Outgoing<'_>) -> Result<Option<Repo
     std::thread::scope(|s| {
         let reader = s.spawn(move || read_response(r, sideband, report));
         let written = write_request(w, out, adv);
+        if written.is_err() {
+            // The pack could not be completed (an object that cannot be
+            // read): end the server's input so that it answers instead of
+            // waiting for the rest.
+            w.close_write();
+        }
         let read = reader
             .join()
             .unwrap_or_else(|_| Err(PError::Unexpected("reader thread".into())));
-        written?;
-        read.map_err(|e| e.to_string())
+        match (written, read) {
+            (Ok(()), read) => read.map_err(|e| e.to_string()),
+            // Like git: the failure of the local pack, then the server's
+            // report (which rejects the refs).
+            (Err(e), Ok(Some(report))) => {
+                eprintln!("fatal: {e}");
+                Ok(Some(report))
+            }
+            (Err(e), _) => Err(e),
+        }
     })
 }
 
