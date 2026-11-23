@@ -50,7 +50,8 @@ pub fn failed_reading_ssh_signature(path: &str, reason: &str) -> String {
     format!("failed reading ssh signing data buffer from '{path}': {reason}")
 }
 
-pub const CANNOT_CREATE_TEMP_SIG: &str = "could not create temporary file";
+/// A tag merged into a commit whose signature could not be checked.
+pub const NO_SIGNATURE_SHOWN: &str = "No signature";
 
 pub const ALLOWED_SIGNERS_NEEDED: &str =
     "gpg.ssh.allowedSignersFile needs to be configured and exist for ssh signature verification";

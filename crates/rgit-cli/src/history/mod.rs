@@ -944,6 +944,12 @@ impl Printer<'_, '_> {
             let good = match verify::tag_signature(&data) {
                 Some((payload, sig)) => {
                     let c = verify::check(settings, &payload, &sig);
+                    if c.not_run {
+                        text.extend_from_slice(
+                            crate::messages::signing::NO_SIGNATURE_SHOWN.as_bytes(),
+                        );
+                        text.push(b'\n');
+                    }
                     text.extend_from_slice(&c.output);
                     c.good(min)
                 }
@@ -1531,6 +1537,10 @@ impl Printer<'_, '_> {
                 let end = if self.opts.zero { 0 } else { b'\n' };
                 if !terminator && !self.first && self.graph.is_none() {
                     self.out.push(end);
+                }
+                if self.show_signature {
+                    let block = self.signature_block(&s.id, commit, &commit.serialize());
+                    self.out.extend_from_slice(&block);
                 }
                 self.out.extend_from_slice(&prefix);
                 self.out.extend_from_slice(&expanded);

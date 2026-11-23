@@ -42,6 +42,8 @@ pub(crate) struct Check {
     pub(crate) status: Vec<u8>,
     /// The program itself accepted the signature.
     verified: bool,
+    /// The program could not even be asked (no temporary file).
+    pub(crate) not_run: bool,
 }
 
 impl Default for Check {
@@ -56,6 +58,7 @@ impl Default for Check {
             output: Vec::new(),
             status: Vec::new(),
             verified: false,
+            not_run: false,
         }
     }
 }
@@ -205,9 +208,15 @@ pub(crate) fn check(settings: &Settings, payload: &[u8], signature: &[u8]) -> Ch
     if format == Format::Ssh {
         return check_ssh(settings, &program, payload, signature);
     }
-    let Ok(sig_file) = temp_file(".git_vtag_tmp", signature) else {
-        eprintln!("error: {}", msg::CANNOT_CREATE_TEMP_SIG);
-        return Check::default();
+    let sig_file = match temp_file(".git_vtag_tmp", signature) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: {}", msg::cannot_create_temp(&e));
+            return Check {
+                not_run: true,
+                ..Check::default()
+            };
+        }
     };
     let path = sig_file.path().display().to_string();
     let mut args = Vec::new();
@@ -309,9 +318,15 @@ fn check_ssh(settings: &Settings, program: &str, payload: &[u8], signature: &[u8
             }
         })
     };
-    let Ok(sig_file) = temp_file(".git_vtag_tmp", signature) else {
-        eprintln!("error: {}", msg::CANNOT_CREATE_TEMP_SIG);
-        return Check::default();
+    let sig_file = match temp_file(".git_vtag_tmp", signature) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: {}", msg::cannot_create_temp(&e));
+            return Check {
+                not_run: true,
+                ..Check::default()
+            };
+        }
     };
     let sig_path = sig_file.path().display().to_string();
     let time = payload_time(payload).map(|t| format!("-Overify-time={}", local_stamp(t)));

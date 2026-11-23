@@ -615,6 +615,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         rebase,
         Some(Rebase::True | Rebase::Merges | Rebase::Interactive)
     );
+    if rebasing && args.verify_signatures.as_deref() == Some("--verify-signatures") {
+        eprintln!("warning: {}", msg::IGNORING_VERIFY_SIGNATURES);
+    }
 
     // Nothing may be in the way of a merge.
     let git_dir = repo.setup.cwd.join(&repo.setup.git_dir);

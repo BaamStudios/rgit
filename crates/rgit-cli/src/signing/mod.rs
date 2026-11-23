@@ -418,10 +418,10 @@ fn normalize_newlines(sig: Vec<u8>) -> Vec<u8> {
 
 /// A temporary file in the system's temporary directory.
 pub(crate) fn temp_file(prefix: &str, data: &[u8]) -> Result<rgit_fs::TempFile, String> {
-    let mut f =
-        rgit_fs::TempFile::new_in(std::env::temp_dir(), prefix).map_err(|e| e.to_string())?;
-    f.write_all(data).map_err(|e| e.to_string())?;
-    f.flush().map_err(|e| e.to_string())?;
+    let mut f = rgit_fs::TempFile::new_in(std::env::temp_dir(), prefix)
+        .map_err(|e| rgit_messages::strerror(&e))?;
+    f.write_all(data).map_err(|e| rgit_messages::strerror(&e))?;
+    f.flush().map_err(|e| rgit_messages::strerror(&e))?;
     Ok(f)
 }
 
