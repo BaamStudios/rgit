@@ -13,3 +13,4 @@ Milestones:
 Topics:
 
 - [Hooks: runner, call sites and owners](hooks.md)
+- [HTTP configuration: what rgit supports](http-config.md)

@@ -15,6 +15,11 @@
 //!   content type.
 //! - `/status/<code>/...`: always answers with that status.
 //! - `/slow/...`: sends headers, then stalls.
+//! - `/once429/<retry-after>/<rest>`: `429` on the first request for each
+//!   path, then `/<rest>`.
+//! - `/cookie/<rest>`: `/<rest>` plus `Set-Cookie: name=value`.
+//! - `/bearer/<rest>`: `401` with Bearer and Basic challenges unless the
+//!   request has `Authorization: Bearer s3cret`, then `/<rest>`.
 //!
 //! Requests in absolute form (`GET http://host/path`) are accepted, so a
 //! [`Proxy`] can pass them through unchanged. Every request is recorded in
@@ -62,6 +67,7 @@ struct Shared {
     root: PathBuf,
     log: Mutex<Vec<Logged>>,
     stop: AtomicBool,
+    hits: Mutex<HashMap<String, usize>>,
 }
 
 pub struct Server {
@@ -81,6 +87,7 @@ impl Server {
             root,
             log: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
+            hits: Mutex::new(HashMap::new()),
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -510,6 +517,64 @@ fn handle(
             Vec::new(),
             false,
         );
+    }
+    if let Some(rest) = path.strip_prefix("/once429/") {
+        // `/once429/<retry-after>/<rest>`: the first request for each path
+        // gets 429 (`none`: without `Retry-After`), later ones go on.
+        let (after, rest) = rest.split_once('/').unwrap();
+        let first = {
+            let mut hits = sh.hits.lock().unwrap();
+            let n = hits.entry(path.clone()).or_insert(0);
+            *n += 1;
+            *n == 1
+        };
+        if first {
+            let mut h = vec![
+                ("Content-Type".into(), "text/plain".into()),
+                ("Content-Length".into(), "13".into()),
+            ];
+            if after != "none" {
+                h.push(("Retry-After".into(), after.to_string()));
+            }
+            return (429, h, b"Rate limited\n".to_vec(), false);
+        }
+        let q = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{query}")
+        };
+        return handle(sh, method, &format!("/{rest}{q}"), headers, body, port);
+    }
+    if let Some(rest) = path.strip_prefix("/cookie/") {
+        // Sets a cookie, and reports the cookies it got in `X-Cookie`.
+        let q = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{query}")
+        };
+        let mut reply = handle(sh, method, &format!("/{rest}{q}"), headers, body, port);
+        reply.1.push(("Set-Cookie".into(), "name=value".into()));
+        return reply;
+    }
+    if let Some(rest) = path.strip_prefix("/bearer/") {
+        if hdr("authorization").as_deref() != Some("Bearer s3cret") {
+            return (
+                401,
+                vec![
+                    ("WWW-Authenticate".into(), "Bearer realm=\"t\"".into()),
+                    ("WWW-Authenticate".into(), "Basic realm=\"t\"".into()),
+                    ("Content-Length".into(), "0".into()),
+                ],
+                Vec::new(),
+                false,
+            );
+        }
+        let q = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{query}")
+        };
+        return handle(sh, method, &format!("/{rest}{q}"), headers, body, port);
     }
     if let Some(rest) = path.strip_prefix("/status/") {
         let code: u16 = rest.split('/').next().unwrap().parse().unwrap();

@@ -23,10 +23,12 @@
 
 pub mod auth;
 mod client;
+mod cookies;
 mod error;
 pub mod messages;
 pub mod options;
 mod smart;
+mod socks;
 mod tls;
 mod trace;
 mod transport;
@@ -34,7 +36,10 @@ pub mod url;
 
 pub use auth::{Credential, CredentialProvider};
 pub use error::{Error, Result, Transport};
-pub use options::{FollowRedirects, HttpOptions, HttpVersion, Proxy};
+pub use options::{
+    EmptyAuth, FollowRedirects, HttpOptions, HttpVersion, ProactiveAuth, Proxy, ProxyAuthMethod,
+    ProxyKind, SslVersion,
+};
 pub use smart::{Advertisement, RpcBody, RpcResponse, Service, SmartHttp};
 pub use transport::{HttpTransport, transport_for};
 pub use url::{Scheme, Url};

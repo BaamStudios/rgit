@@ -26,6 +26,7 @@ use rgit_config::value::{parse_bool, parse_int};
 use rgit_config::{ConfigSet, Entry, Environment, IntWidth};
 
 use crate::error::Error;
+use crate::messages;
 use crate::url::{Scheme, Url, percent_decode};
 
 /// `http.followRedirects`.
@@ -49,6 +50,58 @@ pub enum HttpVersion {
     Http11,
     /// `HTTP/2` (served as HTTP/1.1).
     Http2,
+}
+
+/// `http.emptyAuth`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptyAuth {
+    /// `auto` (default): only when the server offers a scheme that needs it.
+    Auto,
+    /// `true`: send empty credentials with the first request.
+    Always,
+    /// `false`.
+    Never,
+}
+
+/// `http.proactiveAuth`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProactiveAuth {
+    /// `none` (default): authenticate after a `401` only.
+    None,
+    /// `basic`: ask the helper for a user name and password up front.
+    Basic,
+    /// `auto`: let the helper pick the scheme up front.
+    Auto,
+}
+
+/// `http.proxyAuthMethod`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyAuthMethod {
+    /// `anyauth` (default).
+    Any,
+    /// `basic`.
+    Basic,
+    /// `digest`.
+    Digest,
+    /// `negotiate`.
+    Negotiate,
+    /// `ntlm`.
+    Ntlm,
+}
+
+/// `http.sslVersion`: the lowest TLS version to accept. rustls speaks
+/// TLS 1.2 and 1.3 only, so every TLS version below 1.3 means "1.2 or
+/// later".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SslVersion {
+    /// Not configured (or `GIT_SSL_VERSION` is empty).
+    Default,
+    /// `tlsv1`, `tlsv1.0`, `tlsv1.1`, `tlsv1.2`.
+    Tls12,
+    /// `tlsv1.3`.
+    Tls13,
+    /// `sslv2`, `sslv3`: protocols rustls does not implement.
+    Ssl,
 }
 
 /// Effective HTTP settings for one remote URL.
@@ -90,6 +143,46 @@ pub struct HttpOptions {
     /// `protocol.<name>.allow` and `GIT_ALLOW_PROTOCOL` allow for a URL
     /// that does not come from the user (`user` does not count).
     pub redirect_schemes: Vec<&'static str>,
+    /// `http.cookieFile`; `Some("")` keeps cookies in memory only.
+    pub cookie_file: Option<PathBuf>,
+    /// `http.saveCookies`.
+    pub save_cookies: bool,
+    /// `http.curloptResolve` entries in order (`[+]HOST:PORT:ADDR[,ADDR]`,
+    /// `-HOST:PORT`).
+    pub resolve: Vec<String>,
+    /// `http.maxRetries` / `GIT_HTTP_MAX_RETRIES` (0 = no retries on 429).
+    pub max_retries: i64,
+    /// `http.retryAfter` / `GIT_HTTP_RETRY_AFTER` (seconds).
+    pub retry_after: i64,
+    /// `http.maxRetryTime` / `GIT_HTTP_MAX_RETRY_TIME` (seconds).
+    pub max_retry_time: i64,
+    /// `http.sslCert` / `GIT_SSL_CERT`.
+    pub ssl_cert: Option<PathBuf>,
+    /// `http.sslKey` / `GIT_SSL_KEY`.
+    pub ssl_key: Option<PathBuf>,
+    /// `http.sslCertPasswordProtected` / `GIT_SSL_CERT_PASSWORD_PROTECTED`.
+    pub ssl_cert_password_protected: bool,
+    /// `http.sslCertType` / `GIT_SSL_CERT_TYPE`.
+    pub ssl_cert_type: Option<String>,
+    /// `http.sslKeyType` / `GIT_SSL_KEY_TYPE`.
+    pub ssl_key_type: Option<String>,
+    /// `http.sslVersion` / `GIT_SSL_VERSION`.
+    pub ssl_version: SslVersion,
+    /// `http.sslCipherList` / `GIT_SSL_CIPHER_LIST`.
+    pub ssl_cipher_list: Option<String>,
+    /// `http.pinnedPubkey`.
+    pub pinned_pubkey: Option<String>,
+    /// `http.sslBackend`.
+    pub ssl_backend: Option<String>,
+    /// `http.emptyAuth`.
+    pub empty_auth: EmptyAuth,
+    /// `http.proactiveAuth`.
+    pub proactive_auth: ProactiveAuth,
+    /// `http.proxyAuthMethod` / `GIT_HTTP_PROXY_AUTHMETHOD`.
+    pub proxy_auth_method: ProxyAuthMethod,
+    /// Warnings git prints for unusable values (`unsupported ssl version
+    /// ...: using default`); the caller prints them as `warning: <line>`.
+    pub warnings: Vec<String>,
 }
 
 /// `http_proxy`, `https_proxy`, `all_proxy` and `no_proxy` as libcurl
@@ -108,6 +201,9 @@ pub struct EnvProxy {
 
 /// Default `http.postBuffer`.
 pub const DEFAULT_POST_BUFFER: usize = 1024 * 1024;
+
+/// Default `http.maxRetryTime` (seconds).
+pub const DEFAULT_MAX_RETRY_TIME: i64 = 300;
 
 impl Default for HttpOptions {
     fn default() -> Self {
@@ -128,6 +224,25 @@ impl Default for HttpOptions {
             smart: true,
             verbosity: 0,
             redirect_schemes: vec!["http", "https"],
+            cookie_file: None,
+            save_cookies: false,
+            resolve: Vec::new(),
+            max_retries: 0,
+            retry_after: 0,
+            max_retry_time: DEFAULT_MAX_RETRY_TIME,
+            ssl_cert: None,
+            ssl_key: None,
+            ssl_cert_password_protected: false,
+            ssl_cert_type: None,
+            ssl_key_type: None,
+            ssl_version: SslVersion::Default,
+            ssl_cipher_list: None,
+            pinned_pubkey: None,
+            ssl_backend: None,
+            empty_auth: EmptyAuth::Auto,
+            proactive_auth: ProactiveAuth::None,
+            proxy_auth_method: ProxyAuthMethod::Any,
+            warnings: Vec::new(),
         }
     }
 }
@@ -140,6 +255,8 @@ pub fn default_user_agent() -> String {
 /// A proxy to send requests through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proxy {
+    /// The protocol spoken with the proxy.
+    pub kind: ProxyKind,
     /// Host name.
     pub host: String,
     /// Port (libcurl's default is 1080).
@@ -148,6 +265,44 @@ pub struct Proxy {
     pub user: Option<String>,
     /// Password for Basic proxy authentication.
     pub password: Option<String>,
+    /// A Unix socket path (`socks5://localhost/path/to/socket`).
+    pub socket: Option<String>,
+}
+
+/// The proxy protocols git accepts (`[protocol://]` of `http.proxy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyKind {
+    /// `http://` (and no protocol).
+    Http,
+    /// `https://`: TLS to the proxy (not supported by rgit).
+    Https,
+    /// `socks4://`: the client resolves the target to IPv4.
+    Socks4,
+    /// `socks4a://`: the proxy resolves the target.
+    Socks4a,
+    /// `socks5://`: the client resolves the target.
+    Socks5,
+    /// `socks5h://`: the proxy resolves the target.
+    Socks5h,
+}
+
+impl ProxyKind {
+    /// Whether this is one of the SOCKS protocols.
+    pub fn is_socks(self) -> bool {
+        !matches!(self, ProxyKind::Http | ProxyKind::Https)
+    }
+
+    /// The scheme as written in the proxy URL.
+    pub fn scheme(self) -> &'static str {
+        match self {
+            ProxyKind::Http => "http",
+            ProxyKind::Https => "https",
+            ProxyKind::Socks4 => "socks4",
+            ProxyKind::Socks4a => "socks4a",
+            ProxyKind::Socks5 => "socks5",
+            ProxyKind::Socks5h => "socks5h",
+        }
+    }
 }
 
 impl HttpOptions {
@@ -179,6 +334,7 @@ impl HttpOptions {
         let mut best: std::collections::HashMap<Vec<u8>, Rank> = Default::default();
         let mut winners: Vec<(Vec<u8>, &Entry)> = Vec::new();
         let mut headers: Vec<String> = Vec::new();
+        let mut resolve: Vec<String> = Vec::new();
         for e in cfg.entries() {
             let (section, sub, key) = rgit_config::key::split_canonical(e.name.as_bstr());
             if section != "http" {
@@ -200,6 +356,14 @@ impl HttpOptions {
                 }
                 continue;
             }
+            if key == b"curloptresolve" {
+                match e.value.as_deref() {
+                    Some(v) if !v.is_empty() => resolve.push(v.to_str_lossy().into_owned()),
+                    Some(_) => resolve.clear(),
+                    None => return Err(cerr(e.string().unwrap_err())),
+                }
+                continue;
+            }
             let cur = best.get(&key).copied().unwrap_or(Rank::NONE);
             if rank >= cur {
                 best.insert(key.clone(), rank);
@@ -208,6 +372,10 @@ impl HttpOptions {
             }
         }
         self.extra_headers.extend(headers);
+        self.resolve.extend(resolve);
+        let string = |e: &Entry| -> Result<String, Error> {
+            Ok(e.string().map_err(cerr)?.to_str_lossy().into_owned())
+        };
         for (key, e) in winners {
             match key.as_slice() {
                 b"sslverify" => self.ssl_verify = e.bool().map_err(cerr)?,
@@ -250,8 +418,68 @@ impl HttpOptions {
                     } else if v == "HTTP/1.1" {
                         HttpVersion::Http11
                     } else {
+                        self.warnings
+                            .push(messages::unknown_http_version(&v.to_str_lossy()));
                         HttpVersion::Default
                     };
+                }
+                b"cookiefile" => self.cookie_file = e.path(env).map_err(cerr)?,
+                b"savecookies" => self.save_cookies = e.bool().map_err(cerr)?,
+                b"maxretries" => self.max_retries = e.int(IntWidth::I64).map_err(cerr)?,
+                b"retryafter" => self.retry_after = e.int(IntWidth::I64).map_err(cerr)?,
+                b"maxretrytime" => self.max_retry_time = e.int(IntWidth::I64).map_err(cerr)?,
+                b"sslcert" => self.ssl_cert = e.path(env).map_err(cerr)?,
+                b"sslkey" => self.ssl_key = e.path(env).map_err(cerr)?,
+                b"sslcertpasswordprotected" => {
+                    self.ssl_cert_password_protected = e.bool().map_err(cerr)?
+                }
+                b"sslcerttype" => self.ssl_cert_type = Some(string(e)?),
+                b"sslkeytype" => self.ssl_key_type = Some(string(e)?),
+                b"sslversion" => self.set_ssl_version(&string(e)?),
+                b"sslcipherlist" => self.ssl_cipher_list = Some(string(e)?),
+                b"pinnedpubkey" => self.pinned_pubkey = Some(string(e)?),
+                b"sslbackend" => self.ssl_backend = Some(string(e)?),
+                b"emptyauth" => {
+                    let v = e.value.as_deref().map(|v| v.as_bytes());
+                    self.empty_auth = if v.is_some_and(|v| v.eq_ignore_ascii_case(b"auto")) {
+                        EmptyAuth::Auto
+                    } else if e.bool().map_err(cerr)? {
+                        EmptyAuth::Always
+                    } else {
+                        EmptyAuth::Never
+                    };
+                }
+                b"proactiveauth" => {
+                    self.proactive_auth = match string(e)?.as_str() {
+                        "basic" => ProactiveAuth::Basic,
+                        "auto" => ProactiveAuth::Auto,
+                        "none" => ProactiveAuth::None,
+                        _ => {
+                            self.warnings
+                                .push(messages::UNKNOWN_PROACTIVE_AUTH.to_string());
+                            ProactiveAuth::None
+                        }
+                    };
+                }
+                b"proxyauthmethod" => self.set_proxy_auth_method(&string(e)?),
+                b"delegation" => {
+                    let v = string(e)?;
+                    if !matches!(v.as_str(), "none" | "policy" | "always") {
+                        self.warnings.push(messages::unknown_delegation(&v));
+                    }
+                }
+                // Checked like git, without an effect on this client (see
+                // docs/http-config.md).
+                b"maxrequests" | b"minsessions" | b"keepaliveidle" | b"keepaliveinterval"
+                | b"keepalivecount" => {
+                    e.int(IntWidth::I32).map_err(cerr)?;
+                }
+                b"noepsv"
+                | b"ssltry"
+                | b"schannelcheckrevoke"
+                | b"schannelusesslcainfo"
+                | b"proxysslcertpasswordprotected" => {
+                    e.bool().map_err(cerr)?;
                 }
                 _ => {}
             }
@@ -284,6 +512,44 @@ impl HttpOptions {
         {
             self.low_speed_time = v.max(0) as u64;
         }
+        let int = |n: &str| var(n).and_then(|v| parse_int(v.as_bytes(), IntWidth::I64).ok());
+        if let Some(v) = int("GIT_HTTP_MAX_RETRIES") {
+            self.max_retries = v;
+        }
+        if let Some(v) = int("GIT_HTTP_RETRY_AFTER") {
+            self.retry_after = v;
+        }
+        if let Some(v) = int("GIT_HTTP_MAX_RETRY_TIME") {
+            self.max_retry_time = v;
+        }
+        if let Some(v) = var("GIT_SSL_CERT") {
+            self.ssl_cert = Some(PathBuf::from(v));
+        }
+        if let Some(v) = var("GIT_SSL_KEY") {
+            self.ssl_key = Some(PathBuf::from(v));
+        }
+        if let Some(v) = var("GIT_SSL_CERT_TYPE") {
+            self.ssl_cert_type = Some(v);
+        }
+        if let Some(v) = var("GIT_SSL_KEY_TYPE") {
+            self.ssl_key_type = Some(v);
+        }
+        if let Some(v) = var("GIT_SSL_CERT_PASSWORD_PROTECTED") {
+            self.ssl_cert_password_protected = parse_bool(Some(v.as_bytes())).unwrap_or(false);
+        }
+        if let Some(v) = var("GIT_SSL_VERSION") {
+            if v.is_empty() {
+                self.ssl_version = SslVersion::Default;
+            } else {
+                self.set_ssl_version(&v);
+            }
+        }
+        if let Some(v) = var("GIT_SSL_CIPHER_LIST") {
+            self.ssl_cipher_list = Some(v).filter(|v| !v.is_empty());
+        }
+        if let Some(v) = var("GIT_HTTP_PROXY_AUTHMETHOD") {
+            self.set_proxy_auth_method(&v);
+        }
         if let Some(v) = var("GIT_SMART_HTTP") {
             self.smart = parse_bool(Some(v.as_bytes())).unwrap_or(true);
         }
@@ -297,6 +563,33 @@ impl HttpOptions {
         self.accept_language = accept_language(env);
     }
 
+    fn set_ssl_version(&mut self, v: &str) {
+        self.ssl_version = match v {
+            "tlsv1" | "tlsv1.0" | "tlsv1.1" | "tlsv1.2" => SslVersion::Tls12,
+            "tlsv1.3" => SslVersion::Tls13,
+            "sslv2" | "sslv3" => SslVersion::Ssl,
+            _ => {
+                self.warnings.push(messages::unsupported_ssl_version(v));
+                SslVersion::Default
+            }
+        };
+    }
+
+    pub(crate) fn set_proxy_auth_method(&mut self, v: &str) {
+        self.proxy_auth_method = match v {
+            "anyauth" => ProxyAuthMethod::Any,
+            "basic" => ProxyAuthMethod::Basic,
+            "digest" => ProxyAuthMethod::Digest,
+            "negotiate" => ProxyAuthMethod::Negotiate,
+            "ntlm" => ProxyAuthMethod::Ntlm,
+            _ => {
+                self.warnings
+                    .push(messages::unsupported_proxy_auth_method(v));
+                ProxyAuthMethod::Any
+            }
+        };
+    }
+
     /// The proxy to use for `url`, if any.
     pub fn proxy_for(&self, url: &Url) -> Result<Option<Proxy>, Error> {
         if let Some(np) = &self.env_proxy.no_proxy {
@@ -304,33 +597,57 @@ impl HttpOptions {
                 return Ok(None);
             }
         }
-        let spec = match &self.proxy {
+        let (spec, strict) = match &self.proxy {
             Some(p) if p.is_empty() => return Ok(None),
-            Some(p) => Some(p.clone()),
-            None => match url.scheme {
-                Scheme::Http => self.env_proxy.http.clone(),
-                Scheme::Https => self.env_proxy.https.clone(),
-            }
-            .or_else(|| self.env_proxy.all.clone()),
+            Some(p) => (Some(p.clone()), true),
+            None => (
+                match url.scheme {
+                    Scheme::Http => self.env_proxy.http.clone(),
+                    Scheme::Https => self.env_proxy.https.clone(),
+                }
+                .or_else(|| self.env_proxy.all.clone()),
+                false,
+            ),
         };
-        spec.map(|s| parse_proxy(&s)).transpose()
+        spec.map(|s| parse_proxy_spec(&s, strict)).transpose()
     }
 }
 
-/// Parse `[protocol://][user[:password]@]host[:port][/path]`.
+/// Parse `[protocol://][user[:password]@]host[:port][/path]` as git
+/// checks `http.proxy`: the protocol is one of `http`, `https`, `socks4`,
+/// `socks4a`, `socks5`, `socks5h` (lower case), and only SOCKS proxies on
+/// `localhost` may have a path (a Unix socket).
 pub fn parse_proxy(spec: &str) -> Result<Proxy, Error> {
-    let unsupported = || Error::Access {
-        url: spec.to_string(),
-        status: None,
-        reason: crate::messages::unsupported_proxy(spec),
-        remote: Vec::new(),
+    parse_proxy_spec(spec, true)
+}
+
+fn parse_proxy_spec(spec: &str, strict: bool) -> Result<Proxy, Error> {
+    let invalid = |reason: &str| Error::Config(messages::invalid_proxy_url(spec, reason));
+    let (kind, rest) = match spec.split_once("://") {
+        Some((scheme, rest)) => {
+            let s = if strict {
+                scheme.to_string()
+            } else {
+                scheme.to_ascii_lowercase()
+            };
+            let kind = match s.as_str() {
+                "http" => ProxyKind::Http,
+                "https" => ProxyKind::Https,
+                "socks4" => ProxyKind::Socks4,
+                "socks4a" => ProxyKind::Socks4a,
+                "socks5" => ProxyKind::Socks5,
+                "socks5h" => ProxyKind::Socks5h,
+                _ => return Err(invalid(&messages::unsupported_proxy_scheme(scheme))),
+            };
+            (kind, rest)
+        }
+        None => (ProxyKind::Http, spec),
     };
-    let rest = match spec.split_once("://") {
-        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => rest,
-        Some(_) => return Err(unsupported()),
-        None => spec,
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
     };
-    let authority = rest.split('/').next().unwrap_or("");
+    let unsupported = || Error::Config(messages::invalid_proxy_url(spec, "bad host or port"));
     let (userinfo, hostport) = match authority.rfind('@') {
         Some(i) => (Some(&authority[..i]), &authority[i + 1..]),
         None => (None, authority),
@@ -340,11 +657,23 @@ pub fn parse_proxy(spec: &str) -> Result<Proxy, Error> {
             h.trim_matches(['[', ']']).to_string(),
             p.parse().map_err(|_| unsupported())?,
         ),
-        _ => (hostport.trim_matches(['[', ']']).to_string(), 1080),
+        _ => (
+            hostport.trim_matches(['[', ']']).to_string(),
+            if kind == ProxyKind::Https { 443 } else { 1080 },
+        ),
     };
     if host.is_empty() {
         return Err(unsupported());
     }
+    let socket = if path.is_empty() || path == "/" {
+        None
+    } else if !kind.is_socks() {
+        return Err(invalid(messages::PROXY_PATH_NOT_SOCKS));
+    } else if host != "localhost" {
+        return Err(invalid(messages::PROXY_PATH_NOT_LOCALHOST));
+    } else {
+        Some(percent_decode(path))
+    };
     let (user, password) = match userinfo {
         Some(ui) => match ui.split_once(':') {
             Some((u, p)) => (Some(percent_decode(u)), Some(percent_decode(p))),
@@ -353,10 +682,12 @@ pub fn parse_proxy(spec: &str) -> Result<Proxy, Error> {
         None => (None, None),
     };
     Ok(Proxy {
+        kind,
         host,
         port,
         user,
         password,
+        socket,
     })
 }
 
@@ -630,10 +961,12 @@ mod tests {
         assert_eq!(
             p,
             Proxy {
+                kind: ProxyKind::Http,
                 host: "proxy".into(),
                 port: 3128,
                 user: Some("u".into()),
-                password: Some("p@".into())
+                password: Some("p@".into()),
+                socket: None,
             }
         );
         let p = o
@@ -658,6 +991,55 @@ mod tests {
                 .is_none()
         );
         o.proxy = Some("socks5://h".into());
-        assert!(o.proxy_for(&Url::parse("http://x/r").unwrap()).is_err());
+        let p = o
+            .proxy_for(&Url::parse("http://x/r").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!((p.kind, p.port), (ProxyKind::Socks5, 1080));
+        let err = |spec: &str| parse_proxy(spec).unwrap_err().to_string();
+        assert_eq!(
+            err("htpp://127.0.0.1"),
+            "Invalid proxy URL 'htpp://127.0.0.1': unsupported proxy scheme 'htpp'"
+        );
+        assert_eq!(
+            err("HTTP://127.0.0.1"),
+            "Invalid proxy URL 'HTTP://127.0.0.1': unsupported proxy scheme 'HTTP'"
+        );
+        assert_eq!(
+            err("localhost/path"),
+            "Invalid proxy URL 'localhost/path': only SOCKS proxies support paths"
+        );
+        assert_eq!(
+            err("socks4://127.0.0.1/path"),
+            "Invalid proxy URL 'socks4://127.0.0.1/path': host must be localhost if a path is present"
+        );
+        let p = parse_proxy("socks5h://localhost/tmp/%30.sock").unwrap();
+        assert_eq!(p.socket.as_deref(), Some("/tmp/0.sock"));
+    }
+
+    #[test]
+    fn retry_and_tls_settings() {
+        let c = cfg(
+            "[http]\n\tmaxRetries = 3\n\tretryAfter = 2\n\tsslVersion = tlsv1.3\n\
+             \tsslVersion = bogus\n\tcurloptResolve = a:1:127.0.0.1\n\tcurloptResolve =\n\
+             \tcurloptResolve = b:2:127.0.0.1\n\tproactiveAuth = basic\n\temptyAuth = true\n",
+        );
+        let env = MapEnv::new([
+            ("GIT_HTTP_RETRY_AFTER", "1"),
+            ("GIT_HTTP_MAX_RETRY_TIME", "9"),
+        ]);
+        let url = Url::parse("https://example.com/r").unwrap();
+        let o = HttpOptions::load(&c, &url, &env).unwrap();
+        assert_eq!((o.max_retries, o.retry_after, o.max_retry_time), (3, 1, 9));
+        assert_eq!(o.ssl_version, SslVersion::Default);
+        assert_eq!(
+            o.warnings,
+            vec!["unsupported ssl version bogus: using default".to_string()]
+        );
+        assert_eq!(o.resolve, vec!["b:2:127.0.0.1".to_string()]);
+        assert_eq!(o.proactive_auth, ProactiveAuth::Basic);
+        assert_eq!(o.empty_auth, EmptyAuth::Always);
+        let c = cfg("[http]\n\tmaxRequests = x\n");
+        assert!(HttpOptions::load(&c, &url, &env).is_err());
     }
 }

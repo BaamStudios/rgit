@@ -45,6 +45,8 @@ fn fatal(e: impl std::fmt::Display) -> Die {
 /// Options that matter after parsing.
 struct Flags {
     verbose: bool,
+    /// The number of `-v` (smart HTTP reports POST sizes above 1).
+    verbosity: i32,
     quiet: bool,
     porcelain: bool,
     dry_run: bool,
@@ -304,6 +306,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let flags = Flags {
         verbose: verbose.get() > 0,
+        verbosity: verbose.get(),
         quiet: quiet.get() > 0,
         porcelain: porcelain.get(),
         dry_run: dry_run.get() > 0,
@@ -518,6 +521,7 @@ impl Push<'_> {
             _ => rgit_protocol::ProtocolVersion::V0,
         };
         opts.trace_name = Some("push".into());
+        opts.verbosity = f.verbosity;
         let conn = transport.connect(&opts).map_err(fatal)?;
         let mut session =
             send::start(conn, hash).map_err(|e| Die::Fatal(send::advertisement_error(&e)))?;

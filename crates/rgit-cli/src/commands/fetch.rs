@@ -529,7 +529,8 @@ pub fn run_with_reflog_action(
             let mut a = String::from("fetch");
             for arg in &argv[1..] {
                 a.push(' ');
-                a.push_str(arg);
+                // No credentials from URLs in reflog messages.
+                a.push_str(&rgit_fetch::display::anonymize(arg));
             }
             a
         }

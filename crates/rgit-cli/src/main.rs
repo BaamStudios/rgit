@@ -294,10 +294,21 @@ fn main() {
     let start = std::time::Instant::now();
     reset_sigpipe();
     let args: Vec<String> = std::env::args_os().map(argv::to_string).collect();
-    let code = match run(args.clone()) {
-        Ok(code) => code,
-        Err(die) => die.emit(),
-    };
+    // The command runs on a thread with a stack of its own: scripts start
+    // git under a small stack limit (t5551/t5559 clone under
+    // `ulimit -s 128`), which the main thread inherits.
+    let cmd_args = args.clone();
+    let code = std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(move || match run(cmd_args) {
+            Ok(code) => code,
+            Err(die) => die.emit(),
+        })
+        .map(|t| t.join().unwrap_or(101))
+        .unwrap_or_else(|_| match run(args.clone()) {
+            Ok(code) => code,
+            Err(die) => die.emit(),
+        });
     // Filter processes see the end of their input and finish.
     rgit_convert::filter::finish_all();
     let _ = std::io::stdout().flush();

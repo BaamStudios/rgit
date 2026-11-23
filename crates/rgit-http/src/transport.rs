@@ -28,19 +28,100 @@ pub fn transport_for(
     url: &str,
     settings: &rgit_transport::Settings<'_>,
 ) -> TResult<Option<Box<dyn Transport>>> {
+    check_credentials_in_url(url, settings.config)?;
     let scheme = url.split_once("://").map(|(s, _)| s);
     if !scheme.is_some_and(|s| s.eq_ignore_ascii_case("http") || s.eq_ignore_ascii_case("https")) {
         return rgit_transport::transport_for(url, settings);
     }
     let parsed = Url::parse(url).map_err(other)?;
-    let opts = HttpOptions::load(settings.config, &parsed, settings.env).map_err(other)?;
+    let mut opts = HttpOptions::load(settings.config, &parsed, settings.env).map_err(other)?;
+    apply_remote_proxy(&mut opts, settings.config, url, settings.env);
+    for w in &opts.warnings {
+        eprintln!("warning: {w}");
+    }
     let credentials = SystemCredentials {
         config: settings.config.clone(),
         base_env: settings.base_env.clone(),
+        helper_caps: (false, false),
     };
     Ok(Some(Box::new(
         HttpTransport::new(url, opts).with_credentials(Box::new(credentials)),
     )))
+}
+
+/// `remote.<name>.proxy` and `remote.<name>.proxyAuthMethod` of the remote
+/// whose `url` or `pushurl` is `url` (they override `http.proxy` and
+/// `http.proxyAuthMethod`; `GIT_HTTP_PROXY_AUTHMETHOD` still wins).
+fn apply_remote_proxy(
+    opts: &mut HttpOptions,
+    config: &ConfigSet,
+    url: &str,
+    env: &dyn rgit_config::Environment,
+) {
+    let mut names: Vec<Vec<u8>> = Vec::new();
+    for e in config.entries() {
+        let (section, sub, key) = rgit_config::key::split_canonical(e.name.as_bstr());
+        if section != "remote" || !(key == b"url" || key == b"pushurl") {
+            continue;
+        }
+        if let (Some(sub), Some(v)) = (sub, e.value.as_deref()) {
+            if v.as_bytes() == url.as_bytes() && !names.iter().any(|n| n == sub.as_bytes()) {
+                names.push(sub.to_vec());
+            }
+        }
+    }
+    let Some(name) = names.first() else {
+        return;
+    };
+    let name = name.to_str_lossy();
+    if let Ok(Some(p)) = config.string(format!("remote.{name}.proxy")) {
+        opts.proxy = Some(p.to_str_lossy().into_owned());
+    }
+    if env.var("GIT_HTTP_PROXY_AUTHMETHOD").is_none() {
+        if let Ok(Some(m)) = config.string(format!("remote.{name}.proxyauthmethod")) {
+            opts.set_proxy_auth_method(&m.to_str_lossy());
+        }
+    }
+}
+
+/// `transfer.credentialsInUrl` (`Documentation/config/transfer.adoc`):
+/// a URL with `user:password@` is allowed (default), warned about or
+/// refused. The password is shown as `<redacted>`.
+pub fn check_credentials_in_url(url: &str, config: &ConfigSet) -> TResult<()> {
+    let mode = match config.string("transfer.credentialsinurl") {
+        Ok(Some(v)) => v.to_str_lossy().into_owned(),
+        _ => return Ok(()),
+    };
+    let Some(redacted) = redact_password(url) else {
+        return Ok(());
+    };
+    let msg = crate::messages::plaintext_credentials(&redacted);
+    match mode.as_str() {
+        "allow" => Ok(()),
+        "warn" => {
+            eprintln!("warning: {msg}");
+            Ok(())
+        }
+        "die" => Err(TError::Other(msg)),
+        other => Err(TError::Other(
+            crate::messages::unrecognized_credentials_in_url(other),
+        )),
+    }
+}
+
+/// `scheme://user:<redacted>@rest` for a URL with a password.
+fn redact_password(url: &str) -> Option<String> {
+    let i = url.find("://")?;
+    let rest = &url[i + 3..];
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let at = rest[..end].rfind('@')?;
+    let colon = rest[..at].find(':')?;
+    Some(format!(
+        "{}{}:<redacted>{}",
+        &url[..i + 3],
+        &rest[..colon],
+        &rest[at..]
+    ))
 }
 
 /// The credential subsystem of `rgit-transport` (helpers from
@@ -48,12 +129,16 @@ pub fn transport_for(
 struct SystemCredentials {
     config: ConfigSet,
     base_env: Vec<(OsString, OsString)>,
+    /// The capabilities (`authtype`, `state`) the helpers announced in
+    /// the last `get`; `store` and `erase` pass on only those.
+    helper_caps: (bool, bool),
 }
 
 impl SystemCredentials {
     fn run(
         &self,
         cred: &Credential,
+        caps: (bool, bool),
         op: impl FnOnce(&mut cred::Credential, &mut cred::CredentialContext<'_>) -> TResult<()>,
     ) -> TResult<cred::Credential> {
         let env = SystemEnv::default();
@@ -64,12 +149,26 @@ impl SystemCredentials {
             base_env: self.base_env.clone(),
             prompter: &mut prompter,
         };
+        let s = |v: &Option<String>| v.as_deref().map(Into::into);
         let mut c = cred::Credential {
             protocol: Some(cred.protocol.as_str().into()),
             host: Some(cred.host.as_str().into()),
-            path: cred.path.as_deref().map(Into::into),
-            username: cred.username.as_deref().map(Into::into),
-            password: cred.password.as_deref().map(Into::into),
+            path: s(&cred.path),
+            username: s(&cred.username),
+            password: s(&cred.password),
+            authtype: s(&cred.authtype),
+            credential: s(&cred.credential),
+            wwwauth: cred.wwwauth.iter().map(|v| v.as_str().into()).collect(),
+            state: cred.state.iter().map(|v| v.as_str().into()).collect(),
+            multistage: cred.multistage,
+            capa_authtype: cred::Capability {
+                caller: caps.0,
+                helper: false,
+            },
+            capa_state: cred::Capability {
+                caller: caps.1,
+                helper: false,
+            },
             ..cred::Credential::default()
         };
         op(&mut c, &mut ctx)?;
@@ -80,19 +179,51 @@ impl SystemCredentials {
 impl CredentialProvider for SystemCredentials {
     fn fill(&mut self, cred: &mut Credential) -> Result<(), String> {
         let c = self
-            .run(cred, |c, ctx| c.fill(ctx))
+            .run(cred, (true, true), |c, ctx| c.fill(ctx))
             .map_err(|e| e.to_string())?;
-        cred.username = c.username.map(|u| u.to_str_lossy().into_owned());
-        cred.password = c.password.map(|p| p.to_str_lossy().into_owned());
+        self.helper_caps = (c.capa_authtype.helper, c.capa_state.helper);
+        let s = |v: Option<bstr::BString>| v.map(|v| v.to_str_lossy().into_owned());
+        cred.username = s(c.username);
+        cred.password = s(c.password);
+        // Pre-encoded credentials count only from a helper that announced
+        // `authtype`.
+        if c.capa_authtype.helper {
+            cred.authtype = s(c.authtype);
+            cred.credential = s(c.credential);
+        } else {
+            cred.authtype = None;
+            cred.credential = None;
+        }
+        // `state[]` is the helper's answer only; what was sent is consumed.
+        let sent = cred.state.len();
+        let answered = if c.state.len() >= sent
+            && c.state[..sent]
+                .iter()
+                .zip(&cred.state)
+                .all(|(a, b)| a.as_slice() == b.as_bytes())
+        {
+            &c.state[sent..]
+        } else {
+            &c.state[..]
+        };
+        cred.state = if c.capa_state.helper {
+            answered
+                .iter()
+                .map(|v| v.to_str_lossy().into_owned())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        cred.multistage = c.capa_state.helper && c.multistage;
         Ok(())
     }
 
     fn approve(&mut self, cred: &Credential) {
-        let _ = self.run(cred, |c, ctx| c.approve(ctx));
+        let _ = self.run(cred, self.helper_caps, |c, ctx| c.approve(ctx));
     }
 
     fn reject(&mut self, cred: &Credential) {
-        let _ = self.run(cred, |c, ctx| c.reject(ctx));
+        let _ = self.run(cred, self.helper_caps, |c, ctx| c.reject(ctx));
     }
 }
 
@@ -132,7 +263,9 @@ impl Transport for HttpTransport {
                 )));
             }
         };
-        let mut session = SmartHttp::new(&self.url, self.opts.clone()).map_err(other)?;
+        let mut opts = self.opts.clone();
+        opts.verbosity = opts.verbosity.max(options.verbosity);
+        let mut session = SmartHttp::new(&self.url, opts).map_err(other)?;
         if let Some(p) = self.provider.take() {
             session = session.with_credentials(p);
         }
