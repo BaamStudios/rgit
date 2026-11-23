@@ -25,8 +25,14 @@
 //!   `funcname`/`xfuncname` define function lines for `-p`/`-W`, its
 //!   `textconv` is used with `--textconv`.
 //!
-//! Not implemented yet: `--recurse-submodules`; the built-in function
-//! name patterns of `diff=<language>` drivers (#147); threads (`--threads`
+//! - `--recurse-submodules` (or `submodule.recurse`) also searches the
+//!   checked-out submodules (their index and work tree, or with `--cached`
+//!   their index), and for a tree the commits it records, read from the
+//!   submodule's repository when that exists. Their paths are shown below
+//!   the submodule's path; pathspecs apply to those full paths.
+//! - Replace refs (`core.useReplaceRefs`) apply per repository.
+//!
+//! Not implemented yet: the built-in function name patterns of `diff=<language>` drivers (#147); threads (`--threads`
 //! is validated and otherwise ignored).
 
 use std::collections::HashMap;
@@ -45,6 +51,7 @@ use crate::messages::grep as msg;
 use crate::prelude::*;
 use crate::quote::{relative_to, write_quoted};
 use crate::repo::Mode;
+use crate::repo_objects::Replacements;
 use crate::repository::{self, Repo};
 use crate::revision::{Failure, Resolver};
 
@@ -91,7 +98,8 @@ struct Args {
     no_index: bool,
     untracked: bool,
     exclude_standard: i32,
-    recurse_submodules: bool,
+    /// `--[no-]recurse-submodules`: 1, 0, -1 when not given.
+    recurse_submodules: i32,
     invert: bool,
     icase: bool,
     word: bool,
@@ -115,7 +123,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     let no_index = Cell::new(0);
     let untracked = Cell::new(false);
     let exclude_standard = Cell::new(-1);
-    let recurse = Cell::new(false);
+    let recurse = Cell::new(-1);
     let invert = Cell::new(false);
     let icase = Cell::new(false);
     let word = Cell::new(false);
@@ -164,7 +172,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
                 &exclude_standard,
                 msg::HELP_EXCLUDE_STANDARD,
             ),
-            Opt::flag(
+            Opt::bool(
                 None,
                 "recurse-submodules",
                 &recurse,
@@ -561,6 +569,8 @@ struct Grepper<'a> {
     attrs: Attrs<'a>,
     /// Evaluates the `attr:` magic of the pathspec, when there is any.
     spec_attrs: Option<RefCell<crate::attributes::PathspecAttrs<'a>>>,
+    /// `--recurse-submodules`: the context to open submodules with.
+    submodules: Option<&'a Context>,
 }
 
 impl Grepper<'_> {
@@ -724,7 +734,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if args.untracked && args.cached {
         return Err(Die::Fatal(msg::options_together("--untracked", "--cached")));
     }
-    if args.recurse_submodules && args.untracked {
+    let recurse_submodules = match args.recurse_submodules {
+        -1 => config
+            .bool("submodule.recurse")
+            .ok()
+            .flatten()
+            .unwrap_or(false),
+        v => v == 1,
+    };
+    if recurse_submodules && args.untracked {
         return Err(Die::Fatal(msg::UNTRACKED_WITH_SUBMODULES.into()));
     }
     if let Some(n) = args.threads.filter(|n| *n < 0) {
@@ -748,12 +766,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .map_err(|reason| Die::Fatal(msg::bad_pattern(p, &reason)))?;
         atoms.push(atom);
     }
-    let mut matcher = Matcher::new(expr, atoms, args.all_match, args.invert);
-    matcher.empty_line_at_end = !args.invert
-        && args.tokens.len() == 1
-        && patterns.len() == 1
-        && patterns[0] == "^$"
-        && matches!(syn, Syntax::Basic | Syntax::Extended);
+    let matcher = Matcher::new(expr, atoms, args.all_match, args.invert);
     if args.opts.max_count == Some(0) {
         return Ok(1);
     }
@@ -882,9 +895,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if open_pager.is_some() && (args.cached || !revs.is_empty()) {
         return Err(Die::Fatal(msg::OPEN_ONLY_WORKTREE.into()));
     }
-    if args.recurse_submodules {
-        return Err(Die::Fatal(msg::not_supported("--recurse-submodules")));
-    }
 
     let root = work_tree
         .as_ref()
@@ -922,6 +932,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let (index, _) = repo.read_index()?;
     let tree_source = crate::attributes::tree_source(ctx, &mut repo, None)?;
     let spec_tree = crate::attributes::PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
+    let replace = repo.replacement_lookup();
     let repo = repo;
     let mut attrs = crate::attributes::open(&repo, &index, tree_source, false);
     let diff = attrs.id(b"diff");
@@ -948,12 +959,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         },
         spec_attrs: spec_tree
             .map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t))),
+        submodules: recurse_submodules.then_some(&*ctx),
     };
 
     match target {
         Target::WorkTree { untracked } => {
             let root = work_tree.clone().expect("work tree");
-            grep_index(&mut g, &repo, &index, Some(&root))?;
+            grep_index(&mut g, &repo, &replace, &index, Some(&root), b"")?;
             if untracked && !g.done() {
                 let mut ex = if args.exclude_standard != 0 {
                     Some(super::ls_files::build_excludes(
@@ -988,14 +1000,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 }
             }
         }
-        Target::Cached => grep_index(&mut g, &repo, &index, None)?,
+        Target::Cached => grep_index(&mut g, &repo, &replace, &index, None, b"")?,
         Target::Revs(revs) => {
             for (name, id, blob) in revs {
                 if g.done() {
                     break;
                 }
                 if blob {
-                    let Some(obj) = repo.odb().read(&id).ok().flatten() else {
+                    let Some(obj) = repo.odb().read(&replace.get(&id)).ok().flatten() else {
                         continue;
                     };
                     let path = name.split_once(':').map(|(_, p)| p.as_bytes().to_vec());
@@ -1004,7 +1016,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 }
                 let mut label = name.into_bytes();
                 label.push(b':');
-                grep_tree(&mut g, &repo, &id, b"", &label)?;
+                grep_tree(&mut g, &repo, &replace, &id, b"", 0, &label)?;
             }
         }
     }
@@ -1028,16 +1040,41 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 fn grep_index(
     g: &mut Grepper<'_>,
     repo: &Repo,
+    replace: &Replacements,
     index: &Index,
     root: Option<&Path>,
+    base: &[u8],
 ) -> Result<(), Die> {
     let mut last: Option<&[u8]> = None;
     for e in index.entries() {
         if g.done() {
             break;
         }
-        let path = e.path();
-        if last == Some(path) || !e.mode.is_file() {
+        let full = [base, e.path()].concat();
+        let path = full.as_slice();
+        if e.mode.is_gitlink() && !e.stage().is_conflict() {
+            if let Some(ctx) = g.submodules {
+                if g.pathspec.dir_interest(path) != DirInterest::None {
+                    if let Some(mut sub) = open_submodule(ctx, repo, e.path(), root) {
+                        let sub_replace = sub.replacement_lookup();
+                        let (sub_index, _) = sub.read_index()?;
+                        let sub_root = sub.setup.work_tree.clone();
+                        let mut sub_base = path.to_vec();
+                        sub_base.push(b'/');
+                        grep_index(
+                            g,
+                            &sub,
+                            &sub_replace,
+                            &sub_index,
+                            root.and(sub_root.as_deref()),
+                            &sub_base,
+                        )?;
+                    }
+                }
+            }
+            continue;
+        }
+        if last == Some(e.path()) || !e.mode.is_file() {
             continue;
         }
         if root.is_none() && e.stage().is_conflict() {
@@ -1046,22 +1083,22 @@ fn grep_index(
         if !g.wanted(path) {
             continue;
         }
-        last = Some(path);
+        last = Some(e.path());
         if e.flags.intent_to_add && (root.is_none() || e.flags.assume_valid || e.flags.skip_worktree)
         {
             continue;
         }
         let data = match root {
             Some(r) if !(e.flags.assume_valid || e.flags.skip_worktree) => {
-                match std::fs::symlink_metadata(os_path(r, path)) {
-                    Ok(m) if m.is_file() => match std::fs::read(os_path(r, path)) {
+                match std::fs::symlink_metadata(os_path(r, e.path())) {
+                    Ok(m) if m.is_file() => match std::fs::read(os_path(r, e.path())) {
                         Ok(d) => d,
                         Err(_) => continue,
                     },
                     _ => continue,
                 }
             }
-            _ => match repo.odb().read(&e.id).ok().flatten() {
+            _ => match repo.odb().read(&replace.get(&e.id)).ok().flatten() {
                 Some(o) => o.data,
                 None => continue,
             },
@@ -1073,15 +1110,19 @@ fn grep_index(
 }
 
 /// Search a tree; `base` is the path of the tree relative to the top of
-/// the searched tree, `label` the `<rev>:` prefix.
+/// the searched tree, `label` the `<rev>:` prefix. The first `outer`
+/// bytes of `base` are the path of the submodule `repo` is (0 for the
+/// top).
 fn grep_tree(
     g: &mut Grepper<'_>,
     repo: &Repo,
+    replace: &Replacements,
     tree: &rgit_hash::ObjectId,
     base: &[u8],
+    outer: usize,
     label: &[u8],
 ) -> Result<(), Die> {
-    let Some(Object::Tree(t)) = repo.read_object(tree) else {
+    let Some(Object::Tree(t)) = repo.read_object(&replace.get(tree)) else {
         return Err(Die::Fatal(msg::unable_to_read(&tree.to_hex())));
     };
     for e in t.entries {
@@ -1096,12 +1137,30 @@ fn grep_tree(
                 continue;
             }
             path.push(b'/');
-            grep_tree(g, repo, &e.oid, &path, label)?;
+            grep_tree(g, repo, replace, &e.oid, &path, outer, label)?;
+        } else if mode & 0o170000 == 0o160000 {
+            let Some(ctx) = g.submodules else { continue };
+            if g.pathspec.dir_interest(&path) == DirInterest::None {
+                continue;
+            }
+            let Some(mut sub) = open_submodule(ctx, repo, &path[outer..], None) else {
+                continue;
+            };
+            let sub_replace = sub.replacement_lookup();
+            let Some(sub_tree) = sub.read_object(&sub_replace.get(&e.oid)).and_then(|o| match o {
+                Object::Commit(c) => c.tree().ok(),
+                _ => None,
+            }) else {
+                continue;
+            };
+            path.push(b'/');
+            let outer = path.len();
+            grep_tree(g, &sub, &sub_replace, &sub_tree, &path, outer, label)?;
         } else if mode & 0o170000 == 0o100000 {
             if !g.wanted(&path) {
                 continue;
             }
-            let Some(obj) = repo.odb().read(&e.oid).ok().flatten() else {
+            let Some(obj) = repo.odb().read(&replace.get(&e.oid)).ok().flatten() else {
                 continue;
             };
             let name = g.shown(label, &path);
@@ -1109,6 +1168,33 @@ fn grep_tree(
         }
     }
     Ok(())
+}
+
+/// Open the submodule at `path` (relative to the top of `repo`'s work
+/// tree) when its repository exists. `root`: the work tree of `repo` is
+/// searched, so the submodule must be checked out there.
+fn open_submodule(ctx: &Context, repo: &Repo, path: &[u8], root: Option<&Path>) -> Option<Repo> {
+    let git_dir = crate::submodules::sub_git_dir(repo, path)?;
+    let work_tree = repo
+        .setup
+        .work_tree
+        .as_ref()
+        .map(|w| os_path(w, path))
+        .filter(|d| rgit_submodule::gitdir::git_dir_of(d).is_some());
+    if root.is_some() && work_tree.is_none() {
+        return None;
+    }
+    let mut opts = rgit_repo::SetupOptions::from_process().ok()?;
+    opts.cwd = work_tree.clone().unwrap_or_else(|| git_dir.clone());
+    opts.git_dir = Some(git_dir);
+    opts.work_tree = work_tree;
+    opts.common_dir = None;
+    opts.object_dir = None;
+    let env = rgit_config::SystemEnv::default();
+    let mut protected =
+        rgit_repo::StandardProtectedConfig::new(&env, crate::repo::command_line(ctx));
+    let setup = rgit_repo::setup(&opts, &mut protected).ok()?;
+    Repo::from_setup(ctx, setup).ok()
 }
 
 /// Normalise a path relative to the current directory; `None` when it
@@ -1222,6 +1308,7 @@ fn run_no_index(
             no_repo_source,
         },
         spec_attrs: None,
+        submodules: None,
     };
     for path in files {
         if g.done() {

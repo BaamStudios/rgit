@@ -11,6 +11,12 @@
 //!   the leftmost start; a DFA run anchored there with "all matches"
 //!   semantics then finds the longest end. `-P` keeps the leftmost-first
 //!   semantics of Perl.
+//! - What the automata cannot do runs on a backtracking engine
+//!   (`fancy-regex`): `-P` look-around, atomic groups, possessive
+//!   quantifiers and back-references, and POSIX back-references (there
+//!   leftmost-longest). `-P` drops leading `(*VERB)` options and quotes
+//!   `\Q...\E`. Without a UTF-8 locale `-P` matches bytes (non-ASCII
+//!   pattern characters are their UTF-8 bytes, `.` is one byte).
 //! - `-w`: a match counts only when it is neither preceded nor followed
 //!   by a word character (ASCII letter, digit, `_`); otherwise the search
 //!   goes on from one byte after the start of the rejected match.
@@ -42,7 +48,7 @@ pub enum Syntax {
     /// `-F`: fixed strings.
     Fixed,
     /// `-P`: Perl-compatible regular expressions (the syntax of the
-    /// `regex` crate).
+    /// `regex` crate, else of `fancy-regex`).
     Perl,
 }
 
@@ -60,16 +66,150 @@ impl Syntax {
     }
 }
 
+/// How a pattern is matched.
+enum Engine {
+    /// The automata of the `regex` crate.
+    Automaton {
+        /// Finds the leftmost match.
+        first: Regex,
+        /// The same pattern with `^`/`$` matching at line ends, to rule
+        /// out a whole buffer at once.
+        whole: Regex,
+        /// Finds the longest match at a given start (POSIX syntaxes).
+        longest: Option<Box<(DFA, RefCell<Cache>)>>,
+    },
+    /// A backtracking engine, for `-P` look-around, atomic groups and
+    /// back-references (in every syntax).
+    Backtrack(fancy_regex::Regex),
+}
+
 /// One compiled pattern.
 pub struct Atom {
-    /// Finds the leftmost match.
-    first: Regex,
-    /// The same pattern with `^`/`$` matching at line ends, to rule out a
-    /// whole buffer at once.
-    whole: Regex,
-    /// Finds the longest match at a given start (POSIX syntaxes).
-    longest: Option<(DFA, RefCell<Cache>)>,
+    engine: Engine,
     word: bool,
+    /// The pattern may select the empty "line" after the final newline
+    /// of a file (POSIX syntaxes without `-w`).
+    pub eof_line: bool,
+}
+
+/// The PCRE start-of-pattern options git's patterns may begin with; they
+/// tune the engine and change nothing in what matches here.
+const PCRE_VERBS: [&str; 17] = [
+    "NO_JIT",
+    "UTF",
+    "UTF8",
+    "UCP",
+    "NO_START_OPT",
+    "NO_AUTO_POSSESS",
+    "NO_DOTSTAR_ANCHOR",
+    "NOTEMPTY",
+    "NOTEMPTY_ATSTART",
+    "CR",
+    "LF",
+    "CRLF",
+    "ANYCRLF",
+    "ANY",
+    "NUL",
+    "BSR_ANYCRLF",
+    "BSR_UNICODE",
+];
+
+/// A `-P` pattern in the syntax of the backtracking engine: leading
+/// `(*VERB)` options dropped, `\Q...\E` quoted.
+fn perl_pattern(pattern: &str) -> Result<String, String> {
+    let mut rest = pattern;
+    while let Some(r) = rest.strip_prefix("(*") {
+        let Some(end) = r.find(')') else { break };
+        let name = &r[..end];
+        let limit = [
+            "LIMIT_MATCH=",
+            "LIMIT_DEPTH=",
+            "LIMIT_HEAP=",
+            "LIMIT_RECURSION=",
+        ]
+        .iter()
+        .any(|p| {
+            name.strip_prefix(p)
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        });
+        if !limit && !PCRE_VERBS.contains(&name) {
+            return Err(msg::PCRE_BAD_VERB.into());
+        }
+        rest = &r[end + 1..];
+    }
+    let mut out = String::with_capacity(rest.len());
+    let mut chars = rest.chars();
+    let mut quoting = false;
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            if quoting {
+                out.push_str(&fancy_regex::escape(c.encode_utf8(&mut [0; 4])));
+            } else {
+                out.push(c);
+            }
+            continue;
+        }
+        match chars.next() {
+            Some('E') if quoting => quoting = false,
+            // A stray `\E` is ignored.
+            Some('E') => {}
+            Some('Q') if !quoting => quoting = true,
+            Some(d) if quoting => {
+                out.push_str(&fancy_regex::escape("\\"));
+                out.push_str(&fancy_regex::escape(d.encode_utf8(&mut [0; 4])));
+            }
+            Some(d) => {
+                out.push('\\');
+                out.push(d);
+            }
+            None if quoting => out.push_str(r"\\"),
+            None => out.push('\\'),
+        }
+    }
+    Ok(out)
+}
+
+/// `text` with every non-ASCII character written as the `\xHH` escapes
+/// of its UTF-8 bytes (for matching bytes with Unicode off).
+fn byte_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            for b in c.encode_utf8(&mut [0; 4]).bytes() {
+                out.push_str(&format!("\\x{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
+/// Compile `text` for the backtracking engine.
+fn backtracking(
+    text: &str,
+    icase: bool,
+    utf8: bool,
+    longest: bool,
+) -> Result<fancy_regex::Regex, fancy_regex::Error> {
+    let mut b = fancy_regex::RegexBuilder::new(text);
+    b.case_insensitive(icase)
+        .unicode_mode(utf8)
+        .bytes_mode(if utf8 {
+            fancy_regex::BytesMode::UnicodeBytes
+        } else {
+            fancy_regex::BytesMode::Ascii
+        })
+        .leftmost_longest(longest);
+    b.build()
+}
+
+/// The message of a backtracking engine error, without its position.
+fn backtrack_reason(e: &fancy_regex::Error) -> String {
+    match e {
+        fancy_regex::Error::ParseError(_, p) => p.to_string(),
+        e => e.to_string(),
+    }
 }
 
 /// Whether the character type locale is UTF-8 (`LC_ALL`, else
@@ -123,15 +263,24 @@ impl Atom {
     ) -> Result<Atom, String> {
         // A pattern with newlines is a list of alternatives.
         let mut pieces = Vec::new();
+        let mut groups = 0;
+        let mut backrefs = false;
         for piece in pattern.split('\n') {
             pieces.push(match syn {
                 Syntax::Fixed => regex::escape(piece),
-                Syntax::Perl => piece.to_string(),
-                Syntax::Basic => {
-                    rgit_revwalk::walk::grep::translate(piece, false).map_err(str::to_string)?
-                }
-                Syntax::Extended => {
-                    rgit_revwalk::walk::grep::translate(piece, true).map_err(str::to_string)?
+                Syntax::Perl if utf8 => perl_pattern(piece)?,
+                // Without a UTF-8 locale the pattern is bytes too.
+                Syntax::Perl => byte_escapes(&perl_pattern(piece)?),
+                Syntax::Basic | Syntax::Extended => {
+                    let t = rgit_revwalk::walk::grep::translate_backrefs(
+                        piece,
+                        syn == Syntax::Extended,
+                        groups,
+                    )
+                    .map_err(str::to_string)?;
+                    groups += t.groups;
+                    backrefs |= t.backrefs;
+                    t.text
                 }
             });
         }
@@ -151,26 +300,67 @@ impl Atom {
                 text = text.replace(class, unicode);
             }
         }
-        let unicode = perl || utf8;
-        let build = |multi: bool| {
+        let eof_line = !perl && !word;
+        if backrefs {
+            // POSIX back-references: leftmost-longest on the backtracking
+            // engine.
+            let re = backtracking(&text, icase, utf8, true)
+                .map_err(|e| rgit_revwalk::walk::grep::reason(&backtrack_reason(&e)).to_string())?;
+            return Ok(Atom {
+                engine: Engine::Backtrack(re),
+                word,
+                eof_line,
+            });
+        }
+        let build = |multi: bool, unicode: bool| {
             RegexBuilder::new(&text)
                 .case_insensitive(icase)
                 .unicode(unicode)
                 .multi_line(multi)
                 .build()
         };
-        let first = build(false).map_err(|e| {
-            let e = e.to_string();
-            if perl {
-                e.lines()
-                    .rev()
-                    .find(|l| l.starts_with("error: "))
-                    .map_or(e.clone(), |l| l["error: ".len()..].to_string())
-            } else {
-                rgit_revwalk::walk::grep::reason(&e).to_string()
+        // Without a UTF-8 locale `-P` matches bytes, but still knows
+        // Unicode properties (`\p{Ps}`) and non-ASCII classes.
+        let mut unicode = utf8;
+        let mut first = build(false, unicode);
+        if perl && !utf8 && first.is_err() && build(false, true).is_ok() {
+            unicode = true;
+            first = build(false, true);
+        }
+        let first = match first {
+            Ok(re) => re,
+            // What the automata cannot do (look-around, atomic groups,
+            // possessive quantifiers, back-references, `\K`, ...) goes to
+            // the backtracking engine.
+            Err(e) if perl => {
+                let re = backtracking(&text, icase, utf8, false)
+                    .or_else(|fe| {
+                        if utf8 {
+                            Err(fe)
+                        } else {
+                            backtracking(&text, icase, true, false)
+                        }
+                    })
+                    .map_err(|fe| {
+                        let e = e.to_string();
+                        match fe {
+                            fancy_regex::Error::CompileError(_) => e
+                                .lines()
+                                .rev()
+                                .find(|l| l.starts_with("error: "))
+                                .map_or(e.clone(), |l| l["error: ".len()..].to_string()),
+                            _ => backtrack_reason(&fe),
+                        }
+                    })?;
+                return Ok(Atom {
+                    engine: Engine::Backtrack(re),
+                    word,
+                    eof_line,
+                });
             }
-        })?;
-        let whole = build(true).map_err(|e| e.to_string())?;
+            Err(e) => return Err(rgit_revwalk::walk::grep::reason(&e.to_string()).to_string()),
+        };
+        let whole = build(true, unicode).map_err(|e| e.to_string())?;
         let longest = if perl {
             None
         } else {
@@ -178,7 +368,7 @@ impl Atom {
                 .syntax(
                     syntax::Config::new()
                         .case_insensitive(icase)
-                        .unicode(unicode)
+                        .unicode(utf8)
                         .utf8(false),
                 )
                 .thompson(regex_automata::nfa::thompson::Config::new().utf8(false))
@@ -187,31 +377,46 @@ impl Atom {
                 .ok()
                 .map(|dfa| {
                     let cache = dfa.create_cache();
-                    (dfa, RefCell::new(cache))
+                    Box::new((dfa, RefCell::new(cache)))
                 })
         };
         Ok(Atom {
-            first,
-            whole,
-            longest,
+            engine: Engine::Automaton {
+                first,
+                whole,
+                longest,
+            },
             word,
+            eof_line,
         })
     }
 
     /// The leftmost(-longest) match in `line` starting at or after `from`.
     fn raw_find(&self, line: &[u8], from: usize) -> Option<(usize, usize)> {
-        let m = self.first.find_at(line, from)?;
-        let (s, mut e) = (m.start(), m.end());
-        if let Some((dfa, cache)) = &self.longest {
-            let input = Input::new(line).range(s..).anchored(Anchored::Yes);
-            if let Ok(Some(hm)) = dfa.try_search_fwd(&mut cache.borrow_mut(), &input) {
-                e = e.max(hm.offset());
+        match &self.engine {
+            Engine::Automaton { first, longest, .. } => {
+                let m = first.find_at(line, from)?;
+                let (s, mut e) = (m.start(), m.end());
+                if let Some(l) = longest {
+                    let (dfa, cache) = &**l;
+                    let input = Input::new(line).range(s..).anchored(Anchored::Yes);
+                    if let Ok(Some(hm)) = dfa.try_search_fwd(&mut cache.borrow_mut(), &input) {
+                        e = e.max(hm.offset());
+                    }
+                }
+                Some((s, e))
             }
+            // A search that gives up (too much backtracking) finds nothing.
+            Engine::Backtrack(re) => re
+                .find_from_pos(line, from)
+                .ok()
+                .flatten()
+                .map(|m| (m.start(), m.end())),
         }
-        Some((s, e))
     }
 
-    /// The first match in `line` at or after `from`, honouring `-w`.
+    /// The first match in `line` at or after `from`, honouring `-w`
+    /// (which never accepts an empty match).
     pub fn find(&self, line: &[u8], mut from: usize) -> Option<(usize, usize)> {
         loop {
             if from > line.len() {
@@ -223,7 +428,7 @@ impl Atom {
             }
             let before = s == 0 || !is_word(line[s - 1]);
             let after = e == line.len() || !is_word(line[e]);
-            if before && after {
+            if before && after && s < e {
                 return Some((s, e));
             }
             from = s + 1;
@@ -232,17 +437,20 @@ impl Atom {
 
     /// Whether the pattern matches somewhere in the line.
     pub fn is_match(&self, line: &[u8]) -> bool {
-        if self.word {
-            self.find(line, 0).is_some()
-        } else {
-            self.first.is_match(line)
+        match &self.engine {
+            Engine::Automaton { first, .. } if !self.word => first.is_match(line),
+            _ => self.find(line, 0).is_some(),
         }
     }
 
     /// Whether the pattern may match some line of `buf` (no false
     /// negatives).
     pub fn may_match_buffer(&self, buf: &[u8]) -> bool {
-        self.whole.is_match(buf)
+        match &self.engine {
+            Engine::Automaton { whole, .. } => whole.is_match(buf),
+            // Look-around could see across lines; search line by line.
+            Engine::Backtrack(_) => true,
+        }
     }
 }
 
@@ -400,23 +608,39 @@ pub struct Matcher {
     terms: Option<Vec<Expr>>,
     pub invert: bool,
     has_not: bool,
-    /// The pattern is just `^$`: git then also reports the empty line
-    /// after the final newline of a file whose last line is not empty.
-    pub empty_line_at_end: bool,
+    /// Whether the empty "line" after the final newline of a file is
+    /// selected when the last real line is not (see
+    /// [`Matcher::selects_eof_line`]).
+    eof_line: bool,
 }
 
 impl Matcher {
     pub fn new(expr: Expr, atoms: Vec<Atom>, all_match: bool, invert: bool) -> Matcher {
         let terms = all_match.then(|| expr.or_terms().into_iter().cloned().collect());
         let has_not = expr.has_not();
+        let only_or = expr.or_terms().iter().all(|t| matches!(t, Expr::Atom(_)));
+        let eof_line = !invert
+            && !all_match
+            && only_or
+            && atoms.iter().all(|a| a.eof_line)
+            && atoms.iter().any(|a| a.is_match(b""));
         Matcher {
             atoms,
             expr,
             terms,
             invert,
             has_not,
-            empty_line_at_end: false,
+            eof_line,
         }
+    }
+
+    /// git searches ahead from a line that does not match for the next
+    /// match in the rest of the file; with POSIX patterns (no `-w`, no
+    /// `--and`/`--not`, no `-v`) one that matches an empty line then
+    /// finds the empty "line" after the final newline, which is reported
+    /// as one more line.
+    pub fn selects_eof_line(&self) -> bool {
+        self.eof_line
     }
 
     fn eval(&self, e: &Expr, line: &[u8]) -> bool {
@@ -562,5 +786,58 @@ mod tests {
         let m = matcher(&["l*"], Syntax::Basic);
         assert_eq!(m.next_match(b"Hello", 0), Some((0, 0)));
         assert_eq!(m.column(b"Hello"), 1);
+    }
+
+    #[test]
+    fn backreferences() {
+        let find = |p: &str, syn: Syntax, line: &[u8]| {
+            Atom::new(p, syn, false, false, false)
+                .unwrap()
+                .find(line, 0)
+        };
+        assert_eq!(find(r"\(a\)\1", Syntax::Basic, b"xaa"), Some((1, 3)));
+        assert_eq!(find("(a*)\\1", Syntax::Extended, b"aaaa"), Some((0, 4)));
+        assert_eq!(
+            find("(ab|a)(b*)\\1", Syntax::Extended, b"abab"),
+            Some((0, 4))
+        );
+        assert_eq!(find(r"\(z\)\1*", Syntax::Basic, b"zzz"), Some((0, 3)));
+        assert_eq!(find("(a)\\10", Syntax::Extended, b"aa0"), Some((0, 3)));
+        let err = |p: &str, syn: Syntax| Atom::new(p, syn, false, false, false).err();
+        assert_eq!(
+            err(r"\(a\)\2", Syntax::Basic).as_deref(),
+            Some("Invalid back reference")
+        );
+        assert_eq!(
+            err(r"\(a\1\)", Syntax::Basic).as_deref(),
+            Some("Invalid back reference")
+        );
+        assert!(err("(a)\\1", Syntax::Fixed).is_none());
+    }
+
+    #[test]
+    fn perl_backtracking() {
+        let find = |p: &str, line: &[u8]| {
+            Atom::new(p, Syntax::Perl, false, false, false)
+                .unwrap()
+                .find(line, 0)
+        };
+        assert_eq!(find("(?<=a)b", b"abc"), Some((1, 2)));
+        assert_eq!(find("a(?!c)", b"acab"), Some((2, 3)));
+        assert_eq!(find(r"\Qo(b\E", b"foo(bar)"), Some((2, 5)));
+        assert_eq!(find(r"(*NO_JIT)(l)\1", b"hello"), Some((2, 4)));
+        // Without a UTF-8 locale `.` is one byte.
+        assert_eq!(find("l.", "ló".as_bytes()), Some((0, 2)));
+        assert!(Atom::new("(*BOGUS)a", Syntax::Perl, false, false, false).is_err());
+    }
+
+    #[test]
+    fn eof_line_and_word() {
+        assert!(matcher(&["^x*$"], Syntax::Basic).selects_eof_line());
+        assert!(!matcher(&["^x*$"], Syntax::Perl).selects_eof_line());
+        assert!(!matcher(&["a"], Syntax::Basic).selects_eof_line());
+        assert!(!matcher(&["^$", "--and", "a"], Syntax::Basic).selects_eof_line());
+        let a = Atom::new("x*", Syntax::Basic, false, true, false).unwrap();
+        assert_eq!(a.find(b"", 0), None);
     }
 }

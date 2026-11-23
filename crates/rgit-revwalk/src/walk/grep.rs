@@ -169,11 +169,40 @@ pub fn reason(error: &str) -> &'static str {
 }
 
 /// Translate a POSIX regular expression (basic or extended) into the
-/// syntax of the `regex` crate.
+/// syntax of the `regex` crate. Back-references are not supported there
+/// and match their digit.
 pub fn translate(pattern: &str, extended: bool) -> Result<String, &'static str> {
+    posix(pattern, extended, None).map(|t| t.text)
+}
+
+/// A POSIX regular expression in the syntax of the `regex` crate, with
+/// back-references kept as `\N` (for a backtracking engine).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Translated {
+    pub text: String,
+    /// The number of groups.
+    pub groups: usize,
+    /// Whether the pattern refers back to a group.
+    pub backrefs: bool,
+}
+
+/// Translate a POSIX regular expression keeping back-references; its
+/// groups are numbered from `base + 1` (for alternatives joined into one
+/// pattern). A reference to a group that is not closed yet is invalid.
+pub fn translate_backrefs(
+    pattern: &str,
+    extended: bool,
+    base: usize,
+) -> Result<Translated, &'static str> {
+    posix(pattern, extended, Some(base))
+}
+
+fn posix(pattern: &str, extended: bool, base: Option<usize>) -> Result<Translated, &'static str> {
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::with_capacity(pattern.len() * 2);
     let mut i = 0;
+    let mut groups = Groups::default();
+    let mut backrefs = false;
     // At the start of an expression (`*` is literal there in BRE, `^` is
     // an anchor).
     let mut at_start = true;
@@ -189,16 +218,27 @@ pub fn translate(pattern: &str, extended: bool) -> Result<String, &'static str> 
                     '(' | ')' | '{' | '}' | '|' | '+' | '?' if !extended => {
                         out.push(d);
                         at_start = d == '(' || d == '|';
+                        groups.see(d);
                     }
                     '<' | '>' => out.push_str(r"\b"),
                     'w' | 'W' | 's' | 'S' | 'b' | 'B' => {
                         out.push('\\');
                         out.push(d);
                     }
-                    '1'..='9' => {
+                    '1'..='9' => match base {
                         // Back-references are not supported; match the digit.
-                        out.push(d);
-                    }
+                        None => out.push(d),
+                        Some(base) => {
+                            let n = d as usize - '0' as usize;
+                            if !groups.closed.get(n - 1).copied().unwrap_or(false) {
+                                return Err(msg::REGEX_BAD_BACKREF);
+                            }
+                            backrefs = true;
+                            // The group keeps a following digit literal
+                            // and takes a following repetition.
+                            out.push_str(&format!("(?:\\{})", base + n));
+                        }
+                    },
                     _ => push_literal(&mut out, d),
                 }
                 continue;
@@ -226,6 +266,11 @@ pub fn translate(pattern: &str, extended: bool) -> Result<String, &'static str> 
             '(' | '|' if extended => {
                 out.push(c);
                 at_start = true;
+                groups.see(c);
+            }
+            ')' if extended => {
+                out.push(c);
+                groups.see(c);
             }
             // `.` matches neither a newline nor a NUL byte (`git grep .fi`
             // does not match `\0file`).
@@ -244,7 +289,37 @@ pub fn translate(pattern: &str, extended: bool) -> Result<String, &'static str> 
         }
         i += 1;
     }
-    Ok(out)
+    Ok(Translated {
+        text: out,
+        groups: groups.closed.len(),
+        backrefs,
+    })
+}
+
+/// The groups seen so far: `(` opens the next one, `)` closes the
+/// innermost open one.
+#[derive(Default)]
+struct Groups {
+    /// Per group (in order of their `(`), whether it is closed.
+    closed: Vec<bool>,
+    open: Vec<usize>,
+}
+
+impl Groups {
+    fn see(&mut self, c: char) {
+        match c {
+            '(' => {
+                self.open.push(self.closed.len());
+                self.closed.push(false);
+            }
+            ')' => {
+                if let Some(n) = self.open.pop() {
+                    self.closed[n] = true;
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn push_literal(out: &mut String, c: char) {

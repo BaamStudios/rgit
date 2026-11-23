@@ -54,6 +54,9 @@ rgit-http = { path = "../rgit-http" }
 rgit-version = { path = "../rgit-version" }
 rgit-worktree = { path = "../rgit-worktree" }
 regex = { version = "1.13", default-features = false, features = ["std", "perf", "unicode"] }
+# Backtracking engine (MIT) for `git grep -P` look-around and for
+# backreferences; everything else stays on the automata of `regex`.
+fancy-regex = { version = "0.20", default-features = false, features = ["std", "perf", "unicode", "variable-lookbehinds", "leftmost_longest"] }
 regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "hybrid", "unicode"] }
 unicode-width = { version = "0.2", default-features = false }
 

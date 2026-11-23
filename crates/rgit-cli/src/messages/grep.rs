@@ -56,6 +56,8 @@ pub const NO_PATTERN: &str = "no pattern given";
 pub const CACHED_AND_TREES: &str = "both --cached and trees are given";
 pub const NO_INDEX_WITH_REVS: &str = "--no-index or --untracked cannot be used with revs";
 pub const NUL_IN_PATTERN: &str = "given pattern contains NULL byte (via -f <file>). This is only supported with -P under PCRE v2";
+/// PCRE2's reason for an unknown `(*VERB)` at the start of a `-P` pattern.
+pub const PCRE_BAD_VERB: &str = "(*VERB) not recognized or malformed";
 pub const ATTR_SOURCE_WITHOUT_REPO: &str =
     "cannot use --attr-source or GIT_ATTR_SOURCE without repo";
 pub const UNTRACKED_WITH_SUBMODULES: &str = "--untracked not supported with --recurse-submodules";
@@ -97,10 +99,6 @@ pub fn outside_directory(path: &str) -> String {
 /// The pattern that did not compile, as git reports it.
 pub fn bad_pattern(pattern: &str, reason: &str) -> String {
     format!("command line, '{pattern}': {reason}")
-}
-
-pub fn not_supported(what: &str) -> String {
-    format!("{what} is not supported by rgit yet")
 }
 
 /// `Binary file <name> matches` around the (coloured) name.

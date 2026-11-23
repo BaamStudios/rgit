@@ -9,6 +9,7 @@ pub const REGEX_UNMATCHED_BRACE: &str = "Unmatched \\{";
 pub const REGEX_BAD_PRECEDING: &str = "Invalid preceding regular expression";
 pub const REGEX_BAD_INTERVAL: &str = "Invalid content of \\{\\}";
 pub const REGEX_BAD_CLASS: &str = "Invalid character class name";
+pub const REGEX_BAD_BACKREF: &str = "Invalid back reference";
 
 /// A pattern of `--grep` (`header` false) or `--author`/`--committer`
 /// that does not compile.
