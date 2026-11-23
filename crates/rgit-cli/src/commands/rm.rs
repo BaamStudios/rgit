@@ -337,6 +337,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(0);
     }
     for p in &chosen {
+        // Removing a conflict keeps its stages for `restore --merge`.
+        let entries = index.entries_for_path(p);
+        if entries.iter().any(|e| e.stage().is_conflict()) {
+            let mut stages = [None; 3];
+            for e in entries {
+                if e.stage().is_conflict() {
+                    stages[usize::from(e.stage().get()) - 1] = Some((e.mode.0, e.id));
+                }
+            }
+            index.record_resolve_undo(p, stages);
+        }
         index.remove_path(p);
     }
     let cwd = std::fs::canonicalize(os_path(&root, &repo.prefix())).ok();

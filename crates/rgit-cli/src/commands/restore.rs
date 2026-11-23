@@ -11,8 +11,8 @@
 //! `--ignore-skip-worktree-bits`, `-q`, `-p`,
 //! `--pathspec-from-file`/`--pathspec-file-nul`.
 //!
-//! Not yet: re-creating conflicts from the resolve-undo record of an
-//! already resolved path (#35), `--recurse-submodules`.
+//! With `-m` the conflicts of paths resolved since are re-created from
+//! the resolve-undo record. Not yet: `--recurse-submodules`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -170,6 +170,33 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         }
     };
 
+    // `--merge` re-creates the conflicts of paths resolved since
+    // (the resolve undo record).
+    if how.source.is_none() && how.merge.is_some() {
+        for r in index.resolve_undo_records() {
+            if ps.match_path(&r.path).is_none() {
+                continue;
+            }
+            index.remove_path(&r.path);
+            for (k, s) in r.stages.iter().enumerate() {
+                if let Some((mode, id)) = s {
+                    let stage = Stage::new(k as u8 + 1).expect("stage");
+                    let e = Entry::new(r.path.clone(), stage, rgit_index::Mode(*mode), *id);
+                    index
+                        .add(
+                            e,
+                            AddOptions {
+                                ok_to_replace: true,
+                                ..Default::default()
+                            },
+                        )
+                        .map_err(|err| Die::Fatal(err.to_string()))?;
+                }
+            }
+            index.remove_resolve_undo(&r.path);
+            index_changed = true;
+        }
+    }
     match how.source {
         Some(t) => {
             let original = index.entries().to_vec();
