@@ -273,5 +273,3 @@ pub fn cannot_parse_expected(expect: &str) -> String {
 pub const PROGRESS_ENUMERATING: &str = "Enumerating objects";
 /// git: progress meter while looking up the objects to send.
 pub const PROGRESS_COUNTING: &str = "Counting objects";
-/// git: progress meter while writing the pack.
-pub const PROGRESS_WRITING: &str = "Writing objects";

@@ -4,16 +4,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use rgit_hash::{HashKind, ObjectId};
+use rgit_progress::Progress;
 
 use super::entry::{TYPE_OFS_DELTA, TYPE_REF_DELTA, push_base_distance, push_entry_header};
 use super::output::PackStream;
 use super::search::{Candidate, SearchOptions, search};
-use super::{ListedObject, ObjectSource, WriteError};
+use super::{ListedObject, ObjectSource, WriteError, messages};
 use crate::data::EntryKind;
 use crate::index_pack::{IndexedObject, IndexedPack};
 use crate::{ObjectKind, Pack, PackData};
@@ -50,6 +51,21 @@ pub struct WriteOptions {
     /// Objects larger than this are never deltified
     /// (`core.bigFileThreshold`).
     pub big_file_threshold: u64,
+    /// Progress meters on standard error.
+    pub progress: WriteProgress,
+}
+
+/// Which progress meters [`write_pack`] shows on standard error
+/// (`pack-objects --progress`/`--all-progress`, push).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WriteProgress {
+    /// `Compressing objects` over the delta search.
+    pub compress: bool,
+    /// `Writing objects`, and `Delta compression using up to N threads`
+    /// before a delta search with several threads.
+    pub write: bool,
+    /// Add the bytes written and the rate to `Writing objects`.
+    pub throughput: bool,
 }
 
 impl Default for WriteOptions {
@@ -64,6 +80,7 @@ impl Default for WriteOptions {
             window_memory: 0,
             threads: 0,
             big_file_threshold: DEFAULT_BIG_FILE_THRESHOLD,
+            progress: WriteProgress::default(),
         }
     }
 }
@@ -353,7 +370,22 @@ fn write_impl<W: Write, S: ObjectSource + Sync + ?Sized>(
             level,
             id_len: hash.byte_len(),
         };
-        for (pos, found) in search(source, packs, cands, &search_opts)? {
+        let targets = cands.iter().filter(|c| search_opts.counted(c)).count() as u64;
+        let meter = (opts.progress.compress && targets > 0).then(|| {
+            if opts.progress.write && search_opts.threads > 1 {
+                eprintln!("{}", messages::delta_threads(search_opts.threads));
+            }
+            Mutex::new(Progress::start(
+                messages::PROGRESS_COMPRESSING,
+                targets,
+                true,
+            ))
+        });
+        let found = search(source, packs, cands, &search_opts, meter.as_ref())?;
+        if let Some(m) = meter {
+            m.into_inner().unwrap_or_else(|e| e.into_inner()).stop();
+        }
+        for (pos, found) in found {
             reps[pos] = Rep::NewDelta {
                 base: found.base,
                 raw_len: found.raw_len,
@@ -376,6 +408,19 @@ fn write_impl<W: Write, S: ObjectSource + Sync + ?Sized>(
     }
 
     let mut stream = PackStream::new(out, hash, count)?;
+    let mut meter = opts
+        .progress
+        .write
+        .then(|| Progress::start(messages::PROGRESS_WRITING, u64::from(count), true));
+    if opts.progress.throughput {
+        if let Some(m) = &mut meter {
+            m.throughput(0);
+        }
+    }
+    // Bytes in the output packs finished before the current one.
+    let mut finished_bytes = 0u64;
+    let mut written = 0u64;
+    let mut m_last = 0u64;
     let mut offsets: Vec<Option<u64>> = vec![None; ids.len()];
     // Which output pack each written object went to.
     let mut pack_of: Vec<u32> = vec![0; ids.len()];
@@ -467,6 +512,7 @@ fn write_impl<W: Write, S: ObjectSource + Sync + ?Sized>(
                     summary.pack_len = stream.offset() + hash.byte_len() as u64;
                     let (checksum, w) = stream.finish_partial()?;
                     summary.checksum = checksum;
+                    finished_bytes += summary.pack_len;
                     done.push((std::mem::replace(&mut summary, new_summary()), w));
                     stream = PackStream::new(next()?, hash, count)?;
                     current += 1;
@@ -496,6 +542,18 @@ fn write_impl<W: Write, S: ObjectSource + Sync + ?Sized>(
                 offset,
                 crc32,
             });
+            written += 1;
+        }
+        // Like git, the meter moves once per object in list order, with
+        // the bases written ahead of it counted in the same step.
+        if let Some(m) = &mut meter {
+            if m_last != written {
+                m_last = written;
+                if opts.progress.throughput {
+                    m.throughput(finished_bytes + stream.offset());
+                }
+                m.set(written);
+            }
         }
     }
     summary.pack_len = stream.offset() + hash.byte_len() as u64;
@@ -505,6 +563,12 @@ fn write_impl<W: Write, S: ObjectSource + Sync + ?Sized>(
         stream.finish()?
     };
     summary.checksum = checksum;
+    if let Some(mut m) = meter {
+        if opts.progress.throughput {
+            m.throughput(finished_bytes + summary.pack_len);
+        }
+        m.stop();
+    }
     done.push((summary, out));
     Ok(done)
 }

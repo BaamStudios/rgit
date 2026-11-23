@@ -280,3 +280,115 @@ fn push_with_corrupt_object_ends() {
     .only_exit_code()
     .run();
 }
+
+/// `--progress` to a pipe: `Enumerating objects`, `Counting objects`,
+/// `Delta compression using up to N threads`, `Compressing objects`,
+/// `Writing objects` with size and rate, and the `Total` line.
+#[test]
+fn push_progress_meters() {
+    use rgit_difftest::Normalizer;
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut text = String::new();
+    for i in 0..300 {
+        text.push_str(&format!("line {i} of a longer file\n"));
+    }
+    let mut fx = fx
+        .write("long", &text)
+        .git(["add", "long"])
+        .git(["commit", "-q", "-m", "long"])
+        .tick()
+        .git(["push", "-q", "origin", "main"])
+        .write("long", text.replace("line 7 ", "line seven "))
+        .write("other", &text[100..])
+        .git(["add", "-A"])
+        .git(["commit", "-q", "-m", "two"])
+        .tick();
+    fx.compare([
+        "-c",
+        "pack.threads=2",
+        "push",
+        "--progress",
+        "origin",
+        "main",
+    ])
+    .checks([Check::ExitCode, Check::Stderr])
+    // Other delta bases are written ahead at other places.
+    .normalize_stderr(Normalizer::regex(
+        r"Writing objects: +\d+% \(\d+/\d+\)\r",
+        "",
+    ))
+    .normalize_stderr(Normalizer::regex(
+        r", [0-9.]+ (bytes|KiB|MiB) \| [0-9.]+ (bytes|KiB|MiB)/s",
+        ", <SIZE> | <RATE>",
+    ))
+    .normalize_stderr(Normalizer::regex(
+        r"Total (\d+) \(delta \d+\), reused (\d+) \(delta \d+\)",
+        "Total $1 (delta <D>), reused $2 (delta <D>)",
+    ))
+    .run();
+    // Nothing to send: no meters, only the `Total` line.
+    fx.compare(["push", "--progress", "origin", "main:refs/heads/copy"])
+        .checks([Check::ExitCode, Check::Stderr])
+        .run();
+}
+
+/// `color.push` (`color.push.error`) and `color.transport`
+/// (`color.transport.rejected`, `color.transport.reset`) colour the
+/// `failed to push` line and the flag and summary of failed refs;
+/// `color.ui` does not turn them on.
+#[test]
+fn push_colors() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx
+        .write("f", "two\n")
+        .git(["commit", "-q", "-a", "-m", "two"])
+        .tick()
+        .git(["push", "-q", "origin", "main"]);
+    for args in [
+        &[
+            "-c",
+            "color.transport=always",
+            "-c",
+            "color.advice=always",
+            "-c",
+            "color.push=always",
+            "push",
+            "origin",
+            "main^:main",
+        ][..],
+        &["-c", "color.ui=always", "push", "origin", "main^:main"],
+        &[
+            "-c",
+            "color.transport=always",
+            "-c",
+            "color.transport.rejected=blue",
+            "-c",
+            "color.transport.reset=green",
+            "-c",
+            "color.push=always",
+            "-c",
+            "color.push.error=magenta",
+            "push",
+            "origin",
+            "main^:main",
+            "main:new",
+        ],
+        &[
+            "-c",
+            "color.push=always",
+            "push",
+            "-v",
+            "origin",
+            "main^:main",
+            "main:main",
+        ],
+    ] {
+        fx.compare(args).run();
+    }
+}

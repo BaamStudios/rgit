@@ -55,3 +55,13 @@ pub fn too_many_objects(f: &mut fmt::Formatter<'_>) -> fmt::Result {
 pub fn trailer_collision(f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "SHA-1 collision detected while hashing the pack")
 }
+
+/// git: progress meter over the delta search.
+pub const PROGRESS_COMPRESSING: &str = "Compressing objects";
+/// git: progress meter while writing the pack.
+pub const PROGRESS_WRITING: &str = "Writing objects";
+
+/// git: before the delta search when it may use several threads.
+pub fn delta_threads(n: usize) -> String {
+    format!("Delta compression using up to {n} threads")
+}

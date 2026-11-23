@@ -101,6 +101,28 @@ pub fn want(config: &ConfigSet, var: Option<&str>, cli: Option<ColorBool>) -> Re
     })
 }
 
+/// Whether to colour messages on stderr for a variable that does not
+/// fall back to `color.ui` (`color.push`, `color.transport`, as observed
+/// from git): unset or `auto` colours when stderr is a terminal.
+pub fn want_stderr(config: &ConfigSet, var: &str) -> bool {
+    match colorbool(config, var).ok().flatten() {
+        Some(ColorBool::Always) => true,
+        Some(ColorBool::Never) => false,
+        _ => {
+            std::env::var_os("TERM").is_some_and(|t| t != "dumb") && std::io::stderr().is_terminal()
+        }
+    }
+}
+
+/// The colour of slot `key`, or `default` when unset or invalid.
+pub fn slot_or(config: &ConfigSet, key: &str, default: &str) -> String {
+    config
+        .get(key)
+        .and_then(|e| e.value.as_ref())
+        .and_then(|v| parse_color(&v.to_string()))
+        .unwrap_or_else(|| default.to_owned())
+}
+
 /// The colours of remote messages (`color.remote`, else `color.ui`;
 /// `auto` when stderr is a terminal), `None` without colour. Invalid
 /// `color.remote.<slot>` values keep the default.

@@ -262,7 +262,7 @@ impl Plan {
             }
         }
         let symlinks = wt.checker.options().symlinks;
-        let mut delayed = false;
+        let mut delayed = 0u64;
         for path in &update {
             tick(&mut meter);
             let Ok(pos) = index.position(path, Stage::MERGED) else {
@@ -277,7 +277,7 @@ impl Plan {
                         match filter.to_worktree_delayable(path, &entry.id, d) {
                             Some(d) => d,
                             None => {
-                                delayed = true;
+                                delayed += 1;
                                 continue;
                             }
                         }
@@ -299,8 +299,27 @@ impl Plan {
                 Err(e) => errors.push(e.to_string()),
             }
         }
-        if delayed {
+        // Like git, the work tree meter ends before the filters deliver
+        // the delayed paths.
+        if let Some(m) = meter {
+            m.stop();
+        }
+        if delayed > 0 {
+            let mut filtering = progress.then(|| {
+                rgit_progress::Progress::start_delayed(msg::PROGRESS_FILTERING, delayed, true)
+            });
+            let mut filtered = 0u64;
+            let mut filtered_bytes = 0u64;
+            if let Some(m) = &mut filtering {
+                m.throughput(0);
+            }
             let mut ready = |path: &[u8], data: Vec<u8>| {
+                if let Some(m) = &mut filtering {
+                    filtered += 1;
+                    filtered_bytes += data.len() as u64;
+                    m.throughput(filtered_bytes);
+                    m.set(filtered);
+                }
                 let Ok(pos) = index.position(path, Stage::MERGED) else {
                     return;
                 };
@@ -316,10 +335,10 @@ impl Plan {
                 }
             };
             let missing = filter.finish_delayed(&mut ready);
+            if let Some(m) = filtering {
+                m.stop();
+            }
             errors.extend(missing);
-        }
-        if let Some(m) = meter {
-            m.stop();
         }
         Applied { index, errors }
     }

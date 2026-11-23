@@ -360,6 +360,49 @@ fn delayed_checkout() {
     fx.compare(["checkout", "-q", "main"])
         .checks(CHECKOUT)
         .run();
+    // The `Filtering content` meter over the delayed paths.
+    for args in [
+        &["checkout", "--progress", "--", "."][..],
+        &["checkout", "--quiet", "--progress", "--", "."],
+        &["checkout", "--no-progress", "--", "."],
+        &["checkout", "--", "."],
+    ] {
+        fx = fx
+            .remove("filter.log")
+            .remove("a.r")
+            .remove("delay1.r")
+            .remove("delay2.r");
+        fx.compare(args)
+            .env("GIT_PROGRESS_DELAY", "0")
+            .checks(CHECKOUT)
+            .run();
+    }
+    // Branch checkout: git rewrites every entry with `-f` (its `Updating
+    // files` total differs), so only the filter meter is checked here.
+    for (args, shown) in [
+        (&["checkout", "--progress", "-f", "HEAD"][..], true),
+        (&["checkout", "--quiet", "--progress", "-f", "HEAD"], true),
+        (&["checkout", "-f", "HEAD"], false),
+    ] {
+        fx = fx.remove("delay1.r").remove("delay2.r");
+        let home = fx.home_dir();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
+            .args(args)
+            .current_dir(fx.work_dir())
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_PROGRESS_DELAY", "0")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            err.contains("Filtering content: 100% (2/2), 8 bytes"),
+            shown,
+            "{args:?}: {err}"
+        );
+    }
 }
 
 #[test]

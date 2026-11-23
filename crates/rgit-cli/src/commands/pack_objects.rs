@@ -5,7 +5,11 @@
 //! `--depth`, `pack.*`), reuse of existing deltas and objects, and thin
 //! packs (`--thin`). See `rgit_pack::write`.
 //!
-//! Not yet: progress meters (only the final "Total" line), `--include-tag`,
+//! Progress: `Enumerating objects`, `Counting objects`, `Compressing
+//! objects`, `Writing objects` (`--all-progress`, or `<base-name>`
+//! output), the `Total` line.
+//!
+//! Not yet: `--include-tag`,
 //! `--shallow`, `--incremental`, `--local`, `--unpacked`, `--stdin-packs`,
 //! filters, bitmaps.
 
@@ -23,13 +27,14 @@ use rgit_refs::name::{RefNameFlags, is_valid_refname};
 use rgit_refs::{IterItem, IterOptions, MAX_SYMREF_DEPTH, RefStore, Target};
 
 use crate::messages::pack_objects as msg;
+use crate::messages::push as push_msg;
 use crate::prelude::*;
 use crate::repo::{self, Mode};
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
-    let quiet = Cell::new(false);
-    let progress = Cell::new(false);
-    let all_progress = Cell::new(false);
+    // -1: not given (a terminal shows progress), 0: none, 1: no writing
+    // meter with `--stdout`, 2: all meters.
+    let progress = Cell::new(-1);
     let all_progress_implied = Cell::new(false);
     let window = Cell::new(i32::MIN);
     let window_memory = Cell::new(u64::MAX);
@@ -66,9 +71,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
-            Opt::flag('q', "quiet", &quiet, msg::H_QUIET),
-            Opt::flag(None, "progress", &progress, msg::H_PROGRESS),
-            Opt::flag(None, "all-progress", &all_progress, msg::H_ALL_PROGRESS),
+            Opt::set_int('q', "quiet", &progress, msg::H_QUIET, 0),
+            Opt::set_int(None, "progress", &progress, msg::H_PROGRESS, 1),
+            Opt::set_int(None, "all-progress", &progress, msg::H_ALL_PROGRESS, 2),
             Opt::flag(
                 None,
                 "all-progress-implied",
@@ -276,6 +281,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         opts.max_depth = pw::MAX_DEPTH;
     }
     opts.ofs_delta = ofs_delta.get();
+    let mut level = match progress.get() {
+        -1 => i32::from(std::io::stderr().is_terminal()),
+        v => v,
+    };
+    if all_progress_implied.get() && level > 0 {
+        level = 2;
+    }
+    let show_progress = level > 0;
+    opts.progress = pw::WriteProgress {
+        compress: show_progress,
+        write: level > 1 || (show_progress && !stdout.get()),
+        throughput: level > 1 && stdout.get(),
+    };
     opts.reuse_object = reuse_object.get();
     opts.reuse_delta = reuse_delta.get() && reuse_object.get();
 
@@ -320,13 +338,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         };
         (listed, bases)
     };
+    if show_progress {
+        show_enumerated(&listed, &bases);
+    }
     let ordered = pw::pack_order(&listed);
     if ordered.is_empty() && non_empty.get() {
         return Ok(0);
     }
 
     let packs = odb.packs().map(|p| p.set().packs()).unwrap_or_default();
-    let show_progress = !quiet.get() && (progress.get() || std::io::stderr().is_terminal());
     let summaries = if stdout.get() {
         let out = BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
         let (summary, mut out) =
@@ -379,6 +399,30 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         );
     }
     Ok(0)
+}
+
+/// The `Enumerating objects` and `Counting objects` meters (also used by
+/// push). Like git, both count the objects to pack plus the delta bases
+/// the other side has under the path of a tree or blob that is packed.
+pub(crate) fn show_enumerated(listed: &[ListedObject], bases: &[ListedObject]) {
+    let paths: std::collections::HashSet<u32> = listed
+        .iter()
+        .filter(|o| matches!(o.kind, ObjectKind::Tree | ObjectKind::Blob))
+        .map(|o| o.name_hash)
+        .collect();
+    let n = (listed.len()
+        + bases
+            .iter()
+            .filter(|b| paths.contains(&b.name_hash))
+            .count()) as u64;
+    let mut meter = rgit_progress::Progress::start(push_msg::PROGRESS_ENUMERATING, 0, true);
+    meter.set(n);
+    meter.stop();
+    let mut meter = rgit_progress::Progress::start(push_msg::PROGRESS_COUNTING, n, true);
+    for i in 1..=n {
+        meter.set(i);
+    }
+    meter.stop();
 }
 
 /// The pack settings from configuration: `pack.window`, `pack.depth`,

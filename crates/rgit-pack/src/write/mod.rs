@@ -39,7 +39,7 @@ pub use error::{SourceError, WriteError};
 pub use output::PackStream;
 pub use pack::{
     DEFAULT_BIG_FILE_THRESHOLD, DEFAULT_DEPTH, DEFAULT_WINDOW, MAX_DEPTH, PackSummary,
-    WriteOptions, WrittenEntry, write_pack, write_pack_files, write_thin_pack,
+    WriteOptions, WriteProgress, WrittenEntry, write_pack, write_pack_files, write_thin_pack,
 };
 pub use source::{ObjectSource, PackSetSource, ShallowSource};
 pub use walk::{
