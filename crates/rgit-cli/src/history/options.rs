@@ -114,6 +114,8 @@ pub struct Options {
     /// `--ancestry-path=<commit>` arguments.
     pub ancestry: Vec<String>,
     pub abbrev_commit: bool,
+    /// `--[no-]expand-tabs[=<n>]`.
+    pub tab_width: Option<usize>,
     pub abbrev: Abbrev,
     /// `--pretty`/`--format`/`--oneline` as given (resolved with the
     /// configuration into `pretty`).
@@ -290,6 +292,7 @@ impl Options {
             grep: GrepOptions::default(),
             ancestry: Vec::new(),
             abbrev_commit: false,
+            tab_width: None,
             abbrev: Abbrev::Default,
             pretty_arg: None,
             pretty: None,
@@ -517,6 +520,8 @@ impl Options {
                 "--graph" => o.graph = true,
                 "--root" if cmd == Command::Log => o.root = true,
                 "--no-graph" => o.graph = false,
+                "--expand-tabs" => o.tab_width = Some(8),
+                "--no-expand-tabs" => o.tab_width = Some(0),
                 "--graph-indent" => o.graph_indent = Some(true),
                 "--no-graph-indent" => o.graph_indent = Some(false),
                 "--reverse" => o.walk.reverse = true,
@@ -708,6 +713,8 @@ impl Options {
                     } else if let Some(v) = a.strip_prefix("--ancestry-path=") {
                         o.walk.ancestry_path = true;
                         o.ancestry.push(v.to_string());
+                    } else if let Some(v) = a.strip_prefix("--expand-tabs=") {
+                        o.tab_width = Some(parse_count(v)?);
                     } else if let Some(v) = a.strip_prefix("--max-count-oldest=") {
                         o.walk.max_count = Some(parse_count(v)?);
                         o.max_count_oldest = true;

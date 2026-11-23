@@ -159,12 +159,16 @@ pub fn subject(lines: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-/// Append `line` with tabs expanded to every eighth column.
-fn push_expanded(out: &mut Vec<u8>, line: &[u8]) {
+/// Append `line` with tabs expanded to every `width`th column (0: kept).
+fn push_expanded(out: &mut Vec<u8>, line: &[u8], width: usize) {
+    if width == 0 {
+        out.extend_from_slice(line);
+        return;
+    }
     let mut col = 0usize;
     for &b in line {
         if b == b'\t' {
-            let n = 8 - col % 8;
+            let n = width - col % width;
             out.extend(std::iter::repeat_n(b' ', n));
             col += n;
         } else {
@@ -246,6 +250,9 @@ pub struct Style {
     pub commit_color: Option<String>,
     /// `-z`: entries end (oneline) or are separated by NUL.
     pub zero: bool,
+    /// `--[no-]expand-tabs[=<n>]`: the tab width of indented messages
+    /// (`None`: 8, 0: tabs are kept).
+    pub tab_width: Option<usize>,
 }
 
 /// Append one entry. `first` is false for every entry after the first,
@@ -365,7 +372,7 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
         if style.pretty == Pretty::Raw {
             out.extend_from_slice(line);
         } else {
-            push_expanded(out, line);
+            push_expanded(out, line, style.tab_width.unwrap_or(8));
         }
         out.push(b'\n');
     }
@@ -383,7 +390,7 @@ mod tests {
         assert_eq!(lines.last(), Some(&&b"end"[..]));
         assert_eq!(subject(&lines), b"  first    second");
         let mut out = Vec::new();
-        push_expanded(&mut out, b"body\ttab x");
+        push_expanded(&mut out, b"body\ttab x", 8);
         assert_eq!(out, b"body    tab x");
         assert!(message_lines(b"").is_empty());
     }

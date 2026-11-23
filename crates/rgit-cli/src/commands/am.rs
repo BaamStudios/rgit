@@ -142,28 +142,36 @@ fn sq(s: &str) -> String {
 
 /// Splits `'a' 'b\''c'` into its words.
 fn sq_dequote_words(s: &str) -> Vec<String> {
+    sq_dequote_bytes(s.as_bytes())
+        .into_iter()
+        .map(|w| lossy(&w))
+        .collect()
+}
+
+/// [`sq_dequote_words`] on bytes (author names keep their encoding).
+fn sq_dequote_bytes(s: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
-    let mut cur = String::new();
+    let mut cur = Vec::new();
     let mut in_word = false;
-    let mut chars = s.chars().peekable();
+    let mut chars = s.iter().copied();
     while let Some(c) = chars.next() {
         match c {
-            '\'' => {
+            b'\'' => {
                 in_word = true;
                 for d in chars.by_ref() {
-                    if d == '\'' {
+                    if d == b'\'' {
                         break;
                     }
                     cur.push(d);
                 }
             }
-            '\\' => {
+            b'\\' => {
                 if let Some(d) = chars.next() {
                     cur.push(d);
                 }
                 in_word = true;
             }
-            ' ' | '\t' | '\n' => {
+            b' ' | b'\t' | b'\n' => {
                 if in_word {
                     out.push(std::mem::take(&mut cur));
                     in_word = false;
@@ -227,38 +235,74 @@ fn parse_info(data: &[u8]) -> MailInfo {
     out
 }
 
-/// The author of the current mail, from `author-script`.
+/// The author of the current mail, from `author-script`. The values are
+/// bytes: a name in the commit encoding need not be UTF-8.
 #[derive(Default, Clone)]
 struct Author {
-    name: String,
-    email: String,
-    date: String,
+    name: Vec<u8>,
+    email: Vec<u8>,
+    date: Vec<u8>,
 }
 
-fn author_script(a: &Author) -> String {
-    format!(
-        "GIT_AUTHOR_NAME={}\nGIT_AUTHOR_EMAIL={}\nGIT_AUTHOR_DATE={}\n",
-        sq(&a.name),
-        sq(&a.email),
-        sq(&a.date)
-    )
+/// `'<value>'` with `'` and `!` escaped like git's shell quoting.
+fn sq_bytes(v: &[u8]) -> Vec<u8> {
+    let mut out = vec![b'\''];
+    for &b in v {
+        if b == b'\'' || b == b'!' {
+            out.extend_from_slice(b"'\\");
+            out.push(b);
+            out.push(b'\'');
+        } else {
+            out.push(b);
+        }
+    }
+    out.push(b'\'');
+    out
 }
 
-fn read_author_script(data: &str) -> Author {
+fn author_script(a: &Author) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (k, v) in [
+        ("GIT_AUTHOR_NAME", &a.name),
+        ("GIT_AUTHOR_EMAIL", &a.email),
+        ("GIT_AUTHOR_DATE", &a.date),
+    ] {
+        out.extend_from_slice(k.as_bytes());
+        out.push(b'=');
+        out.extend_from_slice(&sq_bytes(v));
+        out.push(b'\n');
+    }
+    out
+}
+
+fn read_author_script(data: &[u8]) -> Author {
     let mut a = Author::default();
-    for line in data.lines() {
-        let Some((k, v)) = line.split_once('=') else {
+    for line in data.split(|&b| b == b'\n') {
+        let Some(eq) = line.iter().position(|&b| b == b'=') else {
             continue;
         };
-        let v = sq_dequote_words(v).join(" ");
-        match k {
-            "GIT_AUTHOR_NAME" => a.name = v,
-            "GIT_AUTHOR_EMAIL" => a.email = v,
-            "GIT_AUTHOR_DATE" => a.date = v,
+        let v = sq_dequote_bytes(&line[eq + 1..]).join(&b' ');
+        match &line[..eq] {
+            b"GIT_AUTHOR_NAME" => a.name = v,
+            b"GIT_AUTHOR_EMAIL" => a.email = v,
+            b"GIT_AUTHOR_DATE" => a.date = v,
             _ => {}
         }
     }
     a
+}
+
+/// Bytes as an environment value.
+fn os_bytes(v: &[u8]) -> OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(v.to_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        OsString::from(lossy(v))
+    }
 }
 
 struct Am<'c> {
@@ -550,6 +594,16 @@ impl<'c> Am<'c> {
             eprintln!("warning: {}", msg::FORMAT_FLOWED);
         }
         let mi = parse_info(&info.info);
+        // The identity is re-coded to the commit encoding even with
+        // `--no-utf8`, which keeps only the message as it is.
+        let ident = if self.cur.utf8 {
+            None
+        } else {
+            let mut o = self.mailinfo_options();
+            o.metainfo_charset = Some(crate::commands::mailinfo::commit_encoding(&self.config));
+            Some(parse_info(&rgit_mailinfo::info(&data, &o).info))
+        };
+        let ident = ident.as_ref().unwrap_or(&mi);
         if mi.subject == msg::PINE_INTERNAL_DATA.as_bytes() {
             // The first message of a Pine mailbox holds the folder's data.
             return Ok(false);
@@ -562,9 +616,9 @@ impl<'c> Am<'c> {
             message = self.signoff(&message)?;
         }
         let author = Author {
-            name: lossy(&mi.author),
-            email: lossy(&mi.email),
-            date: lossy(&mi.date),
+            name: ident.author.clone(),
+            email: ident.email.clone(),
+            date: mi.date.clone(),
         };
         self.write("author-script", author_script(&author))?;
         self.write("final-commit", &message)?;
@@ -756,7 +810,7 @@ impl<'c> Am<'c> {
         let tree = crate::commands::write_tree::write_tree(&repo, &index, false, None)?;
         drop(index);
         let head = seq::head_commit(&mut repo);
-        let author_data = self.read("author-script").unwrap_or_default();
+        let author_data = std::fs::read(self.path("author-script")).unwrap_or_default();
         let a = read_author_script(&author_data);
         let icfg = IdentConfig::from_config(&repo.config).map_err(|p| {
             p.print();
@@ -765,14 +819,14 @@ impl<'c> Am<'c> {
         let author_env = Overlay {
             base: SystemEnv::default(),
             vars: vec![
-                ("GIT_AUTHOR_NAME", a.name.clone().into()),
-                ("GIT_AUTHOR_EMAIL", a.email.clone().into()),
+                ("GIT_AUTHOR_NAME", os_bytes(&a.name)),
+                ("GIT_AUTHOR_EMAIL", os_bytes(&a.email)),
                 (
                     "GIT_AUTHOR_DATE",
                     if self.ignore_date {
                         OsString::new()
                     } else {
-                        a.date.clone().into()
+                        os_bytes(&a.date)
                     },
                 ),
             ],
@@ -820,6 +874,10 @@ impl<'c> Am<'c> {
             encoding: encoding.as_deref(),
             message,
         };
+        // `--no-utf8` keeps the mail's bytes, which need not be UTF-8.
+        if !new.conforms() {
+            eprintln!("{}", rgit_commit::messages::NOT_UTF8_WARNING);
+        }
         let oid = crate::signing::create_commit(&repo, &new, self.sign.as_ref())?;
         let action = std::env::var("GIT_REFLOG_ACTION")
             .ok()
@@ -1706,12 +1764,12 @@ mod tests {
             vec!["-p1", "--include=*", "a'b"]
         );
         let a = Author {
-            name: "O'Neil".into(),
-            email: "o@x".into(),
-            date: "Thu, 7 Apr 2005 15:13:13 -0700".into(),
+            name: b"O'Neil \xc1!".to_vec(),
+            email: b"o@x".to_vec(),
+            date: b"Thu, 7 Apr 2005 15:13:13 -0700".to_vec(),
         };
         let back = read_author_script(&author_script(&a));
-        assert_eq!(back.name, "O'Neil");
+        assert_eq!(back.name, a.name);
         assert_eq!(back.date, a.date);
     }
 
