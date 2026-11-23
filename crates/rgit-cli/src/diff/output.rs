@@ -28,6 +28,17 @@ use crate::messages::diff as msg;
 use crate::repository::Repo;
 use rgit_diff::ws_rule::{self, WsRule};
 
+/// An abbreviated object id of a raw line, followed by "..." when
+/// `GIT_PRINT_SHA1_ELLIPSIS` is `yes` (git(1), ENVIRONMENT).
+pub fn raw_ellipsis(mut id: String, hash: HashKind) -> String {
+    if id.len() < hash.hex_len()
+        && std::env::var("GIT_PRINT_SHA1_ELLIPSIS").is_ok_and(|v| v.eq_ignore_ascii_case("yes"))
+    {
+        id.push_str("...");
+    }
+    id
+}
+
 /// Output settings, resolved from options and configuration.
 pub struct Output<'a> {
     pub repo: Option<&'a Repo>,
@@ -417,6 +428,18 @@ impl<'a> Output<'a> {
         if porcelain && !opts.default_prefix && config_bool("diff.noprefix") == Some(true) {
             src.clear();
             dst.clear();
+        } else if porcelain && !opts.default_prefix {
+            // diff.srcPrefix / diff.dstPrefix (config/diff.adoc).
+            let config_str = |key: &str| {
+                repo.and_then(|r| r.config.string(key).ok().flatten())
+                    .map(|v| v.to_vec())
+            };
+            if let Some(p) = config_str("diff.srcprefix") {
+                src = p;
+            }
+            if let Some(p) = config_str("diff.dstprefix") {
+                dst = p;
+            }
         }
         if opts.no_prefix {
             src.clear();
@@ -1171,8 +1194,8 @@ impl<'a> Output<'a> {
                 write!(
                     out,
                     ":{om:06o} {nm:06o} {} {} ",
-                    self.abbrev(&oo, self.raw_abbrev),
-                    self.abbrev(&no, self.raw_abbrev)
+                    raw_ellipsis(self.abbrev(&oo, self.raw_abbrev), self.hash),
+                    raw_ellipsis(self.abbrev(&no, self.raw_abbrev), self.hash)
                 )
                 .unwrap();
                 self.write_status(&mut out, p);

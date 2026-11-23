@@ -22,6 +22,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let mut cached = false;
     let mut merge_base = false;
+    // `-m`: files missing from the work tree count as unchanged.
+    let mut missing_unchanged = false;
     let parsed = diff::parse_args(
         &argv[1..],
         |a| match a {
@@ -33,7 +35,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 merge_base = true;
                 Ok(true)
             }
-            "-m" => Err(Die::Fatal(msg::not_supported(a))),
+            "-m" => {
+                missing_unchanged = true;
+                Ok(true)
+            }
             _ => Ok(false),
         },
         |_| usage(),
@@ -83,7 +88,34 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             submodules: submodules.as_ref(),
             dirty: Default::default(),
         };
-        collect::index(&repo, &tree, &index, &pathspec, Some(&wt), false)?
+        let mut pairs = collect::index(&repo, &tree, &index, &pathspec, Some(&wt), false)?;
+        if missing_unchanged {
+            // A deleted work tree file is its index entry.
+            pairs.retain_mut(|p| {
+                if p.new.is_some() || p.unmerged {
+                    return true;
+                }
+                let Some(e) = index
+                    .entries()
+                    .iter()
+                    .find(|e| e.path() == &p.path[..] && e.stage() == rgit_index::Stage::MERGED)
+                else {
+                    return true;
+                };
+                let side = collect::Side {
+                    mode: e.mode.0,
+                    oid: e.id,
+                    file: None,
+                };
+                let same = p
+                    .old
+                    .as_ref()
+                    .is_some_and(|o| o.oid == side.oid && o.mode == side.mode);
+                p.new = Some(side);
+                !same
+            });
+        }
+        pairs
     };
     let mut pairs = if opts.copies_harder {
         collect::with_unmodified(pairs, collect::tree_files(&repo, &tree, &pathspec)?)

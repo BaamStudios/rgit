@@ -159,6 +159,9 @@ pub struct Options {
     pub merges: Option<MergeDiff>,
     /// `git show`: objects one by one, with diffs by default.
     pub show: bool,
+    /// `diff-tree` with a pretty format: plumbing diffs (full raw ids,
+    /// recursive only when asked for).
+    pub plumbing: bool,
     /// `--root`: root commits get a diff (else `log.showRoot`).
     pub root: bool,
     /// `--max-count-oldest`: the count limits the last commits.
@@ -313,6 +316,7 @@ impl Options {
             diff: crate::diff::options::DiffOpts::default(),
             merges: None,
             show: false,
+            plumbing: false,
             root: false,
             max_count_oldest: false,
             max_count_given: false,
