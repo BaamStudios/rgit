@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! `git diff-files` (Documentation/git-diff-files.adoc): the index against
-//! the work tree. No combined diffs (`-c`, `--cc`, `-0`..`-3`).
+//! the work tree. No combined diffs (`-c`, `--cc`).
 
 use crate::diff::collect::{self, WorkTree};
 use crate::diff::output::Output;
@@ -18,15 +18,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some(code) = diff::help(argv, &format!("{}{}", msg::DIFF_FILES_USAGE, msg::COMMON_OPTIONS)) {
         return Ok(code);
     }
+    // The conflict stage unmerged paths are compared with; without one a
+    // patch is a combined diff and other formats use "ours" (`-2`).
+    let mut stage = None;
     let parsed = diff::parse_args(
         &argv[1..],
-        |a| match a {
-            // Only silences errors about missing files, which are not reported.
-            "-q" => Ok(true),
-            "-0" | "-1" | "-2" | "-3" | "--base" | "--ours" | "--theirs" | "-c" | "--cc" => {
-                Err(Die::Fatal(msg::not_supported(a)))
-            }
-            _ => Ok(false),
+        |a| {
+            stage = match a {
+                // Only silences errors about missing files, which are not reported.
+                "-q" => return Ok(true),
+                "-0" => Some(0),
+                "-1" | "--base" => Some(1),
+                "-2" | "--ours" => Some(2),
+                "-3" | "--theirs" => Some(3),
+                "-c" | "--cc" => return Err(Die::Fatal(msg::not_supported(a))),
+                _ => return Ok(false),
+            };
+            Ok(true)
         },
         |_| usage(),
     )?;
@@ -48,7 +56,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         submodules: submodules.as_ref(),
         dirty: Default::default(),
     };
-    let mut pairs = collect::files(&index, &pathspec, &wt, false)?;
+    let mut pairs = collect::files_stage(&index, &pathspec, &wt, false, stage.unwrap_or(2))?;
     if opts.copies_harder {
         pairs = collect::with_unmodified(pairs, collect::index_files(&index, &pathspec));
     }
@@ -56,7 +64,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     diff::attr_retain(&repo, &mut pairs, attr_filter)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
-    out.combined_unmerged = true;
+    out.combined_unmerged = stage.is_none();
     let (bytes, changed) = out.render(pairs)?;
     Ok(out.finish(&bytes, changed, &opts))
 }

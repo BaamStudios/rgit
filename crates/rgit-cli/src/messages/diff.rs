@@ -77,6 +77,10 @@ pub fn could_not_read(id: &str) -> String {
     format!("unable to read tree ({id})")
 }
 
+pub fn unable_to_read_blob(hex: &str) -> String {
+    format!("unable to read {hex}")
+}
+
 pub fn read_failed(path: &str) -> String {
     format!("cannot read '{path}'")
 }
@@ -198,6 +202,10 @@ pub const WS_RULE_CONFLICT: &str = "cannot enforce both tab-in-indent and indent
 
 pub fn ws_check_line(path: &str, line: usize, what: &str) -> String {
     format!("{path}:{line}: {what}.\n")
+}
+
+pub fn leftover_conflict_marker(path: &str, line: usize) -> String {
+    format!("{path}:{line}: leftover conflict marker\n")
 }
 
 pub const WS_TRAILING: &str = "trailing whitespace";

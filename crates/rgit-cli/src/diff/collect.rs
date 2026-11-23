@@ -539,6 +539,18 @@ pub fn files(
     wt: &WorkTree<'_>,
     skip_deleted: bool,
 ) -> Result<Vec<Pair>, Die> {
+    files_stage(index, ps, wt, skip_deleted, 2)
+}
+
+/// [`files`] comparing unmerged paths' conflict `stage` (1 base, 2 ours,
+/// 3 theirs; 0 none) against the work tree (`diff-files -0`..`-3`).
+pub fn files_stage(
+    index: &Index,
+    ps: &Pathspec,
+    wt: &WorkTree<'_>,
+    skip_deleted: bool,
+    stage: usize,
+) -> Result<Vec<Pair>, Die> {
     let mut pairs = Vec::new();
     for ip in index_paths(index, ps) {
         let path = ip.path.to_vec();
@@ -558,8 +570,9 @@ pub fn files(
             }
             continue;
         }
-        // Unmerged: the `U` line, then "ours" against the work tree.
-        let ours = ip.stages[1];
+        // Unmerged: the `U` line, then the chosen stage ("ours" by default)
+        // against the work tree.
+        let ours = stage.checked_sub(1).and_then(|s| ip.stages[s]);
         let file = wt.unmerged_file(&path, ours.map(|e| e.mode.0))?;
         let shown = file.as_ref().map(|s| Side {
             mode: s.mode,

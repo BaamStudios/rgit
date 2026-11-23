@@ -37,7 +37,45 @@ pub fn pathspec(ctx: &Context, repo: &Repo, args: &[String]) -> Result<Pathspec,
         implicit_base: rgit_pathspec::ImplicitBase::Top,
         ..Default::default()
     };
-    Pathspec::parse(args, &opts).map_err(|e| Die::Fatal(e.to_string()))
+    let ps = Pathspec::parse(args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
+    // `<submodule>/` names the submodule itself (t4010): the trailing slash
+    // of a pathspec naming a gitlink of the index is dropped.
+    let slashed: Vec<&[u8]> = ps
+        .items()
+        .iter()
+        .filter(|i| !i.has_wildcard() && i.pattern().len() > 1 && i.pattern().ends_with(b"/"))
+        .map(|i| i.pattern())
+        .collect();
+    if slashed.is_empty() || repo.setup.work_tree.is_none() {
+        return Ok(ps);
+    }
+    let Ok((index, _)) = repo.read_index() else {
+        return Ok(ps);
+    };
+    let strip: Vec<&[u8]> = ps
+        .items()
+        .iter()
+        .filter(|i| slashed.contains(&i.pattern()))
+        .filter(|i| {
+            let p = &i.pattern()[..i.pattern().len() - 1];
+            index
+                .entries()
+                .iter()
+                .any(|e| e.mode.is_gitlink() && e.path() == p)
+        })
+        .map(|i| i.original())
+        .collect();
+    if strip.is_empty() {
+        return Ok(ps);
+    }
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| match a.strip_suffix('/') {
+            Some(s) if strip.contains(&a.as_bytes()) => s.to_owned(),
+            _ => a.clone(),
+        })
+        .collect();
+    Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))
 }
 
 /// `--max-depth` cannot be combined with wildcards in the pathspec.

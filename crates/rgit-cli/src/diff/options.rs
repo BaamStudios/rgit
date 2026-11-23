@@ -301,6 +301,8 @@ impl DiffOpts {
                     stat: false,
                     shortstat: false,
                     summary: false,
+                    check: false,
+                    dirstat: None,
                     ..std::mem::take(self)
                 };
             }
