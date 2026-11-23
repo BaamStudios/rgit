@@ -313,6 +313,21 @@ fn embedded_repositories() {
     }
 }
 
+/// A conflicted submodule (gitlink stages, as a merge leaves them) is
+/// resolved by the commit checked out in it (t3404 53, 54).
+#[test]
+fn unmerged_submodule() {
+    let script = "!h=$(git -C s rev-parse HEAD) && \
+                  printf '160000 %s 1\ts\n160000 %s 2\ts\n160000 %s 3\ts\n' $h $h $h \
+                  | git update-index --index-info";
+    for args in [&["-v", "s"][..], &["-v", "-u"], &["-v", "."]] {
+        let mut fx = with_nested(true).git(["-c", &format!("alias.mk={script}"), "mk"]);
+        let mut argv = vec!["add"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv).checks(STATE).run();
+    }
+}
+
 #[test]
 fn beyond_symlink() {
     for args in [
