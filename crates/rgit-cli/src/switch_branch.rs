@@ -73,6 +73,25 @@ pub struct Request {
     pub refuse_in_progress: bool,
 }
 
+/// Show the `Updating files` meter (`--progress`, or standard error is a
+/// terminal and not `--quiet`).
+static PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Decide about the work tree meter of the running `switch` / `checkout`:
+/// `option` is `--[no-]progress` (-1 when not given).
+pub fn set_progress(option: i32, quiet: bool) {
+    let on = match option {
+        -1 => !quiet && rgit_progress::stderr_is_terminal(),
+        n => n != 0,
+    };
+    PROGRESS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the work tree meter is on (see [`set_progress`]).
+pub fn progress() -> bool {
+    PROGRESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `--ignore-other-worktrees` of the running `switch` / `checkout`.
 static IGNORE_OTHER_WORKTREES: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -253,7 +272,8 @@ pub fn move_index_with(
         Err(e) => return Err(unpack_failed(e)),
     };
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
-    let applied = plan.apply(repo.odb(), &wt, &conv);
+    let progress = PROGRESS.load(std::sync::atomic::Ordering::Relaxed);
+    let applied = plan.apply_with_progress(repo.odb(), &wt, &conv, progress);
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if let Some(reference) = mtime {

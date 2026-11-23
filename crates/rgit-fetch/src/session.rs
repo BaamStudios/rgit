@@ -367,8 +367,12 @@ impl Session {
         let ip_opts = index_pack_options(repo);
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
         let proto = &mut self.proto;
+        let show_progress = !opts.no_progress;
+        let unpack_limit = u64::from(opts.unpack_limit.unwrap_or(0));
         let (outcome, indexed) = std::thread::scope(|s| {
             let worker = s.spawn(move || {
+                let mut meter =
+                    ip::meter::PackMeter::new(None, true, show_progress).unpack_below(unpack_limit);
                 let mut reader = ChannelReader {
                     rx,
                     buf: Vec::new(),
@@ -383,7 +387,7 @@ impl Session {
                     &ip_opts,
                     Some(odb as &dyn ObjectDb),
                     None,
-                    None,
+                    Some(&mut meter),
                 )
             });
             let mut progress = Progress::new(io::stderr(), ProgressStyle::detect());

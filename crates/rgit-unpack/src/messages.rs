@@ -117,3 +117,7 @@ pub fn unable_to_unlink(path: &str, err: &str) -> String {
 pub fn unable_to_read_sha1(id: &str) -> String {
     format!("unable to read sha1 file of {id}")
 }
+
+/// Progress title while the work tree is updated (shown after
+/// `GIT_PROGRESS_DELAY` seconds).
+pub const PROGRESS_UPDATING_FILES: &str = "Updating files";

@@ -435,6 +435,7 @@ impl Hooks {
         };
         let _ = std::io::stdout().flush();
         let _sigpipe = SigpipeIgnored::new();
+        rgit_trace::trace2::region_enter("hook", event, Some(&format!("max:{width}")), false);
         let mut code = 0;
         let mut running: VecDeque<Running> = VecDeque::new();
         for hook in &hooks {
@@ -443,7 +444,7 @@ impl Hooks {
                     code |= r.finish();
                 }
             }
-            match self.start(hook, opts, piped) {
+            match self.start(event, hook, opts, piped) {
                 Ok(r) => running.push_back(r),
                 Err(c) => code |= c,
             }
@@ -451,6 +452,7 @@ impl Hooks {
         while let Some(r) = running.pop_front() {
             code |= r.finish();
         }
+        rgit_trace::trace2::region_leave();
         Ok(Outcome {
             found: true,
             ran: hooks.len(),
@@ -458,7 +460,14 @@ impl Hooks {
         })
     }
 
-    fn start(&self, hook: &Hook, opts: &RunOptions<'_>, piped: bool) -> Result<Running, i32> {
+    fn start(
+        &self,
+        event: &str,
+        hook: &Hook,
+        opts: &RunOptions<'_>,
+        piped: bool,
+    ) -> Result<Running, i32> {
+        let use_shell = matches!(hook.source, Source::Configured { .. });
         let (mut cmd, shown) = match &hook.source {
             Source::Configured { command, .. } => {
                 let args: Vec<&std::ffi::OsStr> =
@@ -513,12 +522,30 @@ impl Hooks {
         } else if !opts.separate_stdout {
             cmd.stdout(stderr_stdio());
         }
+        let traced = if rgit_trace::trace2::enabled() {
+            let mut argv = vec![shown.clone()];
+            argv.extend(opts.args.iter().map(|a| a.to_string_lossy().into_owned()));
+            rgit_trace::trace2::child_start(
+                rgit_trace::trace2::ChildInfo {
+                    class: "hook",
+                    hook: Some(event),
+                    use_shell,
+                    cd: None,
+                },
+                &argv,
+            )
+        } else {
+            None
+        };
         let spawned = cmd.spawn();
         // The command holds the write end of the output pipe.
         drop(cmd);
         let mut child = match spawned {
             Ok(c) => c,
             Err(e) => {
+                if let Some(t) = traced {
+                    t.exit(-1, -1);
+                }
                 let _ = writeln!(
                     std::io::stderr(),
                     "{}",
@@ -545,6 +572,7 @@ impl Hooks {
             shown,
             feeder,
             output,
+            traced,
         })
     }
 }
@@ -555,12 +583,19 @@ struct Running {
     shown: String,
     feeder: Option<JoinHandle<()>>,
     output: Option<JoinHandle<Vec<u8>>>,
+    traced: Option<rgit_trace::trace2::ChildTrace>,
 }
 
 impl Running {
     /// Waits for the hook and returns its exit code.
     fn finish(mut self) -> i32 {
         let status = self.child.wait();
+        if let Some(t) = self.traced.take() {
+            match &status {
+                Ok(s) => t.exit_status(self.child.id(), *s),
+                Err(_) => t.exit(i64::from(self.child.id()), -1),
+            }
+        }
         if let Some(f) = self.feeder.take() {
             let _ = f.join();
         }

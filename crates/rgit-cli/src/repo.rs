@@ -158,6 +158,11 @@ fn setup_inner(
     if trace {
         setup.trace();
     }
+    if let Some(wt) = &setup.work_tree {
+        if rgit_trace::trace2::enabled() {
+            rgit_trace::trace2::def_repo(&setup.cwd.join(wt).to_string_lossy());
+        }
+    }
     Ok(Some(setup))
 }
 

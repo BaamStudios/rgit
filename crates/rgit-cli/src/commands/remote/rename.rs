@@ -71,7 +71,11 @@ pub fn rename(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let from = format!(":refs/remotes/{old}/");
     let to = format!(":refs/remotes/{new}/");
     if specs.iter().any(|s| s.contains(&from)) {
-        rename_refs(&repo, old, new)?;
+        let show = match progress.get() {
+            -1 => rgit_progress::stderr_is_terminal(),
+            n => n != 0,
+        };
+        rename_refs(&repo, old, new, show)?;
     }
     if !specs.is_empty() {
         let key = format!("remote.{new}.fetch");
@@ -116,7 +120,7 @@ fn migrate(repo: &Repo, remote: &Remote, name: &str) -> Result<(), Die> {
 
 /// Move `refs/remotes/<old>/*` to `refs/remotes/<new>/*` with their
 /// reflogs; symbolic references keep pointing into the renamed space.
-fn rename_refs(repo: &Repo, old: &str, new: &str) -> Result<(), Die> {
+fn rename_refs(repo: &Repo, old: &str, new: &str, show_progress: bool) -> Result<(), Die> {
     let old_prefix = format!("refs/remotes/{old}/");
     let new_prefix = format!("refs/remotes/{new}/");
     let moved = |name: &str| format!("{new_prefix}{}", &name[old_prefix.len()..]);
@@ -128,7 +132,13 @@ fn rename_refs(repo: &Repo, old: &str, new: &str) -> Result<(), Die> {
     let mut tx = Transaction::new(&repo.store);
     let mut renamed: Vec<(String, String, Option<ObjectId>)> = Vec::new();
     let mut result = Ok(());
+    let mut meter = rgit_progress::Progress::start_delayed(
+        msg::PROGRESS_RENAMING_REFS,
+        refs.len() as u64,
+        show_progress,
+    );
     for (name, target) in &refs {
+        meter.inc();
         let to = moved(name);
         let (del, add, oid) = match target {
             Target::Object(oid) => (
@@ -153,6 +163,7 @@ fn rename_refs(repo: &Repo, old: &str, new: &str) -> Result<(), Die> {
             .and_then(|()| tx.push(add.no_deref(true)));
         renamed.push((name.clone(), to, oid));
     }
+    meter.stop();
     let objects = Objects::open(&repo.setup);
     let mut quiet = UpdateHooks::new(&repo.setup, &repo.config, &objects).without_reflogs();
     if let Err(e) = result.and_then(|()| tx.commit(&mut quiet)) {

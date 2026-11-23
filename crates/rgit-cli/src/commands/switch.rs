@@ -310,6 +310,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
     sb::set_ignore_other_worktrees(ignore_other.get());
     let quiet = quiet.get() > 0;
+    sb::set_progress(progress.get(), quiet);
     let force = force.get() || discard.get();
     let track = track.get();
     let mut create = create.borrow().clone();

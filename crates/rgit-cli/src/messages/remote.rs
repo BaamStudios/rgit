@@ -43,6 +43,8 @@ pub const HELP_MASTER: &str = "master branch";
 pub const HELP_MIRROR: &str = "set up remote as a mirror to push to or fetch from";
 pub const ARGH_MIRROR: &str = "(push|fetch)";
 pub const HELP_PROGRESS: &str = "force progress reporting";
+/// Progress title of `remote rename` (shown after `GIT_PROGRESS_DELAY`).
+pub const PROGRESS_RENAMING_REFS: &str = "Renaming remote references";
 pub const HELP_AUTO: &str = "set refs/remotes/<name>/HEAD according to remote";
 pub const HELP_DELETE_HEAD: &str = "delete refs/remotes/<name>/HEAD";
 pub const HELP_ADD_BRANCH: &str = "add branch";

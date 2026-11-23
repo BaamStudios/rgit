@@ -19,13 +19,14 @@
 //! ```
 //!
 //! Behaviour follows `Documentation/git.adoc` (ENVIRONMENT, "Debugging") and
-//! the git 2.56.0 binary. trace2 (`GIT_TRACE2*`) is not part of this crate.
+//! the git 2.56.0 binary. trace2 (`GIT_TRACE2*`) is in [`trace2`].
 
 pub mod format;
 mod key;
 pub mod messages;
 pub mod quote;
 pub mod target;
+pub mod trace2;
 
 use std::ffi::OsStr;
 use std::path::Path;

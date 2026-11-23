@@ -163,6 +163,8 @@ pub fn completed_with(n: u64) -> String {
 pub const PROGRESS_INDEXING: &str = "Indexing objects";
 /// Progress title of the first phase with `--stdin`.
 pub const PROGRESS_RECEIVING: &str = "Receiving objects";
+/// Progress title of a small fetched pack (git unpacks those).
+pub const PROGRESS_UNPACKING: &str = "Unpacking objects";
 /// Progress title of the second phase.
 pub const PROGRESS_RESOLVING: &str = "Resolving deltas";
 

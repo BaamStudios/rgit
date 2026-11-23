@@ -30,6 +30,27 @@ pub fn cannot_write(key: &str, err: &io::Error) -> String {
     )
 }
 
+/// trace2: a target value that is not understood.
+pub fn trace2_unknown_value(key: &str, value: &str) -> String {
+    format!("warning: trace2: unknown value for '{key}': '{value}'\n")
+}
+
+/// trace2 (`GIT_TRACE2_DST_DEBUG`): the target file cannot be opened.
+pub fn trace2_cannot_open(path: &str, key: &str, err: &io::Error) -> String {
+    format!(
+        "warning: trace2: could not open '{path}' for '{key}' tracing: {}\n",
+        strerror(err)
+    )
+}
+
+/// trace2 (`GIT_TRACE2_DST_DEBUG`): the target socket cannot be reached.
+pub fn trace2_cannot_connect(path: &str, key: &str, err: &io::Error) -> String {
+    format!(
+        "warning: trace2: could not connect to socket '{path}' for '{key}' tracing: {}\n",
+        strerror(err)
+    )
+}
+
 /// The C library style error text: `io::Error`'s display without the
 /// trailing ` (os error N)`.
 pub fn strerror(err: &io::Error) -> String {

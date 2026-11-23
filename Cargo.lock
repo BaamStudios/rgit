@@ -466,6 +466,7 @@ dependencies = [
  "rgit-options",
  "rgit-pack",
  "rgit-pathspec",
+ "rgit-progress",
  "rgit-protocol",
  "rgit-refs",
  "rgit-remote",
@@ -589,6 +590,7 @@ dependencies = [
  "rgit-difftest",
  "rgit-ident",
  "rgit-messages",
+ "rgit-trace",
  "tempfile",
 ]
 
@@ -706,6 +708,7 @@ dependencies = [
  "memmap2",
  "rgit-hash",
  "rgit-object",
+ "rgit-progress",
  "tempfile",
 ]
 
@@ -714,6 +717,14 @@ name = "rgit-pathspec"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "rgit-progress"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rgit-trace",
 ]
 
 [[package]]
@@ -804,10 +815,13 @@ dependencies = [
  "rgit-messages",
  "rgit-options",
  "rgit-pathspec",
+ "rgit-progress",
  "rgit-protocol",
  "rgit-refs",
  "rgit-repo",
  "rgit-submodule",
+ "rgit-trace",
+ "rgit-version",
 ]
 
 [[package]]
@@ -849,6 +863,7 @@ dependencies = [
  "rgit-index",
  "rgit-object",
  "rgit-odb",
+ "rgit-progress",
  "rgit-worktree",
  "thiserror",
 ]

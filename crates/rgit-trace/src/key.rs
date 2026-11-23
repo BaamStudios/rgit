@@ -60,7 +60,7 @@ impl Sink {
 
 /// Write to a raw, inherited descriptor without taking ownership of it.
 #[cfg(unix)]
-fn write_fd(fd: i32, mut buf: &[u8]) -> io::Result<()> {
+pub(crate) fn write_fd(fd: i32, mut buf: &[u8]) -> io::Result<()> {
     while !buf.is_empty() {
         // SAFETY: `write(2)` only reads `buf.len()` bytes from a valid slice.
         // The descriptor is an arbitrary integer chosen by the user; if it is
@@ -84,7 +84,7 @@ fn write_fd(fd: i32, mut buf: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn write_fd(_fd: i32, _buf: &[u8]) -> io::Result<()> {
+pub(crate) fn write_fd(_fd: i32, _buf: &[u8]) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "file descriptor targets are not supported on this platform",

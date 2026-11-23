@@ -392,10 +392,12 @@ impl Children {
 
     /// Run a step; its failure ends gc.
     fn run(&self, args: &[&str]) -> Result<(), Die> {
-        let status = self
-            .command(args)
-            .status()
-            .map_err(|e| Die::Fatal(e.to_string()))?;
+        let status = rgit_trace::trace2::status(
+            &mut self.command(args),
+            Default::default(),
+            &rgit_trace::trace2::git_argv(args),
+        )
+        .map_err(|e| Die::Fatal(e.to_string()))?;
         if status.success() {
             Ok(())
         } else {
@@ -406,11 +408,12 @@ impl Children {
     /// Run a step that rgit may not implement yet: when it reports so, the
     /// step is skipped.
     fn run_optional(&self, args: &[&str]) -> Result<(), Die> {
-        let out = self
-            .command(args)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| Die::Fatal(e.to_string()))?;
+        let out = rgit_trace::trace2::output(
+            self.command(args).stdin(Stdio::null()),
+            Default::default(),
+            &rgit_trace::trace2::git_argv(args),
+        )
+        .map_err(|e| Die::Fatal(e.to_string()))?;
         let _ = std::io::stdout().write_all(&out.stdout);
         if out.status.success() {
             let _ = std::io::stderr().write_all(&out.stderr);

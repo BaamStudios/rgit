@@ -36,6 +36,9 @@ mod imp {
 
     /// Process id of the running pager, 0 when there is none.
     pub static PID: AtomicI32 = AtomicI32::new(0);
+    /// The trace2 record of the pager.
+    pub static TRACED: std::sync::Mutex<Option<rgit_trace::trace2::ChildTrace>> =
+        std::sync::Mutex::new(None);
     /// stderr was redirected into the pager as well.
     pub static STDERR: AtomicBool = AtomicBool::new(false);
 
@@ -48,11 +51,11 @@ mod imp {
     ];
 
     /// Close our ends of the pipe and wait for the pager. Only uses
-    /// async-signal-safe calls.
-    fn close_and_wait() {
+    /// async-signal-safe calls. Returns the pager's pid and wait status.
+    fn close_and_wait() -> Option<(i32, libc::c_int)> {
         let pid = PID.swap(0, Ordering::SeqCst);
         if pid <= 0 {
-            return;
+            return None;
         }
         // SAFETY: closing file descriptors and waiting for our own child
         // are async-signal-safe and touch no Rust-owned memory.
@@ -65,11 +68,34 @@ mod imp {
             while libc::waitpid(pid, &mut status, 0) < 0
                 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
             {}
+            Some((pid, status))
+        }
+    }
+
+    /// The exit code trace2 reports for a wait status.
+    fn code(status: libc::c_int) -> i32 {
+        if libc::WIFSIGNALED(status) {
+            128 + libc::WTERMSIG(status)
+        } else {
+            libc::WEXITSTATUS(status)
         }
     }
 
     extern "C" fn on_signal(sig: libc::c_int) {
-        close_and_wait();
+        let waited = close_and_wait();
+        // SIGPIPE comes from our own write to the pager, so the trace
+        // state is not in use; other signals may interrupt anything.
+        if sig == libc::SIGPIPE {
+            if let (Some((pid, status)), Ok(mut t)) = (waited, TRACED.try_lock()) {
+                if let Some(t) = t.take() {
+                    rgit_trace::trace2::child_exit_in_signal_handler(
+                        t,
+                        i64::from(pid),
+                        code(status),
+                    );
+                }
+            }
+        }
         // SAFETY: restoring the default action and re-raising the signal
         // are async-signal-safe.
         unsafe {
@@ -102,7 +128,12 @@ mod imp {
     }
 
     pub fn finish() {
-        close_and_wait();
+        if let Some((pid, status)) = close_and_wait() {
+            let traced = TRACED.lock().ok().and_then(|mut t| t.take());
+            if let Some(t) = traced {
+                t.exit(i64::from(pid), code(status));
+            }
+        }
     }
 
     pub fn running() -> bool {
@@ -284,9 +315,20 @@ fn spawn(ctx: &Context, pager: &str) -> Result<(), Die> {
             cmd.env(k, v);
         }
     }
+    let traced = rgit_trace::trace2::child_start(
+        rgit_trace::trace2::ChildInfo {
+            class: "pager",
+            use_shell: true,
+            ..Default::default()
+        },
+        &[pager],
+    );
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            if let Some(t) = traced {
+                t.exit(-1, -1);
+            }
             let _ = writeln!(
                 std::io::stderr(),
                 "error: {}",
@@ -300,6 +342,9 @@ fn spawn(ctx: &Context, pager: &str) -> Result<(), Die> {
     };
     let stderr_too = std::io::stderr().is_terminal();
     let pid = i32::try_from(child.id()).unwrap_or(0);
+    if let Ok(mut t) = imp::TRACED.lock() {
+        *t = traced;
+    }
     imp::attach(stdin.into_raw_fd(), pid, stderr_too);
     // The pager is waited for by pid in `finish`.
     drop(child);
