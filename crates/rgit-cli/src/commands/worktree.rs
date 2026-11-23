@@ -293,11 +293,6 @@ fn unique_remote_branch(
     }
 }
 
-/// The short name of a remote-tracking ref (`origin/topic`).
-fn remote_short(full: &str) -> String {
-    full.strip_prefix("refs/remotes/").unwrap_or(full).to_string()
-}
-
 fn branch_exists(repo: &Repo, name: &str) -> bool {
     repo.refs.resolve(&format!("refs/heads/{name}")).is_some()
 }
@@ -530,7 +525,16 @@ fn add_worktree(
             }
         }
     }
-    if !opts.orphan && commitish.is_none() && repo.resolve("HEAD").is_none() {
+    // A remote-tracking branch guessed from the path needs no HEAD.
+    let guessed = !opts.orphan
+        && commitish.is_none()
+        && opts.new_branch.is_none()
+        && !opts.detach
+        && guess_remote
+        && repo.resolve("HEAD").is_none()
+        && !branch_exists(repo, &basename(&path))
+        && unique_remote_branch(ctx, repo, &basename(&path), path_arg)?.is_some();
+    if !opts.orphan && commitish.is_none() && !guessed && repo.resolve("HEAD").is_none() {
         if !opts.quiet {
             eprintln!("warning: {}", msg::BAD_HEAD);
             eprintln!();
@@ -571,7 +575,8 @@ fn add_worktree(
             match unique_remote_branch(ctx, repo, &c, path_arg)? {
                 Some(remote) => {
                     implicit_track = true;
-                    commitish = Some(remote_short(&remote));
+                    // The full name (the branch reflog names it).
+                    commitish = Some(remote.clone());
                     Head::NewBranch {
                         name: c,
                         start: commitish.clone(),
@@ -597,7 +602,7 @@ fn add_worktree(
             match remote {
                 Some(r) => {
                     implicit_track = true;
-                    commitish = Some(remote_short(&r));
+                    commitish = Some(r.clone());
                     Head::NewBranch {
                         name,
                         start: commitish.clone(),
@@ -1068,6 +1073,10 @@ fn move_worktree(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(fatal(msg::cannot_locked("move", &reason)));
         }
     }
+    // Submodule repositories of the worktree live in its admin directory.
+    if w.git_dir.join("modules").exists() {
+        return Err(fatal(msg::CONTAINS_SUBMODULES.into()));
+    }
     if let Some(admin) = reuse {
         let _ = std::fs::remove_dir_all(admin);
     }
@@ -1137,6 +1146,9 @@ fn remove(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if force.get() < 2 {
             return Err(fatal(msg::cannot_locked("remove", &reason)));
         }
+    }
+    if force.get() == 0 && w.git_dir.join("modules").exists() {
+        return Err(fatal(msg::CONTAINS_SUBMODULES.into()));
     }
     let present = w.path.join(".git").exists();
     if present && force.get() == 0 {

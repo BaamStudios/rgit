@@ -206,6 +206,49 @@ fn move_and_remove() {
         .repo("main")
         .skip(Check::Fsck)
         .run();
+    // Submodule repositories in the worktree's admin directory: never
+    // moved, removed only with --force.
+    for args in [
+        &["move", "w1", "../moved"][..],
+        &["move", "-f", "w1", "../moved"],
+        &["remove", "w1"],
+        &["remove", "-f", "w1"],
+    ] {
+        let mut fx = with_worktrees().write("main/.git/worktrees/w1/modules/sub/HEAD", "x\n");
+        let mut argv = vec!["worktree"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv)
+            .in_dir("main")
+            .repo("main")
+            .skip(Check::Fsck)
+            .run();
+    }
+}
+
+/// `worktree add --guess-remote` (or `worktree.guessRemote`) without a
+/// commit in a repository with an unborn HEAD uses the remote branch.
+#[test]
+fn add_guess_remote_unborn() {
+    for cfg in [
+        &["worktree", "add", "--guess-remote"][..],
+        &["-c", "worktree.guessRemote=true", "worktree", "add"],
+    ] {
+        let mut fx = Fixture::new()
+            .rgit(env!("CARGO_BIN_EXE_rgit"))
+            .git(["init", "-q", "-b", "main", "repo"])
+            .git(["init", "-q", "-b", "main", "up"])
+            .git(["-C", "up", "commit", "-q", "--allow-empty", "-m", "c"])
+            .git(["-C", "up", "branch", "foo"])
+            .git(["-C", "repo", "remote", "add", "up", "../up"])
+            .git(["-C", "repo", "fetch", "-q", "up"]);
+        let mut argv = cfg.to_vec();
+        argv.push("../foo");
+        fx.compare(&argv)
+            .in_dir("repo")
+            .repo("repo")
+            .skip(Check::Fsck)
+            .run();
+    }
 }
 
 #[test]

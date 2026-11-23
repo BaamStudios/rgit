@@ -145,6 +145,60 @@ fn renormalize() {
 }
 
 #[test]
+fn stash_round_trip_text_auto() {
+    // stash push cleans the work tree files into the stash commits and
+    // resets them through the checkout conversion; apply and pop smudge
+    // them back (#403). Each step is compared, the next one continues from
+    // the reference git's state.
+    let configs: &[&[&str]] = &[
+        &[],
+        &["-c", "core.autocrlf=true"],
+        &["-c", "core.autocrlf=input"],
+        &["-c", "core.eol=crlf"],
+    ];
+    for attrs in [
+        "* text=auto\n",
+        "* text=auto eol=crlf\n",
+        "*.txt text=auto\n",
+    ] {
+        for cfg in configs {
+            let mut fx = committed()
+                .write(".gitattributes", attrs)
+                .git(["add", ".gitattributes"])
+                .git(["commit", "-q", "-m", "attrs"])
+                .tick()
+                .write("lf.txt", b"$Id$\r\none\r\ntwo\r\nthree\r\n")
+                .write("crlf.txt", b"$Id$\none\ntwo\nthree\n")
+                .write("mixed.txt", b"$Id$\none\r\ntwo\nthree\r\n")
+                .write("sub/lf.c", b"$Id$\none\ntwo\nthree\n")
+                .write("new.txt", b"new\r\nfile\r\n")
+                .git(["add", "new.txt"]);
+            for step in [
+                &["stash", "push"][..],
+                &["stash", "apply"],
+                &["reset", "-q", "--hard"],
+                &["stash", "pop", "--index"],
+                &["stash", "push", "-u"],
+                &["stash", "pop"],
+            ] {
+                let mut argv = cfg.to_vec();
+                argv.extend(step);
+                fx.compare(&argv)
+                    .checks([
+                        Check::ExitCode,
+                        Check::Stdout,
+                        Check::Stderr,
+                        Check::Objects,
+                        Check::Refs,
+                        Check::Worktree,
+                    ])
+                    .run();
+            }
+        }
+    }
+}
+
+#[test]
 fn checkout_paths() {
     let attrs = [
         "",

@@ -846,6 +846,15 @@ impl Options {
                             }
                             _ => MergesPatch::None,
                         };
+                    } else if matches!(a, "-S" | "-G" | "-l" | "-I" | "-O") {
+                        // The value may also be the next argument.
+                        let Some(v) = argv.get(i + 1) else {
+                            return Err(crate::diff::options::usage_exit(
+                                crate::messages::diff::requires_value(&a[1..]),
+                            ));
+                        };
+                        i += 1;
+                        o.diff.parse_arg(&format!("{a}{v}"))?;
                     } else if !o.diff.parse_arg(a)? {
                         return Err(usage(cmd, a));
                     }

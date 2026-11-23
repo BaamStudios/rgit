@@ -1549,7 +1549,15 @@ impl Printer<'_, '_> {
         // log and show run textconv filters unless told not to.
         out.textconv = d.opts.textconv.unwrap_or(!plumbing);
         out.set_color(&d.opts)?;
-        let (bytes, _) = out.render(std::mem::take(&mut w.pairs))?;
+        let mut pairs = std::mem::take(&mut w.pairs);
+        // Submodules set to `ignore=all` are left out, as in `diff`.
+        crate::submodules::IgnoreRules::drop_ignored(
+            &d.repo,
+            &mut pairs,
+            d.opts.ignore_submodules()?,
+            !plumbing,
+        )?;
+        let (bytes, _) = out.render(pairs)?;
         Ok(bytes)
     }
 

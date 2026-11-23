@@ -466,14 +466,12 @@ impl Session<'_> {
             .collect();
         let mut out = Outcome::default();
         if files.is_empty() {
-            println!(
-                "{}",
-                if any_binary {
-                    msg::ONLY_BINARY
-                } else {
-                    msg::NO_CHANGES
-                }
-            );
+            // In the error colour, on stdout (as git).
+            self.error(if any_binary {
+                msg::ONLY_BINARY
+            } else {
+                msg::NO_CHANGES
+            });
             return Ok(out);
         }
         let reverse = self.opts.mode.reverse();

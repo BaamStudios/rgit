@@ -122,3 +122,47 @@ fn from_stdin() {
         &[&["fmt-merge-msg"]],
     );
 }
+
+#[test]
+fn several_tags_and_merged_heads() {
+    // Several tag messages each get a comment line naming the tag; heads
+    // already merged get an empty shortlog heading; when every head is
+    // merged there is no message at all.
+    let tags = |fx: Fixture| {
+        fx.git(["tag", "-a", "-m", "second tag", "t2", "y"])
+            .git(["tag", "-a", "-m", " ", "tempty", "y"])
+    };
+    let cases: &[&[&str]] = &[
+        &["fmt-merge-msg", "-F", ".git/FETCH_HEAD"],
+        &["fmt-merge-msg", "--log", "-F", ".git/FETCH_HEAD"],
+        &["fmt-merge-msg", "-m", "custom", "-F", ".git/FETCH_HEAD"],
+    ];
+    run(
+        |fx| {
+            tags(fx).git([
+                "fetch", "-q", ".", "tag", "t1", "tag", "t2", "tag", "tempty",
+            ])
+        },
+        None,
+        cases,
+    );
+    run(
+        |fx| {
+            tags(fx)
+                .git(["merge", "-q", "--ff-only", "x"])
+                .git(["fetch", "-q", ".", "x", "y"])
+        },
+        None,
+        cases,
+    );
+    run(
+        |fx| {
+            tags(fx)
+                .git(["merge", "-q", "--ff-only", "x"])
+                .git(["fetch", "-q", ".", "x", "tag", "t1"])
+        },
+        None,
+        cases,
+    );
+    run(tags, None, &[&["merge", "-q", "--no-edit", "t1", "t2"]]);
+}

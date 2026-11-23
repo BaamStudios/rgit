@@ -269,11 +269,6 @@ pub fn option_not_supported(name: &str) -> String {
 pub const APPLY_STASH_WHEN_FINISHED: &str =
     "When finished, apply stashed changes with `git stash pop`";
 
-/// The comment above a tag message when several tags are merged.
-pub fn tag_header(name: &str) -> String {
-    format!("tag '{name}'")
-}
-
 /// `git merge-recursive -h`.
 pub const MERGE_RECURSIVE_USAGE: &str =
     "usage: git merge-recursive <base>... -- <head> <remote> ...";

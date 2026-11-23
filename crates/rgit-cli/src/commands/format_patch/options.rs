@@ -207,7 +207,7 @@ impl Options {
                     o.max_count = Some(a[1..].to_string());
                 }
                 _ => {
-                    if matches!(a, "-S" | "-G" | "-l") {
+                    if matches!(a, "-S" | "-G" | "-l" | "-I" | "-O") {
                         let Some(v) = it.next() else {
                             return Err(usage_exit(crate::messages::diff::requires_value(&a[1..])));
                         };

@@ -677,3 +677,33 @@ fn option_errors() {
         ])
         .run();
 }
+
+#[test]
+fn gitlink_patches_in_the_index() {
+    // A submodule's recorded commit changes; its check-out is ignored.
+    let one = "1".repeat(40);
+    let two = "2".repeat(40);
+    let modify = format!(
+        "diff --git a/sm b/sm\nindex 1111111..2222222 160000\n--- a/sm\n+++ b/sm\n\
+         @@ -1 +1 @@\n-Subproject commit {one}\n+Subproject commit {two}\n"
+    );
+    let create = format!(
+        "diff --git a/new b/new\nnew file mode 160000\nindex 0000000..2222222\n\
+         --- /dev/null\n+++ b/new\n@@ -0,0 +1 @@\n+Subproject commit {two}\n"
+    );
+    let delete = format!(
+        "diff --git a/sm b/sm\ndeleted file mode 160000\nindex 1111111..0000000\n\
+         --- a/sm\n+++ /dev/null\n@@ -1 +0,0 @@\n-Subproject commit {one}\n"
+    );
+    let cacheinfo = format!("160000,{one},sm");
+    for patch in [&modify, &create, &delete] {
+        for args in [&["--cached"][..], &["--index"], &["--cached", "--stat"]] {
+            case_with(
+                patch,
+                args,
+                |fx| fx.git(["update-index", "--add", "--cacheinfo", cacheinfo.as_str()]),
+                "",
+            );
+        }
+    }
+}
