@@ -117,6 +117,10 @@ pub fn collect(
         .filter(|k| rest.iter().all(|m| m.contains_key(*k)))
         .collect();
     keys.sort();
+    // `-O<orderfile>` / `diff.orderFile`.
+    if !out.order.is_empty() {
+        keys.sort_by_cached_key(|k| super::order::rank(&out.order, k));
+    }
     Ok(keys
         .into_iter()
         .map(|k| {

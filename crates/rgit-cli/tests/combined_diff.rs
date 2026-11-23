@@ -375,3 +375,20 @@ fn combined_diff_attributes() {
     }
     assert!(failed.is_empty(), "{}", failed.join("\n\n"));
 }
+
+/// `-O<orderfile>` orders combined diffs too.
+#[test]
+fn combined_diff_order() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx.write("order", "new\ng\n");
+    for args in [
+        &["diff", "-Oorder", "--name-only", "HEAD", "HEAD^", "HEAD^2"][..],
+        &["diff", "-Oorder", "HEAD^!"],
+        &["show", "-Oorder", "--cc"],
+    ] {
+        fx.compare(args).output_only().run();
+    }
+}
