@@ -51,8 +51,12 @@ pub const EXTERNAL_FILE: &str = "External file (--contents)";
 pub const EXTERNAL_FILE_MAIL: &str = "<external.file>";
 
 pub const INVALID_EMPTY_RANGE: &str = "-L invalid empty range";
-pub const REVERSE_NOT_SUPPORTED: &str = "--reverse is not supported yet";
-pub const REVS_FILE_NOT_SUPPORTED: &str = "-S is not supported yet";
+pub const CONTENTS_AND_REVERSE: &str = "--contents and --reverse do not blend well.";
+pub const NO_COMMIT_TO_DIG: &str = "No commit to dig up from?";
+
+pub fn more_than_one_to_dig(a: &str, b: &str) -> String {
+    format!("More than one commit to dig up from, {a} and {b}?")
+}
 
 pub fn summary(path: &str, source: &str) -> String {
     format!("Version of {path} from {source}")
@@ -141,4 +145,8 @@ pub fn cannot_open_revs_file(path: &str) -> String {
 
 pub fn invalid_object_name(name: &str) -> String {
     format!("invalid object name: {name}")
+}
+
+pub fn cannot_read_graft_file(path: &str, err: &str) -> String {
+    format!("reading graft file '{path}' failed: {err}")
 }
