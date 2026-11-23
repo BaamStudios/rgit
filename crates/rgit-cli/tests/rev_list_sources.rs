@@ -114,3 +114,42 @@ fn sources_and_output_options() {
         fx.compare(args).checks(Check::OUTPUT).run();
     }
 }
+
+/// `--alternate-refs` in a shared clone, limited by
+/// `core.alternateRefsPrefixes` or replaced by `core.alternateRefsCommand`.
+#[test]
+fn alternate_refs_follow_the_configuration() {
+    let mut fx = history().git(["clone", "-q", "-s", ".", "child"]);
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["-C", "child", "rev-list", "--alternate-refs"][..],
+        &[
+            "-C",
+            "child",
+            "-c",
+            "core.alternateRefsPrefixes=refs/heads/side",
+            "rev-list",
+            "--alternate-refs",
+        ],
+        &[
+            "-C",
+            "child",
+            "-c",
+            "core.alternateRefsPrefixes=refs/heads/side refs/tags/",
+            "rev-list",
+            "--alternate-refs",
+        ],
+        &[
+            "-C",
+            "child",
+            "-c",
+            "core.alternateRefsCommand=git -C \"$1\" rev-parse side #",
+            "rev-list",
+            "--alternate-refs",
+        ],
+    ] {
+        fx.compare(args).checks(Check::OUTPUT).run();
+    }
+}

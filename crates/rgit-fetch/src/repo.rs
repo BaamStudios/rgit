@@ -138,14 +138,7 @@ impl LocalRepo {
     /// holding each alternate object directory (`<repo>/objects`), as an
     /// absolute path.
     pub fn alternate_repositories(&self) -> Vec<PathBuf> {
-        rgit_odb::resolve_alternates(&self.objects_dir())
-            .into_iter()
-            .filter(|d| d.file_name().is_some_and(|n| n == "objects"))
-            .filter_map(|d| {
-                let d = std::path::absolute(&d).unwrap_or(d);
-                d.parent().map(Path::to_path_buf)
-            })
-            .collect()
+        alternate_repositories(&self.objects_dir())
     }
 
     /// The reference tips of the alternate repositories ("alternate
@@ -153,64 +146,7 @@ impl LocalRepo {
     /// `core.alternateRefsPrefixes` in git-config), which a fetch may
     /// announce as `have`s.
     pub fn alternate_tips(&self) -> Vec<ObjectId> {
-        let mut out = Vec::new();
-        let command = self
-            .config
-            .string("core.alternaterefscommand")
-            .ok()
-            .flatten()
-            .map(|v| v.to_string())
-            .filter(|v| !v.is_empty());
-        let prefixes: Vec<String> = self
-            .config
-            .string("core.alternaterefsprefixes")
-            .ok()
-            .flatten()
-            .map(|v| {
-                v.to_string()
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
-        for repo in self.alternate_repositories() {
-            match &command {
-                Some(cmd) => {
-                    let output = std::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(format!("{cmd} \"$@\""))
-                        .arg(cmd)
-                        .arg(&repo)
-                        .stdin(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::inherit())
-                        .output();
-                    let Ok(output) = output else { continue };
-                    for line in output.stdout.split(|&b| b == b'\n') {
-                        let line = String::from_utf8_lossy(line);
-                        if let Ok(id) = ObjectId::from_hex(self.hash, line.trim().as_bytes()) {
-                            out.push(id);
-                        }
-                    }
-                }
-                None => {
-                    let store = FilesStore::new(repo, self.hash);
-                    let all = IterOptions {
-                        prefix: String::new(),
-                        include_root_refs: false,
-                    };
-                    for item in store.iter(&all).unwrap_or_default() {
-                        if let IterItem::Ref(r) = item {
-                            let wanted = prefixes.is_empty()
-                                || prefixes.iter().any(|p| r.name.starts_with(p.as_str()));
-                            if let (true, Some(id)) = (wanted, r.oid) {
-                                out.push(id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out
+        alternate_tips(&self.config, self.hash, &self.objects_dir())
     }
 
     /// See packs written since the database was opened.
@@ -267,4 +203,81 @@ impl From<String> for Error {
     fn from(s: String) -> Error {
         Error::Fatal(s)
     }
+}
+
+/// The repositories whose objects the object directory `objects` borrows:
+/// the directory holding each alternate object directory
+/// (`<repo>/objects`), as an absolute path.
+pub fn alternate_repositories(objects: &Path) -> Vec<PathBuf> {
+    rgit_odb::resolve_alternates(objects)
+        .into_iter()
+        .filter(|d| d.file_name().is_some_and(|n| n == "objects"))
+        .filter_map(|d| {
+            let d = std::path::absolute(&d).unwrap_or(d);
+            d.parent().map(Path::to_path_buf)
+        })
+        .collect()
+}
+
+/// The reference tips of the repositories the object directory `objects`
+/// borrows from ("alternate refs"): the output of
+/// `core.alternateRefsCommand` run with each repository, or else their
+/// references, limited to `core.alternateRefsPrefixes` when that is set.
+pub fn alternate_tips(config: &ConfigSet, hash: HashKind, objects: &Path) -> Vec<ObjectId> {
+    let mut out = Vec::new();
+    let command = config
+        .string("core.alternaterefscommand")
+        .ok()
+        .flatten()
+        .map(|v| v.to_string())
+        .filter(|v| !v.is_empty());
+    let prefixes: Vec<String> = config
+        .string("core.alternaterefsprefixes")
+        .ok()
+        .flatten()
+        .map(|v| {
+            v.to_string()
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    for repo in alternate_repositories(objects) {
+        match &command {
+            Some(cmd) => {
+                let output = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("{cmd} \"$@\""))
+                    .arg(cmd)
+                    .arg(&repo)
+                    .stdin(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::inherit())
+                    .output();
+                let Ok(output) = output else { continue };
+                for line in output.stdout.split(|&b| b == b'\n') {
+                    let line = String::from_utf8_lossy(line);
+                    if let Ok(id) = ObjectId::from_hex(hash, line.trim().as_bytes()) {
+                        out.push(id);
+                    }
+                }
+            }
+            None => {
+                let store = FilesStore::new(repo, hash);
+                let all = IterOptions {
+                    prefix: String::new(),
+                    include_root_refs: false,
+                };
+                for item in store.iter(&all).unwrap_or_default() {
+                    if let IterItem::Ref(r) = item {
+                        let wanted = prefixes.is_empty()
+                            || prefixes.iter().any(|p| r.name.starts_with(p.as_str()));
+                        if let (true, Some(id)) = (wanted, r.oid) {
+                            out.push(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }

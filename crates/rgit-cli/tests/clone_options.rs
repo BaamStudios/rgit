@@ -91,6 +91,19 @@ fn local_clone_links_the_object_store_like_git() {
         assert!(links >= 2, "{} is not hard-linked", rel.display());
     }
     assert!(objects("copied").iter().all(|(_, links)| *links == 1));
+    // Copies keep the modification time (the age of loose objects).
+    let mtime = |p: std::path::PathBuf| std::fs::metadata(p).unwrap().modified().unwrap();
+    for (rel, _) in objects("copied") {
+        if rel.ends_with("alternates") {
+            continue;
+        }
+        assert_eq!(
+            mtime(work.join("copied/.git/objects").join(&rel)),
+            mtime(work.join("src/.git/objects").join(&rel)),
+            "{} lost its modification time",
+            rel.display()
+        );
+    }
     let alternates =
         std::fs::read_to_string(work.join("linked/.git/objects/info/alternates")).unwrap();
     let alt = std::fs::canonicalize(work.join("alt.git/objects")).unwrap();
