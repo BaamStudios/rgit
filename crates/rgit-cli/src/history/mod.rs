@@ -1492,6 +1492,7 @@ impl Printer<'_, '_> {
                     abbrev: d.repo.default_abbrev(),
                     quote: style.quote,
                     diff: &out.patch.diff,
+                    output: Some(&out),
                 };
                 crate::diff::combined::patch(&d.repo, &files, &opts, &mut bytes);
             }
@@ -2054,6 +2055,11 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
     }
     // `-z` also ends the paths of raw and name output with NUL.
     diff_opts.nul |= opts.zero;
+    // log and show run textconv filters unless told otherwise; diff-tree
+    // does not.
+    if diff_opts.textconv.is_none() && !opts.plumbing {
+        diff_opts.textconv = Some(true);
+    }
     if let (None, Abbrev::Digits(n)) = (diff_opts.abbrev, opts.abbrev) {
         // `--abbrev=<n>` also abbreviates the ids of raw output.
         diff_opts.abbrev = Some(Some(n));

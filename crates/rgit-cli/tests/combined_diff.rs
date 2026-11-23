@@ -339,3 +339,39 @@ fn remerge_diff() {
     }
     assert!(failed.is_empty(), "{}", failed.join("\n\n"));
 }
+
+/// The `diff` attribute of the work tree: `-diff` makes combined diffs
+/// binary, a textconv driver converts every side (not for diff-tree).
+#[test]
+fn combined_diff_attributes() {
+    let mut failed = Vec::new();
+    for (attrs, args) in [
+        ("f -diff\n", &["show", "-c", "--format=%s"][..]),
+        ("f -diff\n", &["show", "--cc", "--format=%s"]),
+        ("f -diff\n", &["show", "-m", "--format=%s"]),
+        ("f diff=upcase\n", &["show", "-c", "--format=%s"]),
+        ("f diff=upcase\n", &["show", "--cc", "--format=%s"]),
+        ("f diff=upcase\n", &["show", "-m", "--format=%s"]),
+        (
+            "f diff=upcase\n",
+            &["show", "--remerge-diff", "--format=%s"],
+        ),
+        ("f diff=upcase\n", &["diff-tree", "-c", "-p", "HEAD"]),
+    ] {
+        let fx = conflicted();
+        if fx.is_skipped() {
+            return;
+        }
+        let mut fx = fx
+            .write("f", "1\n2\nresolved\n4\n5\n6\n7\n8\nnine\n")
+            .write("added", "both\n")
+            .git(["add", "f", "added", "s", "d"])
+            .git(["commit", "-q", "-m", "resolved"])
+            .git(["config", "diff.upcase.textconv", "tr a-z A-Z <"])
+            .write(".gitattributes", attrs);
+        if let Err(m) = fx.compare(args).output_only().try_run() {
+            failed.push(m.to_string());
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n\n"));
+}

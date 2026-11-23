@@ -1745,6 +1745,25 @@ impl Output<'_> {
         self.drivers.resolve(&repo.config, &state)
     }
 
+    /// `path`'s contents `data` as a combined diff shows them: through
+    /// the textconv filter (with `--textconv`), and whether the `diff`
+    /// attribute makes the path binary (`Some(true)`) or text.
+    pub fn combined_view(
+        &self,
+        path: &[u8],
+        data: Vec<u8>,
+    ) -> Result<(Vec<u8>, Option<bool>), Die> {
+        let attr = self.diff_attr(path)?;
+        if self.textconv {
+            if let Some(cmd) = attr.textconv() {
+                if let Ok(conv) = super::driver::run_textconv(cmd, &data) {
+                    return Ok((conv, Some(false)));
+                }
+            }
+        }
+        Ok((data, attr.binary()))
+    }
+
     /// Run the textconv filter of `path`'s driver on `l`.
     fn apply_textconv(&self, path: &[u8], l: &mut Loaded) -> Result<(), Die> {
         if !is_file_mode(l.mode) || type_bits(l.mode) == 0o120000 {
