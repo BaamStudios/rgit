@@ -1793,6 +1793,15 @@ impl Printer<'_, '_> {
         Ok(text)
     }
 
+    /// Commit `s` takes its place in the drawing without being shown.
+    fn skip_in_graph<S: CommitSource<Error = ObjectId>>(&mut self, walk: &Walk<S>, s: &Shown) {
+        let parents = self.graph_parents(walk, &s.id);
+        let mark = self.graph_mark(s);
+        if let Some(g) = &mut self.graph {
+            g.update(s.id, parents, mark.as_bytes(), self.next);
+        }
+    }
+
     /// The character of a commit in the graph.
     fn graph_mark(&self, s: &Shown) -> &'static str {
         match self.mark(s) {
@@ -2676,7 +2685,18 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
                 .unwrap_or(true)
     });
     let ident_grep = !opts.grep.author.is_empty() || !opts.grep.committer.is_empty();
-    let diff_limit = commit_diff_limit(ctx, repo, cmd, opts, &resolved.paths)?;
+    let mut diff_limit = commit_diff_limit(ctx, repo, cmd, opts, &resolved.paths)?;
+    // With `--graph` the walk keeps every commit and the drawing goes on
+    // through the ones the diff limit leaves out (`...`, like git).
+    let graph_limit = if opts.graph && !opts.count {
+        diff_limit.take()
+    } else {
+        None
+    };
+    if graph_limit.is_some() {
+        // `-n` counts the commits shown.
+        walk_opts.max_count = None;
+    }
     let mut walk = Walk::new(
         Commits {
             repo,
@@ -2892,6 +2912,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         // The graph looks two commits ahead.
         let mut queue = std::collections::VecDeque::new();
         let mut done = false;
+        let mut passed = 0usize;
         loop {
             while !done && queue.len() < 3 {
                 match next_shown(&mut walk, &mut kept)? {
@@ -2911,6 +2932,18 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
                 root: !n.boundary && p.graph_parents(&walk, &n.id).is_empty(),
                 last: done && queue.len() == 1,
             });
+            if let Some(limit) = &graph_limit {
+                if !s.boundary && !limit.keeps(repo, &s.id)? {
+                    // Drawn but not shown: the next shown commit starts
+                    // with `...`.
+                    p.skip_in_graph(&walk, &s);
+                    continue;
+                }
+                if max_count.is_some_and(|m| passed >= m) {
+                    break;
+                }
+                passed += 1;
+            }
             p.commit(&walk, &s)?;
         }
         p.flush();
