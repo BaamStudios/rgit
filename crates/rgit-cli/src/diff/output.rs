@@ -764,8 +764,10 @@ impl<'a> Output<'a> {
             });
         }
         let data = if is_file_mode(side.mode) {
-            match self.repo.and_then(|r| r.read_object(&side.oid)) {
-                Some(Object::Blob(b)) => b.data,
+            match self.repo.map(|r| r.read_object(&side.oid)) {
+                Some(Some(Object::Blob(b))) => b.data,
+                // A missing object (e.g. the null id in a bogus tree).
+                Some(None) => return Err(Die::Fatal(msg::unable_to_read_blob(&side.oid.to_hex()))),
                 _ => Vec::new(),
             }
         } else if type_bits(side.mode) == GITLINK_MODE {
@@ -1305,6 +1307,7 @@ impl<'a> Output<'a> {
                 _ => None,
             };
             let ws_id = attrs.as_mut().map(|a| a.id(b"whitespace"));
+            let marker_id = attrs.as_mut().map(|a| a.id(b"conflict-marker-size"));
             let diff_id = attrs.as_mut().map(|a| a.id(b"diff"));
             // `diff.<driver>.wordRegex` of the path's `diff` attribute.
             let mut driver_regex = |path: &[u8]| -> Result<Option<regex::bytes::Regex>, Die> {
@@ -1329,11 +1332,22 @@ impl<'a> Output<'a> {
                     driver_regexes.push(driver_regex(path)?);
                 }
             }
-            let mut rule_for = |path: &[u8]| -> Result<WsRule, Die> {
-                let (Some(a), Some(id)) = (attrs.as_mut(), ws_id) else {
-                    return Ok(base_rule);
+            // The whitespace rule and the `conflict-marker-size` (for
+            // `--check`) of a path.
+            let mut rule_for = |path: &[u8]| -> Result<(WsRule, usize), Die> {
+                let (Some(a), Some(id), Some(marker_id)) = (attrs.as_mut(), ws_id, marker_id)
+                else {
+                    return Ok((base_rule, super::check::DEFAULT_MARKER_SIZE));
                 };
-                match a.lookup(path, false).get(id).clone() {
+                let found = a.lookup(path, false);
+                let marker_size = match found.get(marker_id) {
+                    rgit_attr::State::Value(v) => std::str::from_utf8(v)
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(super::check::DEFAULT_MARKER_SIZE),
+                    _ => super::check::DEFAULT_MARKER_SIZE,
+                };
+                let rule = match found.get(id).clone() {
                     rgit_attr::State::Set => Ok(WsRule {
                         bits: ws_rule::ATTRIBUTE_SET_RULES,
                         tab_width: base_rule.tab_width,
@@ -1342,7 +1356,8 @@ impl<'a> Output<'a> {
                     rgit_attr::State::Value(v) => WsRule::parse(&String::from_utf8_lossy(&v))
                         .map_err(|_| Die::Fatal(msg::WS_RULE_CONFLICT.to_string())),
                     rgit_attr::State::Unspecified => Ok(base_rule),
-                }
+                };
+                Ok((rule?, marker_size))
             };
             // With --color-moved the coloured patches wait until all
             // patches are known: (offset in `out`, plain patch, settings).
@@ -1397,10 +1412,10 @@ impl<'a> Output<'a> {
                 });
                 let new_data = nf.as_ref().map_or(&[][..], |f| f.data);
                 let old_data = of.as_ref().map_or(&[][..], |f| f.data);
-                let rule = if need_rules {
+                let (rule, marker_size) = if need_rules {
                     rule_for(&full_paths[k])?
                 } else {
-                    base_rule
+                    (base_rule, super::check::DEFAULT_MARKER_SIZE)
                 };
                 let extra = PatchExtra {
                     rename: p.renamed.map(|c| (c == b'C', p.percent())),
@@ -1424,7 +1439,7 @@ impl<'a> Output<'a> {
                     };
                     if f.check {
                         let name = String::from_utf8_lossy(&p.path).into_owned();
-                        if super::check::check_patch(out, &plain, &ws, &name) {
+                        if super::check::check_patch(out, &plain, &ws, &name, marker_size) {
                             self.ws_errors.set(true);
                         }
                     } else if let Some((mode, regex)) = &self.word_diff {

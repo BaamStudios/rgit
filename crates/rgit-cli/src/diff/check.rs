@@ -9,9 +9,40 @@ use rgit_diff::ws_rule::{self, check_line};
 use super::color::{WsContext, blank_at_eof_from};
 use crate::messages::diff as msg;
 
+/// Default length of conflict markers (the `conflict-marker-size`
+/// attribute in Documentation/gitattributes.adoc).
+pub const DEFAULT_MARKER_SIZE: usize = 7;
+
+/// An added line that looks like a conflict marker left over from a
+/// merge: exactly `size` of `<`, `>` followed by a space, or of `=`, `|`
+/// followed by whitespace or the end of the line (observed with `git
+/// diff --check`).
+fn is_conflict_marker(text: &[u8], size: usize) -> bool {
+    let Some(&c) = text.first() else {
+        return false;
+    };
+    if size == 0 || !matches!(c, b'<' | b'>' | b'=' | b'|') || text.len() < size {
+        return false;
+    }
+    if !text[..size].iter().all(|&b| b == c) {
+        return false;
+    }
+    match (c, text.get(size)) {
+        (b'<' | b'>', next) => next == Some(&b' '),
+        (_, None) => true,
+        (_, Some(b)) => b.is_ascii_whitespace() || *b == 0x0b,
+    }
+}
+
 /// Writes the errors of one file's patch (`plain`) to `out`; returns
 /// whether there were any.
-pub fn check_patch(out: &mut Vec<u8>, plain: &[u8], ws: &WsContext<'_>, path: &str) -> bool {
+pub fn check_patch(
+    out: &mut Vec<u8>,
+    plain: &[u8],
+    ws: &WsContext<'_>,
+    path: &str,
+    marker_size: usize,
+) -> bool {
     let blank_from = blank_at_eof_from(ws);
     let mut found = false;
     let mut blank_at: Option<usize> = None;
@@ -35,6 +66,10 @@ pub fn check_patch(out: &mut Vec<u8>, plain: &[u8], ws: &WsContext<'_>, path: &s
             }
             b'+' => {
                 let text = &line[1..];
+                if is_conflict_marker(text, marker_size) {
+                    found = true;
+                    out.extend_from_slice(msg::leftover_conflict_marker(path, new_line).as_bytes());
+                }
                 let errors = check_line(text, &ws.rule).errors;
                 let mut names = Vec::new();
                 for (bit, name) in [
