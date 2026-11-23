@@ -317,6 +317,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let untracked: RefCell<Option<String>> = RefCell::new(None);
     let ignored: RefCell<Option<String>> = RefCell::new(None);
     let ahead_behind = Cell::new(-1);
+    let show_stash = Cell::new(-1);
     let no_renames = Cell::new(-1);
     let find_renames: RefCell<Option<Option<String>>> = RefCell::new(None);
     let ignore_submodules: RefCell<Option<String>> = RefCell::new(None);
@@ -325,6 +326,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         vec![
             Opt::set_int('s', "short", &format, msg::HELP_SHORT, F_SHORT),
             Opt::bool('b', "branch", &branch, msg::HELP_BRANCH),
+            Opt::bool(None, "show-stash", &show_stash, msg::HELP_SHOW_STASH),
             Opt::bool(None, "ahead-behind", &ahead_behind, msg::HELP_AHEAD_BEHIND),
             Opt::callback(
                 None,
@@ -398,6 +400,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let show_branch = match branch.get() {
         -1 if matches!(format, Format::Porcelain(_)) => false,
         -1 => config_bool(&repo, "status.branch")?.unwrap_or(false),
+        b => b != 0,
+    };
+    let show_stash = match show_stash.get() {
+        -1 => config_bool(&repo, "status.showstash")?.unwrap_or(false),
         b => b != 0,
     };
     let count = match ahead_behind.get() {
@@ -570,6 +576,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 mode,
             };
             long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
+            if show_stash {
+                // The entries of the stash reflog.
+                let log = repo.setup.absolute_common_dir().join("logs/refs/stash");
+                let n = std::fs::read(log)
+                    .map(|d| d.split(|&b| b == b'\n').filter(|l| !l.is_empty()).count())
+                    .unwrap_or(0);
+                if n > 0 {
+                    p.text(&msg::stash_entries(n));
+                }
+            }
         }
         Format::Short | Format::Porcelain(1) => {
             if show_branch {

@@ -146,11 +146,13 @@ pub(crate) fn push(ctx: &mut Context, args: &[String], kind: PushKind) -> CmdRes
     let mut message = message.borrow().clone();
     match kind {
         PushKind::Implicit => {
+            // Pathspecs need `--`, except with `-p` (git-stash.adoc).
             if let Some(first) = rest.first() {
-                if first != "--" {
+                if first == "--" {
+                    rest.remove(0);
+                } else if !patch.get() {
                     return Err(Die::Fatal(msg::no_assumed_push(first)));
                 }
-                rest.remove(0);
             }
         }
         PushKind::Push => {
