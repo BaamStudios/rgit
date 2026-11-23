@@ -292,12 +292,6 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     let path_str = String::from_utf8_lossy(&path).into_owned();
 
     // Unsupported so far: say so instead of printing a wrong answer.
-    if rev.reverse {
-        return Err(Die::Fatal(msg::REVERSE_NOT_SUPPORTED.into()));
-    }
-    if cli.revs_file.borrow().is_some() {
-        return Err(Die::Fatal(msg::REVS_FILE_NOT_SUPPORTED.into()));
-    }
 
     // The diff.
     let mut diff = DiffOptions::default();
@@ -344,18 +338,20 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
 
     // Positive and negative revisions.
     let mut positive: Vec<(String, ObjectId)> = Vec::new();
-    let mut negative: Vec<ObjectId> = Vec::new();
+    let mut negative: Vec<(String, ObjectId)> = Vec::new();
     for r in &revs {
         if let Some(base) = r.strip_suffix("^!") {
             let id = resolve_commit(&mut repo, base, r)?;
-            negative.extend(commit_parents(&repo, &id));
+            for p in commit_parents(&repo, &id) {
+                negative.push((format!("{base}^"), p));
+            }
             positive.push((base.to_owned(), id));
         } else if let Some(n) = r.strip_prefix('^') {
-            negative.push(resolve_commit(&mut repo, n, r)?);
+            negative.push((n.to_owned(), resolve_commit(&mut repo, n, r)?));
         } else if let Some((a, b)) = r.split_once("..").filter(|_| !r.contains("...")) {
             let a = if a.is_empty() { "HEAD" } else { a };
             let b = if b.is_empty() { "HEAD" } else { b };
-            negative.push(resolve_commit(&mut repo, a, r)?);
+            negative.push((a.to_owned(), resolve_commit(&mut repo, a, r)?));
             positive.push((b.to_owned(), resolve_commit(&mut repo, b, r)?));
         } else {
             positive.push((r.clone(), resolve_commit(&mut repo, r, r)?));
@@ -364,9 +360,43 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     if positive.len() > 1 {
         return Err(Die::Fatal(msg::more_than_one(&positive[0].0, &positive[1].0)));
     }
-
     let head = repo.resolve("HEAD").and_then(|h| peel_commit(&mut repo, h));
+    // `--reverse <start>..<end>`: the file at <start>, walking towards
+    // <end> (`<start>` alone means `<start>..HEAD`).
+    let reverse = if rev.reverse {
+        if cli.contents.borrow().is_some() {
+            return Err(Die::Fatal(msg::CONTENTS_AND_REVERSE.into()));
+        }
+        if negative.is_empty() {
+            match positive.pop() {
+                Some(p) => negative.push(p),
+                None => return Err(Die::Fatal(msg::NO_COMMIT_TO_DIG.into())),
+            }
+        }
+        let end = match positive.first() {
+            Some(p) => p.clone(),
+            None => {
+                let id = head.ok_or_else(|| Die::Fatal(msg::bad_revision("HEAD")))?;
+                ("HEAD".to_owned(), id)
+            }
+        };
+        if negative.len() > 1 || negative[0].1 == end.1 {
+            let other = negative.get(1).unwrap_or(&end);
+            return Err(Die::Fatal(msg::more_than_one_to_dig(&negative[0].0, &other.0)));
+        }
+        let start = negative.remove(0);
+        Some((start, end.1))
+    } else {
+        None
+    };
+
     let mut sb = Scoreboard::new(&repo, settings);
+    if let Some(file) = cli.revs_file.borrow().as_deref() {
+        let data = std::fs::read(file).map_err(|e| {
+            Die::Fatal(msg::cannot_read_graft_file(file, &rgit_messages::strerror(&e)))
+        })?;
+        sb.add_grafts(&data);
+    }
     // Every version of a file goes through the textconv filter of its
     // path's diff driver (not symbolic links: their target is shown as
     // it is).
@@ -388,7 +418,15 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     let mut fake: Option<(usize, Info)> = None;
     let contents = cli.contents.borrow().clone();
     let use_work_tree = positive.is_empty() && repo.setup.work_tree.is_some();
-    let final_origin = if contents.is_some() || use_work_tree {
+    let final_origin = if let Some(((name, start), end)) = reverse {
+        let children = children_towards(&repo, &start, &end, rev.first_parent);
+        sb.reverse(children);
+        let n = sb.commit(&start).map_err(score_error)?;
+        sb.reverse_start = Some(n);
+        sb.final_origin(n, &path)
+            .map_err(score_error)?
+            .ok_or_else(|| Die::Fatal(msg::no_such_path_in(&path_str, &name)))?
+    } else if contents.is_some() || use_work_tree {
         let mut parents: Vec<ObjectId> = match positive.first() {
             Some((_, id)) => vec![*id],
             None => head.into_iter().collect(),
@@ -445,7 +483,7 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             .map_err(score_error)?
             .ok_or_else(|| Die::Fatal(msg::no_such_path_in(&path_str, &name)))?
     };
-    for id in &negative {
+    for (_, id) in &negative {
         sb.exclude(id).map_err(score_error)?;
     }
 
@@ -761,6 +799,52 @@ fn resolve_commit(repo: &mut Repo, name: &str, arg: &str) -> Result<ObjectId, Di
     repo.resolve(name)
         .and_then(|id| peel_commit(repo, id))
         .ok_or_else(|| Die::Fatal(msg::bad_revision(arg)))
+}
+
+/// For `--reverse`: the children of the commits between `start` and `end`
+/// (reachable from `end`, and `start` itself), towards `end`.
+fn children_towards(
+    repo: &Repo,
+    start: &ObjectId,
+    end: &ObjectId,
+    first_parent: bool,
+) -> HashMap<ObjectId, Vec<ObjectId>> {
+    let parents = |id: &ObjectId| -> Vec<ObjectId> {
+        let mut p = commit_parents(repo, id);
+        if first_parent {
+            p.truncate(1);
+        }
+        p
+    };
+    // Everything reachable from `start` is outside the range.
+    let mut below = std::collections::HashSet::new();
+    let mut todo = vec![*start];
+    while let Some(id) = todo.pop() {
+        if below.insert(id) {
+            todo.extend(parents(&id));
+        }
+    }
+    let mut children: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut todo = vec![*end];
+    while let Some(id) = todo.pop() {
+        if below.contains(&id) || !seen.insert(id) {
+            continue;
+        }
+        for p in parents(&id) {
+            children.entry(p).or_default().push(id);
+            todo.push(p);
+        }
+    }
+    // Older children first.
+    let time = |id: &ObjectId| match repo.read_object(id) {
+        Some(Object::Commit(c)) => c.committer().and_then(|s| s.time()).map_or(0, |t| t.seconds),
+        _ => 0,
+    };
+    for list in children.values_mut() {
+        list.sort_by_cached_key(time);
+    }
+    children
 }
 
 fn commit_parents(repo: &Repo, id: &ObjectId) -> Vec<ObjectId> {

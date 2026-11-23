@@ -362,3 +362,70 @@ fn blame_ignore_revs() {
         fx.compare(&with).checks(Check::OUTPUT).run();
     }
 }
+
+/// `--reverse` (with merges and `--first-parent`), `-S <revs-file>` and
+/// `info/grafts`.
+#[test]
+fn blame_reverse_and_grafts() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    if fx.is_skipped() {
+        return;
+    }
+    fx = fx.write("f", "l1\nl2\nl3\nl4\nl5\nl6\n").git(["add", "."]);
+    fx = commit(fx, "A0", "A0").git(["tag", "A0"]);
+    fx = commit(fx.write("f", "l1\nl2\nl3\nl4\nl5\nl6\nA1\n"), "A1", "A1").git(["tag", "A1"]);
+    fx = fx.git(["checkout", "-q", "-b", "side", "A0"]);
+    fx = commit(fx.write("f", "l1\nB2\nl3\nl4\nl5\nl6\n"), "B1", "B1");
+    fx = commit(fx.write("f", "l1\nB2\nl3\nl4b\nl5\nl6\n"), "B2", "B2");
+    fx = fx
+        .git(["checkout", "-q", "main"])
+        .tick()
+        .git(["merge", "-q", "--no-edit", "side"])
+        .git(["tag", "A2"]);
+    fx = fx.git(["checkout", "-q", "-b", "c", "A1"]);
+    fx = commit(fx.write("f", "l1\nl2\nl3\nl4\nl5\nC6\nA1\n"), "C1", "C1").git(["tag", "C1"]);
+    fx = fx
+        .git(["checkout", "-q", "main"])
+        .tick()
+        .git(["merge", "-q", "--no-edit", "c"])
+        .git(["tag", "A3"]);
+    let a3 = String::from_utf8_lossy(&fx.git_stdout(["rev-parse", "A3"]))
+        .trim()
+        .to_owned();
+    let c1 = String::from_utf8_lossy(&fx.git_stdout(["rev-parse", "C1"]))
+        .trim()
+        .to_owned();
+    fx = fx.write("revs", format!("{a3} {c1}\n{c1}\n"));
+    let cases: &[&[&str]] = &[
+        &["--reverse", "A0..A3", "--", "f"],
+        &["--reverse", "A0..A2", "-p", "--", "f"],
+        &["--reverse", "--first-parent", "A0..A3", "--", "f"],
+        &["--reverse", "A1", "--", "f"],
+        &["--reverse", "A1..A0", "--", "f"],
+        &["--reverse", "^A0", "C1", "--", "f"],
+        &["--reverse", "A2..A2", "--", "f"],
+        &["--reverse", "--", "f"],
+        &["--reverse", "--contents", "f", "A0..", "--", "f"],
+        &["--incremental", "--reverse", "A0..A3", "--", "f"],
+        &["-s", "-S", "revs", "f"],
+        &["-s", "-S", "revs", "A1", "--", "f"],
+        &["-S", "missing", "f"],
+    ];
+    for args in cases {
+        compare(&mut fx, "blame", args);
+    }
+    fx = fx.write(".git/info/grafts", format!("{a3} {c1}\n"));
+    // (git also prints the advice graftFileDeprecated, not implemented.)
+    let args = [
+        "-c",
+        "advice.graftFileDeprecated=false",
+        "blame",
+        "-s",
+        "A3",
+        "--",
+        "f",
+    ];
+    fx.compare(args).checks(Check::OUTPUT).run();
+}

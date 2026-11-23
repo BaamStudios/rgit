@@ -217,12 +217,18 @@ pub struct Scoreboard<'r> {
     pub batches: Vec<usize>,
     settings: Settings,
     shallow: std::collections::HashSet<ObjectId>,
+    /// `info/grafts`: commits with replaced parents.
+    grafts: HashMap<ObjectId, Vec<ObjectId>>,
     /// The textconv filter of a path's diff driver, applied to every
     /// version (`--textconv`, on by default).
     pub textconv: Option<TextConv<'r>>,
     /// Line ids shared by all versions, and a scratch table that maps them
     /// to dense ids for one diff (stamp, id).
     interner: RefCell<rgit_diff::Interner>,
+    /// `--reverse`: the children of each commit (walked instead of the
+    /// parents), and the start, which takes the lines changed after it.
+    children: Option<HashMap<ObjectId, Vec<ObjectId>>>,
+    pub reverse_start: Option<usize>,
     /// The final version of the file (`-M`/`-C` look for its lines).
     pub final_blob: Option<Rc<Blob>>,
     dense: RefCell<(u32, Vec<(u32, u32)>)>,
@@ -261,9 +267,12 @@ impl<'r> Scoreboard<'r> {
             batches: Vec::new(),
             settings,
             shallow,
+            grafts: read_grafts(repo),
             textconv: None,
             interner: RefCell::new(rgit_diff::Interner::new()),
             final_blob: None,
+            children: None,
+            reverse_start: None,
             dense: RefCell::new((0, Vec::new())),
         }
     }
@@ -290,7 +299,11 @@ impl<'r> Scoreboard<'r> {
             .and_then(|s| s.time())
             .map_or(0, |t| t.seconds);
         let tree = commit.tree().ok();
-        let parents = if self.shallow.contains(id) {
+        let parents = if let Some(children) = &self.children {
+            children.get(id).cloned().unwrap_or_default()
+        } else if let Some(p) = self.grafts.get(id) {
+            p.clone()
+        } else if self.shallow.contains(id) {
             Vec::new()
         } else {
             commit.parents().unwrap_or_default()
@@ -394,6 +407,16 @@ impl<'r> Scoreboard<'r> {
         Ok(blob)
     }
 
+    /// `-S <revs-file>`: more grafts (commits and their parents).
+    pub fn add_grafts(&mut self, data: &[u8]) {
+        parse_grafts(self.repo.hash, data, &mut self.grafts);
+    }
+
+    /// `--reverse`: walk from commits to the given children.
+    pub fn reverse(&mut self, children: HashMap<ObjectId, Vec<ObjectId>>) {
+        self.children = Some(children);
+    }
+
     /// Mark `id` as excluded (`^<rev>`).
     pub fn exclude(&mut self, id: &ObjectId) -> Res<()> {
         let n = self.commit(id)?;
@@ -415,12 +438,18 @@ impl<'r> Scoreboard<'r> {
         }
         self.nodes[n].queued = true;
         self.seq += 1;
-        self.queue.push((self.nodes[n].time, Reverse(self.seq), n));
+        // Newest first; oldest first when walking towards children.
+        let time = if self.children.is_some() {
+            -self.nodes[n].time
+        } else {
+            self.nodes[n].time
+        };
+        self.queue.push((time, Reverse(self.seq), n));
     }
 
     fn parents(&self, n: usize) -> Vec<ObjectId> {
         let mut p = self.nodes[n].parents.clone().unwrap_or_default();
-        if self.settings.first_parent {
+        if self.settings.first_parent && self.children.is_none() {
             p.truncate(1);
         }
         p
@@ -474,7 +503,8 @@ impl<'r> Scoreboard<'r> {
         }
         let parents = self.parents(n);
         if parents.is_empty() {
-            if !self.settings.show_root && self.nodes[n].commit.is_some() {
+            let root = self.children.is_none() && !self.settings.show_root;
+            if (root && self.nodes[n].commit.is_some()) || self.reverse_start == Some(n) {
                 self.nodes[n].boundary = true;
             }
             self.finish(entries);
@@ -530,6 +560,9 @@ impl<'r> Scoreboard<'r> {
                     rest = self.pass_matches(o, rest, &candidates, min)?;
                 }
             }
+        }
+        if !rest.is_empty() && self.reverse_start == Some(n) {
+            self.nodes[n].boundary = true;
         }
         self.finish(rest);
         Ok(())
@@ -1035,6 +1068,30 @@ impl<'r> Scoreboard<'r> {
             out.push((pb, pa, tr.len() - pb));
         }
         out
+    }
+}
+
+/// The grafts of `info/grafts`.
+fn read_grafts(repo: &Repo) -> HashMap<ObjectId, Vec<ObjectId>> {
+    let data = std::fs::read(repo.setup.common_dir.join("info").join("grafts")).unwrap_or_default();
+    let mut out = HashMap::new();
+    parse_grafts(repo.hash, &data, &mut out);
+    out
+}
+
+/// Graft lines: a commit and its parents.
+fn parse_grafts(kind: rgit_hash::HashKind, data: &[u8], out: &mut HashMap<ObjectId, Vec<ObjectId>>) {
+    for line in data.split(|&b| b == b'\n') {
+        if line.starts_with(b"#") {
+            continue;
+        }
+        let mut ids = line
+            .split(|b| b.is_ascii_whitespace())
+            .filter(|w| !w.is_empty())
+            .map(|w| ObjectId::from_hex(kind, w));
+        if let Some(Ok(commit)) = ids.next() {
+            out.insert(commit, ids.filter_map(Result::ok).collect());
+        }
     }
 }
 
