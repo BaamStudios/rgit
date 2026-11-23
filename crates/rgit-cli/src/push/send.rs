@@ -60,6 +60,9 @@ pub struct Outgoing<'a> {
     /// Show the local progress meters (`--progress`, or stderr is a
     /// terminal) and the `Total` line.
     pub progress: bool,
+    /// A signed push certificate (payload and signature), sent in place
+    /// of the command list (`--signed`).
+    pub cert: Option<Vec<u8>>,
 }
 
 /// The objects reachable from the new values, minus everything reachable
@@ -223,7 +226,11 @@ fn write_request(w: &mut dyn Write, out: &Outgoing<'_>, adv: &Advertisement) -> 
                 .write_data(format!("shallow {id}").as_bytes())
                 .map_err(|e| e.to_string())?;
         }
-        push::write_commands(&mut writer, &out.commands, &caps, opts).map_err(|e| e.to_string())?;
+        match &out.cert {
+            Some(cert) => push::write_push_cert(&mut writer, cert, &caps, opts),
+            None => push::write_commands(&mut writer, &out.commands, &caps, opts),
+        }
+        .map_err(|e| e.to_string())?;
     }
     if out.commands.iter().any(|c| !c.new.is_null()) {
         write_pack(w, out, adv)?;
