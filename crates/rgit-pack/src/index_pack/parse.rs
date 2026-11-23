@@ -29,6 +29,8 @@ pub(crate) struct Pass1 {
     pub version: u32,
     /// Bytes read after the trailer (with `Options::allow_trailing_data`).
     pub trailing: Vec<u8>,
+    /// The trailing checksum matched (always, unless `Options::checksum_last`).
+    pub checksum_ok: bool,
 }
 
 /// Buffered input that hashes, counts and copies what is consumed.
@@ -125,7 +127,17 @@ impl<'a> Input<'a> {
 
     /// Inflate one zlib stream that must produce exactly `size` bytes.
     /// Returns the data if `keep`, otherwise an empty vector.
-    fn inflate(&mut self, size: u64, keep: bool, offset: u64) -> Result<Vec<u8>, Error> {
+    ///
+    /// With `exact_room`, zlib never gets room for more than `size` bytes:
+    /// a longer stream stops where the output is full (the position
+    /// recovery goes on from).
+    fn inflate(
+        &mut self,
+        size: u64,
+        keep: bool,
+        offset: u64,
+        exact_room: bool,
+    ) -> Result<Vec<u8>, Error> {
         let bad = |code: i32, detail: Option<String>| Error::BadObject {
             offset,
             what: BadEntry::Inflate { code, detail },
@@ -140,7 +152,8 @@ impl<'a> Input<'a> {
         loop {
             // Give zlib room for the rest of the object, or one byte to
             // detect a stream that is longer than the header says.
-            let room = (size - produced).min(chunk.len() as u64).max(1) as usize;
+            let room = (size - produced).min(chunk.len() as u64);
+            let room = if exact_room { room } else { room.max(1) } as usize;
             let before_in = z.total_in();
             let before_out = z.total_out();
             let status = {
@@ -286,6 +299,9 @@ pub(crate) fn read_pack(
                 let base_offset = offset - rel;
                 match entries.binary_search_by_key(&base_offset, |e| e.offset) {
                     Ok(idx) => Base::Ofs(idx as u32),
+                    // No entry starts there: a delta waiting for a base
+                    // that never comes.
+                    Err(_) if opts.checksum_last => Base::Ref(opts.hash.null()),
                     Err(_) => return Err(out_of_bound),
                 }
             }
@@ -295,34 +311,67 @@ pub(crate) fn read_pack(
                 Base::Ref(ObjectId::from_bytes(opts.hash, &raw[..hlen]).expect("length matches"))
             }
             _ => {
-                return Err(Error::BadObject {
+                let e = Error::BadObject {
                     offset,
                     what: BadEntry::UnknownType(ty),
+                };
+                if !opts.recover {
+                    return Err(e);
+                }
+                // Recovery reads the next entry right after the header.
+                checker.corrupt(&e);
+                let crc32 = std::mem::replace(&mut input.crc, crc32fast::Hasher::new()).finalize();
+                entries.push(Entry {
+                    offset,
+                    data_offset: input.offset,
+                    size: 0,
+                    crc32,
+                    base: Base::Ref(opts.hash.null()),
+                    broken: true,
                 });
+                slots.push(OnceLock::new());
+                continue;
             }
         };
         let data_offset = input.offset;
         let slot = OnceLock::new();
-        match base {
-            Base::None(kind) => {
-                let data = input.inflate(size, true, offset)?;
-                let mut h = object_hasher(opts.hash, kind.as_str(), size);
-                h.update(&data);
-                let id = h.finalize().map_err(|_| Error::CollisionAttack(offset))?;
-                checker.check(&id, kind, &data)?;
-                let _ = slot.set((id, kind));
+        let inflated = input.inflate(size, matches!(base, Base::None(_)), offset, opts.recover);
+        let broken = match inflated {
+            // Recovery goes on after the end of the broken zlib stream.
+            Err(
+                e @ Error::BadObject {
+                    what: BadEntry::Inflate { .. },
+                    ..
+                },
+            ) if opts.recover => {
+                checker.corrupt(&e);
+                true
             }
-            _ => {
-                input.inflate(size, false, offset)?;
+            Err(e) => return Err(e),
+            Ok(data) => {
+                if let Base::None(kind) = base {
+                    let mut h = object_hasher(opts.hash, kind.as_str(), size);
+                    h.update(&data);
+                    let id = h.finalize().map_err(|_| Error::CollisionAttack(offset))?;
+                    checker.check(&id, kind, &data)?;
+                    let _ = slot.set((id, kind));
+                }
+                false
             }
-        }
+        };
         let crc32 = std::mem::replace(&mut input.crc, crc32fast::Hasher::new()).finalize();
         entries.push(Entry {
             offset,
             data_offset,
             size,
             crc32,
-            base,
+            // A broken entry resolves nothing and is resolved by nothing.
+            base: if broken {
+                Base::Ref(opts.hash.null())
+            } else {
+                base
+            },
+            broken,
         });
         slots.push(slot);
         if let Some(p) = progress.as_deref_mut() {
@@ -335,7 +384,8 @@ pub(crate) fn read_pack(
         .map_err(|_| Error::ChecksumMismatch)?;
     let mut trailer = [0u8; 32];
     input.exact(&mut trailer[..hlen], false)?;
-    if computed.as_bytes() != &trailer[..hlen] {
+    let checksum_ok = computed.as_bytes() == &trailer[..hlen];
+    if !checksum_ok && !opts.checksum_last {
         return Err(Error::ChecksumMismatch);
     }
     // Data after the trailer.
@@ -359,5 +409,6 @@ pub(crate) fn read_pack(
         entries_end,
         version,
         trailing,
+        checksum_ok,
     })
 }

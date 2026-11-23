@@ -54,6 +54,9 @@ pub fn inflate_error(detail: &str) -> String {
     format!("inflate: data stream error ({detail})")
 }
 
+/// A zlib stream that asks for a preset dictionary.
+pub const INFLATE_NEEDS_DICTIONARY: &str = "inflate: needs dictionary (no message)";
+
 /// An `OFS_DELTA` base offset that is not the start of an earlier entry.
 pub const DELTA_BASE_OUT_OF_BOUND: &str = "delta base offset is out of bound";
 

@@ -12,9 +12,11 @@
 //! everything it refers to is in the pack (and itself writable) or in the
 //! repository.
 //!
-//! Not supported yet: `-r` recovery after a corrupt entry stops at the
-//! first corruption like a run without `-r`; objects larger than
-//! `core.bigFileThreshold` are not streamed (#89).
+//! `-r` skips entries whose data does not inflate and goes on after
+//! them; deltas on a skipped entry stay unresolved.
+//!
+//! Not supported yet: objects larger than `core.bigFileThreshold` are not
+//! streamed (#89).
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
@@ -211,6 +213,25 @@ impl ObjectHook for Sink<'_> {
         }
         Ok(())
     }
+
+    fn corrupt(&self, error: &ip::Error) {
+        let mut err = io::stderr().lock();
+        for line in error.errors_before() {
+            let _ = writeln!(err, "error: {line}");
+        }
+        match error {
+            ip::Error::BadObject {
+                what: BadEntry::UnknownType(t),
+                ..
+            } => {
+                let _ = writeln!(err, "error: {}", msg::bad_object_type(*t));
+            }
+            ip::Error::BadObject { what, .. } => {
+                let _ = writeln!(err, "error: {what}");
+            }
+            _ => {}
+        }
+    }
 }
 
 /// `--strict`: the `.gitmodules` blobs named by trees of the pack.
@@ -271,6 +292,10 @@ fn fail(e: ip::Error) -> Die {
         ip::Error::Unresolved(_) => Die::Fatal(msg::UNRESOLVED.into()),
         ip::Error::TooLarge(_) => Die::Fatal(msg::TOO_LARGE.into()),
         ip::Error::Hook(m) => Die::Fatal(m),
+        ip::Error::BadObject {
+            what: BadEntry::DeltaBaseOutOfBound,
+            ..
+        } => Die::Fatal(msg::OFS_OUT_OF_BOUND.into()),
         ip::Error::BadObject { ref what, .. } => {
             for line in e.errors_before() {
                 eprintln!("error: {line}");
@@ -303,6 +328,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     opts.pack_header = args.pack_header;
     opts.max_input_size = args.max_input_size.filter(|&n| n > 0);
     opts.allow_trailing_data = true;
+    opts.recover = args.recover;
+    opts.checksum_last = true;
     let sink = Sink {
         repo: &repo,
         args: &args,
@@ -334,7 +361,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(file);
     drop(tmp);
     let _ = args.quiet;
-    let _ = args.recover;
     let indexed = indexed.map_err(fail)?;
     if let Some(e) = sink.write_error.lock().unwrap_or_else(|p| p.into_inner()).take() {
         return Err(Die::Fatal(e));

@@ -71,6 +71,9 @@ pub trait ObjectDb: Sync {
 pub trait ObjectHook: Sync {
     /// Look at one object.
     fn object(&self, id: &ObjectId, kind: ObjectKind, data: &[u8]) -> Result<(), String>;
+
+    /// An entry skipped under [`Options::recover`].
+    fn corrupt(&self, _error: &Error) {}
 }
 
 /// The phases reported to a [`Progress`].
@@ -137,6 +140,15 @@ pub struct Options {
     /// (it may belong to a protocol that continues). Otherwise the input
     /// is read to its end and any data after the pack is an error.
     pub allow_trailing_data: bool,
+    /// Keep going after an entry whose data does not inflate (`git
+    /// unpack-objects -r`): the entry is reported to
+    /// [`ObjectHook::corrupt`] and skipped; deltas on it stay unresolved.
+    pub recover: bool,
+    /// `git unpack-objects` order: check the trailing checksum only after
+    /// the deltas were resolved (unresolved deltas are reported first, and
+    /// the objects that could be resolved reach the hook); an
+    /// `OFS_DELTA` whose base offset starts no entry is left unresolved.
+    pub checksum_last: bool,
 }
 
 impl Options {
@@ -152,6 +164,8 @@ impl Options {
             compression_level: -1,
             memory_limit: DEFAULT_MEMORY_LIMIT,
             allow_trailing_data: false,
+            recover: false,
+            checksum_last: false,
         }
     }
 }
@@ -253,6 +267,8 @@ pub(crate) struct Entry {
     pub size: u64,
     pub crc32: u32,
     pub base: Base,
+    /// Skipped under [`Options::recover`]: never resolved.
+    pub broken: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -325,8 +341,9 @@ pub fn index_pack(
         entries_end,
         version,
         trailing,
+        checksum_ok,
     } = pass1;
-    let deltas = entries.iter().filter(|e| e.is_delta()).count() as u64;
+    let deltas = entries.iter().filter(|e| e.is_delta() && !e.broken).count() as u64;
 
     let data = crate::mmap::FileData::open(&data_path).map_err(|e| Error::Open {
         path: data_path.clone(),
@@ -389,10 +406,14 @@ pub fn index_pack(
     if resolved < deltas {
         return Err(Error::Unresolved(deltas - resolved));
     }
+    if !checksum_ok {
+        return Err(Error::ChecksumMismatch);
+    }
 
     let objects: Vec<IndexedObject> = entries
         .iter()
         .zip(slots.iter())
+        .filter(|(e, _)| !e.broken)
         .map(|(e, s)| {
             let (id, kind) = *s.get().expect("every entry is resolved");
             IndexedObject {
@@ -453,6 +474,12 @@ impl Checker<'_> {
             h.object(id, kind, data).map_err(Error::Hook)?;
         }
         Ok(())
+    }
+
+    pub fn corrupt(&self, error: &Error) {
+        if let Some(h) = self.hook {
+            h.corrupt(error);
+        }
     }
 }
 

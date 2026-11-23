@@ -234,6 +234,34 @@ pub fn shallow_path(common: &Path) -> PathBuf {
     common.join("shallow")
 }
 
+/// Drop the commits that no longer exist from `.git/shallow`; remove the
+/// file when none is left.
+pub fn prune_shallow(odb: &ObjectDatabase, common: &Path, kind: HashKind) {
+    let path = shallow_path(common);
+    let Ok(data) = std::fs::read(&path) else {
+        return;
+    };
+    let mut kept = Vec::new();
+    let mut changed = false;
+    for line in data.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+        match ObjectId::from_hex(kind, line) {
+            Ok(id) if !odb.contains(&id) => changed = true,
+            _ => {
+                kept.extend_from_slice(line);
+                kept.push(b'\n');
+            }
+        }
+    }
+    if !changed {
+        return;
+    }
+    if kept.is_empty() {
+        let _ = std::fs::remove_file(&path);
+    } else {
+        let _ = std::fs::write(&path, kept);
+    }
+}
+
 fn read_shallow(path: &Path, kind: HashKind) -> HashSet<ObjectId> {
     let Ok(data) = std::fs::read(path) else {
         return HashSet::new();

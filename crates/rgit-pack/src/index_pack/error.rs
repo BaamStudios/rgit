@@ -111,6 +111,10 @@ impl Error {
                 ..
             } => vec![m::inflate_error(d)],
             Error::BadObject {
+                what: BadEntry::Inflate { code: 2, .. },
+                ..
+            } => vec![m::INFLATE_NEEDS_DICTIONARY.to_string()],
+            Error::BadObject {
                 what: BadEntry::BadDelta { note: Some(n) },
                 ..
             } => vec![(*n).to_string()],

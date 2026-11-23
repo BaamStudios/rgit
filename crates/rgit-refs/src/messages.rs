@@ -21,6 +21,11 @@ pub fn duplicate(name: &str) -> String {
     format!("multiple updates for ref '{name}' not allowed")
 }
 
+/// An update would store a reference with the null object id.
+pub fn no_oid_nor_target(name: &str) -> String {
+    format!("'{name}' has neither a valid OID nor a target")
+}
+
 /// A reference is updated directly and through a symbolic reference.
 pub fn duplicate_via_symref(name: &str, symref: &str) -> String {
     format!("multiple updates for '{name}' (including one via symref '{symref}') are not allowed")

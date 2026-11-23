@@ -126,6 +126,53 @@ fn local_clone_refuses_symlinks_like_git() {
         .run();
 }
 
+/// A broken ref of a local source fails the clone when the refs are
+/// written (t5605 "local clone from repo with corrupt refs fails
+/// gracefully").
+#[test]
+fn local_clone_of_corrupt_refs_fails_like_git() {
+    let mut fx = source().write("src/.git/refs/heads/topic", "a\n");
+    if fx.is_skipped() {
+        return;
+    }
+    fx.compare(["clone", "src", "c1"])
+        .checks(Check::OUTPUT)
+        .run();
+}
+
+/// A shallow repository at a local path is cloned like a remote one and
+/// keeps its shallow boundary (t5601 "shallow clone locally"); `-l` is
+/// ignored with a warning there and for URLs.
+#[test]
+fn local_clone_of_a_shallow_repository_like_git() {
+    let mut fx = source().git(["clone", "-q", "--depth=1", "--no-local", "src", "s"]);
+    if fx.is_skipped() {
+        return;
+    }
+    fx.compare(["clone", "s", "d"]).repo("d").run();
+    fx.compare(["clone", "-l", "--depth=1", "s", "d3"])
+        .repo("d3")
+        .run();
+    fx.compare(["clone", "-l", "--reject-shallow", "s", "d4"])
+        .checks(Check::OUTPUT)
+        .run();
+    let url = format!("file://{}/src", fx.work_dir().display());
+    fx.compare(["clone", "-l", "-s", &url, "d5"])
+        .repo("d5")
+        .run();
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
+        .args(["clone", "-q", "s", "d2"])
+        .current_dir(fx.work_dir())
+        .env("HOME", fx.home_dir())
+        .env("XDG_CONFIG_HOME", fx.home_dir().join(".config"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let read = |p: &str| std::fs::read(fx.work_dir().join(p)).unwrap();
+    assert_eq!(read("d2/.git/shallow"), read("s/.git/shallow"));
+}
+
 #[test]
 fn local_clone_checks_ownership_like_git() {
     let mut fx = source();

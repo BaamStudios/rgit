@@ -165,6 +165,49 @@ fn unpack() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// `-r`: entries whose data does not inflate are skipped, the rest is
+/// unpacked; deltas on a skipped entry stay unresolved.
+#[test]
+fn recover() {
+    let mut fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    // Stored (uncompressed) entries: a changed byte shows up as a wrong
+    // zlib checksum at the end of the entry.
+    let stored = |extra: &[&str]| {
+        let mut cmd = Command::new(fx.reference_git());
+        cmd.args(["-C", "src", "-c", "pack.compression=0", "pack-objects"])
+            .args(["--stdout", "-q", "--all", "--revs"])
+            .args(extra);
+        isolate(&fx, &mut cmd);
+        let out = cmd.current_dir(fx.work_dir()).output().unwrap();
+        assert!(out.status.success());
+        out.stdout
+    };
+    let mut failures = Vec::new();
+    for pack in [stored(&["--depth=0"]), stored(&[])] {
+        for pos in [3, 5, 7] {
+            let mut bad = pack.clone();
+            let at = bad.len() * pos / 10;
+            bad[at] ^= 0x41;
+            for args in [&["unpack-objects"][..], &["unpack-objects", "-r"]] {
+                let r = fx
+                    .compare(args)
+                    .in_dir("dst")
+                    .repo("dst")
+                    .checks(CHECKS)
+                    .stdin(bad.clone())
+                    .try_run();
+                if let Err(m) = r {
+                    failures.push(m.to_string());
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn strict_into_populated_repository() {
     let fx = fixture();

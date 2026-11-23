@@ -308,6 +308,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         store::remove_pack_garbage(&pack_dir);
         let packs_now = store::local_packs(&odb, &keep_names);
         store::prune_packed(&objects_dir, &objects_dir, kind, &packs_now, false)?;
+        if pack_everything {
+            // Commits dropped with the old packs leave `.git/shallow`.
+            let fresh = repo::odb_with_config(&setup, &config)?;
+            reach::prune_shallow(&fresh, &common, kind);
+        }
     }
 
     let update_info = !no_server_info.get()
