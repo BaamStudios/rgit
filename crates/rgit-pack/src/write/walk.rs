@@ -365,7 +365,7 @@ pub fn enumerate<S: ObjectSource + ?Sized>(
     hash: HashKind,
     tips: &[Tip],
 ) -> Result<Vec<ListedObject>, WriteError> {
-    walk_objects(source, hash, tips, false, None)
+    walk_objects(source, hash, tips, false, false, None)
 }
 
 /// Like [`enumerate`], and also returns the trees and blobs of the edge:
@@ -386,7 +386,23 @@ pub fn enumerate_with_edges<S: ObjectSource + ?Sized>(
     sparse: bool,
 ) -> Result<(Vec<ListedObject>, Vec<ListedObject>), WriteError> {
     let mut edges = Vec::new();
-    let listed = walk_objects(source, hash, tips, sparse, Some(&mut edges))?;
+    let listed = walk_objects(source, hash, tips, sparse, false, Some(&mut edges))?;
+    Ok((listed, edges))
+}
+
+/// Like [`enumerate_with_edges`] without `sparse`, but the edge also holds
+/// the trees of the excluded tips, not only those of the excluded parents
+/// of listed commits (`rev-list
+/// --objects-edge-aggressive`, used for thin packs from shallow
+/// repositories, where the parents are often cut off). Trees and blobs the
+/// edge holds are not listed.
+pub fn enumerate_with_edges_aggressive<S: ObjectSource + ?Sized>(
+    source: &S,
+    hash: HashKind,
+    tips: &[Tip],
+) -> Result<(Vec<ListedObject>, Vec<ListedObject>), WriteError> {
+    let mut edges = Vec::new();
+    let listed = walk_objects(source, hash, tips, false, true, Some(&mut edges))?;
     Ok((listed, edges))
 }
 
@@ -395,6 +411,7 @@ fn walk_objects<S: ObjectSource + ?Sized>(
     hash: HashKind,
     tips: &[Tip],
     sparse: bool,
+    aggressive: bool,
     mut edge_objects: Option<&mut Vec<ListedObject>>,
 ) -> Result<Vec<ListedObject>, WriteError> {
     let mut w = Walker {
@@ -524,6 +541,17 @@ fn walk_objects<S: ObjectSource + ?Sized>(
                         let _ = w.walk_tree(tree, &mut seen, edge_objects.as_deref_mut());
                     }
                 }
+            }
+        }
+    }
+    // Aggressive: the trees of the excluded tips themselves (the other
+    // side has them even when it lacks their parents).
+    let tips_edge: &[ObjectId] = if aggressive { &exclude_commits } else { &[] };
+    for &id in tips_edge {
+        if edges.insert(id) {
+            if let Ok(c) = w.commit(&id) {
+                let tree = c.tree;
+                let _ = w.walk_tree(tree, &mut seen, edge_objects.as_deref_mut());
             }
         }
     }

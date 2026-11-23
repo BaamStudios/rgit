@@ -770,6 +770,7 @@ impl Push<'_> {
                 bases: Vec::new(),
                 thin: f.thin,
                 pack: crate::commands::pack_objects::config_options(self.config)?,
+                progress: f.progress,
             };
             (out.objects, out.bases) = match send::pack_objects(&out, &session.adv) {
                 Ok(o) => o,

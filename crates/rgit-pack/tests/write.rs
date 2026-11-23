@@ -21,7 +21,8 @@ use std::sync::Arc;
 
 use rgit_hash::{HashKind, ObjectId};
 use rgit_pack::write::{
-    ListedObject, PackSetSource, Tip, WriteOptions, enumerate, pack_order, write_pack,
+    ListedObject, PackSetSource, Tip, WriteOptions, enumerate, enumerate_with_edges,
+    enumerate_with_edges_aggressive, pack_order, write_pack,
 };
 use rgit_pack::{Pack, PackSet};
 
@@ -560,6 +561,46 @@ fn order_groups_types() {
     assert_eq!(ordered[0].id, repo.resolve("main~2"));
     assert_eq!(ordered[1].id, repo.resolve("v1"));
     assert_eq!(ordered[2].id, repo.resolve("v1-again"));
+}
+
+/// The aggressive edge (`--objects-edge-aggressive`) holds the tree of an
+/// excluded tip that is no ancestor: a reworded commit on top of the same
+/// parent sends only the commit, while the plain edge also lists its tree
+/// and the changed blob (git does the same for both forms).
+#[test]
+fn aggressive_edge_covers_excluded_tips() {
+    if !have_git() {
+        return;
+    }
+    let kind = HashKind::Sha1;
+    let repo = Repo::new(kind);
+    repo.write("a", b"one\n");
+    repo.commit("base");
+    repo.write("a", b"two\n");
+    repo.commit("old");
+    let old = repo.resolve("HEAD");
+    repo.git(&["commit", "-q", "--amend", "-m", "reworded"]);
+    let new = repo.resolve("HEAD");
+    repo.repack();
+    let set = PackSet::open(repo.pack_dir(), kind);
+    let source = PackSetSource::new(&set);
+    let tips = vec![
+        Tip {
+            id: new,
+            exclude: false,
+        },
+        Tip {
+            id: old,
+            exclude: true,
+        },
+    ];
+    let (plain, _) = enumerate_with_edges(&source, kind, &tips, false).unwrap();
+    assert_eq!(plain.len(), 3, "commit, tree and blob");
+    let (listed, bases) = enumerate_with_edges_aggressive(&source, kind, &tips).unwrap();
+    let ids: Vec<ObjectId> = listed.iter().map(|o| o.id).collect();
+    assert_eq!(ids, vec![new]);
+    let tree = repo.resolve("HEAD^{tree}");
+    assert!(bases.iter().any(|b| b.id == tree));
 }
 
 /// 50 random (wants, haves) pairs in a full clone of git's repository.
