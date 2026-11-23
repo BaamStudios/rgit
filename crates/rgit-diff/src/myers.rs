@@ -13,12 +13,29 @@
 //! lies), the preprocessing of lines and the cost limit for large inputs are
 //! not specified by git's documentation. They were derived from differential
 //! tests against the `git` binary (randomized inputs, compared with
-//! `git diff --no-index`), see `tests/differential.rs`.
+//! `git diff --no-index`), see `tests/differential.rs`. The heuristics for
+//! large inputs (cost limit, long-snake split points, which parts are then
+//! diffed minimally) were derived the same way from generated inputs of
+//! 30,000 to 120,000 lines; each constant was checked by changing it by one
+//! step in both directions and watching the comparison fail.
 
 /// Search cost (edit distance from either end) at which the search gives up
 /// looking for the exact middle snake, unless a minimal diff was requested.
 /// The limit grows with the input size (see [`cost_limit`]).
 const MIN_COST_LIMIT: isize = 256;
+
+/// Search cost above which a long snake that got far enough from its corner
+/// is taken as split point (see [`Ctx::good_snake`]). The cost limit is 256
+/// up to 65532 lines taking part in the search, so this only matters for
+/// larger inputs.
+const SNAKE_MIN_COST: isize = 256;
+
+/// Number of equal lines a snake needs to count as long.
+const SNAKE_LEN: isize = 20;
+
+/// A long snake is taken only if its end got further from its corner than
+/// this factor times the search cost.
+const SNAKE_PROGRESS: isize = 4;
 
 /// Computes which lines of `a` and `b` are changed (deleted resp. inserted).
 ///
@@ -99,12 +116,12 @@ fn pow2_root(n: usize) -> usize {
     r
 }
 
-/// Cost limit of the search for `n` lines in total.
+/// Cost limit of the search for `n` lines in total (the lines taking part in
+/// the search, after trimming and discarding): `2 * 2^floor(log4(n + 3))`,
+/// at least [`MIN_COST_LIMIT`]. The step from 256 to 512 at `n + 3 = 65536`
+/// was located exactly with generated inputs of 65532 to 65537 lines.
 fn cost_limit(n: usize) -> isize {
-    // Only the lower bound has been confirmed against git (inputs of up to
-    // 1.2 million lines); the growth term is a guess that matters only for
-    // more than a million lines.
-    (pow2_root(n) as isize).max(MIN_COST_LIMIT)
+    ((2 * pow2_root(n + 3)) as isize).max(MIN_COST_LIMIT)
 }
 
 /// Line classes before the search.
@@ -119,10 +136,15 @@ enum Class {
 }
 
 /// Number of partner lines from which on a line counts as [`Class::Many`]
-/// in a file of `len` lines: 2 below 4 lines, 4 below 16, 8 below 64, ...
+/// in a file of `len` lines: 2 below 4 lines, 4 below 16, 8 below 64, ...,
+/// at most [`MAX_MANY_LIMIT`].
 fn many_limit(len: usize) -> u32 {
-    (2 * pow2_root(len)) as u32
+    (2 * pow2_root(len)).min(MAX_MANY_LIMIT) as u32
 }
+
+/// Upper bound of [`many_limit`], reached at 2^18 lines. Checked with files
+/// of 1.1 million lines in which a line has 1023 resp. 1024 partners.
+const MAX_MANY_LIMIT: usize = 1024;
 
 /// Classifies the lines of `x` in `range` and returns the indices that take
 /// part in the search; discarded lines are flagged in `changed`.
@@ -221,6 +243,10 @@ struct Ctx<'a> {
     max_cost: Option<isize>,
 }
 
+/// A split point and whether the parts before and after it must be diffed
+/// minimally (without the cost limit and the snake heuristic).
+type Split = (usize, usize, bool, bool);
+
 impl<'a> Ctx<'a> {
     fn new(a: &'a [u32], b: &'a [u32]) -> Self {
         let size = a.len() + b.len() + 3;
@@ -235,8 +261,9 @@ impl<'a> Ctx<'a> {
     }
 
     fn run(&mut self, fa: &mut [bool], fb: &mut [bool]) {
-        let mut stack = vec![(0usize, self.a.len(), 0usize, self.b.len())];
-        while let Some((mut x0, mut x1, mut y0, mut y1)) = stack.pop() {
+        let top_min = self.max_cost.is_none();
+        let mut stack = vec![(0usize, self.a.len(), 0usize, self.b.len(), top_min)];
+        while let Some((mut x0, mut x1, mut y0, mut y1, min)) = stack.pop() {
             while x0 < x1 && y0 < y1 && self.a[x0] == self.b[y0] {
                 x0 += 1;
                 y0 += 1;
@@ -253,16 +280,27 @@ impl<'a> Ctx<'a> {
                 fa[x0..x1].iter_mut().for_each(|f| *f = true);
                 continue;
             }
-            let (xm, ym) = self.split(x0, x1, y0, y1);
-            stack.push((xm, x1, ym, y1));
-            stack.push((x0, xm, y0, ym));
+            let (xm, ym, lo, hi) = self.split(x0, x1, y0, y1, min);
+            stack.push((xm, x1, ym, y1, hi));
+            stack.push((x0, xm, y0, ym, lo));
         }
     }
 
     /// Finds a point on an optimal path from `(x0, y0)` to `(x1, y1)` that
     /// splits the box into two smaller ones. Diagonals are visited from the
-    /// highest to the lowest in both directions.
-    fn split(&mut self, x0: usize, x1: usize, y0: usize, y1: usize) -> (usize, usize) {
+    /// highest to the lowest in both directions; a step onto a diagonal
+    /// comes from the neighbour that got further (from the lower diagonal on
+    /// ties). End points may lie outside the box (past its right or bottom
+    /// edge for the forward search, before its left or top edge for the
+    /// backward one); they still take part in later steps.
+    ///
+    /// Unless `minimal`, the search may stop early: at the end of a long
+    /// snake (see [`Ctx::good_snake`]) or, once the cost limit is reached,
+    /// at the point that got furthest (see [`Ctx::give_up`]). The part on
+    /// the side the search came from is then diffed minimally, the other
+    /// part may stop early again. After an exact middle snake both parts are
+    /// diffed minimally.
+    fn split(&mut self, x0: usize, x1: usize, y0: usize, y1: usize, minimal: bool) -> Split {
         let (x0, x1, y0, y1) = (x0 as isize, x1 as isize, y0 as isize, y1 as isize);
         let a = self.a;
         let b = self.b;
@@ -280,7 +318,11 @@ impl<'a> Ctx<'a> {
         let mut d = 0isize;
         loop {
             d += 1;
-            // Forward step: extend the D-paths from the start.
+            // Whether a snake longer than SNAKE_LEN was followed in this
+            // step; only then are long snakes looked for.
+            let mut got_snake = false;
+            // Forward step: extend the D-paths from the start. The entries
+            // just outside the visited diagonals act as unreachable.
             if fmin > kmin {
                 fmin -= 1;
                 self.vf[at(fmin - 1)] = NEG;
@@ -297,31 +339,19 @@ impl<'a> Ctx<'a> {
             while k >= fmin {
                 let left = self.vf[at(k - 1)];
                 let up = self.vf[at(k + 1)];
-                // Right from diagonal k-1 (deletion) or down from k+1
-                // (insertion); a deletion wins a tie.
-                let right_ok = left != NEG && left < x1;
-                let down_ok = up != NEG && up - (k + 1) < y1;
-                let start = match (right_ok, down_ok) {
-                    (true, true) => (left + 1).max(up),
-                    (true, false) => left + 1,
-                    (false, true) => up,
-                    (false, false) => NEG,
-                };
-                if start == NEG {
-                    // Only on the box edge: nothing new on this diagonal.
-                    self.vf[at(k)] = NEG;
-                    k -= 2;
-                    continue;
-                }
+                let start = if left >= up { left + 1 } else { up };
                 let mut x = start;
                 let mut y = x - k;
-                while x < x1 && y < y1 && a[x as usize] == b[y as usize] {
+                while x >= x0 && y >= y0 && x < x1 && y < y1 && a[x as usize] == b[y as usize] {
                     x += 1;
                     y += 1;
                 }
+                if x - start > SNAKE_LEN {
+                    got_snake = true;
+                }
                 self.vf[at(k)] = x;
                 if odd && k >= bmin && k <= bmax && self.vb[at(k)] <= x {
-                    return (x as usize, y as usize);
+                    return (x as usize, y as usize, true, true);
                 }
                 k -= 2;
             }
@@ -342,31 +372,35 @@ impl<'a> Ctx<'a> {
             while k >= bmin {
                 let below = self.vb[at(k - 1)];
                 let right = self.vb[at(k + 1)];
-                // Up from diagonal k-1 (keeps x) or left from k+1.
-                let up_ok = below != POS && below - (k - 1) > y0;
-                let left_ok = right != POS && right > x0;
-                let start = match (up_ok, left_ok) {
-                    (true, true) => (right - 1).min(below),
-                    (true, false) => below,
-                    (false, true) => right - 1,
-                    (false, false) => POS,
-                };
-                if start == POS {
-                    self.vb[at(k)] = POS;
-                    k -= 2;
-                    continue;
-                }
+                let start = if below < right { below } else { right - 1 };
                 let mut x = start;
                 let mut y = x - k;
-                while x > x0 && y > y0 && a[(x - 1) as usize] == b[(y - 1) as usize] {
+                while x > x0
+                    && y > y0
+                    && x <= x1
+                    && y <= y1
+                    && a[(x - 1) as usize] == b[(y - 1) as usize]
+                {
                     x -= 1;
                     y -= 1;
                 }
+                if start - x > SNAKE_LEN {
+                    got_snake = true;
+                }
                 self.vb[at(k)] = x;
-                if !odd && k >= fmin && k <= fmax && self.vf[at(k)] >= x {
-                    return (x as usize, y as usize);
+                if !odd && k >= fmin && k <= fmax && x <= self.vf[at(k)] {
+                    return (x as usize, y as usize, true, true);
                 }
                 k -= 2;
+            }
+            if minimal {
+                continue;
+            }
+            if got_snake && d > SNAKE_MIN_COST {
+                let found = self.good_snake(d, (x0, y0, x1, y1), (fmin, fmax), (bmin, bmax));
+                if let Some(p) = found {
+                    return p;
+                }
             }
             if let Some(mc) = self.max_cost {
                 if d >= mc {
@@ -376,46 +410,97 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// Looks for a split point at the end of a snake of at least
+    /// [`SNAKE_LEN`] lines that got far from its corner: both its distances
+    /// from the corner (in `x` and in `y`) must exceed `SNAKE_PROGRESS / 2`
+    /// times the cost `d`. The forward end points are tried first; among
+    /// several, the one with the largest smaller distance wins (the higher
+    /// diagonal on ties).
+    fn good_snake(
+        &self,
+        d: isize,
+        (x0, y0, x1, y1): (isize, isize, isize, isize),
+        (fmin, fmax): (isize, isize),
+        (bmin, bmax): (isize, isize),
+    ) -> Option<Split> {
+        let at = |k: isize| (k + self.off) as usize;
+        // Doubled to stay in integers: twice the smaller distance must
+        // exceed SNAKE_PROGRESS * d.
+        let need = SNAKE_PROGRESS * d;
+        let pick = |cands: &mut dyn Iterator<Item = (isize, isize, isize)>| {
+            let mut best: Option<(isize, isize, isize)> = None;
+            for c in cands {
+                if c.2 > need && best.is_none_or(|b| c.2 > b.2) {
+                    best = Some(c);
+                }
+            }
+            best
+        };
+        let equal = |x: isize, y: isize| self.a[x as usize] == self.b[y as usize];
+        let mut forward = (0..=(fmax - fmin) / 2).filter_map(|i| {
+            let k = fmax - 2 * i;
+            let (x, y) = (self.vf[at(k)], self.vf[at(k)] - k);
+            let inside = x < x1 && y < y1 && x - SNAKE_LEN >= x0 && y - SNAKE_LEN >= y0;
+            let snake = inside && (1..=SNAKE_LEN).all(|s| equal(x - s, y - s));
+            snake.then(|| (x, y, 2 * (x - x0).min(y - y0)))
+        });
+        if let Some((x, y, _)) = pick(&mut forward) {
+            return Some((x as usize, y as usize, true, false));
+        }
+        let mut backward = (0..=(bmax - bmin) / 2).filter_map(|i| {
+            let k = bmax - 2 * i;
+            let (x, y) = (self.vb[at(k)], self.vb[at(k)] - k);
+            let inside = x > x0 && y > y0 && x + SNAKE_LEN <= x1 && y + SNAKE_LEN <= y1;
+            let snake = inside && (0..SNAKE_LEN).all(|s| equal(x + s, y + s));
+            snake.then(|| (x, y, 2 * (x1 - x).min(y1 - y)))
+        });
+        pick(&mut backward).map(|(x, y, _)| (x as usize, y as usize, false, true))
+    }
+
     /// The search became too expensive: split at the forward or backward
-    /// end point that got furthest from its corner (the backward one if both
-    /// got equally far).
+    /// end point that got furthest from its corner (largest resp. smallest
+    /// `x + y`; the higher diagonal on ties), the backward one if both got
+    /// equally far. End points outside the box count as the point where
+    /// their diagonal leaves the box.
     fn give_up(
         &self,
         (x0, y0, x1, y1): (isize, isize, isize, isize),
         (fmin, fmax): (isize, isize),
         (bmin, bmax): (isize, isize),
-    ) -> (usize, usize) {
+    ) -> Split {
         let at = |k: isize| (k + self.off) as usize;
-        // Forward: largest x + y; on ties the higher diagonal.
-        let mut fbest: Option<(isize, isize)> = None;
+        let mut fbest = (isize::MIN, 0);
         let mut k = fmax;
         while k >= fmin {
-            let x = self.vf[at(k)];
-            if x != NEG && fbest.is_none_or(|(bx, bk)| 2 * x - k > 2 * bx - bk) {
-                fbest = Some((x, k));
+            let mut x = self.vf[at(k)].min(x1);
+            if x - k > y1 {
+                x = y1 + k;
+            }
+            let sum = 2 * x - k;
+            if sum > fbest.0 {
+                fbest = (sum, x);
             }
             k -= 2;
         }
-        // Backward: smallest x + y; on ties the higher diagonal.
-        let mut bbest: Option<(isize, isize)> = None;
+        let mut bbest = (isize::MAX, 0);
         let mut k = bmax;
         while k >= bmin {
-            let x = self.vb[at(k)];
-            if x != POS && bbest.is_none_or(|(bx, bk)| 2 * x - k < 2 * bx - bk) {
-                bbest = Some((x, k));
+            let mut x = self.vb[at(k)].max(x0);
+            if x - k < y0 {
+                x = y0 + k;
+            }
+            let sum = 2 * x - k;
+            if sum < bbest.0 {
+                bbest = (sum, x);
             }
             k -= 2;
         }
-        let pick = |(x, k): (isize, isize)| (x as usize, (x - k) as usize);
-        match (fbest, bbest) {
-            (Some(f), Some(b)) => {
-                let fprog = (2 * f.0 - f.1) - (x0 + y0);
-                let bprog = (x1 + y1) - (2 * b.0 - b.1);
-                if fprog > bprog { pick(f) } else { pick(b) }
-            }
-            (Some(f), None) => pick(f),
-            (None, Some(b)) => pick(b),
-            (None, None) => unreachable!("search without any reachable point"),
+        if (x1 + y1) - bbest.0 < fbest.0 - (x0 + y0) {
+            let (sum, x) = fbest;
+            (x as usize, (sum - x) as usize, true, false)
+        } else {
+            let (sum, x) = bbest;
+            (x as usize, (sum - x) as usize, false, true)
         }
     }
 }
@@ -432,6 +517,12 @@ mod tests {
         assert_eq!(many_limit(63), 8);
         assert_eq!(many_limit(64), 16);
         assert_eq!(many_limit(1024), 64);
+        assert_eq!(many_limit(1 << 18), 1024);
+        assert_eq!(many_limit(1 << 22), 1024);
         assert_eq!(cost_limit(100), 256);
+        assert_eq!(cost_limit(65532), 256);
+        assert_eq!(cost_limit(65533), 512);
+        assert_eq!(cost_limit(262140), 512);
+        assert_eq!(cost_limit(262141), 1024);
     }
 }

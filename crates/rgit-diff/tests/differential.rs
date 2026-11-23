@@ -134,6 +134,30 @@ fn anchored_edit() {
     );
 }
 
+/// Inputs above the size where the cost limit grows to 512: split points at
+/// the end of long snakes, and which parts are diffed minimally after a
+/// split (#296).
+#[test]
+fn myers_huge() {
+    if !have_git() {
+        eprintln!("git not found, skipping");
+        return;
+    }
+    let opts = DiffOptions {
+        indent_heuristic: false,
+        ..DiffOptions::default()
+    };
+    let extra = ["--no-indent-heuristic"];
+    let r = run_cases("huge", Gen::Huge, 470_000, 4, &opts, &extra, None);
+    let seeds: Vec<u64> = r.mismatches.iter().map(|m| m.0).collect();
+    assert!(
+        seeds.is_empty(),
+        "{} of {} cases differ: {seeds:?}",
+        seeds.len(),
+        r.cases
+    );
+}
+
 #[test]
 fn minimal_big() {
     check_alg("m-big", Gen::Big, 460_000, 60, "minimal", &[]);
