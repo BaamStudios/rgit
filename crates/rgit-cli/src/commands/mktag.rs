@@ -38,6 +38,11 @@ const KNOWN_IDS: &[&str] = &[
     "zeropaddedfilemode",
 ];
 
+/// Whether `id` (lower case) is a message id of `fsck-msgids(5)`.
+pub(crate) fn is_known_id(id: &str) -> bool {
+    KNOWN_IDS.contains(&id)
+}
+
 /// Ids whose findings cannot be made less severe than an error.
 const FATAL_IDS: &[&str] = &["nulinheader", "unterminatedheader"];
 

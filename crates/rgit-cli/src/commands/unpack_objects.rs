@@ -213,6 +213,54 @@ impl ObjectHook for Sink<'_> {
     }
 }
 
+/// `--strict`: the `.gitmodules` blobs named by trees of the pack.
+fn check_gitmodules(
+    sink: &Sink<'_>,
+    held: &[(ObjectId, ObjectKind, Vec<u8>)],
+    in_pack: &HashMap<ObjectId, usize>,
+) -> Result<(), Die> {
+    let hash = sink.repo.hash;
+    let mut seen = HashSet::new();
+    let mut failed = false;
+    for (_, kind, data) in held {
+        if *kind != ObjectKind::Tree {
+            continue;
+        }
+        for e in rgit_object::TreeIter::new(hash, data) {
+            let Ok(e) = e else { break };
+            if e.mode_bits & 0o170000 == 0o120000
+                || fsck::special_file(e.name) != Some(fsck::SpecialFile::Gitmodules)
+                || !seen.insert(e.oid)
+            {
+                continue;
+            }
+            let Some(&j) = in_pack.get(&e.oid) else {
+                continue;
+            };
+            if held[j].1 != ObjectKind::Blob {
+                continue;
+            }
+            for (id, text) in crate::commands::fsck::gitmodules::check(&held[j].2) {
+                let finding = format!("{}: {text}", id.name());
+                match sink.severity(id) {
+                    Severity::Ignore => {}
+                    Severity::Warn | Severity::Info => {
+                        eprintln!("warning: {}", msg::fsck_finding(&e.oid, &finding));
+                    }
+                    Severity::Error | Severity::Fatal => {
+                        eprintln!("error: {}", msg::fsck_finding(&e.oid, &finding));
+                        failed = true;
+                    }
+                }
+            }
+        }
+    }
+    if failed {
+        return Err(Die::Fatal(msg::FSCK_ERROR_PACK.into()));
+    }
+    Ok(())
+}
+
 /// git's wording for the errors of a pack read by `unpack-objects`.
 fn fail(e: ip::Error) -> Die {
     match e {
@@ -304,6 +352,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .collect();
         let in_pack: HashMap<ObjectId, usize> =
             held.iter().enumerate().map(|(i, o)| (o.0, i)).collect();
+        check_gitmodules(&sink, &held, &in_pack)?;
         // An object is good when every link is in the repository with the
         // right type, or a good object of the pack of the right type.
         let link_lists: Vec<Vec<(ObjectId, Option<ObjectKind>)>> =

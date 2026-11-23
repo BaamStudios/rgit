@@ -221,6 +221,8 @@ fn passes_fsck(kind: ObjectKind, hash: HashKind, data: &[u8]) -> bool {
             }
             let _ = writeln!(err, "error: {}", msg::object_fails_fsck(&f.to_string()));
             failed = true;
+            // Like git, the first error ends the check.
+            return Control::Stop;
         }
         Control::Continue
     });
