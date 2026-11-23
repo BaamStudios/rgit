@@ -15,7 +15,7 @@ pub fn default_funcname(line: &[u8]) -> bool {
 }
 
 /// Text shown after the hunk header for a function-name line.
-fn funcname_text(line: &[u8]) -> &[u8] {
+pub fn funcname_text(line: &[u8]) -> &[u8] {
     let mut l = line;
     let cut = l.len() > FUNCNAME_MAX;
     if cut {

@@ -32,7 +32,7 @@ pub use patch::{
     MODE_SYMLINK, PatchExtra, PatchFile, PatchOptions, quote_path, write_file_patch,
     write_file_patch_extra, write_file_patch_with,
 };
-pub use unified::default_funcname;
+pub use unified::{default_funcname, funcname_text};
 pub use whitespace::{IgnoreRegexes, Whitespace};
 
 /// The line-diff algorithm (`--diff-algorithm`, `diff.algorithm`).
