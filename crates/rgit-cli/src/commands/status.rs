@@ -450,8 +450,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .ok_or_else(|| Die::Fatal(crate::messages::ls_tree::NOT_A_TREE.to_string()))?;
         collect_tree(&repo, &tree, b"", &mut changes)?;
     }
+    let root = work_tree.as_os_str().as_encoded_bytes().to_vec();
+    let opts = ParseOptions {
+        prefix: repo.prefix(),
+        root: Some(root),
+        globals: repository::pathspec_globals(ctx),
+        implicit_base: rgit_pathspec::ImplicitBase::Top,
+        ..Default::default()
+    };
+    let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
+    let attr_tree = crate::attributes::PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
     let repo = repo;
     let (index, index_mtime) = repo.read_index()?;
+    let attrs = attr_tree.map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t)));
     for e in index.entries() {
         let c = changes.entry(e.path().to_vec()).or_default();
         match e.stage().get() {
@@ -494,16 +505,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let core = rename_options(&repo, no_renames.get(), find_renames.as_ref())?;
     staged_renames(&repo, &mut changes, &core);
 
-    let root = work_tree.as_os_str().as_encoded_bytes().to_vec();
-    let opts = ParseOptions {
-        prefix: repo.prefix(),
-        root: Some(root),
-        globals: repository::pathspec_globals(ctx),
-        implicit_base: rgit_pathspec::ImplicitBase::Top,
-        ..Default::default()
+    let wanted = |p: &[u8]| {
+        pathspec.is_empty()
+            || match &attrs {
+                Some(a) => pathspec
+                    .match_path_with(p, None, &mut |p, s| a.borrow_mut().check(p, s))
+                    .is_some(),
+                None => pathspec.match_path(p).is_some(),
+            }
     };
-    let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
-    let wanted = |p: &[u8]| pathspec.is_empty() || pathspec.match_path(p).is_some();
 
     let ignored_mode = match ignored.borrow().as_deref() {
         None | Some("no") => IgnoredMode::No,
@@ -514,14 +524,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if ignored_mode == IgnoredMode::Matching && mode == Untracked::No {
         return Err(Die::Fatal(msg::IGNORED_UNTRACKED_COMBINATION.to_string()));
     }
-    let (untracked_paths, ignored_paths) = untracked_and_ignored(
+    // With `attr:` magic the walk sees every path and the attributes
+    // decide afterwards.
+    let (mut untracked_paths, mut ignored_paths) = untracked_and_ignored(
         &repo,
         &work_tree,
         &index,
-        (!pathspec.is_empty()).then_some(&pathspec),
+        (!pathspec.is_empty() && attrs.is_none()).then_some(&pathspec),
         mode,
         ignored_mode,
     )?;
+    if attrs.is_some() {
+        untracked_paths.retain(|p| wanted(p));
+        ignored_paths.retain(|p| wanted(p));
+    }
 
     let relative = !matches!(format, Format::Porcelain(_))
         && !nul.get()

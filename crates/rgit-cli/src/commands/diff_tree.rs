@@ -85,9 +85,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         trees.push(id);
     }
     opts.resolve_objects(&mut repo)?;
-    let repo = repo;
     let pathspec = diff::pathspec(ctx, &repo, &args)?;
     diff::check_max_depth(&opts, &pathspec)?;
+    let (pathspec, attr_filter) = diff::attr_split(ctx, &mut repo, pathspec)?;
+    let repo = repo;
     let mut w = TreeDiff {
         repo: &repo,
         pathspec: &pathspec,
@@ -107,6 +108,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let files = crate::diff::collect::tree_files(&repo, &trees[0], &pathspec)?;
         pairs = crate::diff::collect::with_unmodified(pairs, files);
     }
+    diff::attr_retain(&repo, &mut pairs, attr_filter)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     let (bytes, changed) = out.render(pairs)?;

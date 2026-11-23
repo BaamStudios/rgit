@@ -180,6 +180,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let pathspec = diff::pathspec(ctx, &repo, &paths)?;
     diff::check_max_depth(&opts, &pathspec)?;
+    let (pathspec, attr_filter) = diff::attr_split(ctx, &mut repo, pathspec)?;
     let mut trees = Vec::new();
     for id in &revs {
         let t = repo
@@ -295,6 +296,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         _ => return Err(Die::Fatal(msg::not_supported("this form of diff"))),
     };
     crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, true)?;
+    diff::attr_retain(&repo, &mut pairs, attr_filter)?;
     if !cached && trees.is_empty() {
         auto_refresh_index(&repo);
     }

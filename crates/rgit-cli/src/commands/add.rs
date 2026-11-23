@@ -42,6 +42,7 @@ use rgit_worktree::stat::{
     Checker, Status, mode_from_metadata, smudge_racy_entries, stat_from_metadata,
 };
 
+use crate::attributes::PathspecAttrs;
 use crate::messages::add as msg;
 use crate::prelude::*;
 use crate::repo::Mode as RepoMode;
@@ -80,10 +81,28 @@ impl From<EntryError> for Die {
     }
 }
 
-struct Walk<'a> {
+/// Matches `path` against `spec`, evaluating `attr:` magic with `attrs`
+/// (without it, `attr:` requirements count as met).
+fn spec_match(
+    spec: &Pathspec,
+    attrs: Option<&RefCell<PathspecAttrs<'_>>>,
+    path: &[u8],
+    seen: Option<&mut [bool]>,
+) -> Option<MatchKind> {
+    match attrs {
+        Some(a) => spec.match_path_with(path, seen, &mut |p, s| a.borrow_mut().check(p, s)),
+        None => match seen {
+            Some(seen) => spec.match_path_seen(path, seen),
+            None => spec.match_path(path),
+        },
+    }
+}
+
+struct Walk<'a, 'b> {
     root: PathBuf,
     index: &'a Index,
     pathspec: &'a Pathspec,
+    attrs: Option<&'a RefCell<PathspecAttrs<'b>>>,
     excludes: Excludes,
     force: bool,
     seen: Vec<bool>,
@@ -91,7 +110,7 @@ struct Walk<'a> {
     ignored: Vec<Vec<u8>>,
 }
 
-impl Walk<'_> {
+impl Walk<'_, '_> {
     /// Whether a pathspec names the directory `dir` or a path below it.
     fn names_inside(&self, dir: &[u8]) -> bool {
         self.pathspec.items().iter().any(|it| {
@@ -146,8 +165,10 @@ impl Walk<'_> {
                     let mut slashed = path.clone();
                     slashed.push(b'/');
                     if !self.pathspec.is_empty() {
-                        let hit = self.pathspec.match_path_seen(&path, &mut self.seen).is_some()
-                            | self.pathspec.match_path_seen(&slashed, &mut self.seen).is_some();
+                        let hit = spec_match(self.pathspec, self.attrs, &path, Some(&mut self.seen))
+                            .is_some()
+                            | spec_match(self.pathspec, self.attrs, &slashed, Some(&mut self.seen))
+                                .is_some();
                         if !hit {
                             continue;
                         }
@@ -172,7 +193,7 @@ impl Walk<'_> {
                 let kind = if self.pathspec.is_empty() {
                     Some(MatchKind::Recursive)
                 } else {
-                    self.pathspec.match_path(&path)
+                    spec_match(self.pathspec, self.attrs, &path, None)
                 };
                 let Some(kind) = kind else { continue };
                 let excluded = parent_excluded || self.excludes.is_excluded(&path, false);
@@ -183,7 +204,7 @@ impl Walk<'_> {
                     continue;
                 }
                 if !self.pathspec.is_empty() {
-                    let _ = self.pathspec.match_path_seen(&path, &mut self.seen);
+                    let _ = spec_match(self.pathspec, self.attrs, &path, Some(&mut self.seen));
                 }
                 self.found.push((path, false));
             }
@@ -432,7 +453,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         )));
     }
 
-    let repo = Repo::open(ctx, RepoMode::Required)?;
+    let mut repo = Repo::open(ctx, RepoMode::Required)?;
     let advisor = ctx.advisor(&repo.config)?;
     let root = repo.work_tree()?;
     if let Some(name) = &from_file {
@@ -477,7 +498,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
         }
     }
+    // `attr:` magic: the attributes of the paths decide (git evaluates them
+    // in the work tree, falling back to the index).
+    let attr_tree = PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
+    let repo = repo;
     let (mut index, index_mtime) = repo.read_index()?;
+    let attr_index = attr_tree.is_some().then(|| index.clone());
+    let attrs = attr_tree
+        .zip(attr_index.as_ref())
+        .map(|(tree, ix)| RefCell::new(PathspecAttrs::new(&repo, ix, tree)));
+    let attrs = attrs.as_ref();
     // Paths inside a submodule belong to the submodule's repository.
     for e in index.entries().iter().filter(|e| e.mode.is_gitlink()) {
         let mut dir = e.path().to_vec();
@@ -528,7 +558,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // untracked files before anything is updated or printed.
     if !pathspec.is_empty() {
         for e in index.entries() {
-            let _ = pathspec.match_path_seen(e.path(), &mut seen);
+            let _ = spec_match(&pathspec, attrs, e.path(), Some(&mut seen));
         }
     }
 
@@ -542,6 +572,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             root: root.clone(),
             index: &index,
             pathspec: &pathspec,
+            attrs,
             excludes,
             force,
             seen,
@@ -608,8 +639,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             p
         };
         if !pathspec.is_empty()
-            && pathspec.match_path(e.path()).is_none()
-            && !(e.mode.is_gitlink() && pathspec.match_path(&slashed()).is_some())
+            && spec_match(&pathspec, attrs, e.path(), None).is_none()
+            && !(e.mode.is_gitlink() && spec_match(&pathspec, attrs, &slashed(), None).is_some())
         {
             continue;
         }
@@ -912,7 +943,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mode = if flip == '+' { Mode::EXECUTABLE } else { Mode::FILE };
         let mut flipped = Vec::new();
         for (pos, e) in index.entries().iter().enumerate() {
-            if !pathspec.matches(e.path()) {
+            if spec_match(&pathspec, attrs, e.path(), None).is_none() {
                 continue;
             }
             if !e.mode.is_file() {
