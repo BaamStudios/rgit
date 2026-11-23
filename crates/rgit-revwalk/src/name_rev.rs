@@ -11,22 +11,22 @@
 //! merge is `X^<k>`. A commit keeps the best name offered to it:
 //!
 //! 1. names from tags beat names from other references;
-//! 2. among tag names the older tag (tagger date, commit date for
-//!    lightweight tags) wins; for equal dates the shorter distance, then
-//!    the name offered first;
-//! 3. among other names the shorter distance wins, then the smaller
-//!    `~<n>` part.
+//! 2. then the shorter distance wins;
+//! 3. among tag names at the same distance the older tag (tagger date,
+//!    commit date for lightweight tags);
+//! 4. otherwise the name offered first stays. A reference's own name
+//!    (distance 0) also beats a distance-0 name as a merge parent.
 //!
-//! These rules reproduce git's names for about 96 % of the commits of
-//! git.git (`name-rev --all`); git's choice among names of the same tag and
-//! between tags reached through different merges is not fully understood
-//! yet (see the comparison in the CLI tests).
-//!
-//! Distance counts one per first-parent step and [`MERGE_WEIGHT`] per step
-//! to another parent, so a name with fewer merge hops always wins. Equal
-//! names keep the one offered first: tips are processed in the order the
-//! caller gives them, and from each tip the first parent line is followed
-//! before the other parents.
+//! Distance: a first-parent step costs 1 and a step to another parent 0,
+//! but every step from a commit that got its name as a second or later
+//! parent (`...^<k>`, see [`RevName::via_merge`]) costs [`MERGE_WEIGHT`]
+//! (plus 1 to a first parent): `X~3^2` is as close as `X~3`, while
+//! `X~3^2~1` and `X~3^2^2` are far. A commit keeps its best name and
+//! passes on only that one, so its ancestors are named through it.
+//! Callers process the tips oldest first (tagger date, else commit date),
+//! and from each tip the first parent line is followed before the other
+//! parents. These rules give git's name for every commit of git.git
+//! (`name-rev --all`) and of hand-made histories.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -35,7 +35,7 @@ use rgit_hash::ObjectId;
 
 use crate::walk::{CommitInfo, CommitSource};
 
-/// Distance added for a step to a second or later parent.
+/// Distance added for every step from a commit named as a merge parent.
 pub const MERGE_WEIGHT: u64 = 65535;
 
 /// Commits more than this much older than the oldest commit asked about
@@ -70,6 +70,9 @@ pub struct RevName {
     pub from_tag: bool,
     pub date: i64,
     pub deref: bool,
+    /// The commit got this name as a second or later parent (`...^<k>`):
+    /// every step from it costs [`MERGE_WEIGHT`].
+    pub via_merge: bool,
 }
 
 impl RevName {
@@ -86,8 +89,10 @@ impl RevName {
 
     /// Whether `self` beats the name `old`.
     pub fn better_than(&self, old: &RevName) -> bool {
-        if self.from_tag && old.from_tag && self.date != old.date {
-            return self.date < old.date;
+        // A reference's own name beats a name its commit got as the
+        // parent of another reference's merge.
+        if self.distance == 0 && !self.via_merge && old.distance == 0 && old.via_merge {
+            return true;
         }
         if self.from_tag != old.from_tag {
             return self.from_tag;
@@ -95,7 +100,10 @@ impl RevName {
         if self.distance != old.distance {
             return self.distance < old.distance;
         }
-        self.generation < old.generation
+        if self.from_tag && self.date != old.date {
+            return self.date < old.date;
+        }
+        false
     }
 }
 
@@ -159,6 +167,7 @@ impl<'s, S: CommitSource> Namer<'s, S> {
             from_tag: tip.from_tag,
             date: tip.date,
             deref: tip.deref,
+            via_merge: false,
         };
         if !self.offer(&tip.commit, first) {
             return Ok(());
@@ -168,6 +177,7 @@ impl<'s, S: CommitSource> Namer<'s, S> {
             let name = self.names[&c].clone();
             let parents = self.load(&c)?.parents.clone();
             let mut next = Vec::new();
+            let step = if name.via_merge { MERGE_WEIGHT + 1 } else { 1 };
             for (i, p) in parents.iter().enumerate() {
                 if self.load(p)?.time < self.cutoff {
                     continue;
@@ -175,7 +185,8 @@ impl<'s, S: CommitSource> Namer<'s, S> {
                 let offered = if i == 0 {
                     RevName {
                         generation: name.generation + 1,
-                        distance: name.distance + 1,
+                        distance: name.distance + step,
+                        via_merge: false,
                         ..name.clone()
                     }
                 } else {
@@ -187,8 +198,9 @@ impl<'s, S: CommitSource> Namer<'s, S> {
                     RevName {
                         tip: Rc::from(tip),
                         generation: 0,
-                        distance: name.distance + MERGE_WEIGHT,
+                        distance: name.distance + if name.via_merge { MERGE_WEIGHT } else { 0 },
                         deref: false,
+                        via_merge: true,
                         ..name.clone()
                     }
                 };
