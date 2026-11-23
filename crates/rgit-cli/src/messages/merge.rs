@@ -273,3 +273,13 @@ pub const APPLY_STASH_WHEN_FINISHED: &str =
 pub fn tag_header(name: &str) -> String {
     format!("tag '{name}'")
 }
+
+/// `git merge-recursive -h`.
+pub const MERGE_RECURSIVE_USAGE: &str =
+    "usage: git merge-recursive <base>... -- <head> <remote> ...";
+
+pub const MERGE_RECURSIVE_TWO_HEADS: &str = "not handling anything other than two heads merge.";
+
+pub fn merge_recursive_bad_object(name: &str) -> String {
+    format!("could not resolve ref '{name}'")
+}
