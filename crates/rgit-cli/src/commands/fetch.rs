@@ -63,6 +63,10 @@ struct Args {
     auto_maintenance: bool,
     set_upstream: bool,
     refetch: bool,
+    /// `--negotiate-only`.
+    negotiate_only: bool,
+    /// `--prefetch`.
+    prefetch: bool,
     stdin: bool,
     jobs: Option<i64>,
     upload_pack: Option<String>,
@@ -188,6 +192,8 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     let server_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let refmap: RefCell<Option<Vec<String>>> = RefCell::new(None);
     let negotiation_restrict: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let negotiate_only = Cell::new(false);
+    let prefetch = Cell::new(false);
     let negotiation_include: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let depth: RefCell<Option<String>> = RefCell::new(None);
     let shallow_since: RefCell<Option<String>> = RefCell::new(None);
@@ -212,6 +218,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::bool('t', "tags", &tags, msg::HELP_TAGS),
             Opt::set_int('n', None, &tags, msg::HELP_NO_TAGS, 0).noneg(),
             Opt::integer('j', "jobs", &jobs, msg::HELP_JOBS),
+            Opt::flag(None, "prefetch", &prefetch, msg::HELP_PREFETCH),
             Opt::bool('p', "prune", &prune, msg::HELP_PRUNE),
             Opt::bool('P', "prune-tags", &prune_tags, msg::HELP_PRUNE_TAGS),
             Opt::bool(None, "dry-run", &dry_run, msg::HELP_DRY_RUN),
@@ -269,6 +276,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
                 "revision",
                 msg::HELP_NEGOTIATION_INCLUDE,
             ),
+            Opt::flag(None, "negotiate-only", &negotiate_only, msg::HELP_NEGOTIATE_ONLY),
             Opt::flag('4', "ipv4", &ipv4, msg::HELP_IPV4).noneg(),
             Opt::flag('6', "ipv6", &ipv6, msg::HELP_IPV6).noneg(),
             Opt::flag(None, "auto-maintenance", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
@@ -291,6 +299,12 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     // Fetching inside submodules is not implemented (rgit #121); turning it
     // off is accepted.
     if let Some(v) = recurse_submodules.borrow().as_deref() {
+        if !matches!(v, "no" | "false" | "off" | "0") && negotiate_only.get() {
+            return Err(Die::Fatal(msg::options_together(
+                "--negotiate-only",
+                "--recurse-submodules",
+            )));
+        }
         if !matches!(v, "no" | "false" | "off" | "0") {
             return Err(Die::Fatal(msg::recurse_submodules_unsupported(v)));
         }
@@ -317,6 +331,8 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
         auto_maintenance: auto_maintenance.get(),
         set_upstream: set_upstream.get(),
         refetch: refetch.get(),
+        negotiate_only: negotiate_only.get(),
+        prefetch: prefetch.get(),
         stdin: stdin.get(),
         jobs: (jobs.get() >= 0).then(|| i64::from(jobs.get())),
         upload_pack: upload_pack.into_inner(),
@@ -567,6 +583,9 @@ pub fn run_with_reflog_action(
     for w in &remote.warnings {
         eprintln!("warning: {w}");
     }
+    if args.negotiate_only {
+        return negotiate_only(ctx, &setup, &repo, &remote, &args);
+    }
     if args.refmap.is_some() && refspecs.is_empty() {
         return Err(Die::Fatal(msg::REFMAP_WITHOUT_REFSPECS.into()));
     }
@@ -633,6 +652,7 @@ pub fn run_with_reflog_action(
         deepen_not: args.shallow_exclude.clone(),
         update_shallow: args.update_shallow,
         no_show_forced_updates: !show_forced_updates,
+        prefetch: args.prefetch,
     };
     let env = SystemEnv::default();
     let connect = ConnectSettings {
@@ -826,6 +846,66 @@ fn config_list(config: &rgit_config::ConfigSet, key: &str) -> Vec<String> {
 
 fn is_glob(s: &str) -> bool {
     s.contains(['*', '?', '['])
+}
+
+/// `--negotiate-only`: print the commits the server has in common with
+/// the negotiation tips (protocol v2 servers with `wait-for-done`).
+fn negotiate_only(
+    ctx: &Context,
+    setup: &rgit_repo::Setup,
+    repo: &LocalRepo,
+    remote: &rgit_remote::Remote,
+    args: &Args,
+) -> CmdResult {
+    let name = remote.name.to_str_lossy().into_owned();
+    let Some(tips) = negotiation_tips(ctx, setup, repo, &name, args)? else {
+        return Err(Die::Fatal(msg::NEGOTIATE_ONLY_NEEDS_TIPS.into()));
+    };
+    let Some(url) = remote.fetch_url() else {
+        return Err(Die::Fatal(rgit_fetch::messages::NO_URL.into()));
+    };
+    let url = url.to_str_lossy().into_owned();
+    let env = SystemEnv::default();
+    let connect = ConnectSettings {
+        env: &env,
+        config: &repo.config,
+        base_env: ctx.child_env(),
+        upload_pack: args
+            .upload_pack
+            .clone()
+            .or_else(|| remote.upload_pack.as_ref().map(|u| u.to_str_lossy().into_owned())),
+        ip: IpVersion::Any,
+        verbose: false,
+    };
+    let fatal = |e: rgit_fetch::Error| Die::Fatal(e.to_string());
+    let negotiation = rgit_fetch::Negotiation::from_config(&repo.config).map_err(fatal)?;
+    let mut session = rgit_fetch::Session::connect(&url, &connect, "fetch").map_err(fatal)?;
+    let server_options: Vec<String> = if args.server_options.is_empty() {
+        remote
+            .server_options
+            .iter()
+            .map(|o| o.to_str_lossy().into_owned())
+            .collect()
+    } else {
+        args.server_options.clone()
+    };
+    let _region = rgit_trace::trace2::region("fetch", "negotiate-only", true);
+    let common = session
+        .negotiate_only(repo, &tips, negotiation, &server_options)
+        .map_err(fatal)?;
+    let Some(common) = common else {
+        // The server is left waiting for wants and reports the hang-up.
+        eprintln!("warning: {}", msg::NEGOTIATE_ONLY_NEEDS_V2);
+        drop(session);
+        return Ok(255);
+    };
+    // Like git: no final flush, the connection is just closed.
+    drop(session);
+    let mut out = std::io::stdout().lock();
+    for id in common {
+        let _ = writeln!(out, "{id}");
+    }
+    Ok(0)
 }
 
 /// The tips of the negotiation (fetch-options.adoc): with

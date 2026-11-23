@@ -631,6 +631,45 @@ fn follow_tags(
     }
 }
 
+/// `push.negotiate`: the commits `fetch --negotiate-only` finds in common
+/// with the remote from the new values of `commands`. A failure is a
+/// warning; the push goes on with what the advertisement says.
+fn negotiate_common(ctx: &Context, url: &str, commands: &[Command], hash: rgit_hash::HashKind) -> Vec<ObjectId> {
+    let mut args: Vec<String> = vec!["fetch".into(), "--negotiate-only".into()];
+    for c in commands.iter().filter(|c| !c.new.is_null()) {
+        args.push(format!("--negotiation-restrict={}", c.new));
+    }
+    if args.len() == 2 {
+        return Vec::new();
+    }
+    args.push(url.to_owned());
+    let output = std::env::current_exe().and_then(|exe| {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(&args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit());
+        for (k, v) in ctx.child_env() {
+            cmd.env(k, v);
+        }
+        rgit_trace::trace2::output(
+            &mut cmd,
+            Default::default(),
+            &rgit_trace::trace2::git_argv(&args),
+        )
+    });
+    match output {
+        Ok(o) if o.status.success() => o
+            .stdout
+            .split(|&b| b == b'\n')
+            .filter_map(|l| ObjectId::from_hex(hash, l).ok())
+            .collect(),
+        _ => {
+            eprintln!("warning: {}", msg::NEGOTIATION_FAILED);
+            Vec::new()
+        }
+    }
+}
+
 /// `scheme://user:pass@host/...` → `scheme://host/...` for messages.
 fn anonymize(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
@@ -845,6 +884,16 @@ impl Push<'_> {
             }
         };
 
+        // `push.negotiate`: find more common commits with a
+        // `fetch --negotiate-only` child.
+        let negotiate = match self.config.bool("push.negotiate") {
+            Ok(v) => v.unwrap_or(false),
+            Err(e) => {
+                eprintln!("fatal: {e}");
+                return Err(Die::Exit(rgit_options::EXIT_FATAL));
+            }
+        };
+
         self.apply_leases(&mut list);
         check_refs(&mut list, &objects);
         if f.atomic {
@@ -906,6 +955,10 @@ impl Push<'_> {
             };
             if let Some(nonce) = &nonce {
                 out.cert = Some(self.push_cert(&session, &out, nonce, &display)?);
+            }
+            if negotiate {
+                let common = negotiate_common(self.ctx, url, &out.commands, hash);
+                session.adv.haves.extend(common);
             }
             (out.objects, out.bases) = match send::pack_objects(&out, &session.adv) {
                 Ok(o) => o,

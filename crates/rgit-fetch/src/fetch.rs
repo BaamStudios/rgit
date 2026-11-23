@@ -80,6 +80,9 @@ pub struct FetchOptions {
     /// forced update is not checked for being a fast-forward and is
     /// reported as one.
     pub no_show_forced_updates: bool,
+    /// `--prefetch`: store under `refs/prefetch/`, without tag refspecs
+    /// and without the remote's HEAD.
+    pub prefetch: bool,
 }
 
 impl FetchOptions {
@@ -182,6 +185,9 @@ pub fn fetch(
     } else {
         remote.fetch.clone()
     };
+    if opts.prefetch {
+        specs = prefetch_specs(&specs)?;
+    }
     // Whether anything is configured to fetch, not counting the tag
     // refspec of `--tags` / `--prune-tags`.
     let nothing_configured = specs.positive().next().is_none();
@@ -232,7 +238,7 @@ pub fn fetch(
         specs.items.insert(0, parse_spec("HEAD")?);
     }
     let head_mode = follow_remote_head(repo, &remote.name);
-    let follow_head = !cmdline && remote.is_configured() && head_mode != "never";
+    let follow_head = !cmdline && !opts.prefetch && remote.is_configured() && head_mode != "never";
 
     let mut extra: Vec<String> = Vec::new();
     for m in &merge_refs {
@@ -436,7 +442,7 @@ pub fn fetch(
         add_followed_tags(repo, &refs, &entries, &mut tags, &mut wants, false);
         entries.extend(tags);
     }
-    if cmdline {
+    if cmdline && !opts.prefetch {
         // `--refmap` replaces the configured refspecs here.
         let map = match &opts.refmap {
             Some(specs) => {
@@ -717,6 +723,35 @@ pub fn fetch(
 }
 
 /// The current value of the local ref `e` updates.
+/// `--prefetch` (fetch-options.adoc): destinations move from `refs/<x>` to
+/// `refs/prefetch/<x>` (other destinations get the prefix as they are);
+/// refspecs for tags and without a destination are dropped, negative ones
+/// stay.
+fn prefetch_specs(specs: &RefspecSet) -> Result<RefspecSet> {
+    let mut out = RefspecSet::default();
+    for r in &specs.items {
+        if r.negative {
+            out.items.push(r.clone());
+            continue;
+        }
+        if r.src.starts_with(b"refs/tags/") {
+            continue;
+        }
+        // Without a destination nothing would be stored: dropped.
+        if let Some(d) = &r.dst {
+            let rest = d.strip_prefix(b"refs/").unwrap_or(d);
+            let spec = format!(
+                "{}{}:refs/prefetch/{}",
+                if r.force { "+" } else { "" },
+                r.src.to_str_lossy(),
+                rest.to_str_lossy()
+            );
+            out.items.push(parse_spec(&spec)?);
+        }
+    }
+    Ok(out)
+}
+
 fn local_value(repo: &LocalRepo, e: &Entry) -> Option<ObjectId> {
     repo.resolve(&e.local.as_ref()?.to_str_lossy())
 }

@@ -138,3 +138,10 @@ pub const FORCED_UPDATES_CHECK_DISABLED: &str =
     "fetch normally indicates which branches had a forced update,
 but that check has been disabled; to re-enable, use '--show-forced-updates'
 flag or run 'git config fetch.showForcedUpdates true'";
+
+pub const HELP_NEGOTIATE_ONLY: &str =
+    "do not fetch a packfile; instead, print ancestors of negotiation tips";
+pub const NEGOTIATE_ONLY_NEEDS_TIPS: &str =
+    "--negotiate-only needs one or more --negotiation-restrict=*";
+pub const NEGOTIATE_ONLY_NEEDS_V2: &str = "--negotiate-only requires protocol v2";
+pub const HELP_PREFETCH: &str = "modify the refspec to place all refs within refs/prefetch/";
