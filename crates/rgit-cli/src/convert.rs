@@ -116,11 +116,27 @@ fn remember(path: &[u8], digest: u64, id: ObjectId) {
         .insert(path.to_vec(), (digest, id));
 }
 
+/// Printed after the `fatal:` line of [`die_now`] (clone's "checkout
+/// failed" warning).
+static DIE_EPILOGUE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Sets (or clears) what [`die_now`] prints after its message.
+pub fn set_die_epilogue(text: Option<String>) {
+    *DIE_EPILOGUE.lock().unwrap_or_else(|e| e.into_inner()) = text;
+}
+
 /// Dies at once with `fatal: <message>` from inside a conversion that
 /// cannot return an error (checkout, comparing with the index): removes
 /// lock files and ends the filter processes first.
 pub fn die_now(message: &str) -> ! {
     eprintln!("fatal: {message}");
+    if let Some(text) = DIE_EPILOGUE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        eprint!("{text}");
+    }
     rgit_fs::remove_registered_files();
     filter::finish_all();
     std::process::exit(rgit_messages::EXIT_FATAL);

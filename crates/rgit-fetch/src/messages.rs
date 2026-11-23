@@ -136,3 +136,6 @@ pub fn unknown_negotiation_algorithm(value: &str) -> String {
 pub fn unadvertised_object(hex: &str) -> String {
     format!("Server does not allow request for unadvertised object {hex}")
 }
+
+/// `fetch --negotiate-only` against a server without `wait-for-done`.
+pub const NO_WAIT_FOR_DONE: &str = "server does not support wait-for-done";

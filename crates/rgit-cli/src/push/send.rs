@@ -162,6 +162,12 @@ impl<W: Write> Write for Metered<'_, W> {
     }
 }
 
+/// The trace2 data the `pack-objects` child reports for the pack it
+/// wrote (t5516 counts the objects sent with and without negotiation).
+fn trace_written(n: usize) {
+    rgit_trace::trace2::data_int("pack-objects", "write_pack_file/wrote", n as i64, true);
+}
+
 fn write_pack(w: &mut dyn Write, out: &Outgoing<'_>, adv: &Advertisement) -> Result<(), String> {
     let packs = out.odb.packs().map(|p| p.set().packs()).unwrap_or_default();
     let opts = WriteOptions {
@@ -169,7 +175,7 @@ fn write_pack(w: &mut dyn Write, out: &Outgoing<'_>, adv: &Advertisement) -> Res
         ..out.pack.clone()
     };
     if !out.progress {
-        let (_, mut bw) = pw::write_thin_pack(
+        let (summary, mut bw) = pw::write_thin_pack(
             BufWriter::new(w),
             out.hash,
             &out.objects,
@@ -179,6 +185,7 @@ fn write_pack(w: &mut dyn Write, out: &Outgoing<'_>, adv: &Advertisement) -> Res
             &opts,
         )
         .map_err(|e| e.to_string())?;
+        trace_written(summary.entries.len());
         return bw.flush().map_err(|e| e.to_string());
     }
     let mut meter = Progress::start(msg::PROGRESS_WRITING, out.objects.len() as u64, true);
@@ -199,6 +206,7 @@ fn write_pack(w: &mut dyn Write, out: &Outgoing<'_>, adv: &Advertisement) -> Res
     .map_err(|e| e.to_string())?;
     bw.flush().map_err(|e| e.to_string())?;
     drop(bw);
+    trace_written(summary.entries.len());
     meter.set(summary.entries.len() as u64);
     meter.stop();
     eprintln!(

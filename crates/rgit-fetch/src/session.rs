@@ -576,6 +576,56 @@ impl Session {
         }))
     }
 
+    /// `fetch --negotiate-only` over protocol v2: negotiate from `tips`
+    /// with `negotiation` and return the commits the server has in common
+    /// with us. `None` when the session is not protocol v2; an error when
+    /// the server lacks `wait-for-done`.
+    pub fn negotiate_only(
+        &mut self,
+        repo: &LocalRepo,
+        tips: &[ObjectId],
+        negotiation: Negotiation,
+        server_options: &[String],
+    ) -> Result<Option<Vec<ObjectId>>> {
+        let Proto::V2(client) = &mut self.proto else {
+            return Ok(None);
+        };
+        if !client.supports_wait_for_done() {
+            return Err(Error::fatal(messages::NO_WAIT_FOR_DONE));
+        }
+        let odb = &repo.odb;
+        let shallow: HashSet<ObjectId> = repo.shallow().into_iter().collect();
+        let mut source = |id: &ObjectId| {
+            let mut info = graph::commit_info(odb, id)?;
+            if shallow.contains(id) {
+                info.parents.clear();
+            }
+            Some(info)
+        };
+        let mut consecutive;
+        let mut skipping;
+        let mut noop = rgit_protocol::v2::NoopNegotiator;
+        let negotiator: &mut dyn Negotiator = match negotiation {
+            Negotiation::Noop => &mut noop,
+            Negotiation::Consecutive => {
+                consecutive = ConsecutiveNegotiator::new(&mut source);
+                for id in tips {
+                    consecutive.add_tip(*id);
+                }
+                &mut consecutive
+            }
+            Negotiation::Skipping => {
+                skipping = SkippingNegotiator::new(&mut source);
+                for id in tips {
+                    skipping.add_tip(*id);
+                }
+                &mut skipping
+            }
+        };
+        let outcome = client.negotiate_only(server_options, negotiator)?;
+        Ok(Some(outcome.common))
+    }
+
     /// End the session (flush on stateful connections) and wait for the
     /// remote side.
     pub fn close(self) -> Result<()> {

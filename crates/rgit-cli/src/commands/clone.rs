@@ -1272,7 +1272,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         };
         drop(hooks);
         drop(repo);
-        let checked_out = match initial_checkout(ctx, setup, oid) {
+        // A filter that fails during the checkout ends the process.
+        crate::convert::set_die_epilogue(Some(format!("warning: {}", msg::CHECKOUT_FAILED)));
+        let checked_out = initial_checkout(ctx, setup, oid);
+        crate::convert::set_die_epilogue(None);
+        let checked_out = match checked_out {
             Ok(r) => r,
             Err(e) => {
                 let _ = e.emit();

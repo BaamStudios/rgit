@@ -609,6 +609,92 @@ impl<C: Duplex> Client<C> {
         }
     }
 
+    /// Whether the server accepts `wait-for-done` in `fetch`.
+    pub fn supports_wait_for_done(&self) -> bool {
+        self.caps.has_feature("fetch", "wait-for-done")
+    }
+
+    /// `fetch --negotiate-only`: rounds of `fetch` requests with
+    /// `wait-for-done`, no wants and no `done`, until the negotiator has
+    /// no more `have`s (or too many went unacknowledged). Returns the
+    /// commits the server acknowledged, in the order of their first ACK.
+    /// Check [`Client::supports_wait_for_done`] first.
+    pub fn negotiate_only(
+        &mut self,
+        server_options: &[String],
+        negotiator: &mut dyn Negotiator,
+    ) -> Result<FetchOutcome> {
+        let mut outcome = FetchOutcome::default();
+        let mut count = INITIAL_HAVES;
+        let mut in_vain = 0usize;
+        let mut seen_ack = false;
+        let region = trace2::region("fetch-pack", "negotiate_using_fetch", true);
+        loop {
+            self.begin("fetch", server_options)?;
+            self.line("wait-for-done")?;
+            for id in &outcome.common {
+                self.request.write_line(&format!("have {id}"))?;
+            }
+            let mut added = 0;
+            let mut exhausted = false;
+            while added < count {
+                let Some(id) = negotiator.next_have() else {
+                    exhausted = true;
+                    break;
+                };
+                self.request.write_line(&format!("have {id}"))?;
+                added += 1;
+            }
+            in_vain += added;
+            self.end_request()?;
+            outcome.rounds += 1;
+            match self.first()? {
+                Pkt::Data(d) if d == b"acknowledgments" => {}
+                other => {
+                    return Err(Error::ExpectedSection("acknowledgments", other.describe()));
+                }
+            }
+            loop {
+                match self.next()? {
+                    Pkt::Flush => break,
+                    Pkt::Data(d) if d == b"NAK" || d == b"ready" => {}
+                    Pkt::Data(d) if d.starts_with(b"ACK ") => {
+                        let Some(id) = self.oid(&d[4..]) else {
+                            return Err(Error::UnexpectedAckLine(
+                                String::from_utf8_lossy(&d).into_owned(),
+                            ));
+                        };
+                        seen_ack = true;
+                        if negotiator.ack(&id) {
+                            in_vain = 0;
+                        }
+                        if !outcome.common.contains(&id) {
+                            outcome.common.push(id);
+                        }
+                    }
+                    Pkt::Data(d) => {
+                        return Err(Error::UnexpectedAckLine(
+                            String::from_utf8_lossy(&d).into_owned(),
+                        ));
+                    }
+                    other => return Err(Error::Unexpected(other.describe())),
+                }
+            }
+            if exhausted || (seen_ack && in_vain >= MAX_IN_VAIN) {
+                break;
+            }
+            count = next_have_count(count);
+        }
+        trace2::data_int(
+            "negotiate_using_fetch",
+            "total_rounds",
+            outcome.rounds as i64,
+            true,
+        );
+        drop(region);
+        Ok(outcome)
+    }
+
     fn write_fetch_args(&mut self, args: &FetchArgs) -> Result<()> {
         self.begin("fetch", &args.server_options)?;
         for (on, name) in [
