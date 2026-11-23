@@ -73,6 +73,8 @@ pub struct Remote {
     pub receive_pack: Option<BString>,
     /// `remote.<name>.vcs`.
     pub vcs: Option<BString>,
+    /// `remote.<name>.serverOption` (an empty value clears the list).
+    pub server_options: Vec<BString>,
     /// Where the definition came from.
     pub source: RemoteSource,
     /// Warnings to print (`warning: ` prefix) when the remote is used.
@@ -125,6 +127,7 @@ struct RawRemote {
     upload_pack: Option<BString>,
     receive_pack: Option<BString>,
     vcs: Option<BString>,
+    server_options: Vec<BString>,
 }
 
 /// All remotes of a configuration plus the URL rewrite rules.
@@ -205,6 +208,14 @@ impl Remotes {
                         || v.starts_with(b"warn-if-not-");
                     if !known {
                         warnings.push(messages::unknown_follow_remote_head(v));
+                    }
+                }
+                b"serveroption" => {
+                    let v = string_value(e)?;
+                    if v.is_empty() {
+                        r.server_options.clear();
+                    } else {
+                        r.server_options.push(v.to_owned());
                     }
                 }
                 _ => {}
@@ -315,6 +326,7 @@ impl Remotes {
             upload_pack: raw.upload_pack,
             receive_pack: raw.receive_pack,
             vcs: raw.vcs,
+            server_options: raw.server_options,
             source,
             warnings,
         })

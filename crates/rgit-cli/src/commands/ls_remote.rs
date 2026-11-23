@@ -44,6 +44,22 @@ fn tail_match(patterns: &[String], name: &[u8]) -> bool {
 }
 
 /// The configuration outside a repository: system, global and `-c`.
+/// A bad `remote.*` configuration, reported like git (`error: missing
+/// value for ...` before the fatal line).
+pub(crate) fn remote_config_die(e: rgit_remote::RemoteError) -> Die {
+    let rgit_remote::RemoteError::Config(c) = &e else {
+        return Die::Fatal(e.to_string());
+    };
+    let mut lines = c.report();
+    let Some((_, last)) = lines.pop() else {
+        return Die::Fatal(e.to_string());
+    };
+    for (level, line) in lines {
+        eprintln!("{} {line}", level.prefix());
+    }
+    Die::Fatal(last)
+}
+
 fn config_outside_repository(ctx: &Context) -> ConfigSet {
     let env = SystemEnv::default();
     let opts = rgit_config::LoadOptions {
@@ -145,7 +161,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(setup) => crate::repo::config(ctx, setup),
         None => config_outside_repository(ctx),
     };
-    let remotes = Remotes::from_config(&config).map_err(|e| Die::Fatal(e.to_string()))?;
+    let remotes = Remotes::from_config(&config).map_err(remote_config_die)?;
     for w in remotes.warnings() {
         eprintln!("warning: {w}");
     }
@@ -239,7 +255,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let caps = Capabilities::read_v2(&mut reader).map_err(|e| fatal(&e))?;
             let mut client = Client::with_capabilities(reader, caps).map_err(|e| fatal(&e))?;
             let mut ls = LsRefsArgs::standard();
-            ls.server_options = server_options.borrow().clone();
+            // `-o` replaces `remote.<name>.serverOption`.
+            ls.server_options = if server_options.borrow().is_empty() {
+                remote
+                    .server_options
+                    .iter()
+                    .map(|o| o.to_str_lossy().into_owned())
+                    .collect()
+            } else {
+                server_options.borrow().clone()
+            };
             if branches.get() {
                 ls.ref_prefixes.push("refs/heads/".into());
             }
@@ -252,6 +277,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             refs
         }
         v => {
+            if !server_options.borrow().is_empty() {
+                eprintln!("hint: {}", rgit_fetch::messages::SERVER_OPTIONS_HINT);
+                return Err(Die::Fatal(rgit_fetch::messages::SERVER_OPTIONS_NEED_V2.into()));
+            }
             let refs = rgit_protocol::v0::read_advertisement(&mut reader, v)
                 .map_err(|e| fatal(&e))?
                 .refs;

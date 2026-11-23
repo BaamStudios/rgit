@@ -253,11 +253,27 @@ impl Session {
         }
     }
 
+    /// Server options given on the command line need protocol v2 (those
+    /// from `remote.<name>.serverOption` are dropped silently): prints the
+    /// hint and fails otherwise.
+    pub fn check_server_options(&self, cmdline: &[String]) -> Result<()> {
+        if cmdline.is_empty() || self.version() == ProtocolVersion::V2 {
+            return Ok(());
+        }
+        eprintln!("hint: {}", crate::messages::SERVER_OPTIONS_HINT);
+        Err(crate::Error::fatal(crate::messages::SERVER_OPTIONS_NEED_V2))
+    }
+
     /// `ls-refs` with `peel`, `symrefs` and `unborn` (if supported) and the
-    /// given `ref-prefix` lines (none: all refs).
-    pub fn ls_refs(&mut self, prefixes: &[String]) -> Result<Vec<RemoteRef>> {
+    /// given `ref-prefix` lines (none: all refs) and server options.
+    pub fn ls_refs(
+        &mut self,
+        prefixes: &[String],
+        server_options: &[String],
+    ) -> Result<Vec<RemoteRef>> {
         let mut args = LsRefsArgs::standard();
         args.ref_prefixes = prefixes.to_vec();
+        args.server_options = server_options.to_vec();
         self.list_refs(&args)
     }
 

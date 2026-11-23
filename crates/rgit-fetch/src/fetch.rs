@@ -4,6 +4,7 @@
 
 use bstr::{BString, ByteSlice};
 use rgit_hash::ObjectId;
+use rgit_protocol::ProtocolVersion;
 use rgit_protocol::v2::RemoteRef;
 use rgit_refs::{RefStore, RefUpdate};
 use rgit_remote::{BranchConfig, Direction, Refspec, RefspecSet, Remote, TagOpt};
@@ -245,7 +246,25 @@ pub fn fetch(
     }
 
     let mut session = Session::connect(&url, connect, "fetch")?;
-    let refs = session.ls_refs(&prefixes)?;
+    session.check_server_options(&opts.server_options)?;
+    // `-o` replaces `remote.<name>.serverOption`.
+    let server_options: Vec<String> = if opts.server_options.is_empty() {
+        remote
+            .server_options
+            .iter()
+            .map(|o| o.to_str_lossy().into_owned())
+            .collect()
+    } else {
+        opts.server_options.clone()
+    };
+    // Only object ids to fetch (and no tags to follow): protocol v2 needs
+    // no ref list (an empty prefix list would ask for all refs).
+    let only_oids = extra.is_empty() && specs.positive().all(|s| s.exact_oid);
+    let refs = if only_oids && session.version() == ProtocolVersion::V2 {
+        Vec::new()
+    } else {
+        session.ls_refs(&prefixes, &server_options)?
+    };
 
     let mut result = FetchResult {
         url: shown_url,
@@ -347,7 +366,7 @@ pub fn fetch(
     let pack_opts = PackOptions {
         no_progress: opts.no_progress,
         include_tag: follow_tags,
-        server_options: opts.server_options.clone(),
+        server_options: server_options.clone(),
         unpack_limit: (!opts.keep).then(|| unpack_limit(&repo.config)),
         deepen: opts.deepen,
         deepen_relative: opts.deepen_relative,
