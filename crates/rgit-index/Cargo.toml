@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+memmap2 = "0.9.10"
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-trace = { path = "../rgit-trace" }

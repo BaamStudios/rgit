@@ -222,6 +222,105 @@ fn is_executable(_meta: &Metadata) -> bool {
     false
 }
 
+/// The type of a work tree file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    /// A regular file.
+    File,
+    /// A symbolic link.
+    Symlink,
+    /// A directory.
+    Dir,
+    /// Anything else (a socket, a device, ...).
+    Other,
+}
+
+/// What the comparisons need of `lstat` data, in a compact form that is
+/// cheap to keep for every index entry ([`Checker::preload`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStat {
+    /// The fields the index records.
+    pub stat: Stat,
+    /// The file type.
+    pub kind: FileKind,
+    /// The owner's executable bit.
+    pub executable: bool,
+}
+
+impl FileStat {
+    /// The data of `meta` (from `lstat`).
+    #[must_use]
+    pub fn from_metadata(meta: &Metadata) -> FileStat {
+        let ft = meta.file_type();
+        let kind = if ft.is_file() {
+            FileKind::File
+        } else if ft.is_symlink() {
+            FileKind::Symlink
+        } else if ft.is_dir() {
+            FileKind::Dir
+        } else {
+            FileKind::Other
+        };
+        FileStat {
+            stat: stat_from_metadata(meta),
+            kind,
+            executable: is_executable(meta),
+        }
+    }
+
+    /// The data of a `stat` structure filled by `lstat`, truncated like
+    /// [`stat_from_metadata`].
+    #[cfg(unix)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::unnecessary_cast
+    )]
+    pub(crate) fn from_stat(st: &libc::stat) -> FileStat {
+        let t = |secs: i64, nsecs: i64| Time {
+            secs: secs as u32,
+            nsecs: nsecs as u32,
+        };
+        let kind = match st.st_mode & libc::S_IFMT {
+            libc::S_IFREG => FileKind::File,
+            libc::S_IFLNK => FileKind::Symlink,
+            libc::S_IFDIR => FileKind::Dir,
+            _ => FileKind::Other,
+        };
+        FileStat {
+            stat: Stat {
+                ctime: t(st.st_ctime as i64, st.st_ctime_nsec as i64),
+                mtime: t(st.st_mtime as i64, st.st_mtime_nsec as i64),
+                dev: st.st_dev as u32,
+                ino: st.st_ino as u32,
+                uid: st.st_uid as u32,
+                gid: st.st_gid as u32,
+                size: st.st_size as u32,
+            },
+            kind,
+            executable: st.st_mode & 0o100 != 0,
+        }
+    }
+
+    /// Whether this is a directory.
+    #[must_use]
+    pub fn is_dir(&self) -> bool {
+        self.kind == FileKind::Dir
+    }
+
+    /// Whether this is a symbolic link.
+    #[must_use]
+    pub fn is_symlink(&self) -> bool {
+        self.kind == FileKind::Symlink
+    }
+
+    /// Whether this is a regular file.
+    #[must_use]
+    pub fn is_file(&self) -> bool {
+        self.kind == FileKind::File
+    }
+}
+
 /// The index mode for a work tree file, as `git add` records it. `old` is
 /// the existing entry's mode: with `core.fileMode=false` its executable bit
 /// is kept (a new file is `100644`), with `core.symlinks=false` a regular
@@ -229,11 +328,16 @@ fn is_executable(_meta: &Metadata) -> bool {
 /// `None` for directories and other file types.
 #[must_use]
 pub fn mode_from_metadata(meta: &Metadata, opts: &StatOptions, old: Option<Mode>) -> Option<Mode> {
-    let ft = meta.file_type();
-    if ft.is_symlink() {
+    mode_from_stat(&FileStat::from_metadata(meta), opts, old)
+}
+
+/// [`mode_from_metadata`] for [`FileStat`] data.
+#[must_use]
+pub fn mode_from_stat(meta: &FileStat, opts: &StatOptions, old: Option<Mode>) -> Option<Mode> {
+    if meta.is_symlink() {
         return Some(Mode::SYMLINK);
     }
-    if !ft.is_file() {
+    if !meta.is_file() {
         return None;
     }
     if let Some(old) = old {
@@ -245,7 +349,7 @@ pub fn mode_from_metadata(meta: &Metadata, opts: &StatOptions, old: Option<Mode>
         }
     }
     // Without core.fileMode a new file never gets the executable bit.
-    Some(if opts.file_mode && is_executable(meta) {
+    Some(if opts.file_mode && meta.executable {
         Mode::EXECUTABLE
     } else {
         Mode::FILE
@@ -255,31 +359,36 @@ pub fn mode_from_metadata(meta: &Metadata, opts: &StatOptions, old: Option<Mode>
 /// Compares the cached stat data of `entry` with `meta` (from `lstat`).
 #[must_use]
 pub fn compare(entry: &Entry, meta: &Metadata, opts: &StatOptions) -> Changes {
-    let ft = meta.file_type();
+    compare_stat(entry, &FileStat::from_metadata(meta), opts)
+}
+
+/// [`compare`] for [`FileStat`] data.
+#[must_use]
+pub fn compare_stat(entry: &Entry, meta: &FileStat, opts: &StatOptions) -> Changes {
     let mut changes = Changes::NONE;
     let mode = entry.mode;
     if mode.is_gitlink() {
-        return if ft.is_dir() {
+        return if meta.is_dir() {
             Changes::NONE
         } else {
             Changes::TYPE
         };
     }
     if mode.is_symlink() {
-        if !(ft.is_symlink() || (!opts.symlinks && ft.is_file())) {
+        if !(meta.is_symlink() || (!opts.symlinks && meta.is_file())) {
             changes |= Changes::TYPE;
         }
     } else if mode.is_file() {
-        if !ft.is_file() {
+        if !meta.is_file() {
             changes |= Changes::TYPE;
-        } else if opts.file_mode && (mode == Mode::EXECUTABLE) != is_executable(meta) {
+        } else if opts.file_mode && (mode == Mode::EXECUTABLE) != meta.executable {
             changes |= Changes::MODE;
         }
     } else {
         changes |= Changes::TYPE;
     }
 
-    let cur = stat_from_metadata(meta);
+    let cur = &meta.stat;
     let old = &entry.stat;
     let minimal = opts.check_stat == CheckStat::Minimal;
     let nsec = opts.nsec && !minimal;
@@ -440,46 +549,40 @@ impl Checker {
     /// # Errors
     /// If `lstat` fails for a reason other than a missing path.
     pub fn lstat(&self, path: &[u8]) -> io::Result<Option<Metadata>> {
-        if self.beyond_symlink(path) {
-            return Ok(None);
-        }
-        match std::fs::symlink_metadata(os::join(&self.root, path)) {
-            Ok(m) => Ok(Some(m)),
-            Err(e) if is_missing(&e) => Ok(None),
-            Err(e) => Err(e),
-        }
+        lstat_at(&self.root, path, &mut self.dir_cache.borrow_mut())
     }
 
-    /// Whether a leading directory of `path` is not a real directory.
-    fn beyond_symlink(&self, path: &[u8]) -> bool {
-        let Some(slash) = path.iter().rposition(|&b| b == b'/') else {
-            return false;
-        };
-        let dir = &path[..slash];
-        let mut cache = self.dir_cache.borrow_mut();
-        let known = cache.as_slice() == dir
-            || (cache.len() > dir.len() && cache.starts_with(dir) && cache[dir.len()] == b'/');
-        if known {
-            return false;
-        }
-        let mut start = 0;
-        if cache.len() < dir.len() && dir.starts_with(&cache) && dir[cache.len()] == b'/' {
-            start = cache.len() + 1;
-        }
-        for (i, &b) in dir.iter().enumerate().skip(start) {
-            if b == b'/' && !self.is_real_dir(&dir[..i]) {
-                return true;
+    /// [`Checker::lstat`] for every entry of `entries`, in order, spread
+    /// over up to `threads` threads (git's `core.preloadIndex`). `None`
+    /// for a file that is missing, lies beyond a symbolic link or cannot
+    /// be examined.
+    #[must_use]
+    pub fn preload(&self, entries: &[Entry], threads: usize) -> Vec<Option<FileStat>> {
+        let root = os::Root::open(&self.root);
+        let root = &root;
+        let run = move |chunk: &[Entry], out: &mut [Option<FileStat>]| {
+            let mut cache = Vec::new();
+            let is_real_dir =
+                |rel: &[u8]| root.lstat(rel).is_ok_and(|m| m.is_some_and(|m| m.is_dir()));
+            for (e, slot) in chunk.iter().zip(out) {
+                if !beyond_symlink(e.path(), &mut cache, is_real_dir) {
+                    *slot = root.lstat(e.path()).ok().flatten();
+                }
             }
+        };
+        let mut out = vec![None; entries.len()];
+        let threads = preload_threads(entries.len(), threads);
+        if threads <= 1 {
+            run(entries, &mut out);
+            return out;
         }
-        if !self.is_real_dir(dir) {
-            return true;
-        }
-        *cache = dir.to_vec();
-        false
-    }
-
-    fn is_real_dir(&self, rel: &[u8]) -> bool {
-        std::fs::symlink_metadata(os::join(&self.root, rel)).is_ok_and(|m| m.is_dir())
+        let per = entries.len().div_ceil(threads);
+        std::thread::scope(|s| {
+            for (chunk, slots) in entries.chunks(per).zip(out.chunks_mut(per)) {
+                s.spawn(move || run(chunk, slots));
+            }
+        });
+        out
     }
 
     /// The state of the work tree file of `entry`. Entries marked
@@ -503,13 +606,21 @@ impl Checker {
     /// # Errors
     /// If the file cannot be read.
     pub fn check_with(&self, entry: &Entry, meta: &Metadata) -> io::Result<Status> {
+        self.check_stat(entry, &FileStat::from_metadata(meta))
+    }
+
+    /// [`Checker::check_with`] for [`FileStat`] data.
+    ///
+    /// # Errors
+    /// If the file cannot be read.
+    pub fn check_stat(&self, entry: &Entry, meta: &FileStat) -> io::Result<Status> {
         if meta.is_dir() && !entry.mode.is_gitlink() {
             return Ok(Status::Deleted);
         }
         if entry.flags.intent_to_add {
             return Ok(Status::Modified);
         }
-        let changes = compare(entry, meta, &self.opts);
+        let changes = compare_stat(entry, meta, &self.opts);
         if changes.contains(Changes::TYPE) {
             return Ok(Status::TypeChanged);
         }
@@ -523,7 +634,7 @@ impl Checker {
             let racy = self
                 .index_mtime
                 .is_some_and(|t| is_racy(entry, t, &self.opts));
-            if racy && self.content_differs(entry, meta)? {
+            if racy && self.content_differs_stat(entry, meta)? {
                 return Ok(Status::Modified);
             }
             return Ok(Status::Unchanged);
@@ -533,7 +644,7 @@ impl Checker {
         if changes.contains(Changes::DATA) && entry.stat.size != 0 {
             return Ok(Status::Modified);
         }
-        if self.content_differs(entry, meta)? {
+        if self.content_differs_stat(entry, meta)? {
             Ok(Status::Modified)
         } else {
             Ok(Status::StatOnly)
@@ -547,8 +658,12 @@ impl Checker {
     /// # Errors
     /// If the file cannot be read.
     pub fn content_differs(&self, entry: &Entry, meta: &Metadata) -> io::Result<bool> {
+        self.content_differs_stat(entry, &FileStat::from_metadata(meta))
+    }
+
+    fn content_differs_stat(&self, entry: &Entry, meta: &FileStat) -> io::Result<bool> {
         let path = os::join(&self.root, entry.path());
-        let data = if meta.file_type().is_symlink() {
+        let data = if meta.is_symlink() {
             os::path_bytes(&std::fs::read_link(&path)?)
         } else {
             let data = std::fs::read(&path)?;
@@ -564,11 +679,76 @@ impl Checker {
     /// Records the current stat data (and, with [`mode_from_metadata`], the
     /// mode) of a file whose content was found unchanged.
     pub fn refresh(&self, entry: &mut Entry, meta: &Metadata) {
-        entry.stat = stat_from_metadata(meta);
-        if let Some(mode) = mode_from_metadata(meta, &self.opts, Some(entry.mode)) {
+        self.refresh_stat(entry, &FileStat::from_metadata(meta));
+    }
+
+    /// [`Checker::refresh`] for [`FileStat`] data.
+    pub fn refresh_stat(&self, entry: &mut Entry, meta: &FileStat) {
+        entry.stat = meta.stat;
+        if let Some(mode) = mode_from_stat(meta, &self.opts, Some(entry.mode)) {
             entry.mode = mode;
         }
     }
+}
+
+/// The least number of entries worth a thread of their own in
+/// [`Checker::preload`].
+const PRELOAD_PER_THREAD: usize = 500;
+
+/// How many threads [`Checker::preload`] uses for `n` entries: at most
+/// `max`, one per [`PRELOAD_PER_THREAD`] entries.
+fn preload_threads(n: usize, max: usize) -> usize {
+    (n / PRELOAD_PER_THREAD).clamp(1, max.max(1))
+}
+
+/// `lstat` of the work tree path `path` below `root`; `None` when it is
+/// missing or lies beyond a symbolic link. `cache` holds the last leading
+/// directory found to be a real directory.
+fn lstat_at(root: &Path, path: &[u8], cache: &mut Vec<u8>) -> io::Result<Option<Metadata>> {
+    let is_real_dir =
+        |rel: &[u8]| std::fs::symlink_metadata(os::join(root, rel)).is_ok_and(|m| m.is_dir());
+    if beyond_symlink(path, cache, is_real_dir) {
+        return Ok(None);
+    }
+    match std::fs::symlink_metadata(os::join(root, path)) {
+        Ok(m) => Ok(Some(m)),
+        Err(e) if is_missing(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a leading directory of `path` is not a real directory.
+fn beyond_symlink(path: &[u8], cache: &mut Vec<u8>, is_real_dir: impl Fn(&[u8]) -> bool) -> bool {
+    let Some(slash) = path.iter().rposition(|&b| b == b'/') else {
+        return false;
+    };
+    let dir = &path[..slash];
+    let known = cache.as_slice() == dir
+        || (cache.len() > dir.len() && cache.starts_with(dir) && cache[dir.len()] == b'/');
+    if known {
+        return false;
+    }
+    // The leading directories `dir` shares with the cached one are known
+    // to be real directories.
+    let common = cache.iter().zip(dir).take_while(|(a, b)| a == b).count();
+    let mut start = dir[..common]
+        .iter()
+        .rposition(|&b| b == b'/')
+        .map_or(0, |i| i + 1);
+    if common == cache.len() && dir.get(common) == Some(&b'/') {
+        start = common + 1;
+    }
+    for (i, &b) in dir.iter().enumerate().skip(start) {
+        if b == b'/' && !is_real_dir(&dir[..i]) {
+            return true;
+        }
+    }
+    if !is_real_dir(dir) {
+        return true;
+    }
+    cache.clear();
+    cache.extend_from_slice(dir);
+    false
 }
 
 fn blob_id(kind: HashKind, data: &[u8]) -> io::Result<ObjectId> {

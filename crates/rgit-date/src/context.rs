@@ -19,13 +19,24 @@ pub const TEST_DATE_NOW_ENV: &str = "GIT_TEST_DATE_NOW";
 pub struct DateContext {
     /// Current time in seconds since the epoch.
     pub now: i64,
-    /// The local time zone (`TZ`), used by the `-local` modes and the parser.
-    pub zone: TimeZone,
+    /// The local time zone (`TZ`), used by the `-local` modes and the
+    /// parser; looked up on first use for [`DateContext::from_env`] (that
+    /// reads the system time zone database, which most commands never
+    /// need).
+    zone: std::sync::OnceLock<TimeZone>,
 }
 
 impl DateContext {
     pub fn new(now: i64, zone: TimeZone) -> Self {
-        DateContext { now, zone }
+        DateContext {
+            now,
+            zone: std::sync::OnceLock::from(zone),
+        }
+    }
+
+    /// The local time zone.
+    pub fn zone(&self) -> &TimeZone {
+        self.zone.get_or_init(local_zone)
     }
 
     /// A context in UTC.
@@ -36,20 +47,23 @@ impl DateContext {
     /// Current time from `GIT_TEST_DATE_NOW` or the system clock, local zone
     /// from `TZ` / the system configuration.
     pub fn from_env() -> Self {
-        DateContext::new(now_from_env(), local_zone())
+        DateContext {
+            now: now_from_env(),
+            zone: std::sync::OnceLock::new(),
+        }
     }
 
     /// Offset of local time from UTC in seconds at instant `t`.
     pub(crate) fn local_offset_secs(&self, t: i64) -> i64 {
         match JTimestamp::from_second(t) {
-            Ok(ts) => self.zone.to_offset(ts).seconds() as i64,
+            Ok(ts) => self.zone().to_offset(ts).seconds() as i64,
             Err(_) => {
                 let clamped = if t < 0 {
                     JTimestamp::MIN
                 } else {
                     JTimestamp::MAX
                 };
-                self.zone.to_offset(clamped).seconds() as i64
+                self.zone().to_offset(clamped).seconds() as i64
             }
         }
     }
@@ -66,7 +80,7 @@ impl DateContext {
         } else {
             JTimestamp::MAX
         });
-        self.zone.to_offset_info(ts).abbreviation().to_string()
+        self.zone().to_offset_info(ts).abbreviation().to_string()
     }
 
     /// Offset (seconds) and whether it is summer time, at instant `t`.
@@ -76,7 +90,7 @@ impl DateContext {
         } else {
             JTimestamp::MAX
         });
-        let info = self.zone.to_offset_info(ts);
+        let info = self.zone().to_offset_info(ts);
         (info.offset().seconds() as i64, info.dst().is_dst())
     }
 
@@ -133,7 +147,7 @@ impl DateContext {
             .ok()
         })();
         if let Some(dt) = dt
-            && let Ok(ts) = self.zone.to_ambiguous_timestamp(dt).later()
+            && let Ok(ts) = self.zone().to_ambiguous_timestamp(dt).later()
         {
             return ts.as_second();
         }

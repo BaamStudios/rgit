@@ -2,7 +2,7 @@
 
 //! Reading and writing the index file on disk.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use rgit_fs::{LockError, LockFile, LockOptions};
@@ -62,8 +62,8 @@ impl Index {
         opts: &ReadOptions,
     ) -> Result<Index, Error> {
         let path = path.as_ref();
-        match std::fs::read(path) {
-            Ok(data) => Index::from_bytes(&data, kind, opts),
+        match FileData::open(path) {
+            Ok(data) => Index::from_bytes(data.as_slice(), kind, opts),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Index::new(kind)),
             Err(source) => Err(Error::Io {
                 path: path.to_owned(),
@@ -94,5 +94,41 @@ impl Index {
     /// operation.
     pub fn write_locked(&self, file: &mut LockFile, opts: &WriteOptions) -> io::Result<()> {
         file.write_all(&self.to_bytes(opts))
+    }
+}
+
+/// Index files at least this large are memory mapped instead of read.
+const MAP_MIN: u64 = 64 << 10;
+
+/// The bytes of an index file: memory mapped when it is large, else read.
+enum FileData {
+    Mapped(memmap2::Mmap),
+    Owned(Vec<u8>),
+}
+
+impl FileData {
+    fn open(path: &Path) -> io::Result<FileData> {
+        let mut file = std::fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        if len >= MAP_MIN {
+            // SAFETY: the mapping is read-only and private to this process
+            // and only lives while the index is parsed. Index files are
+            // never changed in place: git and rgit write `index.lock` and
+            // rename it over the index, which leaves this mapping intact.
+            // The parser bounds-checks every offset against the length.
+            if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+                return Ok(FileData::Mapped(map));
+            }
+        }
+        let mut buf = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+        file.read_to_end(&mut buf)?;
+        Ok(FileData::Owned(buf))
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            FileData::Mapped(m) => m,
+            FileData::Owned(v) => v,
+        }
     }
 }

@@ -19,7 +19,7 @@ use rgit_hash::ObjectId;
 use rgit_index::Entry;
 use rgit_object::{Object, ObjectKind};
 use rgit_pathspec::{ParseOptions, Pathspec};
-use rgit_worktree::stat::{Checker, Status};
+use rgit_worktree::stat::{Checker, FileStat, Status};
 
 use super::ls_files::{ExcludeArg, build_excludes};
 use crate::messages::status as msg;
@@ -64,30 +64,6 @@ pub(crate) struct SubContext<'a> {
     pub(crate) untracked: bool,
 }
 
-pub(crate) fn collect_tree(
-    repo: &Repo,
-    tree: &ObjectId,
-    base: &[u8],
-    out: &mut BTreeMap<Vec<u8>, Change>,
-) -> Result<(), Die> {
-    let Some(Object::Tree(t)) = repo.read_object(tree) else {
-        return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(
-            &tree.to_hex(),
-        )));
-    };
-    for e in t.entries {
-        let mut path = base.to_vec();
-        path.extend_from_slice(&e.name);
-        let mode = e.mode.canonical();
-        if mode.is_tree() {
-            path.push(b'/');
-            collect_tree(repo, &e.oid, &path, out)?;
-        } else {
-            out.entry(path).or_default().head = Some((mode.bits(), e.oid));
-        }
-    }
-    Ok(())
-}
 
 fn type_bits(mode: u32) -> u32 {
     mode & 0o170000
@@ -627,14 +603,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let work_tree = repo.work_tree()?;
     let revs = Revs::new(ctx, &repo.setup)?;
     let info = branch_info(&mut repo, &revs, count)?;
-    let mut changes: BTreeMap<Vec<u8>, Change> = BTreeMap::new();
     let mut base_tree = ObjectId::empty_tree(repo.hash);
     if let Some(h) = info.head {
-        let tree = repo
+        base_tree = repo
             .peel_to(h, ObjectKind::Tree)
             .ok_or_else(|| Die::Fatal(crate::messages::ls_tree::NOT_A_TREE.to_string()))?;
-        collect_tree(&repo, &tree, b"", &mut changes)?;
-        base_tree = tree;
     }
     let root = work_tree.as_os_str().as_encoded_bytes().to_vec();
     let opts = ParseOptions {
@@ -648,19 +621,47 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let attr_tree = crate::attributes::PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
     let stash_count = if show_stash { stash_entries(&mut repo) } else { 0 };
     let repo = repo;
-    if !ctx.no_optional_locks && std::env::var("GIT_OPTIONAL_LOCKS").as_deref() != Ok("0") {
-        refresh_index(&repo);
-    }
-    let (index, index_mtime) = repo.read_index()?;
-    let attrs = attr_tree.map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t)));
-    for e in index.entries() {
-        let c = changes.entry(e.path().to_vec()).or_default();
-        match e.stage().get() {
-            0 => c.index = Some((e.mode.0, e.id, e.flags.intent_to_add)),
-            s => c.stages[usize::from(s) - 1] = Some((e.mode.0, e.id)),
+    // Like git, status refreshes the stat data of the index and writes it
+    // back when that changed something or when entries are racily clean;
+    // quietly skipped when the index is locked or cannot be written.
+    let lock = if !ctx.no_optional_locks && std::env::var("GIT_OPTIONAL_LOCKS").as_deref() != Ok("0") {
+        let index_path = repo.setup.cwd.join(repo.index_path());
+        index_path
+            .exists()
+            .then(|| rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options()).ok())
+            .flatten()
+    } else {
+        None
+    };
+    let (mut index, index_mtime) = repo.read_index()?;
+    let checker = repo.checker(index_mtime)?;
+    let metas = checker.preload(index.entries(), preload_threads(&repo));
+    let statuses = refresh_in_memory(&mut index, &checker, &metas);
+    if let Some(lock) = lock {
+        let racy = index.entries().iter().any(|e| checker.is_racy(e));
+        if racy {
+            if let Some(reference) = index_mtime {
+                let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
+            }
+        }
+        if racy || statuses.refreshed {
+            let _ = crate::switch_branch::write_index(&repo, &index, lock);
         }
     }
-    let checker = repo.checker(index_mtime)?;
+    let index = index;
+    // On an unborn branch everything in the index is new.
+    let unborn = info.head.is_none();
+    let mut heads = if unborn {
+        Vec::new()
+    } else {
+        head_changes(&repo, &base_tree, &index)?
+    };
+    heads.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let mut changes: BTreeMap<Vec<u8>, Change> = BTreeMap::new();
+    for (path, head) in &heads {
+        changes.entry(path.clone()).or_default().head = *head;
+    }
+    let attrs = attr_tree.map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t)));
     let ignore_cli = ignore_submodules
         .borrow()
         .as_deref()
@@ -687,15 +688,42 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         rules,
         untracked: true,
     });
-    for e in index.entries() {
-        let c = changes.get_mut(e.path()).expect("entry");
+    // Only paths with something to show get a `Change`: those that differ
+    // from HEAD (above), conflicts, intent-to-add entries, submodules and
+    // files changed in the work tree.
+    let mut next_head = 0;
+    for (pos, e) in index.entries().iter().enumerate() {
+        let meta = metas[pos].as_ref();
+        // `heads` and the index are both sorted by path.
+        while heads.get(next_head).is_some_and(|h| h.0.as_slice() < e.path()) {
+            next_head += 1;
+        }
+        let listed = unborn || heads.get(next_head).is_some_and(|h| h.0 == e.path());
         if e.stage().is_conflict() {
-            if let Ok(Some(meta)) = checker.lstat(e.path()) {
-                c.wt_mode = Some(wt_mode(&meta, e.mode.0));
+            let c = changes.entry(e.path().to_vec()).or_default();
+            c.stages[usize::from(e.stage().get()) - 1] = Some((e.mode.0, e.id));
+            if let Some(meta) = meta {
+                c.wt_mode = Some(wt_mode(meta, e.mode.0));
             }
             continue;
         }
-        check_worktree(&repo, &checker, &work_tree, e, c, sub_ctx.as_ref())?;
+        let mut wt = Change::default();
+        let status = statuses.status[pos].unwrap_or(Status::Modified);
+        check_worktree_with(&repo, &work_tree, e, &mut wt, sub_ctx.as_ref(), meta, || Ok(status))?;
+        let c = if listed {
+            changes.entry(e.path().to_vec()).or_default()
+        } else if wt.wt != b' ' || e.flags.intent_to_add || e.mode.is_gitlink() {
+            let c = changes.entry(e.path().to_vec()).or_default();
+            // Not among the HEAD changes: HEAD has the same entry.
+            c.head = Some((e.mode.0, e.id));
+            c
+        } else {
+            continue;
+        };
+        c.index = Some((e.mode.0, e.id, e.flags.intent_to_add));
+        c.wt = wt.wt;
+        c.wt_mode = wt.wt_mode;
+        c.sub = wt.sub;
     }
 
     // `--ignore-submodules=all` also hides staged submodule changes.
@@ -876,34 +904,154 @@ fn stash_entries(repo: &mut Repo) -> usize {
         .unwrap_or(0)
 }
 
-/// Like git, status refreshes the stat data of the index and writes it
-/// back when that changed something or when entries are racily clean;
-/// quietly skipped when the index is locked or cannot be written.
-fn refresh_index(repo: &Repo) {
-    let index_path = repo.setup.cwd.join(repo.index_path());
-    if !index_path.exists() {
-        return;
+/// How many threads look at the work tree files: `core.preloadIndex`
+/// (default on) spreads the `lstat` calls over up to 20 threads.
+fn preload_threads(repo: &Repo) -> usize {
+    if config_bool(repo, "core.preloadindex").ok().flatten() == Some(false) {
+        return 1;
     }
-    let Ok(lock) = rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options()) else {
-        return;
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(20))
+}
+
+/// The work tree state of the index entries (see [`refresh_in_memory`]).
+struct WorktreeStatus {
+    /// By index position: the state of each stage-0 entry that is not a
+    /// submodule or intent-to-add (`None` for the others).
+    status: Vec<Option<Status>>,
+    /// Some entry got new stat data.
+    refreshed: bool,
+}
+
+/// Compares the stage-0 entries of `index` with their work tree files
+/// (`metas`, the `lstat` data by index position) and records the new stat
+/// data of the files found unchanged in content (git's index refresh). A
+/// file that cannot be read counts as modified.
+fn refresh_in_memory(
+    index: &mut rgit_index::Index,
+    checker: &Checker,
+    metas: &[Option<FileStat>],
+) -> WorktreeStatus {
+    let mut out = WorktreeStatus {
+        status: vec![None; index.len()],
+        refreshed: false,
     };
-    let Ok((mut index, mtime)) = repo.read_index() else {
-        return;
+    for (pos, meta) in metas.iter().enumerate().take(index.len()) {
+        let e = &index.entries()[pos];
+        if e.stage().is_conflict() || e.flags.intent_to_add || e.mode.is_gitlink() {
+            continue;
+        }
+        let status = if e.flags.skip_worktree || e.flags.assume_valid {
+            Status::Unchanged
+        } else {
+            match meta {
+                Some(meta) => checker.check_stat(e, meta).unwrap_or(Status::Modified),
+                None => Status::Deleted,
+            }
+        };
+        if status == Status::StatOnly {
+            if let (Some(meta), Some(entry)) = (meta, index.entry_mut(pos)) {
+                checker.refresh_stat(entry, meta);
+                out.refreshed = true;
+            }
+        }
+        out.status[pos] = Some(status);
+    }
+    out
+}
+
+/// A `HEAD` entry: mode and id.
+type HeadEntry = Option<(u32, ObjectId)>;
+
+/// The paths whose `HEAD` entry and index entry differ (staged changes,
+/// conflicts, intent-to-add entries), with the `HEAD` side (`None` when
+/// the path is not in `HEAD`). Like git, a subtree is not read at all when
+/// the cache tree (`TREE` extension) of the index records it as `HEAD` has
+/// it.
+fn head_changes(
+    repo: &Repo,
+    tree: &ObjectId,
+    index: &rgit_index::Index,
+) -> Result<Vec<(Vec<u8>, HeadEntry)>, Die> {
+    // The cache tree leaves out conflicts and intent-to-add entries; with
+    // those every tree is read.
+    let exact = index
+        .entries()
+        .iter()
+        .any(|e| e.stage().is_conflict() || e.flags.intent_to_add);
+    let node = if exact {
+        None
+    } else {
+        index.cache_tree().map(|t| &t.root)
     };
-    let Ok(checker) = repo.checker(mtime) else {
-        return;
-    };
-    let before = index.clone();
-    crate::switch_branch::refresh_stat(&mut index, &checker);
-    let racy = index.entries().iter().any(|e| checker.is_racy(e));
-    if racy {
-        if let Some(reference) = mtime {
-            let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
+    let mut out = Vec::new();
+    head_walk(repo, tree, b"", index.entries(), node, &mut out)?;
+    Ok(out)
+}
+
+/// [`head_changes`] for `tree` at `prefix` (empty or ending in `/`);
+/// `entries` are the index entries below `prefix`, `node` the cache tree
+/// node of the directory.
+fn head_walk(
+    repo: &Repo,
+    tree: &ObjectId,
+    prefix: &[u8],
+    entries: &[Entry],
+    node: Option<&rgit_index::TreeNode>,
+    out: &mut Vec<(Vec<u8>, HeadEntry)>,
+) -> Result<(), Die> {
+    if let Some(n) = node {
+        let count = n.entry_count().and_then(|c| usize::try_from(c).ok());
+        if n.id() == Some(tree) && count == Some(entries.len()) {
+            return Ok(());
         }
     }
-    if racy || index != before {
-        let _ = crate::switch_branch::write_index(repo, &index, lock);
+    let Some(Object::Tree(t)) = repo.read_object(tree) else {
+        return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(
+            &tree.to_hex(),
+        )));
+    };
+    // Index entries that HEAD has at their path or below a directory.
+    let mut covered = vec![false; entries.len()];
+    let mut path = prefix.to_vec();
+    for e in t.entries {
+        path.truncate(prefix.len());
+        path.extend_from_slice(&e.name);
+        let mode = e.mode.canonical();
+        if mode.is_tree() {
+            path.push(b'/');
+            let start = entries.partition_point(|x| x.path() < path.as_slice());
+            let len = entries[start..].partition_point(|x| x.path().starts_with(&path));
+            covered[start..start + len].fill(true);
+            let child = node.and_then(|n| n.child(&e.name));
+            head_walk(repo, &e.oid, &path, &entries[start..start + len], child, out)?;
+            continue;
+        }
+        let start = entries.partition_point(|x| x.path() < path.as_slice());
+        let len = entries[start..].partition_point(|x| x.path() == path.as_slice());
+        covered[start..start + len].fill(true);
+        let head = (mode.bits(), e.oid);
+        let same = match &entries[start..start + len] {
+            [x] => {
+                !x.stage().is_conflict()
+                    && !x.flags.intent_to_add
+                    && x.mode.0 == head.0
+                    && x.id == head.1
+            }
+            _ => false,
+        };
+        if !same {
+            out.push((path.clone(), Some(head)));
+        }
     }
+    // Index paths HEAD does not have.
+    let mut last: Option<&[u8]> = None;
+    for (e, covered) in entries.iter().zip(covered) {
+        if !covered && last != Some(e.path()) {
+            out.push((e.path().to_vec(), None));
+            last = Some(e.path());
+        }
+    }
+    Ok(())
 }
 
 /// Rename detection for the staged changes: `--no-renames`,
@@ -1599,12 +1747,27 @@ pub(crate) fn check_worktree(
     subs: Option<&SubContext<'_>>,
 ) -> Result<(), Die> {
     let meta = checker.lstat(e.path()).ok().flatten();
+    let meta = meta.as_ref().map(FileStat::from_metadata);
+    check_worktree_with(repo, work_tree, e, c, subs, meta.as_ref(), || checker.check(e))
+}
+
+/// [`check_worktree`] with the `lstat` data `meta` of the file and its
+/// state (`status`, asked for regular files only).
+fn check_worktree_with(
+    repo: &Repo,
+    work_tree: &Path,
+    e: &Entry,
+    c: &mut Change,
+    subs: Option<&SubContext<'_>>,
+    meta: Option<&FileStat>,
+    status: impl FnOnce() -> std::io::Result<Status>,
+) -> Result<(), Die> {
     let Some(meta) = meta else {
         c.wt = b'D';
         c.wt_mode = None;
         return Ok(());
     };
-    c.wt_mode = Some(wt_mode(&meta, e.mode.0));
+    c.wt_mode = Some(wt_mode(meta, e.mode.0));
     if e.flags.intent_to_add {
         c.wt = b'A';
         return Ok(());
@@ -1628,7 +1791,7 @@ pub(crate) fn check_worktree(
         }
         return Ok(());
     }
-    c.wt = match checker.check(e) {
+    c.wt = match status() {
         Ok(Status::Unchanged | Status::StatOnly) => b' ',
         Ok(Status::TypeChanged) => b'T',
         Ok(Status::Deleted) => {
@@ -1640,24 +1803,18 @@ pub(crate) fn check_worktree(
     Ok(())
 }
 
-fn wt_mode(meta: &std::fs::Metadata, index_mode: u32) -> u32 {
-    let ft = meta.file_type();
-    if ft.is_symlink() {
+fn wt_mode(meta: &FileStat, index_mode: u32) -> u32 {
+    if meta.is_symlink() {
         0o120000
-    } else if ft.is_dir() {
+    } else if meta.is_dir() {
         if type_bits(index_mode) == 0o160000 {
             0o160000
         } else {
             0o040000
         }
+    } else if meta.executable {
+        0o100755
     } else {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if meta.permissions().mode() & 0o100 != 0 {
-                return 0o100755;
-            }
-        }
         0o100644
     }
 }

@@ -206,7 +206,11 @@ fn run_command(ctx: &mut Context, argv: &[String]) -> Option<CmdResult> {
     }
     if let Some(cmd) = builtin {
         rgit_trace::trace_builtin(argv);
-        rgit_convert::filter::set_base_env(ctx.child_env());
+        // Computing it reads the configuration (`pager.<cmd>`); only the
+        // few commands that run a filter need it.
+        let child = ctx.clone();
+        let pager_started = pager::started();
+        rgit_convert::filter::set_base_env_with(move || child.child_env_with(pager_started));
         return Some((cmd.run)(ctx, argv));
     }
     external::run(ctx, argv)
