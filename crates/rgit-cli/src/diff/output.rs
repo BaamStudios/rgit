@@ -1016,6 +1016,26 @@ impl<'a> Output<'a> {
         }
         let mut pickaxe_hit = true;
         if let Some(how) = &self.pickaxe {
+            // With textconv the pickaxe looks at the converted text (and a
+            // failing filter is fatal).
+            let conv_failed = std::cell::Cell::new(false);
+            let converted = |s: &diffcore::Side<Extra>| {
+                let data = self.core_contents(s);
+                if !self.textconv || !is_file_mode(s.mode) || type_bits(s.mode) == 0o120000 {
+                    return data;
+                }
+                match self
+                    .diff_attr(&s.path)
+                    .ok()
+                    .and_then(|a| a.textconv().map(str::to_owned))
+                {
+                    Some(cmd) => super::driver::run_textconv(&cmd, &data).unwrap_or_else(|()| {
+                        conv_failed.set(true);
+                        Vec::new()
+                    }),
+                    None => data,
+                }
+            };
             let literal;
             let count_re;
             let grep_re;
@@ -1032,12 +1052,18 @@ impl<'a> Output<'a> {
                     grep_re = move |l: &[u8]| re.is_match(l);
                     Criterion::Grep {
                         matches: &grep_re,
-                        text: false,
+                        // Textconv output counts as text.
+                        text: self.textconv && self.any_textconv(),
                     }
                 }
                 Pickaxe::Objects(ids) => Criterion::Objects(ids),
             };
-            result = diffcore::pickaxe::pickaxe(result, &criterion, self.pickaxe_all, &contents);
+            result = diffcore::pickaxe::pickaxe(result, &criterion, self.pickaxe_all, &converted);
+            if conv_failed.get() {
+                return Err(Die::Fatal(
+                    crate::messages::userdiff::UNABLE_TO_READ_FILES.into(),
+                ));
+            }
             pickaxe_hit = !result.is_empty();
         }
         // Back to the command's pairs, in order (unmerged paths where they
@@ -1808,6 +1834,16 @@ impl Output<'_> {
         Ok((data, attr.binary()))
     }
 
+    /// Whether any diff driver has a textconv filter configured.
+    fn any_textconv(&self) -> bool {
+        self.repo.is_some_and(|r| {
+            r.config.entries().iter().any(|e| {
+                let n = e.name.as_slice();
+                n.starts_with(b"diff.") && n.ends_with(b".textconv")
+            })
+        })
+    }
+
     /// Run the textconv filter of `path`'s driver on `l`.
     fn apply_textconv(&self, path: &[u8], l: &mut Loaded) -> Result<(), Die> {
         if !is_file_mode(l.mode) || type_bits(l.mode) == 0o120000 {
@@ -1841,7 +1877,8 @@ impl Output<'_> {
             if patch && l.conv.is_some() {
                 continue;
             }
-            let forced = if self.repo.is_some() {
+            // Symbolic links ignore diff drivers (t4011).
+            let forced = if self.repo.is_some() && type_bits(l.mode) != 0o120000 {
                 self.diff_attr(path)?.binary()
             } else {
                 None

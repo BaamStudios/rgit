@@ -2435,6 +2435,8 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     {
         let mut drepo = crate::repository::Repo::open(ctx, Mode::Required)?;
         let mut dopts = d.clone();
+        // log is porcelain: the pickaxe sees textconv output.
+        dopts.textconv = Some(dopts.textconv.unwrap_or(true));
         dopts.resolve_objects(&mut drepo)?;
         // Option conflicts (`-G` with `-S`, ...) are fatal before the walk.
         crate::diff::output::Output::new(
