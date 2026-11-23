@@ -480,8 +480,13 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     if existed && !(target.is_dir() && is_empty_dir(&target)) {
         return Err(Die::Fatal(msg::destination_exists(&dir)));
     }
-    let local_mode = source.local_dir;
-    // Shallow options; a local clone ignores them (it copies everything).
+    let local_source = source.local_dir;
+    // A shallow repository is cloned like a remote one (its shallow
+    // boundary comes with the fetch).
+    let source_shallow =
+        local_source && repository_git_dir(Path::new(&source.url)).join("shallow").is_file();
+    let local_mode = local_source && !source_shallow;
+    // Shallow options; a local path ignores them (it copies everything).
     let mut ignored_local: Vec<&str> = Vec::new();
     let mut deepen = PackOptions::default();
     if let Some(d) = &opts.depth {
@@ -499,7 +504,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
     // Implies --single-branch, also when ignored.
     let shallow_clone = !ignored_local.is_empty();
-    if local_mode {
+    if local_source {
         deepen = PackOptions::default();
     }
 
@@ -617,7 +622,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             eprintln!("{}", msg::cloning_into(&dir));
         }
     }
-    if local_mode {
+    if local_source {
         for o in &ignored_local {
             eprintln!("warning: {}", msg::ignored_in_local_clones(o));
         }
@@ -728,13 +733,14 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             .flatten()
             .unwrap_or(false)
     });
-    if reject_shallow
-        && local_mode
-        && repository_git_dir(Path::new(&source.url))
-            .join("shallow")
-            .is_file()
-    {
+    if reject_shallow && source_shallow {
         return Err(Die::Fatal(msg::SOURCE_SHALLOW.into()));
+    }
+    if opts.local == Some(true) && !local_mode {
+        if source_shallow {
+            eprintln!("warning: {}", msg::SHALLOW_IGNORING_LOCAL);
+        }
+        eprintln!("warning: {}", msg::LOCAL_IGNORED);
     }
 
     // Talk to the remote.
@@ -779,10 +785,16 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let mut ls = LsRefsArgs::standard();
     ls.server_options = server_options.clone();
     if !opts.mirror && opts.revision.is_none() {
-        ls.ref_prefixes.push("HEAD".into());
         ls.ref_prefixes.push("refs/heads/".into());
         if opts.tags || opts.branch.is_some() {
             ls.ref_prefixes.push("refs/tags/".into());
+        }
+        // The names `--branch` could stand for.
+        if let Some(b) = &opts.branch {
+            for p in ["", "refs/", "refs/tags/", "refs/heads/", "refs/remotes/"] {
+                ls.ref_prefixes.push(format!("{p}{b}"));
+            }
+            ls.ref_prefixes.push(format!("refs/remotes/{b}/HEAD"));
         }
         for spec in &extra_fetch {
             let src = spec.trim_start_matches('+');
@@ -791,6 +803,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             if !prefix.is_empty() && !src.starts_with('^') {
                 ls.ref_prefixes.push(prefix.to_owned());
             }
+        }
+        // A single branch named by --branch does not need the remote HEAD
+        // (and gets no `refs/remotes/<origin>/HEAD` over protocol v2).
+        if opts.branch.is_none() || !opts.single_branch.unwrap_or(shallow_clone) {
+            ls.ref_prefixes.push("HEAD".into());
         }
     }
     let mut refs: Vec<RemoteRef> = session.list_refs(&ls).map_err(|e| fatal(&e))?;
@@ -811,12 +828,15 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             r.symref_target = None;
         }
     }
-    // A v0/v1 server advertises every ref: keep what v2 would list.
+    // A v0/v1 server advertises every ref (HEAD included): keep what v2
+    // would list.
     if !ls.ref_prefixes.is_empty() {
         refs.retain(|r| {
-            ls.ref_prefixes
-                .iter()
-                .any(|p| r.name.starts_with(p.as_bytes()))
+            r.name == b"HEAD"
+                || ls
+                    .ref_prefixes
+                    .iter()
+                    .any(|p| r.name.starts_with(p.as_bytes()))
         });
     }
 
@@ -986,6 +1006,12 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         // Objects borrowed from alternates are not asked for.
         let mut wants: Vec<ObjectId> = Vec::new();
         let mut seen = HashSet::new();
+        // A local source's broken refs are advertised with the null id;
+        // they fail when the refs are written (below), as in git, which
+        // reads them directly.
+        if local_mode {
+            seen.insert(hash.null());
+        }
         for (_, oid) in &mapped {
             if seen.insert(*oid) && !repo.has_object(oid) {
                 wants.push(*oid);
@@ -1063,11 +1089,15 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         if reject_shallow && !shallow_clone && !shallow.is_empty() {
             return Err(Die::Fatal(msg::SOURCE_SHALLOW.into()));
         }
+
         if local_mode && !opts.quiet {
             eprintln!("{}", msg::DONE);
         }
         if let Some(dup) = duplicate {
             return Err(Die::Fatal(rgit_refs::messages::duplicate(&dup)));
+        }
+        if let Some((name, _)) = mapped.iter().find(|(_, o)| local_mode && o.is_null()) {
+            return Err(Die::Fatal(rgit_refs::messages::no_oid_nor_target(name)));
         }
 
         let received: HashSet<ObjectId> = packs

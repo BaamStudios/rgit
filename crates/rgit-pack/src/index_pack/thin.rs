@@ -92,6 +92,7 @@ pub(crate) fn complete(
             size: obj.data.len() as u64,
             crc32: crc32fast::hash(&bytes),
             base: Base::None(obj.kind),
+            broken: false,
         });
         let slot = OnceLock::new();
         let _ = slot.set((base, obj.kind));

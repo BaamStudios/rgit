@@ -2,6 +2,8 @@
 //! `git fetch` from one remote: the whole sequence on top of the pieces in
 //! the other modules.
 
+use std::collections::HashSet;
+
 use bstr::{BString, ByteSlice};
 use rgit_hash::ObjectId;
 use rgit_protocol::ProtocolVersion;
@@ -409,6 +411,17 @@ pub fn fetch(
             } else {
                 by_id.push(e.oid);
             }
+        }
+    }
+    // Everything is here: unless its history is incomplete (objects of a
+    // fetch whose refs were rejected), then all of it is asked for.
+    if wants.is_empty() && !entries.is_empty() {
+        let tips: Vec<ObjectId> = entries.iter().map(|e| e.oid).collect();
+        let mut complete: HashSet<ObjectId> =
+            repo.list_refs("").into_iter().map(|(_, id)| id).collect();
+        let shallow: HashSet<ObjectId> = repo.shallow().into_iter().collect();
+        if !graph::history_complete(&repo.odb, &tips, &mut complete, &shallow) {
+            wants = tips;
         }
     }
     let follow_tags = tag_opt == TagOpt::Auto

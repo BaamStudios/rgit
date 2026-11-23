@@ -151,6 +151,10 @@ pub fn unable_to_read_tree(oid: &str) -> String {
     format!("unable to read tree ({oid})")
 }
 pub const SOURCE_SHALLOW: &str = "source repository is shallow, reject to clone.";
+/// `-l` with a shallow source.
+pub const SHALLOW_IGNORING_LOCAL: &str = "source repository is shallow, ignoring --local";
+/// `-l` with a source that is not a local path.
+pub const LOCAL_IGNORED: &str = "--local is ignored";
 /// `--depth`, `--shallow-since`, `--shallow-exclude` with a local path.
 pub fn ignored_in_local_clones(option: &str) -> String {
     format!("{option} is ignored in local clones; use file:// instead.")

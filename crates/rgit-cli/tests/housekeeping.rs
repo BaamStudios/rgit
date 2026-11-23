@@ -621,6 +621,35 @@ fn shallow_file_is_pruned() {
     sh(&fx, &format!("grep {head} .git/shallow"));
 }
 
+/// `repack -a -d` drops the shallow commits it deletes (t5537 ".git/shallow
+/// is edited by repack"); `-A` loosens them, so they stay listed.
+#[test]
+fn repack_edits_the_shallow_file() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let tree = sh(&fx, "\"$GIT\" rev-parse HEAD^{tree}").trim().to_string();
+    let orphan = sh(&fx, &format!("echo hi | \"$GIT\" commit-tree {tree}"))
+        .trim()
+        .to_string();
+    let head = sh(&fx, "\"$GIT\" rev-parse HEAD").trim().to_string();
+    // The orphan is packed, so that only deleting the old pack removes it.
+    sh(
+        &fx,
+        &format!("\"$GIT\" repack -adkq && printf '%s\\n' {head} {orphan} >.git/shallow"),
+    );
+    sh(&fx, "cp -R .git ../loosen.git");
+    sh(&fx, "\"$RGIT\" repack -Adq --unpack-unreachable=never");
+    sh(&fx, &format!("grep {orphan} .git/shallow"));
+    sh(
+        &fx,
+        "rm -rf .git && mv ../loosen.git .git && \"$RGIT\" repack -adq",
+    );
+    let shallow = std::fs::read_to_string(fx.work_dir().join(".git/shallow")).unwrap();
+    assert_eq!(shallow, format!("{head}\n"));
+}
+
 // ---------------------------------------------------------------- gc
 
 /// [`repo`] with reflog expiry off, so that git's `reflog expire` step
