@@ -625,3 +625,74 @@ fn delete_branch_under_rebase_or_bisect() {
         .git(["checkout", "-q", "topic"]);
     all_same(&mut fx, &[&["branch", "-D", "main"]]);
 }
+
+/// Renaming onto a dangling symbolic ref, a linked worktree whose `HEAD`
+/// is locked or on an unborn branch (t3200 16, 33, 39).
+#[test]
+fn rename_dangling_locked_and_unborn_elsewhere() {
+    let dangling = || {
+        fixture().git(["branch", "--create-reflog", "m"]).git([
+            "symbolic-ref",
+            "refs/heads/broken",
+            "refs/heads/nowhere",
+        ])
+    };
+    each(dangling, &[&["branch", "-m", "m", "broken"]]);
+    let locked = || {
+        fixture()
+            .git(["worktree", "add", "-q", "-b", "baz", "wt1"])
+            .git(["worktree", "add", "-q", "-f", "wt2", "baz"])
+            .git(["config", "branch.baz.x", "y"])
+            .write(".git/worktrees/wt1/HEAD.lock", "")
+    };
+    each(locked, &[&["branch", "-M", "baz", "bam"]]);
+    let unborn = || {
+        fixture()
+            .git(["worktree", "add", "-q", "--detach", "wt"])
+            .git(["-C", "wt", "checkout", "-q", "--orphan", "orph"])
+    };
+    each(
+        unborn,
+        &[
+            &["branch", "-m", "orph", "orph2"],
+            &["branch", "-c", "orph", "orph2"],
+        ],
+    );
+}
+
+/// `-u <remote> <branch>` suggests `<remote>/<branch>` (t3200 106, 109);
+/// a local branch two remotes fetch into is ambiguous (t3200 127).
+#[test]
+fn upstream_slip_and_ambiguous_local() {
+    let slip = || {
+        fixture()
+            .git(["remote", "add", "slip", "."])
+            .git(["update-ref", "refs/remotes/slip/feat", "HEAD"])
+            .git(["update-ref", "refs/remotes/slip/a/b", "HEAD"])
+    };
+    each(
+        slip,
+        &[
+            &["branch", "--set-upstream-to", "slip", "feat"],
+            &["branch", "-u", "slip", "a/b"],
+            &[
+                "-c",
+                "advice.setUpstreamFailure=false",
+                "branch",
+                "-u",
+                "slip",
+                "feat",
+            ],
+            &["branch", "-u", "slip", "nothere"],
+        ],
+    );
+    let ambiguous = || {
+        fixture()
+            .git(["config", "branch.autosetupmerge", "true"])
+            .git(["config", "remote.a1.url", "x"])
+            .git(["config", "remote.a1.fetch", "refs/heads/x:refs/heads/main"])
+            .git(["config", "remote.a2.url", "y"])
+            .git(["config", "remote.a2.fetch", "refs/heads/y:refs/heads/main"])
+    };
+    each(ambiguous, &[&["branch", "all1", "main"]]);
+}

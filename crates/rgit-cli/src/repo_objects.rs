@@ -264,6 +264,24 @@ impl Repo {
         if !self.replace_enabled {
             return *oid;
         }
+        let map = self.replacements();
+        let mut cur = *oid;
+        for _ in 0..MAX_REPLACE_DEPTH {
+            match map.get(&cur) {
+                Some(next) => cur = *next,
+                None => break,
+            }
+        }
+        cur
+    }
+
+    /// Replace refs as `original -> replacement` (empty when replacing is
+    /// disabled).
+    pub fn replacements(&mut self) -> &HashMap<ObjectId, ObjectId> {
+        if !self.replace_enabled {
+            self.replace.get_or_insert_with(HashMap::new).clear();
+            return self.replace.as_ref().expect("set");
+        }
         if self.replace.is_none() {
             let base = std::env::var("GIT_REPLACE_REF_BASE")
                 .ok()
@@ -278,15 +296,7 @@ impl Repo {
             }
             self.replace = Some(map);
         }
-        let map = self.replace.as_ref().expect("loaded");
-        let mut cur = *oid;
-        for _ in 0..MAX_REPLACE_DEPTH {
-            match map.get(&cur) {
-                Some(next) => cur = *next,
-                None => break,
-            }
-        }
-        cur
+        self.replace.as_ref().expect("loaded")
     }
 
     /// The alternate object directories in lookup order (without the

@@ -300,7 +300,7 @@ pub fn plan(
     };
     // A remote-tracking branch is any ref a remote's fetch refspec maps
     // to, not only `refs/remotes/...`.
-    let local = full.starts_with("refs/heads/");
+    let local = full.starts_with("refs/heads/") && repo.remotes_mapping(&full)?.is_empty();
     if mode == AutoMerge::Inherit {
         if !local && repo.remotes_mapping(&full)?.is_empty() {
             return Ok(None);

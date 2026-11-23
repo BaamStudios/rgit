@@ -283,6 +283,7 @@ pub fn run_with_usage(ctx: &mut Context, argv: &[String], usage: &[&str]) -> Cmd
         });
     }
 
+    env.choose_bases(items.iter().map(|it| (it.name.as_str(), it.oid)));
     let mut keyed = Vec::with_capacity(items.len());
     for it in items {
         let cache = ItemCache::default();

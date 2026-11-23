@@ -2,8 +2,11 @@
 //! `git refs` (Documentation/git-refs.adoc): low-level access to the
 //! references. `list` is `for-each-ref`, `optimize` is `pack-refs`;
 //! `exists`, `create`, `update`, `delete` and `rename` work on single
-//! references like `update-ref`. `verify` and `migrate` are not
-//! implemented yet (#31).
+//! references like `update-ref`; `verify` checks the files backend
+//! ([`verify`]). `migrate` is not implemented yet (#31).
+
+#[path = "refs/verify.rs"]
+mod verify;
 
 use rgit_hash::ObjectId;
 use rgit_refs::name::{RefNameFlags, check_refname_format};
@@ -28,7 +31,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some("exists") => exists(ctx, args),
         Some(op @ ("create" | "update" | "delete")) => write(ctx, op, args),
         Some("rename") => rename(ctx, args),
-        Some(s @ ("verify" | "migrate")) => Err(Die::Fatal(msg::not_supported(s))),
+        Some("verify") => verify::run(ctx, args),
+        Some(s @ "migrate") => Err(Die::Fatal(msg::not_supported(s))),
         Some(s) if !s.starts_with('-') => {
             Err(top.error_with_usage(&msg::unknown_subcommand(s)).into())
         }

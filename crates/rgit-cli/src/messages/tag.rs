@@ -152,3 +152,5 @@ pub const REFLOG_TAG: &str = "other tag object";
 pub fn message_left_in(path: &str) -> String {
     format!("The tag message has been left in {path}")
 }
+
+pub const ANCESTRY_CYCLE: &str = "commit ancestry contains a cycle";

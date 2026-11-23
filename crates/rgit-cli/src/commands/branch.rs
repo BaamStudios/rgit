@@ -14,8 +14,7 @@
 //! Colours (`--color`, `color.branch`, `color.branch.<slot>`) and the
 //! pager (`pager.branch`, on for listing) are supported.
 //!
-//! Not yet: `-f`, columns, `--format`, `--sort`,
-//! `--merged`, `--contains`, `--points-at`, `--edit-description`.
+//! Not yet: `--recurse-submodules`, `--forked`, `--delete-merged`.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -744,12 +743,19 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
         }
     }
     let is_current = c.current.as_deref() == Some(old.as_str());
+    // Other worktrees whose HEAD is on the old branch.
+    let others: Vec<crate::worktrees::Worktree> = crate::worktrees::list(c.setup, false)
+        .into_iter()
+        .filter(|w| !w.current && w.head_ref.as_deref() == Some(old_ref.as_str()))
+        .collect();
     let oid = c.branch_oid(&old);
     if oid.is_none() {
-        if is_current && is_copy {
+        // An unborn branch exists as the HEAD of some worktree.
+        let unborn = is_current || !others.is_empty();
+        if unborn && is_copy {
             return Err(Die::Fatal(msg::no_commit_on_branch(&old)));
         }
-        if !is_current {
+        if !unborn {
             return Err(Die::Fatal(msg::no_branch_named(&old)));
         }
     }
@@ -772,13 +778,18 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
     }
 
     let Some(oid) = oid else {
-        // Unborn current branch: only HEAD changes.
-        let mut hooks = c.hooks().without_reflogs();
-        hooks.mark_symbolic("HEAD");
-        c.run_tx(
-            RefUpdate::symref_update("HEAD", new_ref.as_str(), None).no_deref(true),
-            &mut hooks,
-        )?;
+        // Unborn branch: only the HEADs on it change.
+        if is_current {
+            let mut hooks = c.hooks().without_reflogs();
+            hooks.mark_symbolic("HEAD");
+            c.run_tx(
+                RefUpdate::symref_update("HEAD", new_ref.as_str(), None).no_deref(true),
+                &mut hooks,
+            )?;
+        }
+        if !move_other_heads(&others, &new_ref, |_| {}) {
+            return Err(Die::Fatal(msg::renamed_head_not_updated(&new)));
+        }
         return Ok(0);
     };
     let message = if is_copy {
@@ -830,10 +841,14 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
     }
     if old != new {
         let mut silent = c.hooks().without_reflogs();
-        c.run_tx(
-            RefUpdate::create(new_ref.as_str(), oid).no_deref(true),
-            &mut silent,
-        )?;
+        // A dangling symbolic reference of the new name is overwritten.
+        let dangling = matches!(c.store.read_raw(&new_ref), Ok(Some(Target::Symbolic(_))));
+        let update = if dangling {
+            RefUpdate::update(new_ref.as_str(), oid, None)
+        } else {
+            RefUpdate::create(new_ref.as_str(), oid)
+        };
+        c.run_tx(update.no_deref(true), &mut silent)?;
     }
     let create_log = logs
         .as_ref()
@@ -854,16 +869,15 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
 
     if !is_copy && old != new {
         // Other worktrees on the renamed branch follow it.
-        let all = crate::worktrees::list(c.setup, false);
-        for w in all.iter().filter(|w| !w.current) {
-            if w.head_ref.as_deref() == Some(old_ref.as_str()) {
-                let _ = std::fs::write(w.git_dir.join("HEAD"), format!("ref: {new_ref}\n"));
-                let head = match &w.id {
-                    Some(id) => format!("worktrees/{id}/HEAD"),
-                    None => "main-worktree/HEAD".to_owned(),
-                };
-                hooks.log(&head, ObjectId::null(hash), oid, &message, false);
-            }
+        let moved = move_other_heads(&others, &new_ref, |w| {
+            let head = match &w.id {
+                Some(id) => format!("worktrees/{id}/HEAD"),
+                None => "main-worktree/HEAD".to_owned(),
+            };
+            hooks.log(&head, ObjectId::null(hash), oid, &message, false);
+        });
+        if !moved {
+            return Err(Die::Fatal(msg::renamed_head_not_updated(&new)));
         }
     }
 
@@ -898,6 +912,37 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
     Ok(0)
 }
 
+/// Points the `HEAD` of each of `others` at `new_ref` under its lock,
+/// calling `done` for each one moved. Reports the ones that could not be
+/// updated; false when there was one.
+fn move_other_heads(
+    others: &[crate::worktrees::Worktree],
+    new_ref: &str,
+    mut done: impl FnMut(&crate::worktrees::Worktree),
+) -> bool {
+    let mut ok = true;
+    for w in others {
+        let head = w.git_dir.join("HEAD");
+        let written = rgit_fs::LockFile::acquire(&head, &rgit_fs::LockOptions::new())
+            .map_err(|e| rgit_refs::messages::cannot_lock("HEAD", e))
+            .and_then(|mut lock| {
+                lock.file_mut()
+                    .write_all(format!("ref: {new_ref}\n").as_bytes())
+                    .and_then(|()| lock.commit())
+                    .map_err(|e| e.to_string())
+            });
+        match written {
+            Ok(()) => done(w),
+            Err(e) => {
+                eprintln!("error: {e}");
+                eprintln!("error: {}", msg::head_of_worktree_not_updated(&w.path.display().to_string()));
+                ok = false;
+            }
+        }
+    }
+    ok
+}
+
 fn log_all_ref_updates(c: &Ctx<'_>) -> bool {
     match c.config.bool("core.logallrefupdates") {
         Ok(Some(v)) => v,
@@ -921,6 +966,20 @@ fn set_upstream_to(c: &Ctx<'_>, upstream: &str, args: &[String]) -> CmdResult {
             if c.branch_oid(&args[0]).is_none() {
                 if c.current.as_deref() == Some(args[0].as_str()) {
                     return Err(Die::Fatal(msg::no_commit_on_branch(&args[0])));
+                }
+                // `-u <remote> <branch>` meant `-u <remote>/<branch>`.
+                let slip = format!("{upstream}/{}", args[0]);
+                let is_remote = Remotes::from_config(c.config)
+                    .is_ok_and(|r| r.names().any(|n| n == upstream.as_bytes()));
+                if is_remote
+                    && c.store.resolve_oid(&format!("refs/remotes/{slip}")).ok().flatten().is_some()
+                    && c.advisor.enabled(Advice::SetUpstreamFailure).map_err(Die::Fatal)?
+                {
+                    eprintln!("fatal: {}", msg::SET_UPSTREAM_SINGLE_ARGUMENT);
+                    c.advisor
+                        .advise(Advice::SetUpstreamFailure, &msg::hint_set_upstream_slip(&slip))
+                        .map_err(Die::Fatal)?;
+                    return Err(Die::Exit(128));
                 }
                 return Err(Die::Fatal(msg::branch_does_not_exist(&args[0])));
             }
