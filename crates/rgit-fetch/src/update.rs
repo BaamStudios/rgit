@@ -132,9 +132,17 @@ pub fn decide_with(repo: &LocalRepo, entry: &Entry, force: bool, check_forced: b
     if forced && !check_forced {
         return Status::FastForward(old);
     }
-    let commits = repo.kind(&old) == Some(ObjectKind::Commit)
-        && repo.kind(&entry.oid) == Some(ObjectKind::Commit);
-    if commits && graph::is_ancestor(&repo.odb, &old, &entry.oid) {
+    // Tags are peeled for the check, as in git: an annotated tag of a
+    // descendant is a fast-forward (and then fails on a branch, which must
+    // point to a commit).
+    let commit = |id: &ObjectId| {
+        graph::peel(&repo.odb, id).filter(|p| repo.kind(p) == Some(ObjectKind::Commit))
+    };
+    let fast_forward = match (commit(&old), commit(&entry.oid)) {
+        (Some(o), Some(n)) => graph::is_ancestor(&repo.odb, &o, &n),
+        _ => false,
+    };
+    if fast_forward {
         Status::FastForward(old)
     } else if forced {
         Status::Forced(old)

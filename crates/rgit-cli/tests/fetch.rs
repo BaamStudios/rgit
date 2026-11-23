@@ -139,6 +139,19 @@ fn updates() {
         }
         compare(&mut fx, "cl", args);
     }
+    // An annotated tag into an existing branch: a fast-forward of the
+    // peeled commit that cannot be written, or a rejected one.
+    for args in [
+        &["fetch", "origin", "v3:dst"][..],
+        &["fetch", "origin", "v1a:dst"],
+        &["fetch", "origin", "v3:refs/remotes/t"],
+    ] {
+        let mut fx = fixture().git(["-C", "cl", "branch", "dst"]);
+        if fx.is_skipped() {
+            return;
+        }
+        compare(&mut fx, "cl", args);
+    }
 }
 
 #[test]
