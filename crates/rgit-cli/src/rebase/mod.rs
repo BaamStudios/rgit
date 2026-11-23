@@ -126,6 +126,8 @@ pub struct Options {
     pub apply: bool,
     /// Options for its `am` (`-C<n>`, `--whitespace=`, `--ignore-whitespace`).
     pub am_opts: Vec<String>,
+    /// `--trailer <trailer>`: added to every replayed commit.
+    pub trailers: Vec<String>,
 }
 
 /// `--rebase-merges[=<mode>]`.
@@ -169,6 +171,8 @@ struct State {
     reschedule_failed_exec: bool,
     /// Sign the new commits (`gpg_sign_opt`).
     gpg_sign: Option<Sign>,
+    /// `--trailer`s (state file `trailer`, one per line).
+    trailers: Vec<String>,
 }
 
 fn lossy(b: &[u8]) -> String {
@@ -795,7 +799,12 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
             )?
             .is_empty();
         if linear {
-            if !(o.force || o.signoff || o.committer_date_is_author_date || o.ignore_date) {
+            if !(o.force
+                || o.signoff
+                || o.committer_date_is_author_date
+                || o.ignore_date
+                || !o.trailers.is_empty())
+            {
                 if let Some(b) = &switch_to {
                     let current = sequencer::head_commit(&mut repo);
                     let old_tree = match current {
@@ -896,6 +905,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
             force: o.force,
             reschedule_failed_exec: false,
             gpg_sign: signing::resolve(&repo.config, o.gpg_sign.clone()),
+            trailers: Vec::new(),
         };
         if !quiet {
             println!("{}", msg::REWINDING);
@@ -1003,9 +1013,14 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         xopts: o.xopts.clone(),
         autostash: stash,
         squash_onto,
-        force: o.force || o.signoff || o.committer_date_is_author_date || o.ignore_date,
+        force: o.force
+            || o.signoff
+            || o.committer_date_is_author_date
+            || o.ignore_date
+            || !o.trailers.is_empty(),
         reschedule_failed_exec,
         gpg_sign: signing::resolve(&repo.config, o.gpg_sign.clone()),
+        trailers: o.trailers.clone(),
     };
     if o.interactive {
         // git reads the setting once more before writing the list.
@@ -1696,6 +1711,10 @@ fn write_state(
     if let Some(sq) = &s.squash_onto {
         write(&f("squash-onto"), format!("{}\n", sq.to_hex()))?;
     }
+    if !s.trailers.is_empty() {
+        let lines: String = s.trailers.iter().map(|t| format!("{t}\n")).collect();
+        write(&f("trailer"), lines)?;
+    }
     if s.reschedule_failed_exec {
         write(&f("reschedule-failed-exec"), "")?;
     } else {
@@ -1744,6 +1763,9 @@ fn read_state(repo: &Repo, dir: &Path) -> Result<State, Die> {
     let signoff = exists("signoff");
     let cdate_is_adate = exists("cdate_is_adate");
     let ignore_date = exists("ignore_date");
+    let trailers: Vec<String> = read("trailer")
+        .map(|s| s.lines().map(str::to_owned).collect())
+        .unwrap_or_default();
     Ok(State {
         head_name,
         onto,
@@ -1758,9 +1780,10 @@ fn read_state(repo: &Repo, dir: &Path) -> Result<State, Die> {
         xopts,
         autostash: read("autostash").map(|s| s.trim().to_owned()),
         squash_onto: oid("squash-onto"),
-        force: signoff || cdate_is_adate || ignore_date,
+        force: signoff || cdate_is_adate || ignore_date || !trailers.is_empty(),
         reschedule_failed_exec: exists("reschedule-failed-exec"),
         gpg_sign: read("gpg_sign_opt").and_then(|s| Sign::from_opt(s.trim_end_matches('\n'))),
+        trailers,
     })
 }
 
@@ -2210,6 +2233,7 @@ impl<'c> Rebase<'c> {
         if self.state.signoff {
             message = sequencer::signoff_message(&repo, &message, &comment)?;
         }
+        message = self.add_trailers(&repo, message, &comment)?;
         let original_author = self.author_of(&commit, &id, false)?;
         let author = self.author_of(&commit, &id, self.state.ignore_date)?;
         let subject = lossy(sequencer::subject_line(commit.message()));
@@ -2453,11 +2477,13 @@ impl<'c> Rebase<'c> {
         }
 
         let message = if last {
-            rgit_commit::message::cleanup(
+            let m = rgit_commit::message::cleanup(
                 &template,
                 rgit_commit::message::Cleanup::Strip.resolve(false),
                 &comment,
-            )
+            );
+            // The `--trailer`s go into the final message of the chain.
+            self.add_trailers(&repo, m, &comment)?
         } else {
             template
         };
@@ -2903,6 +2929,27 @@ impl<'c> Rebase<'c> {
         )];
         let args = ["--amend", "--allow-empty", "-n", "-e"].map(str::to_owned);
         self.commit_child(&args, &env, false)
+    }
+
+    /// `--trailer`: the trailers added to a replayed commit's message (as
+    /// `interpret-trailers --trailer` does, following `trailer.*`).
+    fn add_trailers(&self, repo: &Repo, message: Vec<u8>, comment: &str) -> Result<Vec<u8>, Fail> {
+        if self.state.trailers.is_empty() {
+            return Ok(message);
+        }
+        let conf = sequencer::trailer_config(repo)?;
+        let opts = rgit_trailer::Options {
+            comment: comment.as_bytes().into(),
+            ..rgit_trailer::Options::default()
+        };
+        let args: Vec<rgit_trailer::NewTrailer> = self
+            .state
+            .trailers
+            .iter()
+            .map(|t| rgit_trailer::NewTrailer::new(t.as_bytes()))
+            .collect();
+        let mut on_error = |m: &str| eprintln!("error: {m}");
+        Ok(rgit_trailer::process(&message, &conf, &opts, &args, &mut on_error).to_vec())
     }
 
     /// The state of a `merge` that stopped with conflicts.
