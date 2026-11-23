@@ -219,6 +219,9 @@ pub struct Options {
     pub paths: Vec<String>,
     /// `--` was given: the arguments before it are revisions.
     pub dashdash: bool,
+    /// The only tip is the implicit `HEAD` of a command without revisions;
+    /// a file named `HEAD` does not make it ambiguous.
+    pub default_head: bool,
     /// `--simplify-by-decoration`.
     pub simplify_by_decoration: bool,
     /// `--full-diff`: the diffs of path-limited commits show every path.
@@ -371,6 +374,7 @@ impl Options {
             exclude: Vec::new(),
             paths: Vec::new(),
             dashdash: false,
+            default_head: false,
             simplify_by_decoration: false,
             full_diff: false,
             follow: None,
@@ -1088,6 +1092,7 @@ impl Options {
 
     /// Start at `HEAD` (log without revisions).
     pub fn push_head(&mut self) {
+        self.default_head = true;
         self.tips.push(Tip::Rev {
             arg: "HEAD".into(),
             negate: false,

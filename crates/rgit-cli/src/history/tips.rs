@@ -571,7 +571,7 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
                     found => found?,
                 };
                 revisions = true;
-                if !opts.dashdash && arg != "-" && also_a_file(repo, arg) {
+                if !opts.dashdash && !opts.default_head && arg != "-" && also_a_file(repo, arg) {
                     return Err(Die::Fatal(msg::revision_and_filename(arg)));
                 }
                 let symmetric = items.iter().any(|i| i.left);

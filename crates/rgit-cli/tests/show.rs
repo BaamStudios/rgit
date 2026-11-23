@@ -79,3 +79,20 @@ fn log_with_diffs() {
         same(&mut fx, args);
     }
 }
+
+/// A file named `HEAD` does not make the implicit `HEAD` of `show` and
+/// `log` ambiguous; an explicit `HEAD` still is (t3404 "rebase with a file
+/// named HEAD in worktree").
+#[test]
+fn file_named_head() {
+    let mut fx = history().write("HEAD", "").git(["add", "HEAD"]);
+    for args in [
+        &["show", "-s", "--pretty=format:%an"][..],
+        &["log", "--oneline"],
+        &["show", "-s", "HEAD"],
+        &["log", "--oneline", "HEAD"],
+        &["log", "--oneline", "HEAD", "--"],
+    ] {
+        same(&mut fx, args);
+    }
+}
