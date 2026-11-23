@@ -31,7 +31,7 @@ pub(crate) struct Record {
     pub after: Option<ObjectId>,
 }
 
-/// Adds `update-ref` commands after each commit of `todo` that local
+/// Adds `update-ref` commands after each commit (or merge) of `todo` that local
 /// branches point to; a branch checked out in a worktree gets a comment
 /// instead. The branch being rebased (`head_name`) is left out, unless
 /// its commit also has a branch checked out in another worktree; then it
@@ -49,7 +49,7 @@ pub(crate) fn add_commands(repo: &Repo, todo: &mut todo::Todo, head_name: &str, 
     for line in lines {
         let commit = line
             .item()
-            .filter(|i| i.cmd.picks() || i.cmd == Cmd::Drop)
+            .filter(|i| i.cmd.picks() || matches!(i.cmd, Cmd::Drop | Cmd::Merge))
             .and_then(|i| i.commit);
         todo.lines.push(line);
         let Some(names) = commit.and_then(|c| at.get(&c)) else {

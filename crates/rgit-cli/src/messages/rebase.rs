@@ -480,11 +480,21 @@ pub fn could_not_resolve(name: &str) -> String {
     format!("could not resolve '{name}'")
 }
 
+pub fn not_a_commit(oid: &str, kind: &str) -> String {
+    format!("object {oid} is a {kind}, not a commit")
+}
+
+pub fn unable_to_parse(name: &str) -> String {
+    format!("unable to parse '{name}'")
+}
+
+pub fn merge_branches(labels: &str) -> String {
+    format!("Merge branches '{labels}'")
+}
+
 pub fn merge_branch(label: &str) -> String {
     format!("Merge branch '{label}'")
 }
-
-pub const OCTOPUS_NOT_SUPPORTED: &str = "rgit: rebase: octopus merges are not supported yet";
 
 pub fn invalid_label(label: &str) -> String {
     format!("'{label}' is not a valid label")
@@ -529,10 +539,6 @@ pub fn update_ref_failed(name: &str, why: &str) -> String {
 pub const UPDATED_REFS: &str = "Updated the following refs with --update-refs:";
 pub const FAILED_REFS: &str = "Failed to update the following refs with --update-refs:";
 pub const REWRITTEN_DURING_REBASE: &str = "rewritten during rebase";
-
-pub fn could_not_merge(label: &str) -> String {
-    format!("could not merge {label}")
-}
 
 pub fn invalid_rebase_merges(mode: &str) -> String {
     format!("Unknown rebase-merges mode: {mode}")
