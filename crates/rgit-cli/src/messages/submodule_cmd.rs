@@ -296,3 +296,14 @@ pub fn could_not_lock_config(path: &str) -> String {
 pub fn could_not_unset_worktree(name: &str) -> String {
     format!("Could not unset core.worktree setting in submodule '{name}'")
 }
+
+pub fn value_not_recognized(value: &str, key: &str) -> String {
+    format!("Value '{value}' for {key} is not recognized")
+}
+pub fn cannot_add_alternate(name: &str, path: &str) -> String {
+    format!("submodule '{name}' cannot add alternate: path '{path}' does not exist")
+}
+pub const ALTERNATE_ERROR_STRATEGY_HINT: &str = "An alternate computed from a superproject's alternate is invalid.\n\
+To allow Git to clone without an alternate in such a case, set\n\
+submodule.alternateErrorStrategy to 'info' or, equivalently, clone with\n\
+'--reference-if-able' instead of '--reference'.";

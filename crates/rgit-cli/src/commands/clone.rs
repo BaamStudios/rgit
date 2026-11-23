@@ -1255,6 +1255,14 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         for spec in &opts.recurse {
             config_add(&git_dir.join("config"), "submodule.active", spec)?;
         }
+        // Submodules borrow from the matching repositories below the
+        // references' `modules/` (config/submodule.adoc).
+        let any_reference = !opts.reference.is_empty() || !opts.reference_if_able.is_empty();
+        if !opts.recurse.is_empty() && any_reference {
+            let strategy = if opts.reference.is_empty() { "info" } else { "die" };
+            config_add(&git_dir.join("config"), "submodule.alternateLocation", "superproject")?;
+            config_add(&git_dir.join("config"), "submodule.alternateErrorStrategy", strategy)?;
+        }
     }
     junk.on_signal.clear();
     if let (Some(oid), false, Some(_)) = (checkout_oid, opts.no_checkout, &work_tree) {
