@@ -155,6 +155,9 @@ pub fn is_main(arg: &str) -> String {
     format!("'{arg}' is a main working tree")
 }
 
+pub const CONTAINS_SUBMODULES: &str =
+    "working trees containing submodules cannot be moved or removed";
+
 pub fn cannot_locked(cmd: &str, reason: &str) -> String {
     if reason.is_empty() {
         format!(

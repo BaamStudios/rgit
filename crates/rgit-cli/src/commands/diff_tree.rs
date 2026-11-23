@@ -253,6 +253,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let files = crate::diff::collect::tree_files(&repo, &trees[0], &pathspec)?;
         pairs = crate::diff::collect::with_unmodified(pairs, files);
     }
+    crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, false)?;
     diff::attr_retain(&repo, &mut pairs, attr_filter)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
@@ -345,7 +346,14 @@ impl Commits<'_> {
         w.walk(old.as_ref(), Some(new), b"")?;
         let mut out = Output::new(Some(self.repo), self.repo.hash, self.opts, formats, false)?;
         out.set_color(self.opts)?;
-        out.render(std::mem::take(&mut w.pairs))
+        let mut pairs = std::mem::take(&mut w.pairs);
+        crate::submodules::IgnoreRules::drop_ignored(
+            self.repo,
+            &mut pairs,
+            self.opts.ignore_submodules()?,
+            false,
+        )?;
+        out.render(pairs)
     }
 
     /// The diffs `commit` gets (one per parent with `-m`), or none when the
