@@ -612,6 +612,7 @@ pub fn run_with_reflog_action(
         verbose: args.verbose > 0 && !quiet_mode,
     };
     rgit_protocol::sideband::set_remote_colors(crate::color::remote_colors(&repo.config));
+    crate::color::set_sideband_controls(&repo.config, None);
     let mut result =
         rgit_fetch::fetch(&repo, &remote, &opts, &connect).map_err(|e| Die::Fatal(e.to_string()))?;
     // Without FETCH_HEAD, refs stored nowhere are not listed.

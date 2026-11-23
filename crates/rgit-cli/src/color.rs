@@ -104,6 +104,54 @@ pub fn want(config: &ConfigSet, var: Option<&str>, cli: Option<ColorBool>) -> Re
 /// The colours of remote messages (`color.remote`, else `color.ui`;
 /// `auto` when stderr is a terminal), `None` without colour. Invalid
 /// `color.remote.<slot>` values keep the default.
+/// `sideband.allowControlCharacters` (or `sideband.<url>.*` for `url`)
+/// for remote messages: a comma-separated list of `color`, `cursor`,
+/// `erase`, or `true`/`false`.
+pub fn set_sideband_controls(config: &ConfigSet, url: Option<&str>) {
+    use rgit_protocol::sideband as sb;
+    let key = bstr::BStr::new("allowcontrolcharacters");
+    let value = url
+        .and_then(rgit_config::urlmatch::Url::parse)
+        .and_then(|u| {
+            rgit_config::urlmatch::best_entries(
+                config.entries(),
+                bstr::BStr::new("sideband"),
+                Some(key),
+                &u,
+            )
+            .into_iter()
+            .next()
+            .map(|(_, e)| e.value.clone())
+        })
+        .or_else(|| {
+            config
+                .get("sideband.allowcontrolcharacters")
+                .map(|e| e.value.clone())
+        });
+    let Some(value) = value else {
+        sb::set_allowed_controls(sb::ALLOW_COLOR);
+        return;
+    };
+    let Some(v) = value else {
+        // A bare key is `true`.
+        sb::set_allowed_controls(sb::ALLOW_ALL);
+        return;
+    };
+    let v = v.to_string().to_ascii_lowercase();
+    let mut allowed = 0;
+    for word in v.split(',').map(str::trim) {
+        allowed |= match word {
+            "color" => sb::ALLOW_COLOR,
+            "cursor" => sb::ALLOW_CURSOR,
+            "erase" => sb::ALLOW_ERASE,
+            "false" | "no" | "off" | "0" => 0,
+            "true" | "yes" | "on" | "1" => sb::ALLOW_ALL,
+            _ => sb::ALLOW_COLOR,
+        };
+    }
+    sb::set_allowed_controls(allowed);
+}
+
 pub fn remote_colors(config: &ConfigSet) -> Option<rgit_protocol::sideband::RemoteColors> {
     let setting = match colorbool(config, "color.remote") {
         Ok(Some(c)) => c,
