@@ -39,6 +39,8 @@ pub(crate) struct Params {
     pub quiet: bool,
     /// `--rebase-merges=rebase-cousins`.
     pub cousins: bool,
+    /// `--root --onto`: root commits go onto the new base.
+    pub root_onto: bool,
 }
 
 /// A commit of the range.
@@ -305,7 +307,7 @@ pub(crate) fn todo_list(ctx: &Context, repo: &Repo, p: &Params) -> Result<Todo, 
                 };
                 format!("{} # {subject}", repo.abbrev(fp, abbrev_len))
             }
-            None if p.cousins => "onto".to_owned(),
+            None if p.cousins || p.root_onto => "onto".to_owned(),
             None => "[new root]".to_owned(),
         };
         lines.push(Line::Cmd(Item::new(Cmd::Reset, base)));
