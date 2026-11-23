@@ -40,8 +40,7 @@ pub struct Driver {
     pub algorithm: Option<(Algorithm, bool)>,
     /// `diff.<driver>.wordRegex`, else the built-in word pattern (for
     /// `--word-diff`).
-    #[allow(dead_code)]
-    pub word_regex: Option<String>,
+    pub word_regex: Option<regex::bytes::Regex>,
 }
 
 /// What the `diff` attribute says about a path.
@@ -135,7 +134,10 @@ pub fn load(config: &ConfigSet, name: &str) -> Result<Driver, Die> {
         command: get("command"),
         trust_exit_code: flag("trustexitcode")?.unwrap_or(false),
         algorithm: get("algorithm").and_then(|v| Algorithm::parse(&v)),
-        word_regex: get("wordregex").or_else(|| builtin.map(|b| b.word_regex.to_owned())),
+        word_regex: match get("wordregex") {
+            Some(v) => Some(super::options::word_regex(&v)?),
+            None => builtin.map(|b| b.word_regex()),
+        },
     })
 }
 

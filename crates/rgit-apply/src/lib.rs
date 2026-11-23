@@ -29,6 +29,8 @@ pub enum LineKind {
 pub struct HunkLine {
     pub kind: LineKind,
     pub text: Vec<u8>,
+    /// 1-based line number in the patch (0 when not from a patch).
+    pub line: usize,
 }
 
 /// One `@@` section of a patch.
@@ -72,6 +74,14 @@ impl Hunk {
     }
 }
 
+/// One hunk of a binary patch, inflated: the new contents, or (`delta`)
+/// a delta in the pack format against the old contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryHunk {
+    pub delta: bool,
+    pub data: Vec<u8>,
+}
+
 /// The patch for one file.
 #[derive(Debug, Clone, Default)]
 pub struct FilePatch {
@@ -95,8 +105,11 @@ pub struct FilePatch {
     pub old_oid: Option<String>,
     pub new_oid: Option<String>,
     pub hunks: Vec<Hunk>,
-    /// A binary patch (not applied yet).
+    /// A binary patch (`GIT binary patch` or `Binary files ... differ`).
     pub binary: bool,
+    /// The data of a `GIT binary patch`: the forward hunk and, when
+    /// given, the reverse one.
+    pub binary_data: Option<(BinaryHunk, Option<BinaryHunk>)>,
     /// Whether the patch came with a `diff --git` header.
     pub is_git: bool,
     /// Lines added and deleted.
@@ -125,6 +138,10 @@ impl FilePatch {
         std::mem::swap(&mut self.old_mode, &mut self.new_mode);
         std::mem::swap(&mut self.old_oid, &mut self.new_oid);
         std::mem::swap(&mut self.added, &mut self.deleted);
+        self.binary_data = self
+            .binary_data
+            .take()
+            .and_then(|(f, r)| r.map(|r| (r, Some(f))));
         for h in &mut self.hunks {
             h.reverse();
         }
@@ -151,6 +168,9 @@ pub struct ApplyOptions {
     pub unidiff_zero: bool,
     /// `--allow-overlap`.
     pub allow_overlap: bool,
+    /// `--ignore-space-change`: lines match when they differ only in the
+    /// amount of whitespace; context lines keep the file's whitespace.
+    pub ignore_whitespace: bool,
 }
 
 impl Default for ApplyOptions {
@@ -159,6 +179,7 @@ impl Default for ApplyOptions {
             min_context: usize::MAX,
             unidiff_zero: false,
             allow_overlap: false,
+            ignore_whitespace: false,
         }
     }
 }
@@ -221,13 +242,35 @@ fn split_image(data: &[u8]) -> Vec<Line> {
     out
 }
 
-fn matches_at(img: &[Line], pre: &[&[u8]], at: usize, allow_overlap: bool) -> bool {
+/// `line` with each run of whitespace as one space and none at the end.
+fn squeeze(line: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(line.len());
+    let mut space = false;
+    for &c in line {
+        if c.is_ascii_whitespace() {
+            space = true;
+        } else {
+            if space {
+                out.push(b' ');
+            }
+            space = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn same_line(p: &[u8], l: &[u8], ignore_ws: bool) -> bool {
+    p == l || (ignore_ws && squeeze(p) == squeeze(l))
+}
+
+fn matches_at(img: &[Line], pre: &[&[u8]], at: usize, opts: &ApplyOptions) -> bool {
     if at + pre.len() > img.len() {
         return false;
     }
-    pre.iter()
-        .zip(&img[at..at + pre.len()])
-        .all(|(p, l)| *p == l.text.as_slice() && (allow_overlap || !l.patched))
+    pre.iter().zip(&img[at..at + pre.len()]).all(|(p, l)| {
+        same_line(p, &l.text, opts.ignore_whitespace) && (opts.allow_overlap || !l.patched)
+    })
 }
 
 /// Finds where `pre` matches: at the start only, at the end only, or the
@@ -238,7 +281,7 @@ fn find_pos(
     pos: usize,
     begin: bool,
     end: bool,
-    allow_overlap: bool,
+    opts: &ApplyOptions,
 ) -> Option<usize> {
     if pre.len() > img.len() {
         return None;
@@ -249,10 +292,10 @@ fn find_pos(
         if begin && end && limit != 0 {
             return None;
         }
-        return matches_at(img, pre, at, allow_overlap).then_some(at);
+        return matches_at(img, pre, at, opts).then_some(at);
     }
     let start = pos.min(limit);
-    if matches_at(img, pre, start, allow_overlap) {
+    if matches_at(img, pre, start, opts) {
         return Some(start);
     }
     let mut d = 1;
@@ -262,11 +305,11 @@ fn find_pos(
         if fwd > limit && back.is_none() {
             return None;
         }
-        if fwd <= limit && matches_at(img, pre, fwd, allow_overlap) {
+        if fwd <= limit && matches_at(img, pre, fwd, opts) {
             return Some(fwd);
         }
         if let Some(b) = back {
-            if matches_at(img, pre, b, allow_overlap) {
+            if matches_at(img, pre, b, opts) {
                 return Some(b);
             }
         }
@@ -321,11 +364,37 @@ pub fn apply_hunks(image: &[u8], hunks: &[Hunk], opts: &ApplyOptions) -> Applied
             let pre = &pre_all[drop_lead..pre_all.len() - drop_trail];
             let post = &post_all[drop_lead..post_all.len() - drop_trail];
             let start = usize::try_from(pos.max(0)).unwrap_or(0);
-            if let Some(at) = find_pos(&img, pre, start, begin, end, opts.allow_overlap) {
-                let new_lines = post.iter().map(|t| Line {
-                    text: t.to_vec(),
-                    patched: true,
-                });
+            if let Some(at) = find_pos(&img, pre, start, begin, end, opts) {
+                let new_lines: Vec<Line> = if opts.ignore_whitespace {
+                    // Context lines keep the file's whitespace.
+                    let window = &hunk.lines[drop_lead..hunk.lines.len() - drop_trail];
+                    let mut k = at;
+                    let mut lines = Vec::with_capacity(post.len());
+                    for l in window {
+                        match l.kind {
+                            LineKind::Context => {
+                                lines.push(Line {
+                                    text: img[k].text.clone(),
+                                    patched: true,
+                                });
+                                k += 1;
+                            }
+                            LineKind::Remove => k += 1,
+                            LineKind::Add => lines.push(Line {
+                                text: l.text.clone(),
+                                patched: true,
+                            }),
+                        }
+                    }
+                    lines
+                } else {
+                    post.iter()
+                        .map(|t| Line {
+                            text: t.to_vec(),
+                            patched: true,
+                        })
+                        .collect()
+                };
                 img.splice(at..at + pre.len(), new_lines);
                 break HunkResult::Applied {
                     line: at + 1,

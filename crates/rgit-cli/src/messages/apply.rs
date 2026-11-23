@@ -47,7 +47,17 @@ pub const REMOVAL_LEAVES_CONTENTS: &str = "removal patch leaves file contents";
 pub const WHILE_SEARCHING: &str = "while searching for:";
 
 /// Our own message: `--3way` is not implemented yet.
-pub const THREEWAY_UNSUPPORTED: &str = "--3way is not supported by rgit yet";
+pub const LACKS_BLOB: &str = "repository lacks the necessary blob to perform 3-way merge.";
+pub const PERFORMING_3WAY: &str = "Performing three-way merge...";
+pub const FALLING_BACK: &str = "Falling back to direct application...";
+
+pub fn applied_3way_cleanly(name: &str) -> String {
+    format!("Applied patch to '{name}' cleanly.")
+}
+
+pub fn applied_3way_conflicts(name: &str) -> String {
+    format!("Applied patch to '{name}' with conflicts.")
+}
 
 pub fn outside_repository(option: &str) -> String {
     format!("'{option}' outside a repository")
@@ -155,9 +165,16 @@ pub fn binary_without_index(name: &str) -> String {
     format!("cannot apply binary patch to '{name}' without full index line")
 }
 
-/// Our own message: binary patches are not applied yet (#150).
-pub fn binary_unsupported(name: &str) -> String {
-    format!("cannot apply binary patch to '{name}': not supported by rgit yet")
+pub fn binary_preimage_mismatch(name: &str, have: &str) -> String {
+    format!("the patch applies to '{name}' ({have}), which does not match the current contents.")
+}
+
+pub fn binary_wrong_result(name: &str, expected: &str, got: &str) -> String {
+    format!("binary patch to '{name}' creates incorrect result (expecting {expected}, got {got})")
+}
+
+pub fn binary_delta_failed(name: &str) -> String {
+    format!("binary patch does not apply to '{name}'")
 }
 
 pub fn sha1_lacking(name: &str) -> String {
@@ -171,4 +188,39 @@ pub fn rej_header(name: &str) -> String {
 
 pub fn unable_to_add(name: &str) -> String {
     format!("unable to add cache entry for {name}")
+}
+
+pub fn bad_ignore_whitespace(arg: &str) -> String {
+    format!("unrecognized whitespace ignore option '{arg}'")
+}
+
+pub fn ws_squelched(n: usize) -> String {
+    format!(
+        "squelched {n} whitespace error{}",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
+pub fn ws_lines_add(n: usize) -> String {
+    if n == 1 {
+        "1 line adds whitespace errors.".to_string()
+    } else {
+        format!("{n} lines add whitespace errors.")
+    }
+}
+
+pub fn ws_lines_fixed(n: usize) -> String {
+    if n == 1 {
+        "1 line applied after fixing whitespace errors.".to_string()
+    } else {
+        format!("{n} lines applied after fixing whitespace errors.")
+    }
+}
+
+pub fn unable_to_rmdir(path: &str, err: &str) -> String {
+    format!("unable to rmdir '{path}': {err}")
+}
+
+pub fn bad_gitlink(path: &str) -> String {
+    format!("invalid submodule commit in the patch for '{path}'")
 }

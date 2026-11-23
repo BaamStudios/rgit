@@ -9,6 +9,7 @@
 //! indent heuristic scores positions), the behaviour was derived from the
 //! Myers paper and from differential tests against the `git` binary.
 
+pub mod binary;
 mod compact;
 pub mod diffcore;
 pub mod funcname;

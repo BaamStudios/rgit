@@ -745,6 +745,7 @@ impl Parser<'_, '_> {
                         hunk.lines.push(HunkLine {
                             kind: LineKind::Context,
                             text: text.to_vec(),
+                            line: j + 1,
                         });
                     }
                     Some(b'-') => {
@@ -755,6 +756,7 @@ impl Parser<'_, '_> {
                         hunk.lines.push(HunkLine {
                             kind: LineKind::Remove,
                             text: line[1..].to_vec(),
+                            line: j + 1,
                         });
                     }
                     Some(b'+') => {
@@ -765,6 +767,7 @@ impl Parser<'_, '_> {
                         hunk.lines.push(HunkLine {
                             kind: LineKind::Add,
                             text: line[1..].to_vec(),
+                            line: j + 1,
                         });
                     }
                     Some(b'\\') => {
@@ -835,39 +838,75 @@ impl Parser<'_, '_> {
     }
 
     /// `GIT binary patch` or `Binary files ... differ` at `j`: marks the
-    /// patch binary and skips its data.
-    fn binary(&mut self, p: &mut FilePatch, mut j: usize) -> usize {
+    /// patch binary and reads its data (up to two blocks, forward and
+    /// reverse, each `literal N` or `delta N`, data lines and an empty
+    /// line).
+    fn binary(&mut self, p: &mut FilePatch, mut j: usize) -> Result<usize, ParseError> {
         let n = self.lines.len();
         if j >= n {
-            return j;
+            return Ok(j);
         }
         let line = chomp(self.lines[j]);
         if line == b"GIT binary patch" {
             p.binary = true;
+            let start = j;
             j += 1;
-            // Up to two blocks (forward and reverse), each `literal N` or
-            // `delta N` followed by data lines and an empty line.
+            let mut blocks = Vec::new();
             for _ in 0..2 {
                 if j >= n {
                     break;
                 }
                 let l = chomp(self.lines[j]);
-                if !(l.starts_with(b"literal ") || l.starts_with(b"delta ")) {
+                let (delta, size) = if let Some(r) = l.strip_prefix(b"literal ") {
+                    (false, r)
+                } else if let Some(r) = l.strip_prefix(b"delta ") {
+                    (true, r)
+                } else {
                     break;
-                }
+                };
+                let size: Option<usize> =
+                    std::str::from_utf8(size).ok().and_then(|t| t.parse().ok());
                 j += 1;
+                let mut zipped = Vec::new();
+                let mut ok = size.is_some();
                 while j < n && !chomp(self.lines[j]).is_empty() {
+                    match rgit_diff::binary::decode_line(chomp(self.lines[j])) {
+                        Some(d) if ok => zipped.extend(d),
+                        _ => ok = false,
+                    }
                     j += 1;
                 }
+                let data = if ok {
+                    rgit_diff::binary::inflate(&zipped).filter(|d| Some(d.len()) == size)
+                } else {
+                    None
+                };
+                let Some(data) = data else {
+                    let text = if j < n {
+                        self.line_text(j)
+                    } else {
+                        String::new()
+                    };
+                    return Err(self.err(msg::corrupt_binary(self.source, j + 1, &text)));
+                };
+                blocks.push(crate::BinaryHunk { delta, data });
                 if j < n {
                     j += 1;
                 }
+            }
+            if blocks.is_empty() {
+                // git reports the patch and then finds no valid one.
+                return Err(self.err(msg::unrecognized_binary(self.source, start + 1)));
+            }
+            let mut it = blocks.into_iter();
+            if let Some(forward) = it.next() {
+                p.binary_data = Some((forward, it.next()));
             }
         } else if line.starts_with(b"Binary files ") && line.ends_with(b" differ") {
             p.binary = true;
             j += 1;
         }
-        j
+        Ok(j)
     }
 
     fn run(&mut self) -> Result<Vec<FilePatch>, ParseError> {
@@ -890,7 +929,7 @@ impl Parser<'_, '_> {
                 };
                 let mut k = self.hunks(&mut p, j)?;
                 if p.hunks.is_empty() {
-                    k = self.binary(&mut p, k);
+                    k = self.binary(&mut p, k)?;
                 }
                 if p.hunks.is_empty()
                     && !p.binary

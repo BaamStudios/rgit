@@ -130,3 +130,5 @@ pub fn invalid_color(value: &str) -> String {
 pub fn unable_to_read(hex: &str) -> String {
     format!("unable to read {hex}")
 }
+
+pub const HELP_TEXTCONV: &str = "use textconv filters for the blamed file";

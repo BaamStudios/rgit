@@ -1300,6 +1300,8 @@ impl Printer<'_, '_> {
             d.formats,
             !plumbing,
         )?;
+        // log and show run textconv filters unless told not to.
+        out.textconv = d.opts.textconv.unwrap_or(!plumbing);
         out.set_color(&d.opts)?;
         let (bytes, _) = out.render(std::mem::take(&mut w.pairs))?;
         if bytes.is_empty() {
