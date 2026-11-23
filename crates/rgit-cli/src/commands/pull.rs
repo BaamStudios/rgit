@@ -33,9 +33,8 @@
 //!   before fetching, as `merge-base --fork-point`), so that commits the
 //!   upstream rewrote are not replayed; the fetched head when there is
 //!   none or it is already part of the fetched history.
-//!
-//! Not yet: `--rebase=interactive` (#155) and `--rebase=merges` (rebase
-//! has no `--rebase-merges` yet) when the pull is not a fast-forward.
+//!   `--rebase=merges` adds `--rebase-merges`, `--rebase=interactive`
+//!   adds `--interactive` (after the verbosity, as git).
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -428,9 +427,16 @@ impl Args {
     }
 
     /// `rebase` with the options a rebasing pull passes on.
-    fn rebase_argv(&self, autostash: bool, onto: &ObjectId, upstream: &ObjectId) -> Vec<String> {
+    fn rebase_argv(
+        &self,
+        autostash: bool,
+        mode: Option<&str>,
+        onto: &ObjectId,
+        upstream: &ObjectId,
+    ) -> Vec<String> {
         let mut a = vec!["rebase".to_owned()];
         self.verbosity_args(&mut a);
+        a.extend(mode.map(str::to_owned));
         a.extend(self.diffstat.iter().cloned());
         a.extend(self.strategies.iter().cloned());
         a.extend(self.strategy_opts.iter().cloned());
@@ -754,13 +760,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             drop(repo);
             return children.run(&args.merge_argv(Some("--ff-only"), Some(rebase_autostash)));
         }
-        match rebase {
-            Some(Rebase::Interactive) => {
-                return Err(fatal(msg::rebase_mode_not_supported("interactive")));
-            }
-            Some(Rebase::Merges) => return Err(fatal(msg::rebase_mode_not_supported("merges"))),
-            _ => {}
-        }
         let onto = merge_heads[0];
         // A fork point the fetched history already contains gives the
         // same commits as the fetched head itself.
@@ -769,7 +768,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             _ => onto,
         };
         drop(repo);
-        return children.run(&args.rebase_argv(rebase_autostash, &onto, &upstream));
+        let mode = match rebase {
+            Some(Rebase::Merges) => Some("--rebase-merges"),
+            Some(Rebase::Interactive) => Some("--interactive"),
+            _ => None,
+        };
+        return children.run(&args.rebase_argv(rebase_autostash, mode, &onto, &upstream));
     }
     drop(repo);
     children.run(&args.merge_argv(ff.as_deref(), stash))

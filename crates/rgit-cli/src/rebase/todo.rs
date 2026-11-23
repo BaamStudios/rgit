@@ -472,7 +472,8 @@ pub(crate) fn autosquash(repo: &mut Repo, todo: &mut Todo) {
         .iter()
         .map(|l| {
             let i = l.item()?;
-            if !i.cmd.picks() {
+            // A `merge -C` is a target too (by its subject).
+            if !i.cmd.picks() && i.cmd != Cmd::Merge {
                 return None;
             }
             let c = i.commit?;
@@ -493,6 +494,9 @@ pub(crate) fn autosquash(repo: &mut Repo, todo: &mut Todo) {
         let Some(subject) = &subjects[i] else {
             continue;
         };
+        if todo.lines[i].item().is_some_and(|it| it.cmd == Cmd::Merge) {
+            continue;
+        }
         let mut s = subject.as_str();
         let mut kind: Option<(Cmd, Option<char>)> = None;
         // Repeated prefixes ("fixup! fixup! x") name the same target.

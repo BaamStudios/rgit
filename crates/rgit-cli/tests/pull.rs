@@ -627,35 +627,69 @@ fn rebase_rewritten_upstream() {
     );
 }
 
-/// `--rebase=merges` and `--rebase=interactive` need parts of rebase rgit
-/// does not have yet (#155): rgit says so instead of rebasing, unless the
-/// pull is a fast-forward.
+/// `--rebase=merges` passes `--rebase-merges` on, `--rebase=interactive`
+/// `--interactive` (with a sequence editor that keeps the list).
 #[test]
-fn rebase_modes_not_yet_supported() {
-    cases(
-        |fx| fx,
+fn rebase_modes() {
+    let ff: &[&[&str]] = &[
+        &["pull", "--rebase=merges", ".", "c1"],
+        &["pull", "--rebase=interactive", ".", "c1"],
+        &["-c", "pull.rebase=i", "pull", ".", "c1"],
+    ];
+    cases(|fx| fx, ff);
+    let diverged: &[&[&str]] = &[
         &[
-            &["pull", "--rebase=merges", ".", "c1"],
-            &["pull", "--rebase=interactive", ".", "c1"],
-            &["-c", "pull.rebase=i", "pull", ".", "c1"],
+            "-c",
+            "sequence.editor=true",
+            "pull",
+            "--rebase=merges",
+            ".",
+            "c1",
         ],
+        &[
+            "-c",
+            "sequence.editor=true",
+            "pull",
+            "--rebase=m",
+            "-v",
+            ".",
+            "c1",
+        ],
+        &[
+            "-c",
+            "sequence.editor=true",
+            "pull",
+            "--rebase=interactive",
+            ".",
+            "c1",
+        ],
+        &[
+            "-c",
+            "sequence.editor=true",
+            "-c",
+            "pull.rebase=i",
+            "pull",
+            ".",
+            "c1",
+        ],
+        &[
+            "-c",
+            "sequence.editor=true",
+            "-c",
+            "pull.rebase=merges",
+            "pull",
+            ".",
+            "c1",
+        ],
+        &["-c", "sequence.editor=true", "pull", "--rebase", ".", "c1"],
+    ];
+    // `c2` with `c3` merged in: rebasing keeps the merge with merges.
+    cases(
+        |fx| {
+            fx.git(["reset", "-q", "--hard", "c2"])
+                .tick()
+                .git(["merge", "-q", "--no-ff", "-m", "Merge c3", "c3"])
+        },
+        diverged,
     );
-    for mode in ["--rebase=merges", "--rebase=interactive"] {
-        let fx = fixture().git(["reset", "-q", "--hard", "c2"]);
-        if fx.is_skipped() {
-            return;
-        }
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
-            .args(["pull", "-q", mode, ".", "c1"])
-            .current_dir(fx.work_dir())
-            .env("HOME", fx.home_dir())
-            .env("XDG_CONFIG_HOME", fx.home_dir())
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("PATH", server_path(&fx))
-            .output()
-            .unwrap();
-        assert_eq!(out.status.code(), Some(128));
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("#155") && err.contains(mode), "{err}");
-    }
 }

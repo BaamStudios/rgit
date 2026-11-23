@@ -163,14 +163,5 @@ pub const COMMIT_OR_STASH: &str = "Please commit or stash them.";
 /// Reflog message of a pull into an unborn branch.
 pub const REFLOG_INITIAL: &str = "initial pull";
 
-/// rgit's own message: `--rebase=interactive` and `--rebase=merges` need
-/// parts of rebase rgit does not have yet (#155).
-pub fn rebase_mode_not_supported(mode: &str) -> String {
-    format!(
-        "pull --rebase={mode} is not supported by rgit yet unless it is a fast-forward \
-         (rgit #155); use --rebase or --no-rebase instead"
-    )
-}
-
 /// `pull --rebase --verify-signatures`.
 pub const IGNORING_VERIFY_SIGNATURES: &str = "ignoring --verify-signatures for rebase";
