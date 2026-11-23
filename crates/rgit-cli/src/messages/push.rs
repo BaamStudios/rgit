@@ -223,6 +223,20 @@ pub const HINT_NEEDS_FORCE: &str = "You cannot update a remote ref that points a
 or update a remote ref to make it point at a non-commit object,\n\
 without using the '--force' option.";
 
+pub const SEND_PACK_USAGE: &[&str] = &["git send-pack [--mirror] [--dry-run] [--force]
+                     [--receive-pack=<git-receive-pack>]
+                     [--verbose] [--thin] [--atomic]
+                     [--[no-]signed | --signed=(true|false|if-asked)]
+                     [<host>:]<directory> (--all | <ref>...)"];
+pub const H_SP_REMOTE: &str = "remote name";
+pub const H_SP_ALL: &str = "push all refs";
+pub const H_SP_STATELESS_RPC: &str = "use stateless RPC protocol";
+pub const H_SP_STDIN: &str = "read refs from stdin";
+pub const H_SP_HELPER_STATUS: &str = "print status from remote helper";
+
+/// `git send-pack` when the refs do not match (exit 255).
+pub const REMOTE_HUNG_UP: &str = "the remote end hung up unexpectedly";
+
 /// `--atomic` with a remote group.
 pub const ATOMIC_ONE_REMOTE: &str = "--atomic can only be used when pushing to one remote";
 
