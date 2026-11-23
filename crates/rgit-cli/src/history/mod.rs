@@ -2032,6 +2032,28 @@ fn want_decorate(config: &ConfigSet, opt: Option<Decorate>) -> bool {
 /// `log` (each at most once), annotated tags with their header and
 /// message followed by the tagged object, trees as `tree <name>` and the
 /// names of their entries, blobs as they are.
+/// `show --textconv <rev>:<path>`: the blob through the textconv filter of
+/// its path's diff driver (git-show(1)).
+fn textconv_blob(p: &Printer<'_, '_>, name: &str, data: Vec<u8>) -> Result<Vec<u8>, Die> {
+    let (Some(true), Some(d), Some((_, path))) =
+        (p.opts.diff.textconv, p.diff.as_ref(), name.split_once(':'))
+    else {
+        return Ok(data);
+    };
+    let conv = d.repo.converter()?;
+    let cmd = match conv.attr(path.as_bytes(), b"diff") {
+        rgit_attr::State::Value(v) => {
+            crate::diff::driver::load(&d.repo.config, &String::from_utf8_lossy(&v))?.textconv
+        }
+        _ => None,
+    };
+    match cmd {
+        Some(cmd) => crate::diff::driver::run_textconv(&cmd, &data)
+            .map_err(|()| Die::Fatal(crate::messages::cat_file::textconv_failed(name))),
+        None => Ok(data),
+    }
+}
+
 fn show_objects(p: &mut Printer<'_, '_>) -> Result<i32, Die> {
     let repo = p.repo;
     let opts = p.opts;
@@ -2088,7 +2110,10 @@ fn show_objects(p: &mut Printer<'_, '_>) -> Result<i32, Die> {
                         p.out.push(b'\n');
                     }
                 }
-                ObjectKind::Blob => p.out.extend_from_slice(&data),
+                ObjectKind::Blob => {
+                    let data = textconv_blob(p, &name, data)?;
+                    p.out.extend_from_slice(&data);
+                }
             }
             break;
         }

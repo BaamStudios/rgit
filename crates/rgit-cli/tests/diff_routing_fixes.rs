@@ -153,3 +153,21 @@ fn file_named_head_and_deprecated_aliases() {
         ],
     );
 }
+
+#[test]
+fn show_blob_with_textconv() {
+    let mut fx = rgit_fixture()
+        .write(".gitattributes", "f diff=up\n")
+        .write("f", "hello\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "x"])
+        .git(["config", "diff.up.textconv", "tr a-z A-Z <"]);
+    compare_all(
+        &mut fx,
+        &[
+            &["show", "HEAD:f"],
+            &["show", "--textconv", "HEAD:f"],
+            &["show", "--no-textconv", "HEAD:f"],
+        ],
+    );
+}
