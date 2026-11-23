@@ -3,6 +3,60 @@
 //! Splitting file contents into lines and interning them.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// A fast, non-cryptographic hasher for interning lines: multiply-rotate
+/// over 8-byte words. Lines come from the user's own files, so resistance
+/// against crafted collisions is not needed.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct LineHasher(u64);
+
+const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+
+impl LineHasher {
+    #[inline]
+    fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(SEED);
+    }
+}
+
+impl Hasher for LineHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let (chunks, rest) = bytes.as_chunks::<8>();
+        for c in chunks {
+            self.add(u64::from_le_bytes(*c));
+        }
+        if !rest.is_empty() {
+            let mut w = [0u8; 8];
+            w[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(w) ^ ((rest.len() as u64) << 59));
+        }
+    }
+
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.add(u64::from(i));
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.add(i);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A `HashMap` with [`LineHasher`].
+pub(crate) type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<LineHasher>>;
 
 /// Number of leading bytes inspected by [`is_binary`].
 pub const BINARY_CHECK_BYTES: usize = 8000;
@@ -34,6 +88,34 @@ pub fn split_lines(data: &[u8]) -> Vec<&[u8]> {
     lines
 }
 
+/// Gives every distinct line an id, across any number of texts (for
+/// [`crate::diff_interned`]).
+#[derive(Default)]
+pub struct Interner {
+    map: FastMap<Vec<u8>, u32>,
+}
+
+impl Interner {
+    pub fn new() -> Interner {
+        Interner::default()
+    }
+
+    /// The id of `line`.
+    pub fn id(&mut self, line: &[u8]) -> u32 {
+        if let Some(&id) = self.map.get(line) {
+            return id;
+        }
+        let id = self.map.len() as u32;
+        self.map.insert(line.to_vec(), id);
+        id
+    }
+
+    /// One more than the largest id handed out.
+    pub fn classes(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// Maps the lines of both sides to dense ids so that equal lines (bytes
 /// including the line terminator) share an id. With whitespace options
 /// lines are equal when their [`crate::whitespace::key`]s are.
@@ -43,7 +125,8 @@ pub(crate) fn intern<'x>(
     ws: &crate::Whitespace,
 ) -> (Vec<u32>, Vec<u32>, usize) {
     if ws.any() {
-        let mut map: HashMap<Vec<u8>, u32> = HashMap::with_capacity(a.len() + b.len());
+        let mut map: FastMap<Vec<u8>, u32> =
+            FastMap::with_capacity_and_hasher(a.len() + b.len(), Default::default());
         let mut id = |line: &[u8]| -> u32 {
             let next = map.len() as u32;
             let k = crate::whitespace::key(line, ws).unwrap_or_default();
@@ -54,7 +137,8 @@ pub(crate) fn intern<'x>(
         let classes = map.len();
         return (ia, ib, classes);
     }
-    let mut map: HashMap<&'x [u8], u32> = HashMap::with_capacity(a.len() + b.len());
+    let mut map: FastMap<&'x [u8], u32> =
+        FastMap::with_capacity_and_hasher(a.len() + b.len(), Default::default());
     let mut id = |line: &'x [u8]| -> u32 {
         let next = map.len() as u32;
         *map.entry(line).or_insert(next)

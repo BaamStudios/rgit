@@ -29,7 +29,7 @@ pub(crate) fn diff(a: &[u32], b: &[u32], classes: usize, minimal: bool) -> (Vec<
     // Myers for them) get dense ids of their own, so that the partner
     // counts below do not cost the size of the whole files each time.
     if classes > 2 * (a.len() + b.len()) + 64 {
-        let mut map = std::collections::HashMap::new();
+        let mut map: crate::lines::FastMap<u32, u32> = Default::default();
         let mut id = |x: &u32| -> u32 {
             let next = map.len() as u32;
             *map.entry(*x).or_insert(next)

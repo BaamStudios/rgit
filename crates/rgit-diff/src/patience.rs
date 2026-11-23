@@ -17,8 +17,6 @@
 //! Tie breaks and the handling of stretches were derived from differential
 //! tests against the `git` binary.
 
-use std::collections::HashMap;
-
 use crate::myers;
 
 /// Anchor texts with the lines of the old side they are tested against.
@@ -102,7 +100,7 @@ fn unique_matches(
     is_anchor: &dyn Fn(usize) -> bool,
 ) -> Vec<(usize, usize, bool)> {
     // id -> (count in a, position in a, count in b, position in b)
-    let mut seen: HashMap<u32, (u32, usize, u32, usize)> = HashMap::new();
+    let mut seen: crate::lines::FastMap<u32, (u32, usize, u32, usize)> = Default::default();
     for (i, &id) in a.iter().enumerate().take(a1).skip(a0) {
         let e = seen.entry(id).or_insert((0, i, 0, 0));
         e.0 += 1;

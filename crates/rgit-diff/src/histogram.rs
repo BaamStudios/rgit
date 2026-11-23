@@ -20,8 +20,6 @@
 //! `q`). On generated inputs about 1 % of small and 25 % of large file
 //! pairs differ; on the last 500 commits of git.git 3 of 500 patches.
 
-use std::collections::HashMap;
-
 use crate::myers;
 
 /// Occurrence count in the old side above which a region is not indexed
@@ -79,7 +77,7 @@ struct Occ {
 }
 
 fn best_run(a: &[u32], a0: usize, a1: usize, b: &[u32], b0: usize, b1: usize) -> Lcs {
-    let mut index: HashMap<u32, Occ> = HashMap::new();
+    let mut index: crate::lines::FastMap<u32, Occ> = Default::default();
     for (i, &id) in a.iter().enumerate().take(a1).skip(a0) {
         let e = index.entry(id).or_insert(Occ {
             count: 0,

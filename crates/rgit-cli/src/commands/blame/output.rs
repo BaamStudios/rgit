@@ -250,6 +250,16 @@ impl Printer<'_, '_> {
 
     fn porcelain(&self, entries: &[Entry], out: &mut Vec<u8>) {
         let mut shown = std::collections::HashSet::new();
+        // Commits whose lines come from more than one path name the file
+        // in every group.
+        let mut paths: HashMap<usize, &[u8]> = HashMap::new();
+        let mut several = std::collections::HashSet::new();
+        for e in entries {
+            let path = &self.sb.origins[e.suspect].path[..];
+            if *paths.entry(self.commit_of(e)).or_insert(path) != path {
+                several.insert(self.commit_of(e));
+            }
+        }
         for e in entries {
             let hex = self.sb.nodes[self.commit_of(e)].id.to_hex();
             for i in 0..e.num {
@@ -262,6 +272,8 @@ impl Printer<'_, '_> {
                 out.extend_from_slice(head.as_bytes());
                 if self.fmt.line_porcelain || (i == 0 && shown.insert(self.commit_of(e))) {
                     self.meta(e, true, out);
+                } else if i == 0 && several.contains(&self.commit_of(e)) {
+                    self.meta(e, false, out);
                 }
                 out.push(b'\t');
                 push_line(out, self.final_lines.line(e.lno + i));

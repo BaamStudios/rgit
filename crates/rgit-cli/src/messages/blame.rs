@@ -52,7 +52,6 @@ pub const EXTERNAL_FILE_MAIL: &str = "<external.file>";
 
 pub const INVALID_EMPTY_RANGE: &str = "-L invalid empty range";
 pub const REVERSE_NOT_SUPPORTED: &str = "--reverse is not supported yet";
-pub const MOVE_COPY_NOT_SUPPORTED: &str = "-M and -C are not supported yet";
 pub const IGNORE_REV_NOT_SUPPORTED: &str = "--ignore-rev is not supported yet";
 pub const REVS_FILE_NOT_SUPPORTED: &str = "-S is not supported yet";
 

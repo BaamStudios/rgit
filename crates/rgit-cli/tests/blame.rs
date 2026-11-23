@@ -219,3 +219,61 @@ fn blame_work_tree() {
     fx = fx.remove("g");
     compare(&mut fx, "blame", &["g"]);
 }
+
+/// `-M` and `-C`: blocks moved within a file and copied from other files
+/// (changed in the same commit, any file of the commit creating the file,
+/// any file), with thresholds.
+#[test]
+fn blame_moves_and_copies() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    if fx.is_skipped() {
+        return;
+    }
+    fx = fx
+        .write("one", "alpha line one\nalpha line two\nalpha line three\n")
+        .write("two", "beta first\nbeta second\nbeta third\nbeta fourth\n")
+        .write("keep", "kept 1\nkept 2\nkept 3\n")
+        .write("m", "head\nab\ncd\nmiddle\ntail end\n")
+        .git(["add", "."]);
+    fx = commit(fx, "Initial", "initial");
+    fx = fx
+        .write("m", "head\nmiddle\ntail end\nab\ncd\n")
+        .write("two", "beta first\nbeta fourth\n")
+        .write(
+            "three",
+            "new\nbeta second\nbeta third\nalpha line two\nkept 2\n",
+        )
+        .write(
+            "one",
+            "alpha line one\nalpha line two\nalpha line three\nmore\n",
+        )
+        .git(["add", "."]);
+    fx = commit(fx, "Second", "second");
+    fx = fx
+        .write(
+            "one",
+            "alpha line one\nalpha line two\nalpha line three\nmore\nkept 1\nkept 2\n",
+        )
+        .git(["mv", "two", "renamed"]);
+    fx = commit(fx, "Third", "third");
+    let cases: &[&[&str]] = &[
+        &["-M", "m"],
+        &["-M4", "m"],
+        &["-M5", "m"],
+        &["-Mx", "-s", "m"],
+        &["-M4", "-C", "m"],
+        &["-C", "-n", "-f", "three"],
+        &["-C", "-C", "-n", "-f", "three"],
+        &["-C", "-C", "-C", "-n", "-f", "three"],
+        &["-C1", "-C", "-p", "three"],
+        &["-C", "-C", "-C1", "--line-porcelain", "three"],
+        &["-C", "-C", "-C", "one"],
+        &["-C", "-C", "renamed"],
+        &["-w", "-C", "-C", "-C1", "three"],
+    ];
+    for args in cases {
+        compare(&mut fx, "blame", args);
+    }
+}

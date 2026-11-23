@@ -64,8 +64,11 @@ struct Cli {
     color_by_age: Cell<bool>,
     revs_file: RefCell<Option<String>>,
     contents: RefCell<Option<String>>,
-    copies: Cell<i32>,
+    copies: Cell<u8>,
     moves: Cell<bool>,
+    /// The scores of `-C<num>` and `-M<num>` (0: default).
+    copy_score: Cell<usize>,
+    move_score: Cell<usize>,
     ranges: RefCell<Vec<String>>,
     /// `None`: default; `Some(0)`: full names.
     abbrev: Cell<Option<i64>>,
@@ -138,13 +141,19 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             Opt::flag(None, "color-by-age", &cli.color_by_age, msg::HELP_COLOR_BY_AGE),
             Opt::string('S', None, &cli.revs_file, "file", msg::HELP_REVS_FILE),
             Opt::string(None, "contents", &cli.contents, "file", msg::HELP_CONTENTS),
-            Opt::callback('C', None, Some("score"), msg::HELP_COPIES, |_, _| {
-                cli.copies.set(cli.copies.get() + 1);
+            Opt::callback('C', None, Some("score"), msg::HELP_COPIES, |v, _| {
+                cli.copies.set(cli.copies.get().saturating_add(1));
+                if let Some(v) = v {
+                    cli.copy_score.set(v.parse().unwrap_or(0));
+                }
                 Ok(())
             })
             .optional(None),
-            Opt::callback('M', None, Some("score"), msg::HELP_MOVES, |_, _| {
+            Opt::callback('M', None, Some("score"), msg::HELP_MOVES, |v, _| {
                 cli.moves.set(true);
+                if let Some(v) = v {
+                    cli.move_score.set(v.parse().unwrap_or(0));
+                }
                 Ok(())
             })
             .optional(None),
@@ -284,9 +293,6 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     if rev.reverse {
         return Err(Die::Fatal(msg::REVERSE_NOT_SUPPORTED.into()));
     }
-    if cli.copies.get() > 0 || cli.moves.get() {
-        return Err(Die::Fatal(msg::MOVE_COPY_NOT_SUPPORTED.into()));
-    }
     if !cli.ignore_rev.borrow().is_empty() || !cli.ignore_revs_file.borrow().is_empty() {
         return Err(Die::Fatal(msg::IGNORE_REV_NOT_SUPPORTED.into()));
     }
@@ -325,6 +331,15 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
         since: rev.since,
         diff,
         ignore_whitespace: cli.ignore_ws.get(),
+        moves: (cli.moves.get() || cli.copies.get() > 0).then_some(match cli.move_score.get() {
+            0 => DEFAULT_MOVE_SCORE,
+            n => n,
+        }),
+        copies: cli.copies.get().min(3),
+        copy_score: match cli.copy_score.get() {
+            0 => DEFAULT_COPY_SCORE,
+            n => n,
+        },
     };
 
     // Positive and negative revisions.
@@ -633,6 +648,10 @@ fn coloring(
         _ => Ok(Coloring::None),
     }
 }
+
+/// The default minimum scores of `-M` and `-C` (blame-options.adoc).
+const DEFAULT_MOVE_SCORE: usize = 20;
+const DEFAULT_COPY_SCORE: usize = 40;
 
 /// `color.blame.repeatedLines` default: cyan.
 const REPEATED_COLOR: &str = "\x1b[36m";

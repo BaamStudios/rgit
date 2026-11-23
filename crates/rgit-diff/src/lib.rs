@@ -27,7 +27,7 @@ pub mod whitespace;
 pub mod ws_rule;
 
 pub use funcname::{FuncName, FuncPattern};
-pub use lines::{BINARY_CHECK_BYTES, is_binary, split_lines};
+pub use lines::{BINARY_CHECK_BYTES, Interner, is_binary, split_lines};
 pub use patch::{
     MODE_SYMLINK, PatchExtra, PatchFile, PatchOptions, quote_path, write_file_patch,
     write_file_patch_extra, write_file_patch_with,
@@ -140,22 +140,37 @@ pub struct Stats {
 /// Computes the edit script between two lists of lines.
 pub fn diff_lines(a: &[&[u8]], b: &[&[u8]], opts: &DiffOptions) -> Vec<Change> {
     let (ia, ib, classes) = lines::intern(a, b, &opts.whitespace);
+    diff_interned(&ia, &ib, classes, a, b, opts)
+}
+
+/// [`diff_lines`] for lines that are already interned: `ia` and `ib` hold
+/// ids below `classes`, equal for lines that are to be treated as equal
+/// (callers that diff many versions of a file intern every line once).
+/// `a` and `b` are the lines themselves (for the indent heuristic).
+pub fn diff_interned(
+    ia: &[u32],
+    ib: &[u32],
+    classes: usize,
+    a: &[&[u8]],
+    b: &[&[u8]],
+    opts: &DiffOptions,
+) -> Vec<Change> {
     let (mut ca, mut cb) = match opts.algorithm {
-        Algorithm::Myers => myers::diff(&ia, &ib, classes, opts.minimal),
+        Algorithm::Myers => myers::diff(ia, ib, classes, opts.minimal),
         Algorithm::Patience => {
             let anchors = (!opts.anchors.is_empty()).then_some((a, &opts.anchors[..]));
-            patience::diff(&ia, &ib, classes, opts.minimal, anchors)
+            patience::diff(ia, ib, classes, opts.minimal, anchors)
         }
-        Algorithm::Histogram => histogram::diff(&ia, &ib, classes, opts.minimal),
+        Algorithm::Histogram => histogram::diff(ia, ib, classes, opts.minimal),
     };
-    compact::compact(&ia, a, &mut ca, &ib, b, &mut cb, opts.indent_heuristic);
+    compact::compact(ia, a, &mut ca, ib, b, &mut cb, opts.indent_heuristic);
     if opts.algorithm == Algorithm::Histogram {
         // Sliding groups can shift or join a deletion and an insertion so
         // that they share lines (git 2.56, t4074): such a hunk is diffed
         // again and the result compacted once more.
         let mut rounds = 0;
-        while rediff_shared_hunks(&ia, &ib, &mut ca, &mut cb, classes, opts.minimal) && rounds < 8 {
-            compact::compact(&ia, a, &mut ca, &ib, b, &mut cb, opts.indent_heuristic);
+        while rediff_shared_hunks(ia, ib, &mut ca, &mut cb, classes, opts.minimal) && rounds < 8 {
+            compact::compact(ia, a, &mut ca, ib, b, &mut cb, opts.indent_heuristic);
             rounds += 1;
         }
     }
@@ -230,12 +245,7 @@ const TAIL_BLOCK: usize = 1024;
 /// the line). This changes where ambiguous changes are placed, so it is
 /// reproduced here.
 pub fn trim_common_tail<'x>(a: &'x [u8], b: &'x [u8]) -> (&'x [u8], &'x [u8]) {
-    let common = a
-        .iter()
-        .rev()
-        .zip(b.iter().rev())
-        .take_while(|(x, y)| x == y)
-        .count();
+    let common = common_suffix(a, b);
     let cut = common / TAIL_BLOCK * TAIL_BLOCK;
     if cut == 0 {
         return (a, b);
@@ -251,6 +261,23 @@ pub fn trim_common_tail<'x>(a: &'x [u8], b: &'x [u8]) -> (&'x [u8], &'x [u8]) {
         &x[..k]
     };
     (keep(a), keep(b))
+}
+
+/// The length of the longest common suffix of `a` and `b` (compared in
+/// blocks first, which is much faster for long equal tails).
+fn common_suffix(a: &[u8], b: &[u8]) -> usize {
+    const STEP: usize = 64;
+    let max = a.len().min(b.len());
+    let mut n = 0;
+    while n + STEP <= max
+        && a[a.len() - n - STEP..a.len() - n] == b[b.len() - n - STEP..b.len() - n]
+    {
+        n += STEP;
+    }
+    while n < max && a[a.len() - 1 - n] == b[b.len() - 1 - n] {
+        n += 1;
+    }
+    n
 }
 
 /// Result of [`diff_text`].
