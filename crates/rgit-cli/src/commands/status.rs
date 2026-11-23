@@ -19,6 +19,7 @@ use rgit_hash::ObjectId;
 use rgit_index::Entry;
 use rgit_object::{Object, ObjectKind};
 use rgit_pathspec::{ParseOptions, Pathspec};
+use rgit_worktree::ignore::Excludes;
 use rgit_worktree::stat::{Checker, FileStat, Status};
 
 use super::ls_files::{ExcludeArg, build_excludes};
@@ -124,8 +125,27 @@ pub(crate) fn untracked_and_ignored(
     if mode == Untracked::No {
         return Ok((Vec::new(), Vec::new()));
     }
+    let excludes = untracked_excludes(repo, index)?;
+    Ok(walk_untracked(work_tree, index, excludes, pathspec, mode, ignored))
+}
+
+/// The exclude rules of the untracked walk.
+fn untracked_excludes(repo: &Repo, index: &rgit_index::Index) -> Result<Excludes, Die> {
     let mut excludes = build_excludes(repo, &[ExcludeArg::Standard])?;
     untracked::use_skip_worktree_ignores(repo, index, b".gitignore", &mut excludes);
+    Ok(excludes)
+}
+
+/// [`untracked_and_ignored`] with the exclude rules already read (needs no
+/// repository, so it can run on a thread of its own).
+fn walk_untracked(
+    work_tree: &Path,
+    index: &rgit_index::Index,
+    mut excludes: Excludes,
+    pathspec: Option<&Pathspec>,
+    mode: Untracked,
+    ignored: IgnoredMode,
+) -> untracked::StatusLists {
     let roots = untracked::Walker {
         root: work_tree,
         index,
@@ -134,7 +154,7 @@ pub(crate) fn untracked_and_ignored(
         scan_excluded: ignored != IgnoredMode::No,
     }
     .walk();
-    Ok(untracked::status_lists(&roots, mode == Untracked::All, ignored))
+    untracked::status_lists(&roots, mode == Untracked::All, ignored)
 }
 
 pub(crate) struct Printer {
@@ -621,9 +641,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let attr_tree = crate::attributes::PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
     let stash_count = if show_stash { stash_entries(&mut repo) } else { 0 };
     let repo = repo;
-    // Like git, status refreshes the stat data of the index and writes it
-    // back when that changed something or when entries are racily clean;
-    // quietly skipped when the index is locked or cannot be written.
+    // The refreshed index is written back under this lock; quietly
+    // skipped when the index is locked or cannot be written.
     let lock = if !ctx.no_optional_locks && std::env::var("GIT_OPTIONAL_LOCKS").as_deref() != Ok("0") {
         let index_path = repo.setup.cwd.join(repo.index_path());
         index_path
@@ -635,8 +654,58 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     let (mut index, index_mtime) = repo.read_index()?;
     let checker = repo.checker(index_mtime)?;
-    let metas = checker.preload(index.entries(), preload_threads(&repo));
-    let statuses = refresh_in_memory(&mut index, &checker, &metas);
+    let ignored_mode = match ignored.borrow().as_deref() {
+        None | Some("no") => Ok(IgnoredMode::No),
+        Some("traditional") => Ok(IgnoredMode::Traditional),
+        Some("matching") => Ok(IgnoredMode::Matching),
+        Some(m) => Err(Die::Fatal(msg::invalid_ignored(m))),
+    };
+    // The untracked walk runs on a thread of its own while the tracked
+    // files are compared (invalid options end the command later, after
+    // the index is written, as before).
+    let walk_mode = match ignored_mode {
+        Ok(m) if mode != Untracked::No => Some(m),
+        _ => None,
+    };
+    let excludes = match walk_mode {
+        Some(_) => Some(untracked_excludes(&repo, &index)?),
+        None => None,
+    };
+    // With `attr:` magic the walk sees every path and the attributes
+    // decide afterwards.
+    let walk_pathspec = (!pathspec.is_empty() && attr_tree.is_none()).then_some(&pathspec);
+    // On an unborn branch everything in the index is new.
+    let unborn = info.head.is_none();
+    let (metas, statuses, heads, walked) = std::thread::scope(|s| {
+        let index = &index;
+        let work_tree = &work_tree;
+        let walker = walk_mode.zip(excludes).map(|(ignored, excludes)| {
+            s.spawn(move || {
+                let started = std::time::Instant::now();
+                let lists = walk_untracked(work_tree, index, excludes, walk_pathspec, mode, ignored);
+                (lists, started.elapsed().as_secs_f64())
+            })
+        });
+        let metas = checker.preload(index.entries(), preload_threads(&repo));
+        let statuses = compare_worktree(index, &checker, &metas);
+        let heads = if unborn {
+            Ok(Vec::new())
+        } else {
+            head_changes(&repo, &base_tree, index)
+        };
+        let walked = walker.map(|h| match h.join() {
+            Ok(r) => r,
+            Err(panic) => std::panic::resume_unwind(panic),
+        });
+        (metas, statuses, heads, walked)
+    });
+    // Like git, status refreshes the stat data of the index and writes it
+    // back when that changed something or when entries are racily clean.
+    for &pos in &statuses.refresh {
+        if let (Some(meta), Some(entry)) = (metas[pos].as_ref(), index.entry_mut(pos)) {
+            checker.refresh_stat(entry, meta);
+        }
+    }
     if let Some(lock) = lock {
         let racy = index.entries().iter().any(|e| checker.is_racy(e));
         if racy {
@@ -644,18 +713,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
             }
         }
-        if racy || statuses.refreshed {
+        if racy || !statuses.refresh.is_empty() {
             let _ = crate::switch_branch::write_index(&repo, &index, lock);
         }
     }
     let index = index;
-    // On an unborn branch everything in the index is new.
-    let unborn = info.head.is_none();
-    let mut heads = if unborn {
-        Vec::new()
-    } else {
-        head_changes(&repo, &base_tree, &index)?
-    };
+    let mut heads = heads?;
     heads.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let mut changes: BTreeMap<Vec<u8>, Change> = BTreeMap::new();
     for (path, head) in &heads {
@@ -747,26 +810,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
     };
 
-    let ignored_mode = match ignored.borrow().as_deref() {
-        None | Some("no") => IgnoredMode::No,
-        Some("traditional") => IgnoredMode::Traditional,
-        Some("matching") => IgnoredMode::Matching,
-        Some(m) => return Err(Die::Fatal(msg::invalid_ignored(m))),
-    };
+    let ignored_mode = ignored_mode?;
     if ignored_mode == IgnoredMode::Matching && mode == Untracked::No {
         return Err(Die::Fatal(msg::IGNORED_UNTRACKED_COMBINATION.to_string()));
     }
-    let started = std::time::Instant::now();
-    // With `attr:` magic the walk sees every path and the attributes
-    // decide afterwards.
-    let (mut untracked_paths, mut ignored_paths) = untracked_and_ignored(
-        &repo,
-        &work_tree,
-        &index,
-        (!pathspec.is_empty() && attrs.is_none()).then_some(&pathspec),
-        mode,
-        ignored_mode,
-    )?;
+    let ((mut untracked_paths, mut ignored_paths), walk_seconds) =
+        walked.unwrap_or_else(|| ((Vec::new(), Vec::new()), 0.0));
     if attrs.is_some() {
         untracked_paths.retain(|p| wanted(p));
         ignored_paths.retain(|p| wanted(p));
@@ -776,7 +825,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let seconds = if std::env::var_os("GIT_TEST_UF_DELAY_WARNING").is_some() {
         3.25
     } else {
-        started.elapsed().as_secs_f64()
+        walk_seconds
     };
     let uf_delay = (format == Format::Long
         && mode != Untracked::No
@@ -913,30 +962,29 @@ fn preload_threads(repo: &Repo) -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get().min(20))
 }
 
-/// The work tree state of the index entries (see [`refresh_in_memory`]).
+/// The work tree state of the index entries (see [`compare_worktree`]).
 struct WorktreeStatus {
     /// By index position: the state of each stage-0 entry that is not a
     /// submodule or intent-to-add (`None` for the others).
     status: Vec<Option<Status>>,
-    /// Some entry got new stat data.
-    refreshed: bool,
+    /// The positions of the entries that get new stat data: files found
+    /// unchanged in content.
+    refresh: Vec<usize>,
 }
 
 /// Compares the stage-0 entries of `index` with their work tree files
-/// (`metas`, the `lstat` data by index position) and records the new stat
-/// data of the files found unchanged in content (git's index refresh). A
-/// file that cannot be read counts as modified.
-fn refresh_in_memory(
-    index: &mut rgit_index::Index,
+/// (`metas`, the `lstat` data by index position). A file that cannot be
+/// read counts as modified.
+fn compare_worktree(
+    index: &rgit_index::Index,
     checker: &Checker,
     metas: &[Option<FileStat>],
 ) -> WorktreeStatus {
     let mut out = WorktreeStatus {
         status: vec![None; index.len()],
-        refreshed: false,
+        refresh: Vec::new(),
     };
-    for (pos, meta) in metas.iter().enumerate().take(index.len()) {
-        let e = &index.entries()[pos];
+    for (pos, (e, meta)) in index.entries().iter().zip(metas).enumerate() {
         if e.stage().is_conflict() || e.flags.intent_to_add || e.mode.is_gitlink() {
             continue;
         }
@@ -949,10 +997,7 @@ fn refresh_in_memory(
             }
         };
         if status == Status::StatOnly {
-            if let (Some(meta), Some(entry)) = (meta, index.entry_mut(pos)) {
-                checker.refresh_stat(entry, meta);
-                out.refreshed = true;
-            }
+            out.refresh.push(pos);
         }
         out.status[pos] = Some(status);
     }

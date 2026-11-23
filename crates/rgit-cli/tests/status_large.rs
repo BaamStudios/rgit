@@ -32,7 +32,10 @@ fn tree(mut fx: Fixture) -> Fixture {
     for d in 0..24 {
         for s in 0..5 {
             for f in 0..12 {
-                fx = fx.write(format!("d{d:02}/s{s}/f{f:02}.txt"), format!("{d} {s} {f}\n"));
+                fx = fx.write(
+                    format!("d{d:02}/s{s}/f{f:02}.txt"),
+                    format!("{d} {s} {f}\n"),
+                );
             }
         }
     }
