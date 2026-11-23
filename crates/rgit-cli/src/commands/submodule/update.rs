@@ -294,7 +294,7 @@ fn update(sup: &mut Super, args: &[String], opts: &Opts) -> CmdResult {
         if !common::is_populated(&sup.work_tree.join(&m.path)) {
             if let Err(e) = clone_module(sup, &gm, &t, opts) {
                 report_clone_failure(e);
-                eprintln!("{}", msg::retry_scheduled(&t.display));
+                eprintln!("{}", msg::retry_scheduled(&t.module.path));
                 retry.push(todo.len());
             } else {
                 t.just_cloned = true;
@@ -305,7 +305,7 @@ fn update(sup: &mut Super, args: &[String], opts: &Opts) -> CmdResult {
     for i in retry {
         if let Err(e) = clone_module(sup, &gm, &todo[i], opts) {
             report_clone_failure(e);
-            eprintln!("{}", msg::second_failure(&todo[i].display));
+            eprintln!("{}", msg::second_failure(&todo[i].module.path));
             return Ok(1);
         }
         todo[i].just_cloned = true;
@@ -609,6 +609,68 @@ fn recurse(sup: &Super, m: &Module, display: &str, opts: &Opts) -> Result<(), Di
     }
 }
 
+/// `submodule.alternateLocation=superproject`: for each alternate of the
+/// superproject, the repository of this submodule below its `modules/`.
+/// One that does not exist is handled by `submodule.alternateErrorStrategy`
+/// (`die`, the default; `info`; `ignore`).
+/// Returns the strategy too when `superproject` is in effect.
+fn superproject_alternates(sup: &Super, name: &str) -> Result<(Vec<String>, Option<String>), Die> {
+    let location = common::get_string(&sup.repo.config, "submodule.alternatelocation");
+    match location.as_deref() {
+        None | Some("no") => return Ok((Vec::new(), None)),
+        Some("superproject") => {}
+        Some(v) => {
+            return Err(Die::Fatal(msg::value_not_recognized(v, "submodule.alternateLocation")));
+        }
+    }
+    let strategy = common::get_string(&sup.repo.config, "submodule.alternateerrorstrategy")
+        .unwrap_or_else(|| "die".to_owned());
+    if !matches!(strategy.as_str(), "die" | "info" | "ignore") {
+        return Err(Die::Fatal(msg::value_not_recognized(
+            &strategy,
+            "submodule.alternateErrorStrategy",
+        )));
+    }
+    let objects = sup.common_dir.join("objects");
+    let list = std::fs::read_to_string(objects.join("info/alternates")).unwrap_or_default();
+    let mut out = Vec::new();
+    for line in list.lines() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let alt = objects.join(line);
+        let alt = alt.to_string_lossy();
+        let base = alt.strip_suffix("objects").unwrap_or(&alt);
+        let base = if base.ends_with('/') {
+            base.to_owned()
+        } else {
+            format!("{base}/")
+        };
+        let candidate = format!("{base}modules/{name}/");
+        if Path::new(&candidate).is_dir() {
+            out.push(candidate);
+            continue;
+        }
+        let err = msg::cannot_add_alternate(name, &candidate);
+        match strategy.as_str() {
+            "die" => {
+                sup.ctx
+                    .advisor(&sup.repo.config)?
+                    .advise_without_footer(
+                        rgit_messages::Advice::SubmoduleAlternateErrorStrategyDie,
+                        msg::ALTERNATE_ERROR_STRATEGY_HINT,
+                    )
+                    .map_err(Die::Fatal)?;
+                return Err(Die::Fatal(err));
+            }
+            "info" => eprintln!("{err}"),
+            _ => {}
+        }
+    }
+    Ok((out, Some(strategy)))
+}
+
 /// What [`clone_into`] needs.
 pub struct CloneArgs<'a> {
     pub path: &'a str,
@@ -662,6 +724,10 @@ pub fn clone_into(sup: &Super, a: CloneArgs<'_>) -> Result<(), Die> {
     for r in a.reference {
         args.push(format!("--reference={r}"));
     }
+    let (borrowed, strategy) = superproject_alternates(sup, a.name)?;
+    for r in borrowed {
+        args.push(format!("--reference={r}"));
+    }
     if a.dissociate {
         args.push("--dissociate".into());
     }
@@ -673,5 +739,18 @@ pub fn clone_into(sup: &Super, a: CloneArgs<'_>) -> Result<(), Die> {
     if common::run_status(&mut cmd)? != 0 {
         return Err(Die::Fatal(msg::clone_failed(a.url, &dir_s)));
     }
-    common::relocate_git_dir(&dir, &git_dir)
+    common::relocate_git_dir(&dir, &git_dir)?;
+    // The submodule passes the settings on to its own submodules.
+    if let Some(strategy) = strategy {
+        let file = git_dir.join("config");
+        let file = file.to_string_lossy();
+        for (key, value) in [
+            ("submodule.alternateLocation", "superproject"),
+            ("submodule.alternateErrorStrategy", strategy.as_str()),
+        ] {
+            let mut cmd = sup.sub_git(Path::new(""), &["config", "--file", &file, key, value])?;
+            common::run_status(&mut cmd)?;
+        }
+    }
+    Ok(())
 }
