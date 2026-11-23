@@ -486,6 +486,9 @@ fn sign_ssh(program: &str, payload: &[u8], key: &str) -> Result<Vec<u8>, SignErr
 /// input: (success, standard output, standard error). A program that
 /// cannot be started prints git's `cannot exec` message.
 pub(crate) fn run(program: &str, args: &[&str], input: Option<&[u8]>) -> (bool, Vec<u8>, Vec<u8>) {
+    // A program that exits without reading its input must not kill us
+    // with SIGPIPE (git ignores it while feeding the program too).
+    let _sigpipe = IgnoreSigpipe::new();
     let child = Command::new(program)
         .args(args)
         .stdin(if input.is_some() {
@@ -523,5 +526,32 @@ pub(crate) fn run(program: &str, args: &[&str], input: Option<&[u8]>) -> (bool, 
     match out {
         Ok(o) => (o.status.success(), o.stdout, o.stderr),
         Err(_) => (false, Vec::new(), Vec::new()),
+    }
+}
+
+/// Ignores SIGPIPE while it lives, then restores the previous action.
+struct IgnoreSigpipe {
+    #[cfg(unix)]
+    previous: libc::sighandler_t,
+}
+
+impl IgnoreSigpipe {
+    fn new() -> IgnoreSigpipe {
+        IgnoreSigpipe {
+            // SAFETY: setting a signal disposition to SIG_IGN has no
+            // memory-safety impact; the previous one is restored on drop.
+            #[cfg(unix)]
+            previous: unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) },
+        }
+    }
+}
+
+impl Drop for IgnoreSigpipe {
+    fn drop(&mut self) {
+        // SAFETY: restores the disposition saved in `new`.
+        #[cfg(unix)]
+        unsafe {
+            libc::signal(libc::SIGPIPE, self.previous);
+        }
     }
 }

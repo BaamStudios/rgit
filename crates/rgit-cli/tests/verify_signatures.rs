@@ -27,6 +27,9 @@ esac\n";
 /// Fails with a message on standard error.
 const FAILING: &str = "#!/bin/sh\ncat >/dev/null\necho 'no secret key' >&2\nexit 2\n";
 
+/// Fails without reading its input.
+const QUITTING: &str = "#!/bin/sh\necho 'bad key' >&2\nexit 2\n";
+
 /// Status lines of gpg for the verification cases.
 const STATUSES: &[(&str, &str)] = &[
     (
@@ -77,6 +80,7 @@ fn base() -> Fixture {
         .git(["init", "-q", "-b", "main"])
         .write_executable("gpg-verify", VERIFY_STUB)
         .write_executable("gpg-failing", FAILING)
+        .write_executable("gpg-quitting", QUITTING)
         .write(".git/info/exclude", "*\n")
         .git(["config", "gpg.program", "./gpg-verify"])
         .git(["config", "advice.detachedHead", "false"])
@@ -641,4 +645,35 @@ fn openpgp_real_keys() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+/// A signing program that exits without reading a large payload: rgit
+/// fails like git instead of dying of SIGPIPE.
+#[test]
+fn program_that_does_not_read() {
+    let big = "x".repeat(3_000_000);
+    cases(
+        || base().write("big", &big),
+        &[
+            &[
+                "-c",
+                "gpg.program=./gpg-quitting",
+                "tag",
+                "-s",
+                "-F",
+                "big",
+                "t",
+            ],
+            &[
+                "-c",
+                "gpg.program=./gpg-quitting",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-S",
+                "-F",
+                "big",
+            ],
+        ],
+    );
 }
