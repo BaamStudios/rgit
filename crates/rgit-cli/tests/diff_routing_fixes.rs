@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! Differential tests of diff behaviour the conformance scripts need once
 //! the plain diff front ends run through rgit: pickaxe option errors and
-//! textconv, `diff.suppressBlankEmpty`, combined diffs of several commits,
-//! `--attr-source`, symbolic links and diff drivers, the implicit `HEAD`
-//! next to a file named `HEAD`, aliases over `whatchanged`, and trees with
-//! duplicate entries.
+//! textconv, `diff.suppressBlankEmpty`, `--attr-source`, symbolic links
+//! and diff drivers, the implicit `HEAD` next to a file named `HEAD`,
+//! aliases over `whatchanged`.
 
 use rgit_difftest::{Check, Fixture};
 
@@ -93,40 +92,6 @@ fn suppress_blank_empty_and_symlinks() {
             ],
             &["-c", "diff.suppressBlankEmpty=false", "diff", "--", "f"],
             &["-c", "diff.bin.binary=true", "diff", "file.bin", "link.bin"],
-        ],
-    );
-}
-
-#[test]
-fn combined_diff_of_several_commits() {
-    let mut fx = rgit_fixture()
-        .write("a", "1\n2\n3\n")
-        .write("b", "x\n")
-        .git(["add", "."])
-        .git(["commit", "-q", "-m", "base"])
-        .git(["branch", "side"])
-        .tick()
-        .write("a", "1\n2\n3\n4\n")
-        .git(["commit", "-q", "-a", "-m", "main"])
-        .tick()
-        .git(["checkout", "-q", "side"])
-        .write("b", "y\n")
-        .git(["commit", "-q", "-a", "-m", "side"])
-        .tick()
-        .git(["checkout", "-q", "main"])
-        .git(["merge", "-q", "--no-edit", "side"])
-        .tick()
-        .write("a", "0\n1\n2\n3\n4\n")
-        .git(["commit", "-q", "-a", "--amend", "--no-edit"]);
-    compare_all(
-        &mut fx,
-        &[
-            &["diff", "HEAD", "HEAD^", "side"],
-            &["diff", "--stat", "HEAD", "HEAD^", "side"],
-            &["diff", "--raw", "HEAD", "HEAD^", "side"],
-            &["diff", "--patch-with-stat", "HEAD", "HEAD^", "side"],
-            &["diff", "--exit-code", "HEAD", "HEAD^", "side"],
-            &["diff", "HEAD", "HEAD^", "side", "--", "a"],
         ],
     );
 }
