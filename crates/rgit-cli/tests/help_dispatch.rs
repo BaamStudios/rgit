@@ -354,7 +354,8 @@ fn man_viewers() {
     let path = format!("bin:{}", std::env::var("PATH").unwrap_or_default());
     let myemacs = "man.woman.path=bin/myemacs";
     let konq = "man.konqueror.path=konq/konqueror";
-    let cases: Vec<(Vec<&str>, Vec<(&str, &str)>)> = vec![
+    type Case<'a> = (Vec<&'a str>, Vec<(&'a str, &'a str)>);
+    let cases: Vec<Case> = vec![
         (vec!["-c", "man.viewer=woman", "help", "log"], vec![]),
         (
             vec!["-c", "man.viewer=woman", "-c", myemacs, "help", "log"],

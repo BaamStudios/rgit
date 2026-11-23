@@ -466,7 +466,7 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
         });
         opts.push_bisect_refs(&terms.new, &terms.old, has_new, has_old);
     }
-    if opts.has_no_tips() && !opts.stdin && !opts.bisect {
+    if opts.has_no_tips() && !opts.stdin && !opts.bisect && !opts.merge {
         match cmd {
             Command::RevList => {
                 let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
@@ -1419,12 +1419,12 @@ impl Printer<'_, '_> {
                 // statistics are separated even from a one-line entry.
                 MergeDiff::Combined | MergeDiff::Dense => {
                     let first = Some(parents[0]);
-                    let mut bytes = self.diff_against(d, first, &tree, &walk_error)?;
+                    let mut bytes = self.diff_against(d, first, &tree, walk_error)?;
                     let f = d.formats;
                     if self.style.pretty == Pretty::Oneline
                         && self.cmd != Command::RevList
                         && (f.stat || f.numstat || f.shortstat || f.summary || f.dirstat || f.check)
-                        && self.has_changes(d, first, &tree, &walk_error)?
+                        && self.has_changes(d, first, &tree, walk_error)?
                     {
                         bytes.insert(0, b'\n');
                     }
@@ -2730,7 +2730,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
                 )
         }
     };
-    if opts.show && opts.walk.max_count.is_none() && opts.tips.iter().all(single) {
+    if opts.show && !opts.merge && opts.walk.max_count.is_none() && opts.tips.iter().all(single) {
         if opts.graph {
             return Err(Die::Fatal(msg::cannot_be_used_together(
                 "--no-walk",
