@@ -4,6 +4,14 @@
 
 pub const USAGE: &[&str] = &["git clone [<options>] [--] <repo> [<dir>]"];
 
+pub fn invalid_advertised_ref(name: &str) -> String {
+    format!("remote advertised invalid ref name '{name}', ignoring")
+}
+
+pub fn invalid_symref_target(target: &str) -> String {
+    format!("remote advertised invalid symref-target '{target}', ignoring")
+}
+
 pub const HELP_VERBOSE: &str = "be more verbose";
 pub const HELP_QUIET: &str = "be more quiet";
 pub const HELP_PROGRESS: &str = "force progress reporting";

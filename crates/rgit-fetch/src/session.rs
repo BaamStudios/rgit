@@ -137,6 +137,8 @@ fn open(
         e => e.into(),
     };
     let stateless = reader.get_ref().is_stateless();
+    // HTTP responses report cut-off packets (observed: t5702).
+    reader.partial_errors(stateless);
     let first = reader.peek().map_err(|e| hung_up(&read_any, e))?;
     if stateless && matches!(first, Some(Packet::Data(d)) if d.starts_with(b"# service=")) {
         reader.read()?;
@@ -202,17 +204,27 @@ impl Session {
                 .flatten()
                 .unwrap_or(false),
         );
-        let (mut reader, answered) = open(transport.as_mut(), &options, program)?;
+        // A clone over HTTP traces the advertisement as `git` (the remote
+        // helper reads it, observed in t5702), the rest as `clone`.
+        let http = url.starts_with("http://") || url.starts_with("https://");
+        let label = if http && program == "clone" {
+            "git"
+        } else {
+            program
+        };
+        let (mut reader, answered) = open(transport.as_mut(), &options, label)?;
         rgit_protocol::session_id::note_version(answered);
         let proto = match answered {
             ProtocolVersion::V2 => {
                 let caps = Capabilities::read_v2(&mut reader)?;
                 rgit_protocol::session_id::note_server(&caps);
+                reader.tracer_mut().set_name(program);
                 Proto::V2(Client::with_capabilities(reader, caps)?)
             }
             v => {
                 let adv = v0::read_advertisement(&mut reader, v)?;
                 rgit_protocol::session_id::note_server(&adv.caps);
+                reader.tracer_mut().set_name(program);
                 let client = v0::Client::new(reader, &adv);
                 Proto::V0 {
                     adv,

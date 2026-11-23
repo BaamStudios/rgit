@@ -153,3 +153,13 @@ pub fn bad_wanted_ref(line: &str) -> String {
 pub fn bad_request_line(line: &str) -> String {
     format!("protocol error: invalid request line '{line}'")
 }
+
+/// A pkt-line length header cut off by the end of the response.
+pub fn partial_header(got: usize) -> String {
+    format!("{got} bytes of length header were received")
+}
+
+/// A pkt-line body cut off by the end of the response.
+pub fn partial_body(missing: usize) -> String {
+    format!("{missing} bytes of body are still expected")
+}
