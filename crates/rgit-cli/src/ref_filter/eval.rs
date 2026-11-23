@@ -888,7 +888,12 @@ impl<'a> Env<'a> {
                     .and_then(|t| t.trim_end().strip_prefix("ref: ").map(str::to_owned))
             };
             let bare = r.config.bool("core.bare").ok().flatten().unwrap_or(false);
-            if !bare {
+            if bare {
+                // A bare repository is its own main worktree.
+                if let Some(head) = head_of(common) {
+                    map.insert(head, abs(common));
+                }
+            } else {
                 let main = if r.setup.git_dir == *common {
                     r.setup.work_tree.clone()
                 } else {
@@ -1529,15 +1534,17 @@ impl Env<'_> {
             }
             // Where the first-parent chain of a commit meets that of the
             // base, shared between the references.
-            let mut meets: HashMap<ObjectId, Option<usize>> = HashMap::new();
-            let mut best: Option<(usize, &str)> = None;
+            // Per commit: where its first-parent chain meets the base's
+            // (position there, steps to get there).
+            let mut meets: HashMap<ObjectId, Option<(usize, usize)>> = HashMap::new();
+            let mut best: Option<((usize, usize), &str)> = None;
             for (name, tip) in &tips {
                 let mut path = Vec::new();
                 let mut cur = Some(*tip);
                 let found = loop {
                     let Some(c) = cur else { break None };
                     if let Some(p) = pos.get(&c) {
-                        break Some(*p);
+                        break Some((*p, 0));
                     }
                     if let Some(m) = meets.get(&c) {
                         break *m;
@@ -1545,12 +1552,16 @@ impl Env<'_> {
                     path.push(c);
                     cur = first_parent(self.objects, &c);
                 };
-                for c in path {
-                    meets.insert(c, found);
+                let n = path.len();
+                for (i, c) in path.into_iter().enumerate() {
+                    meets.insert(c, found.map(|(k, d)| (k, d + n - i)));
                 }
-                if let Some(k) = found {
-                    if best.is_none_or(|(b, _)| k < b) {
-                        best = Some((k, name));
+                // Fewest base commits outside the ref's history, then a ref
+                // whose tip is on the base's first-parent line, then
+                // listing order.
+                if let Some((k, d)) = found.map(|(k, d)| (k, usize::from(d + n > 0))) {
+                    if best.is_none_or(|(b, _)| (k, d) < b) {
+                        best = Some(((k, d), name));
                     }
                 }
             }

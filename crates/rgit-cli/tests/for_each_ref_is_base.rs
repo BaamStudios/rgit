@@ -46,6 +46,9 @@ fn is_base() {
         &mut fx,
         &[
             &["for-each-ref", "--format=%(refname):%(is-base:topic)"],
+            // Ties between refs whose history holds the base itself.
+            &["for-each-ref", "--format=%(refname):%(is-base:mid)"],
+            &["for-each-ref", "--format=%(refname):%(is-base:early)"],
             &[
                 "for-each-ref",
                 "--format=%(refname):%(is-base:topic)",
@@ -159,5 +162,29 @@ fn tag_contains_replaced_cycle() {
             &["tag", "--no-contains", &second],
             &["--no-replace-objects", "tag", "--contains", &second],
         ],
+    );
+}
+
+/// A bare repository is the main worktree of its `HEAD` branch.
+#[test]
+fn worktreepath_in_bare_repository() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "--bare", "-b", "main"])
+        .git([
+            "--work-tree=.",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ])
+        .git(["branch", "other"]);
+    if fx.is_skipped() {
+        return;
+    }
+    all_same(
+        &mut fx,
+        &[&["for-each-ref", "--format=%(refname) [%(worktreepath)]"]],
     );
 }
