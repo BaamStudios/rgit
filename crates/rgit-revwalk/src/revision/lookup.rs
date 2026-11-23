@@ -134,6 +134,13 @@ pub trait ConfigLookup {
 
     /// All values of `key`, in order.
     fn get_all(&self, key: &str) -> Vec<String>;
+
+    /// Every `(name, value)` whose canonical name starts with `prefix`, in
+    /// order (`remote.`, `url.`); empty when not supported.
+    fn entries_with_prefix(&self, prefix: &str) -> Vec<(String, String)> {
+        let _ = prefix;
+        Vec::new()
+    }
 }
 
 /// Read access to the index.
