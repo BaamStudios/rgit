@@ -365,3 +365,29 @@ fn diff_no_index_matches_git() {
         ],
     );
 }
+
+/// `--relative` also leaves out unmerged paths outside the directory.
+#[test]
+fn relative_leaves_out_unmerged_paths() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("file0", "zero\n")
+        .write("sub/file0", "base\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "base"])
+        .git(["checkout", "-q", "-b", "side"])
+        .write("file0", "one\n")
+        .git(["commit", "-q", "-a", "-m", "one"])
+        .git(["checkout", "-q", "main"])
+        .write("file0", "two\n")
+        .git(["commit", "-q", "-a", "-m", "two"]);
+    // The merge stops with a conflict in file0.
+    let _ = fx.git_output(["merge", "-q", "side"]);
+    for args in [
+        &["diff", "--relative"][..],
+        &["diff", "--relative", "--name-only"],
+    ] {
+        fx.compare(args).in_dir("sub").checks(Check::OUTPUT).run();
+    }
+}

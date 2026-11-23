@@ -60,9 +60,11 @@ pub struct ExtSide<'a> {
     pub data: Vec<u8>,
     pub oid: ObjectId,
     pub mode: u32,
-    /// The side is the work tree file at the pair's path.
+    /// The side is the work tree file `file`.
     pub in_worktree: bool,
     pub path: &'a [u8],
+    /// The work tree file, relative to where the program runs.
+    pub file: Vec<u8>,
 }
 
 /// A call of the program.
@@ -112,7 +114,7 @@ pub fn run(
                 }
                 Some(s) => {
                     if s.in_worktree {
-                        args.push(os(s.path));
+                        args.push(os(&s.file));
                     } else {
                         let t = TempFile::new(&s.data, s.path).map_err(|_| died())?;
                         args.push(t.path.clone().into_os_string());
@@ -125,7 +127,9 @@ pub fn run(
         }
         if let Some((new_path, header)) = &call.rename {
             args.push(os(new_path));
-            args.push(header.into());
+            if !header.is_empty() {
+                args.push(header.into());
+            }
         }
     }
     let arg_refs: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_os_str()).collect();

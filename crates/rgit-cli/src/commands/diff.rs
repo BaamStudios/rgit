@@ -366,6 +366,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some((s, d)) = mnemonic {
         out.mnemonic(&opts, s, d);
     }
+    // --relative: unmerged paths outside the directory are left out too.
+    if let Some(prefix) = &out.relative {
+        unmerged.retain(|u| u.path.starts_with(prefix));
+    }
     let how = diff::unmerged_as(stage, combined, formats.patch);
     let (files, pairs) = crate::diff::combined::worktree(&repo, &out, &unmerged, pairs, how)?;
     let mut bytes = Vec::new();
