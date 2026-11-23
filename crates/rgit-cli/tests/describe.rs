@@ -341,3 +341,30 @@ fn describe_random_history() {
         }
     }
 }
+
+/// `--dirty` dies and `--broken` marks the result when a submodule's
+/// `.git` file leads nowhere.
+#[test]
+fn broken_submodule_gitfile() {
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .git(["commit", "-q", "--allow-empty", "-m", "one"])
+        .git(["tag", "-a", "-m", "t", "v1"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let head = String::from_utf8(fx.git_stdout(["rev-parse", "HEAD"])).unwrap();
+    let cacheinfo = format!("160000,{},sub1", head.trim());
+    let mut fx = fx
+        .git(["update-index", "--add", "--cacheinfo", cacheinfo.as_str()])
+        .git(["commit", "-q", "-m", "sub"])
+        .write("sub1/.git", "gitdir: ../.git/modules/sub1\n");
+    for args in [
+        &["describe", "--dirty"][..],
+        &["describe", "--broken"],
+        &["diff-index", "HEAD"],
+    ] {
+        fx.compare(args).checks(Check::OUTPUT).run();
+    }
+}
