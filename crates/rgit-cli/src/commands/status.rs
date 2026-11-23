@@ -19,7 +19,8 @@ use rgit_hash::ObjectId;
 use rgit_index::Entry;
 use rgit_object::{Object, ObjectKind};
 use rgit_pathspec::{ParseOptions, Pathspec};
-use rgit_worktree::stat::{Checker, Status};
+use rgit_worktree::ignore::Excludes;
+use rgit_worktree::stat::{Checker, FileStat, Status};
 
 use super::ls_files::{ExcludeArg, build_excludes};
 use crate::messages::status as msg;
@@ -64,30 +65,6 @@ pub(crate) struct SubContext<'a> {
     pub(crate) untracked: bool,
 }
 
-pub(crate) fn collect_tree(
-    repo: &Repo,
-    tree: &ObjectId,
-    base: &[u8],
-    out: &mut BTreeMap<Vec<u8>, Change>,
-) -> Result<(), Die> {
-    let Some(Object::Tree(t)) = repo.read_object(tree) else {
-        return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(
-            &tree.to_hex(),
-        )));
-    };
-    for e in t.entries {
-        let mut path = base.to_vec();
-        path.extend_from_slice(&e.name);
-        let mode = e.mode.canonical();
-        if mode.is_tree() {
-            path.push(b'/');
-            collect_tree(repo, &e.oid, &path, out)?;
-        } else {
-            out.entry(path).or_default().head = Some((mode.bits(), e.oid));
-        }
-    }
-    Ok(())
-}
 
 fn type_bits(mode: u32) -> u32 {
     mode & 0o170000
@@ -148,8 +125,27 @@ pub(crate) fn untracked_and_ignored(
     if mode == Untracked::No {
         return Ok((Vec::new(), Vec::new()));
     }
+    let excludes = untracked_excludes(repo, index)?;
+    Ok(walk_untracked(work_tree, index, excludes, pathspec, mode, ignored))
+}
+
+/// The exclude rules of the untracked walk.
+fn untracked_excludes(repo: &Repo, index: &rgit_index::Index) -> Result<Excludes, Die> {
     let mut excludes = build_excludes(repo, &[ExcludeArg::Standard])?;
     untracked::use_skip_worktree_ignores(repo, index, b".gitignore", &mut excludes);
+    Ok(excludes)
+}
+
+/// [`untracked_and_ignored`] with the exclude rules already read (needs no
+/// repository, so it can run on a thread of its own).
+fn walk_untracked(
+    work_tree: &Path,
+    index: &rgit_index::Index,
+    mut excludes: Excludes,
+    pathspec: Option<&Pathspec>,
+    mode: Untracked,
+    ignored: IgnoredMode,
+) -> untracked::StatusLists {
     let roots = untracked::Walker {
         root: work_tree,
         index,
@@ -158,7 +154,7 @@ pub(crate) fn untracked_and_ignored(
         scan_excluded: ignored != IgnoredMode::No,
     }
     .walk();
-    Ok(untracked::status_lists(&roots, mode == Untracked::All, ignored))
+    untracked::status_lists(&roots, mode == Untracked::All, ignored)
 }
 
 pub(crate) struct Printer {
@@ -627,14 +623,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let work_tree = repo.work_tree()?;
     let revs = Revs::new(ctx, &repo.setup)?;
     let info = branch_info(&mut repo, &revs, count)?;
-    let mut changes: BTreeMap<Vec<u8>, Change> = BTreeMap::new();
     let mut base_tree = ObjectId::empty_tree(repo.hash);
     if let Some(h) = info.head {
-        let tree = repo
+        base_tree = repo
             .peel_to(h, ObjectKind::Tree)
             .ok_or_else(|| Die::Fatal(crate::messages::ls_tree::NOT_A_TREE.to_string()))?;
-        collect_tree(&repo, &tree, b"", &mut changes)?;
-        base_tree = tree;
     }
     let root = work_tree.as_os_str().as_encoded_bytes().to_vec();
     let opts = ParseOptions {
@@ -648,19 +641,90 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let attr_tree = crate::attributes::PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
     let stash_count = if show_stash { stash_entries(&mut repo) } else { 0 };
     let repo = repo;
-    if !ctx.no_optional_locks && std::env::var("GIT_OPTIONAL_LOCKS").as_deref() != Ok("0") {
-        refresh_index(&repo);
-    }
-    let (index, index_mtime) = repo.read_index()?;
-    let attrs = attr_tree.map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t)));
-    for e in index.entries() {
-        let c = changes.entry(e.path().to_vec()).or_default();
-        match e.stage().get() {
-            0 => c.index = Some((e.mode.0, e.id, e.flags.intent_to_add)),
-            s => c.stages[usize::from(s) - 1] = Some((e.mode.0, e.id)),
+    // The refreshed index is written back under this lock; quietly
+    // skipped when the index is locked or cannot be written.
+    let lock = if !ctx.no_optional_locks && std::env::var("GIT_OPTIONAL_LOCKS").as_deref() != Ok("0") {
+        let index_path = repo.setup.cwd.join(repo.index_path());
+        index_path
+            .exists()
+            .then(|| rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options()).ok())
+            .flatten()
+    } else {
+        None
+    };
+    let (mut index, index_mtime) = repo.read_index()?;
+    let checker = repo.checker(index_mtime)?;
+    let ignored_mode = match ignored.borrow().as_deref() {
+        None | Some("no") => Ok(IgnoredMode::No),
+        Some("traditional") => Ok(IgnoredMode::Traditional),
+        Some("matching") => Ok(IgnoredMode::Matching),
+        Some(m) => Err(Die::Fatal(msg::invalid_ignored(m))),
+    };
+    // The untracked walk runs on a thread of its own while the tracked
+    // files are compared (invalid options end the command later, after
+    // the index is written, as before).
+    let walk_mode = match ignored_mode {
+        Ok(m) if mode != Untracked::No => Some(m),
+        _ => None,
+    };
+    let excludes = match walk_mode {
+        Some(_) => Some(untracked_excludes(&repo, &index)?),
+        None => None,
+    };
+    // With `attr:` magic the walk sees every path and the attributes
+    // decide afterwards.
+    let walk_pathspec = (!pathspec.is_empty() && attr_tree.is_none()).then_some(&pathspec);
+    // On an unborn branch everything in the index is new.
+    let unborn = info.head.is_none();
+    let (metas, statuses, heads, walked) = std::thread::scope(|s| {
+        let index = &index;
+        let work_tree = &work_tree;
+        let walker = walk_mode.zip(excludes).map(|(ignored, excludes)| {
+            s.spawn(move || {
+                let started = std::time::Instant::now();
+                let lists = walk_untracked(work_tree, index, excludes, walk_pathspec, mode, ignored);
+                (lists, started.elapsed().as_secs_f64())
+            })
+        });
+        let metas = checker.preload(index.entries(), preload_threads(&repo));
+        let statuses = compare_worktree(index, &checker, &metas);
+        let heads = if unborn {
+            Ok(Vec::new())
+        } else {
+            head_changes(&repo, &base_tree, index)
+        };
+        let walked = walker.map(|h| match h.join() {
+            Ok(r) => r,
+            Err(panic) => std::panic::resume_unwind(panic),
+        });
+        (metas, statuses, heads, walked)
+    });
+    // Like git, status refreshes the stat data of the index and writes it
+    // back when that changed something or when entries are racily clean.
+    for &pos in &statuses.refresh {
+        if let (Some(meta), Some(entry)) = (metas[pos].as_ref(), index.entry_mut(pos)) {
+            checker.refresh_stat(entry, meta);
         }
     }
-    let checker = repo.checker(index_mtime)?;
+    if let Some(lock) = lock {
+        let racy = index.entries().iter().any(|e| checker.is_racy(e));
+        if racy {
+            if let Some(reference) = index_mtime {
+                let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
+            }
+        }
+        if racy || !statuses.refresh.is_empty() {
+            let _ = crate::switch_branch::write_index(&repo, &index, lock);
+        }
+    }
+    let index = index;
+    let mut heads = heads?;
+    heads.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let mut changes: BTreeMap<Vec<u8>, Change> = BTreeMap::new();
+    for (path, head) in &heads {
+        changes.entry(path.clone()).or_default().head = *head;
+    }
+    let attrs = attr_tree.map(|t| RefCell::new(crate::attributes::PathspecAttrs::new(&repo, &index, t)));
     let ignore_cli = ignore_submodules
         .borrow()
         .as_deref()
@@ -687,15 +751,42 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         rules,
         untracked: true,
     });
-    for e in index.entries() {
-        let c = changes.get_mut(e.path()).expect("entry");
+    // Only paths with something to show get a `Change`: those that differ
+    // from HEAD (above), conflicts, intent-to-add entries, submodules and
+    // files changed in the work tree.
+    let mut next_head = 0;
+    for (pos, e) in index.entries().iter().enumerate() {
+        let meta = metas[pos].as_ref();
+        // `heads` and the index are both sorted by path.
+        while heads.get(next_head).is_some_and(|h| h.0.as_slice() < e.path()) {
+            next_head += 1;
+        }
+        let listed = unborn || heads.get(next_head).is_some_and(|h| h.0 == e.path());
         if e.stage().is_conflict() {
-            if let Ok(Some(meta)) = checker.lstat(e.path()) {
-                c.wt_mode = Some(wt_mode(&meta, e.mode.0));
+            let c = changes.entry(e.path().to_vec()).or_default();
+            c.stages[usize::from(e.stage().get()) - 1] = Some((e.mode.0, e.id));
+            if let Some(meta) = meta {
+                c.wt_mode = Some(wt_mode(meta, e.mode.0));
             }
             continue;
         }
-        check_worktree(&repo, &checker, &work_tree, e, c, sub_ctx.as_ref())?;
+        let mut wt = Change::default();
+        let status = statuses.status[pos].unwrap_or(Status::Modified);
+        check_worktree_with(&repo, &work_tree, e, &mut wt, sub_ctx.as_ref(), meta, || Ok(status))?;
+        let c = if listed {
+            changes.entry(e.path().to_vec()).or_default()
+        } else if wt.wt != b' ' || e.flags.intent_to_add || e.mode.is_gitlink() {
+            let c = changes.entry(e.path().to_vec()).or_default();
+            // Not among the HEAD changes: HEAD has the same entry.
+            c.head = Some((e.mode.0, e.id));
+            c
+        } else {
+            continue;
+        };
+        c.index = Some((e.mode.0, e.id, e.flags.intent_to_add));
+        c.wt = wt.wt;
+        c.wt_mode = wt.wt_mode;
+        c.sub = wt.sub;
     }
 
     // `--ignore-submodules=all` also hides staged submodule changes.
@@ -719,26 +810,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
     };
 
-    let ignored_mode = match ignored.borrow().as_deref() {
-        None | Some("no") => IgnoredMode::No,
-        Some("traditional") => IgnoredMode::Traditional,
-        Some("matching") => IgnoredMode::Matching,
-        Some(m) => return Err(Die::Fatal(msg::invalid_ignored(m))),
-    };
+    let ignored_mode = ignored_mode?;
     if ignored_mode == IgnoredMode::Matching && mode == Untracked::No {
         return Err(Die::Fatal(msg::IGNORED_UNTRACKED_COMBINATION.to_string()));
     }
-    let started = std::time::Instant::now();
-    // With `attr:` magic the walk sees every path and the attributes
-    // decide afterwards.
-    let (mut untracked_paths, mut ignored_paths) = untracked_and_ignored(
-        &repo,
-        &work_tree,
-        &index,
-        (!pathspec.is_empty() && attrs.is_none()).then_some(&pathspec),
-        mode,
-        ignored_mode,
-    )?;
+    let ((mut untracked_paths, mut ignored_paths), walk_seconds) =
+        walked.unwrap_or_else(|| ((Vec::new(), Vec::new()), 0.0));
     if attrs.is_some() {
         untracked_paths.retain(|p| wanted(p));
         ignored_paths.retain(|p| wanted(p));
@@ -748,7 +825,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let seconds = if std::env::var_os("GIT_TEST_UF_DELAY_WARNING").is_some() {
         3.25
     } else {
-        started.elapsed().as_secs_f64()
+        walk_seconds
     };
     let uf_delay = (format == Format::Long
         && mode != Untracked::No
@@ -876,34 +953,211 @@ fn stash_entries(repo: &mut Repo) -> usize {
         .unwrap_or(0)
 }
 
-/// Like git, status refreshes the stat data of the index and writes it
-/// back when that changed something or when entries are racily clean;
-/// quietly skipped when the index is locked or cannot be written.
-fn refresh_index(repo: &Repo) {
-    let index_path = repo.setup.cwd.join(repo.index_path());
-    if !index_path.exists() {
-        return;
+/// How many threads look at the work tree files: `core.preloadIndex`
+/// (default on) spreads the `lstat` calls over up to 20 threads.
+fn preload_threads(repo: &Repo) -> usize {
+    if config_bool(repo, "core.preloadindex").ok().flatten() == Some(false) {
+        return 1;
     }
-    let Ok(lock) = rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options()) else {
-        return;
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(20))
+}
+
+/// The work tree state of the index entries (see [`compare_worktree`]).
+struct WorktreeStatus {
+    /// By index position: the state of each stage-0 entry that is not a
+    /// submodule or intent-to-add (`None` for the others).
+    status: Vec<Option<Status>>,
+    /// The positions of the entries that get new stat data: files found
+    /// unchanged in content.
+    refresh: Vec<usize>,
+}
+
+/// Compares the stage-0 entries of `index` with their work tree files
+/// (`metas`, the `lstat` data by index position). A file that cannot be
+/// read counts as modified.
+fn compare_worktree(
+    index: &rgit_index::Index,
+    checker: &Checker,
+    metas: &[Option<FileStat>],
+) -> WorktreeStatus {
+    let mut out = WorktreeStatus {
+        status: vec![None; index.len()],
+        refresh: Vec::new(),
     };
-    let Ok((mut index, mtime)) = repo.read_index() else {
-        return;
+    for (pos, (e, meta)) in index.entries().iter().zip(metas).enumerate() {
+        if e.stage().is_conflict() || e.flags.intent_to_add || e.mode.is_gitlink() {
+            continue;
+        }
+        let status = if e.flags.skip_worktree || e.flags.assume_valid {
+            Status::Unchanged
+        } else {
+            match meta {
+                Some(meta) => checker.check_stat(e, meta).unwrap_or(Status::Modified),
+                None => Status::Deleted,
+            }
+        };
+        if status == Status::StatOnly {
+            out.refresh.push(pos);
+        }
+        out.status[pos] = Some(status);
+    }
+    out
+}
+
+/// A `HEAD` entry: mode and id.
+type HeadEntry = Option<(u32, ObjectId)>;
+
+/// The paths whose `HEAD` entry and index entry differ (staged changes,
+/// conflicts, intent-to-add entries), with the `HEAD` side (`None` when
+/// the path is not in `HEAD`). Like git, a subtree is not read at all when
+/// the cache tree (`TREE` extension) of the index records it as `HEAD` has
+/// it.
+fn head_changes(
+    repo: &Repo,
+    tree: &ObjectId,
+    index: &rgit_index::Index,
+) -> Result<Vec<(Vec<u8>, HeadEntry)>, Die> {
+    // The cache tree leaves out conflicts and intent-to-add entries; with
+    // those every tree is read.
+    let exact = index
+        .entries()
+        .iter()
+        .any(|e| e.stage().is_conflict() || e.flags.intent_to_add);
+    let node = if exact {
+        None
+    } else {
+        index.cache_tree().map(|t| &t.root)
     };
-    let Ok(checker) = repo.checker(mtime) else {
-        return;
-    };
-    let before = index.clone();
-    crate::switch_branch::refresh_stat(&mut index, &checker);
-    let racy = index.entries().iter().any(|e| checker.is_racy(e));
-    if racy {
-        if let Some(reference) = mtime {
-            let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
+    let mut out = Vec::new();
+    if head_walk(repo, tree, b"", index.entries(), node, &mut out)? {
+        return Ok(out);
+    }
+    // A tree with duplicate names: like a map from path to entry, the
+    // last entry for a path counts.
+    let mut head = BTreeMap::new();
+    collect_tree(repo, tree, b"", &mut head)?;
+    let entries = index.entries();
+    let mut out = Vec::new();
+    for (path, &(mode, id)) in &head {
+        let same = match &entries[index.path_range(path)] {
+            [x] => {
+                !x.stage().is_conflict() && !x.flags.intent_to_add && x.mode.0 == mode && x.id == id
+            }
+            _ => false,
+        };
+        if !same {
+            out.push((path.clone(), Some((mode, id))));
         }
     }
-    if racy || index != before {
-        let _ = crate::switch_branch::write_index(repo, &index, lock);
+    let mut last: Option<&[u8]> = None;
+    for e in entries {
+        if last != Some(e.path()) && !head.contains_key(e.path()) {
+            out.push((e.path().to_vec(), None));
+        }
+        last = Some(e.path());
     }
+    Ok(out)
+}
+
+/// Every blob and gitlink of `tree` below `base` (empty or ending in `/`),
+/// by path; for duplicate names the last entry counts.
+fn collect_tree(
+    repo: &Repo,
+    tree: &ObjectId,
+    base: &[u8],
+    out: &mut BTreeMap<Vec<u8>, (u32, ObjectId)>,
+) -> Result<(), Die> {
+    let Some(Object::Tree(t)) = repo.read_object(tree) else {
+        return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(
+            &tree.to_hex(),
+        )));
+    };
+    for e in t.entries {
+        let mut path = base.to_vec();
+        path.extend_from_slice(&e.name);
+        let mode = e.mode.canonical();
+        if mode.is_tree() {
+            path.push(b'/');
+            collect_tree(repo, &e.oid, &path, out)?;
+        } else {
+            out.insert(path, (mode.bits(), e.oid));
+        }
+    }
+    Ok(())
+}
+
+/// [`head_changes`] for `tree` at `prefix` (empty or ending in `/`);
+/// `entries` are the index entries below `prefix`, `node` the cache tree
+/// node of the directory. `false` when a tree has a name twice (then the
+/// result is incomplete).
+fn head_walk(
+    repo: &Repo,
+    tree: &ObjectId,
+    prefix: &[u8],
+    entries: &[Entry],
+    node: Option<&rgit_index::TreeNode>,
+    out: &mut Vec<(Vec<u8>, HeadEntry)>,
+) -> Result<bool, Die> {
+    if let Some(n) = node {
+        let count = n.entry_count().and_then(|c| usize::try_from(c).ok());
+        if n.id() == Some(tree) && count == Some(entries.len()) {
+            return Ok(true);
+        }
+    }
+    let Some(Object::Tree(t)) = repo.read_object(tree) else {
+        return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(
+            &tree.to_hex(),
+        )));
+    };
+    let mut names: Vec<&[u8]> = t.entries.iter().map(|e| e.name.as_slice()).collect();
+    names.sort_unstable();
+    if names.windows(2).any(|w| w[0] == w[1]) {
+        return Ok(false);
+    }
+    // Index entries that HEAD has at their path or below a directory.
+    let mut covered = vec![false; entries.len()];
+    let mut path = prefix.to_vec();
+    for e in t.entries {
+        path.truncate(prefix.len());
+        path.extend_from_slice(&e.name);
+        let mode = e.mode.canonical();
+        if mode.is_tree() {
+            path.push(b'/');
+            let start = entries.partition_point(|x| x.path() < path.as_slice());
+            let len = entries[start..].partition_point(|x| x.path().starts_with(&path));
+            covered[start..start + len].fill(true);
+            let child = node.and_then(|n| n.child(&e.name));
+            if !head_walk(repo, &e.oid, &path, &entries[start..start + len], child, out)? {
+                return Ok(false);
+            }
+            continue;
+        }
+        let start = entries.partition_point(|x| x.path() < path.as_slice());
+        let len = entries[start..].partition_point(|x| x.path() == path.as_slice());
+        covered[start..start + len].fill(true);
+        let head = (mode.bits(), e.oid);
+        let same = match &entries[start..start + len] {
+            [x] => {
+                !x.stage().is_conflict()
+                    && !x.flags.intent_to_add
+                    && x.mode.0 == head.0
+                    && x.id == head.1
+            }
+            _ => false,
+        };
+        if !same {
+            out.push((path.clone(), Some(head)));
+        }
+    }
+    // Index paths HEAD does not have.
+    let mut last: Option<&[u8]> = None;
+    for (e, covered) in entries.iter().zip(covered) {
+        if !covered && last != Some(e.path()) {
+            out.push((e.path().to_vec(), None));
+            last = Some(e.path());
+        }
+    }
+    Ok(true)
 }
 
 /// Rename detection for the staged changes: `--no-renames`,
@@ -1599,12 +1853,27 @@ pub(crate) fn check_worktree(
     subs: Option<&SubContext<'_>>,
 ) -> Result<(), Die> {
     let meta = checker.lstat(e.path()).ok().flatten();
+    let meta = meta.as_ref().map(FileStat::from_metadata);
+    check_worktree_with(repo, work_tree, e, c, subs, meta.as_ref(), || checker.check(e))
+}
+
+/// [`check_worktree`] with the `lstat` data `meta` of the file and its
+/// state (`status`, asked for regular files only).
+fn check_worktree_with(
+    repo: &Repo,
+    work_tree: &Path,
+    e: &Entry,
+    c: &mut Change,
+    subs: Option<&SubContext<'_>>,
+    meta: Option<&FileStat>,
+    status: impl FnOnce() -> std::io::Result<Status>,
+) -> Result<(), Die> {
     let Some(meta) = meta else {
         c.wt = b'D';
         c.wt_mode = None;
         return Ok(());
     };
-    c.wt_mode = Some(wt_mode(&meta, e.mode.0));
+    c.wt_mode = Some(wt_mode(meta, e.mode.0));
     if e.flags.intent_to_add {
         c.wt = b'A';
         return Ok(());
@@ -1628,7 +1897,7 @@ pub(crate) fn check_worktree(
         }
         return Ok(());
     }
-    c.wt = match checker.check(e) {
+    c.wt = match status() {
         Ok(Status::Unchanged | Status::StatOnly) => b' ',
         Ok(Status::TypeChanged) => b'T',
         Ok(Status::Deleted) => {
@@ -1640,24 +1909,18 @@ pub(crate) fn check_worktree(
     Ok(())
 }
 
-fn wt_mode(meta: &std::fs::Metadata, index_mode: u32) -> u32 {
-    let ft = meta.file_type();
-    if ft.is_symlink() {
+fn wt_mode(meta: &FileStat, index_mode: u32) -> u32 {
+    if meta.is_symlink() {
         0o120000
-    } else if ft.is_dir() {
+    } else if meta.is_dir() {
         if type_bits(index_mode) == 0o160000 {
             0o160000
         } else {
             0o040000
         }
+    } else if meta.executable {
+        0o100755
     } else {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if meta.permissions().mode() & 0o100 != 0 {
-                return 0o100755;
-            }
-        }
         0o100644
     }
 }

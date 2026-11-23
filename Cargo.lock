@@ -682,6 +682,7 @@ dependencies = [
 name = "rgit-index"
 version = "0.1.0"
 dependencies = [
+ "memmap2",
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",

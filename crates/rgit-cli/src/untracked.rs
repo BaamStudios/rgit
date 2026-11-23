@@ -15,7 +15,9 @@
 //! directory itself; otherwise the walk goes on inside it as if it held
 //! tracked files.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rgit_index::Index;
 use rgit_pathspec::{DirInterest, Pathspec};
@@ -169,22 +171,98 @@ pub(crate) fn use_skip_worktree_ignores(
     }
 }
 
-/// Sorted directory entries without `.git`: name and whether it is a
-/// directory (symbolic links are not followed).
-fn read_sorted(dir: &Path) -> std::io::Result<Vec<(Vec<u8>, bool)>> {
-    let mut out: Vec<(Vec<u8>, bool)> = std::fs::read_dir(dir)?
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().as_encoded_bytes().to_vec();
-            if name == b".git" {
-                return None;
-            }
-            let is_dir = e.file_type().ok()?.is_dir();
-            Some((name, is_dir))
-        })
-        .collect();
-    out.sort();
+/// The entries of a directory, sorted by name, without `.git`.
+#[derive(Default)]
+struct Listing {
+    /// All names, one after the other.
+    names: Vec<u8>,
+    /// Start and end of each name in `names`, and whether it is a
+    /// directory (symbolic links are not followed).
+    items: Vec<(usize, usize, bool)>,
+}
+
+impl Listing {
+    fn iter(&self) -> impl Iterator<Item = (&[u8], bool)> {
+        self.items
+            .iter()
+            .map(|&(start, end, is_dir)| (&self.names[start..end], is_dir))
+    }
+}
+
+/// The entries of the directory `dir`.
+fn read_sorted(dir: &Path) -> std::io::Result<Listing> {
+    let mut out = Listing::default();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let name = e.file_name();
+        let name = name.as_encoded_bytes();
+        if name == b".git" {
+            continue;
+        }
+        let Ok(ft) = e.file_type() else { continue };
+        let start = out.names.len();
+        out.names.extend_from_slice(name);
+        out.items.push((start, out.names.len(), ft.is_dir()));
+    }
+    let names = &out.names;
+    out.items
+        .sort_unstable_by(|a, b| names[a.0..a.1].cmp(&names[b.0..b.1]));
     Ok(out)
+}
+
+/// The fewest directories worth a thread of their own in [`prefetch`].
+const PREFETCH_PER_THREAD: usize = 64;
+
+/// Reads the directories that hold tracked files (all of which the walk
+/// visits when no pathspec limits it) with several threads, keyed by their
+/// path as [`Walker::walk_dir`] gets it (empty or ending in `/`); `None`
+/// for a directory that could not be read.
+fn prefetch(root: &Path, index: &Index) -> HashMap<Vec<u8>, Option<Listing>> {
+    let mut seen: HashSet<&[u8]> = HashSet::new();
+    let mut dirs: Vec<&[u8]> = vec![b""];
+    let mut last: &[u8] = b"";
+    for e in index.entries() {
+        let p = e.path();
+        let Some(slash) = p.iter().rposition(|&b| b == b'/') else {
+            continue;
+        };
+        let dir = &p[..=slash];
+        if dir == last {
+            continue;
+        }
+        last = dir;
+        for (i, &b) in dir.iter().enumerate() {
+            if b == b'/' && seen.insert(&dir[..=i]) {
+                dirs.push(&dir[..=i]);
+            }
+        }
+    }
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get().min(20))
+        .min(dirs.len() / PREFETCH_PER_THREAD);
+    if threads < 2 {
+        return HashMap::new();
+    }
+    let next = AtomicUsize::new(0);
+    let read = || {
+        let mut got = Vec::new();
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(dir) = dirs.get(i) else { break };
+            got.push((dir.to_vec(), read_sorted(&os_path(root, dir)).ok()));
+        }
+        got
+    };
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..threads).map(|_| s.spawn(read)).collect();
+        let mut map = HashMap::with_capacity(dirs.len());
+        for h in handles {
+            match h.join() {
+                Ok(got) => map.extend(got),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        map
+    })
 }
 
 /// The work tree walk.
@@ -226,19 +304,48 @@ impl Walker<'_> {
     /// whole), in walk order.
     pub fn walk(&mut self) -> Vec<Node> {
         let mut out = Vec::new();
-        self.walk_dir(b"", false, &mut out);
+        let mut listings = if self.pathspec.is_none() {
+            prefetch(self.root, self.index)
+        } else {
+            HashMap::new()
+        };
+        self.walk_dir(b"", false, &mut listings, &mut out);
         out
     }
 
-    fn walk_dir(&mut self, dir: &[u8], parent_excluded: bool, out: &mut Vec<Node>) {
-        let Ok(entries) = read_sorted(&os_path(self.root, dir)) else {
+    fn walk_dir(
+        &mut self,
+        dir: &[u8],
+        parent_excluded: bool,
+        listings: &mut HashMap<Vec<u8>, Option<Listing>>,
+        out: &mut Vec<Node>,
+    ) {
+        let listing = match listings.remove(dir) {
+            Some(l) => l,
+            None => read_sorted(&os_path(self.root, dir)).ok(),
+        };
+        let Some(entries) = listing else {
             return;
         };
-        for (name, is_dir) in entries {
-            let mut path = dir.to_vec();
-            path.extend_from_slice(&name);
+        // The index entries below `dir`.
+        let tracked = &self.index.entries()[self.index.dir_range(dir)];
+        fn below<'e>(e: &'e rgit_index::Entry, dir: &[u8]) -> &'e [u8] {
+            &e.path()[dir.len()..]
+        }
+        let mut cursor = 0;
+        for (name, is_dir) in entries.iter() {
             if !is_dir {
-                if !self.index.path_range(&path).is_empty() || !self.selects(&path) {
+                // Both are sorted: look from the previous position on.
+                cursor += tracked[cursor..].partition_point(|e| below(e, dir) < name);
+                if tracked.get(cursor).is_some_and(|e| below(e, dir) == name) {
+                    continue;
+                }
+            }
+            let mut path = Vec::with_capacity(dir.len() + name.len() + 1);
+            path.extend_from_slice(dir);
+            path.extend_from_slice(name);
+            if !is_dir {
+                if !self.selects(&path) {
                     continue;
                 }
                 let excluded = parent_excluded || self.excluded(&path, false);
@@ -273,7 +380,7 @@ impl Walker<'_> {
             }
             if tracked_below || (!shadowing && !self.selects_dir(&path)) {
                 path.push(b'/');
-                self.walk_dir(&path, excluded, out);
+                self.walk_dir(&path, excluded, listings, out);
                 continue;
             }
             let scan = (!excluded || self.scan_excluded).then(|| self.scan(&path, excluded));
@@ -298,13 +405,13 @@ impl Walker<'_> {
                     "warning: {}",
                     msg::could_not_open_dir(&shown, &crate::global::strerror(&e))
                 );
-                Vec::new()
+                Listing::default()
             }
         };
-        for (name, is_dir) in entries {
+        for (name, is_dir) in entries.iter() {
             let mut path = dir.to_vec();
             path.push(b'/');
-            path.extend_from_slice(&name);
+            path.extend_from_slice(name);
             let child_excluded = excluded || self.excluded(&path, is_dir);
             let kind = if !is_dir {
                 Kind::File

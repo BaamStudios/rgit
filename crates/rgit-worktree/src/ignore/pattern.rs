@@ -38,6 +38,16 @@ pub struct Pattern {
     dir_only: bool,
     /// No `/` in the glob: matched against the last path component.
     basename: bool,
+    /// The leading part of the glob without wildcards; a path that does not
+    /// start with it cannot match (case-sensitive matching only).
+    literal_prefix: usize,
+    /// The glob is `*` followed by text without wildcards (`*.o`).
+    suffix: bool,
+}
+
+/// The bytes with a meaning in [`wildmatch`] globs.
+fn is_glob_special(b: u8) -> bool {
+    matches!(b, b'*' | b'?' | b'[' | b'\\')
 }
 
 impl Pattern {
@@ -69,6 +79,12 @@ impl Pattern {
         if glob.is_empty() {
             return None;
         }
+        let literal_prefix = glob
+            .iter()
+            .position(|&b| is_glob_special(b))
+            .unwrap_or(glob.len());
+        let suffix =
+            glob.len() > 1 && glob[0] == b'*' && !glob[1..].iter().any(|&b| is_glob_special(b));
         Some(Pattern {
             text: text.to_vec(),
             glob: glob.to_vec(),
@@ -76,6 +92,8 @@ impl Pattern {
             negative,
             dir_only,
             basename,
+            literal_prefix,
+            suffix,
         })
     }
 
@@ -126,19 +144,33 @@ impl Pattern {
         if self.dir_only && !is_dir {
             return false;
         }
+        let subject = if self.basename {
+            match rel.iter().rposition(|&b| b == b'/') {
+                Some(i) => &rel[i + 1..],
+                None => rel,
+            }
+        } else {
+            rel
+        };
         let mut flags = WildmatchFlags::NONE;
         if icase {
             flags |= WildmatchFlags::CASEFOLD;
-        }
-        if self.basename {
-            let base = match rel.iter().rposition(|&b| b == b'/') {
-                Some(i) => &rel[i + 1..],
-                None => rel,
-            };
-            wildmatch(&self.glob, base, flags)
         } else {
-            wildmatch(&self.glob, rel, flags | WildmatchFlags::PATHNAME)
+            // Shortcuts that give the same answer as the glob match.
+            if !subject.starts_with(&self.glob[..self.literal_prefix]) {
+                return false;
+            }
+            if self.literal_prefix == self.glob.len() {
+                return subject == self.glob.as_slice();
+            }
+            if self.suffix && (self.basename || !subject.contains(&b'/')) {
+                return subject.ends_with(&self.glob[1..]);
+            }
         }
+        if !self.basename {
+            flags |= WildmatchFlags::PATHNAME;
+        }
+        wildmatch(&self.glob, subject, flags)
     }
 }
 
@@ -287,6 +319,71 @@ mod tests {
         assert!(p("foo/").matches(b"foo", true, false));
         assert!(p("FOO").matches(b"foo", false, true));
         assert!(!p("FOO").matches(b"foo", false, false));
+    }
+
+    #[test]
+    fn shortcuts_agree_with_the_glob_match() {
+        let globs = [
+            "*.o",
+            "/x",
+            "a/*",
+            "**/foo",
+            "foo",
+            "a/b",
+            "*",
+            "*.[oa]",
+            "x*",
+            "*x*",
+            "a\\*b",
+            "*/b",
+            "a?c",
+            "Documentation/*.html",
+            "*.tar.gz",
+            "\\*x",
+        ];
+        let paths = [
+            "x.o",
+            "a/b/x.o",
+            "x",
+            "a/x",
+            "a/b",
+            "a/b/c",
+            "foo",
+            "x/foo",
+            "abc",
+            "a*b",
+            "ab",
+            "Documentation/git.html",
+            "Documentation/a/b.html",
+            "x.tar.gz",
+            "y/x.tar.gz",
+            "*x",
+            "a/c/b",
+            "o",
+        ];
+        for g in globs {
+            let pat = p(g);
+            for path in paths {
+                for is_dir in [false, true] {
+                    let subject = if pat.is_basename() {
+                        path.rsplit('/').next().unwrap_or(path)
+                    } else {
+                        path
+                    };
+                    let mut flags = WildmatchFlags::NONE;
+                    if !pat.is_basename() {
+                        flags |= WildmatchFlags::PATHNAME;
+                    }
+                    let want = (!pat.is_dir_only() || is_dir)
+                        && wildmatch(pat.glob(), subject.as_bytes(), flags);
+                    assert_eq!(
+                        pat.matches(path.as_bytes(), is_dir, false),
+                        want,
+                        "{g} {path}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

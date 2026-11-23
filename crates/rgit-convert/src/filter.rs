@@ -114,16 +114,31 @@ pub enum Outcome {
     Delayed,
 }
 
+/// Variables and their values.
+type EnvList = Vec<(OsString, OsString)>;
+
+/// The environment of [`set_base_env`], or how to compute it.
+enum BaseEnv {
+    Ready(EnvList),
+    Lazy(Box<dyn FnOnce() -> EnvList + Send>),
+}
+
 /// Environment the command line front end wants every filter to see
 /// (exports of the global options).
-static BASE_ENV: Mutex<Vec<(OsString, OsString)>> = Mutex::new(Vec::new());
+static BASE_ENV: Mutex<Option<BaseEnv>> = Mutex::new(None);
 
 /// The running `process` filters, by command.
 static PROCESSES: Mutex<Vec<Process>> = Mutex::new(Vec::new());
 
 /// Sets the environment every filter inherits on top of this process's.
 pub fn set_base_env(env: Vec<(OsString, OsString)>) {
-    *BASE_ENV.lock().unwrap_or_else(|e| e.into_inner()) = env;
+    *BASE_ENV.lock().unwrap_or_else(|e| e.into_inner()) = Some(BaseEnv::Ready(env));
+}
+
+/// Like [`set_base_env`], with the environment computed by `env` when the
+/// first filter starts (most commands never start one).
+pub fn set_base_env_with(env: impl FnOnce() -> Vec<(OsString, OsString)> + Send + 'static) {
+    *BASE_ENV.lock().unwrap_or_else(|e| e.into_inner()) = Some(BaseEnv::Lazy(Box::new(env)));
 }
 
 /// Ends all `process` filters: closes their input and waits for them.
@@ -157,7 +172,17 @@ pub fn apply(
 
 fn command_for(cmd: &OsStr, ctx: &Context) -> std::process::Command {
     let mut c = Command::shell(cmd.to_owned());
-    c.base_env(&BASE_ENV.lock().unwrap_or_else(|e| e.into_inner()));
+    {
+        let mut base = BASE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(BaseEnv::Lazy(_)) = &*base {
+            if let Some(BaseEnv::Lazy(f)) = base.take() {
+                *base = Some(BaseEnv::Ready(f()));
+            }
+        }
+        if let Some(BaseEnv::Ready(env)) = &*base {
+            c.base_env(env);
+        }
+    }
     c.trace();
     let mut std = c.to_std();
     for (k, v) in &ctx.env {

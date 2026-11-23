@@ -66,3 +66,74 @@ pub(crate) fn strerror(e: &io::Error) -> String {
         None => s,
     }
 }
+
+/// The top of a work tree for `lstat` calls on many paths below it: on
+/// unix the directory is opened once and paths are looked up relative to
+/// it, which saves resolving its own components again and again.
+pub(crate) struct Root<'a> {
+    path: &'a Path,
+    #[cfg(unix)]
+    dir: Option<std::fs::File>,
+}
+
+impl Root<'_> {
+    pub(crate) fn open(path: &Path) -> Root<'_> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let dir = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+                .open(path)
+                .ok();
+            Root { path, dir }
+        }
+        #[cfg(not(unix))]
+        Root { path }
+    }
+
+    /// `lstat` of `rel` (relative to the top, not empty); `None` when it
+    /// does not exist or a leading component is not a directory.
+    pub(crate) fn lstat(&self, rel: &[u8]) -> io::Result<Option<crate::stat::FileStat>> {
+        #[cfg(unix)]
+        if let Some(dir) = &self.dir {
+            use std::os::fd::AsRawFd;
+            let Ok(name) = std::ffi::CString::new(rel) else {
+                return Ok(None);
+            };
+            let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: `name` is a NUL-terminated string and `st` points to
+            // writable memory for one `stat`, which fstatat fills on success.
+            let rc = unsafe {
+                libc::fstatat(
+                    dir.as_raw_fd(),
+                    name.as_ptr(),
+                    st.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            };
+            if rc != 0 {
+                let e = io::Error::last_os_error();
+                return match e.kind() {
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory => Ok(None),
+                    _ => Err(e),
+                };
+            }
+            // SAFETY: fstatat succeeded, so `st` is initialised.
+            let st = unsafe { st.assume_init() };
+            return Ok(Some(crate::stat::FileStat::from_stat(&st)));
+        }
+        match std::fs::symlink_metadata(join(self.path, rel)) {
+            Ok(m) => Ok(Some(crate::stat::FileStat::from_metadata(&m))),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}

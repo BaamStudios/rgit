@@ -103,6 +103,12 @@ impl Context {
     /// Environment variables to set for child processes so that they see
     /// the global options, as git exports them.
     pub fn child_env(&self) -> Vec<(OsString, OsString)> {
+        self.child_env_with(crate::pager::started())
+    }
+
+    /// [`Context::child_env`] with `pager_started` saying whether the
+    /// pager runs.
+    pub fn child_env_with(&self, pager_started: bool) -> Vec<(OsString, OsString)> {
         let mut env: Vec<(OsString, OsString)> = Vec::new();
         let mut set = |k: &str, v: &str| env.push((k.into(), v.into()));
         if let Some(c) = self.config_parameters_env() {
@@ -147,7 +153,7 @@ impl Context {
         if let Some(a) = &self.attr_source {
             set("GIT_ATTR_SOURCE", a);
         }
-        if crate::pager::started() {
+        if pager_started {
             set("GIT_PAGER_IN_USE", "true");
         } else if self.paginate == Some(false)
             || (self.paginate.is_none()
