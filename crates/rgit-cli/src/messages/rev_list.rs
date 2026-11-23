@@ -215,7 +215,3 @@ pub const REFLOG_HISTORY_LIMITING: &str =
 pub fn cannot_walk_reflogs(name: &str) -> String {
     format!("cannot walk reflogs for {name}")
 }
-
-pub const MERGE_WITHOUT_HEAD: &str = "--merge without HEAD?";
-
-pub const MERGE_NEEDS_PSEUDOREF: &str = "--merge requires one of the pseudorefs MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD or REBASE_HEAD";

@@ -90,9 +90,8 @@ fn log_merge_shows_the_conflicting_commits() {
         &mut fx,
         &[
             &["log", "--merge", "--oneline"],
-            &["show", "--merge", "HEAD"],
             &["log", "--merge", "--oneline", "--", "other"],
-            &["rev-list", "--merge"],
+            &["rev-list", "--merge", "HEAD"],
         ],
     );
 }

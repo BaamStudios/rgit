@@ -217,8 +217,6 @@ pub struct Options {
     exclude: Vec<String>,
     /// The paths after `--` (and after `--` on standard input).
     pub paths: Vec<String>,
-    /// `--merge`: `HEAD...<other>` limited to the conflicted paths.
-    pub merge: bool,
     /// `--` was given: the arguments before it are revisions.
     pub dashdash: bool,
     /// The only tip is the implicit `HEAD` of a command without revisions;
@@ -384,7 +382,6 @@ impl Options {
             simplify_by_decoration: false,
             full_diff: false,
             follow: None,
-            merge: false,
             hidden: None,
             single_worktree: false,
             ignore_missing: false,
@@ -603,7 +600,6 @@ impl Options {
                 "--maximal-only" => o.maximal_only = true,
                 "--disk-usage" if cmd == Command::RevList => o.disk_usage = Some(false),
                 "--bisect" => o.bisect = true,
-                "--merge" => o.merge = true,
                 "--bisect-vars" if cmd == Command::RevList => o.bisect_vars = true,
                 "--bisect-all" if cmd == Command::RevList => o.bisect_all = true,
                 "--object-names" if cmd == Command::RevList => o.object_names = true,

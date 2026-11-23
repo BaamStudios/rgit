@@ -453,9 +453,6 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
         let _ = std::io::stdin().lock().read_to_end(&mut input);
         opts.read_stdin(&input)?;
     }
-    if opts.merge {
-        merge_tips(ctx, &repo, &mut opts)?;
-    }
     if opts.bisect {
         let terms = crate::commands::bisect::Terms::of(&setup);
         let (new, old) = (
@@ -485,63 +482,6 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
         }
     }
     run(ctx, &repo, cmd, &opts)
-}
-
-/// `--merge` (rev-list-options.adoc): `HEAD...<other>` for the first of
-/// `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, limited
-/// to the conflicted paths (those of them the given paths select).
-fn merge_tips(ctx: &Context, repo: &Repo<'_>, opts: &mut Options) -> Result<(), Die> {
-    if repo
-        .refs
-        .resolve("HEAD")
-        .ok()
-        .flatten()
-        .and_then(|r| r.oid)
-        .is_none()
-    {
-        return Err(Die::Fatal(msg::MERGE_WITHOUT_HEAD.into()));
-    }
-    let other = [
-        "MERGE_HEAD",
-        "CHERRY_PICK_HEAD",
-        "REVERT_HEAD",
-        "REBASE_HEAD",
-    ]
-    .into_iter()
-    .find(|name| {
-        repo.refs
-            .resolve(name)
-            .ok()
-            .flatten()
-            .is_some_and(|r| r.oid.is_some())
-    })
-    .ok_or_else(|| Die::Fatal(msg::MERGE_NEEDS_PSEUDOREF.into()))?;
-    opts.tips.push(options::Tip::Rev {
-        arg: format!("HEAD...{other}"),
-        negate: false,
-    });
-    let index_repo = crate::repository::Repo::open(ctx, Mode::Required)?;
-    let (index, _) = index_repo.read_index()?;
-    let mut conflicted: Vec<String> = Vec::new();
-    for e in index.entries() {
-        if e.stage() == rgit_index::Stage::MERGED {
-            continue;
-        }
-        let path = String::from_utf8_lossy(e.path()).into_owned();
-        if conflicted.last() != Some(&path) {
-            conflicted.push(path);
-        }
-    }
-    if !opts.paths.is_empty() {
-        let given = paths::parse_pathspec(ctx, repo, &opts.paths)?;
-        conflicted.retain(|p| given.matches(p.as_bytes()));
-    }
-    // The paths are relative to the top of the work tree.
-    opts.paths = conflicted
-        .into_iter()
-        .map(|p| format!(":(top,literal){p}"))
-        .collect();
-    Ok(())
 }
 
 /// The commits `cherry-pick` and `revert` work on, in the order they are
