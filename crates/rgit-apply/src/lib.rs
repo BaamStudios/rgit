@@ -264,17 +264,57 @@ fn same_line(p: &[u8], l: &[u8], ignore_ws: bool) -> bool {
     p == l || (ignore_ws && squeeze(p) == squeeze(l))
 }
 
-fn matches_at(img: &[Line], pre: &[&[u8]], at: usize, opts: &ApplyOptions) -> bool {
-    if at + pre.len() > img.len() {
-        return false;
+/// Fixes the whitespace of one line (`--whitespace=fix`).
+pub type Fixer<'a> = &'a dyn Fn(&[u8]) -> Vec<u8>;
+
+/// A line that holds only whitespace.
+fn is_blank(line: &[u8]) -> bool {
+    line.iter().all(u8::is_ascii_whitespace)
+}
+
+/// Whether the preimage line `p` matches the image line `l`: `Some(true)`
+/// when it does as it is, `Some(false)` when only after fixing the
+/// whitespace of both.
+fn line_matches(p: &[u8], l: &[u8], opts: &ApplyOptions, fix: Option<Fixer>) -> Option<bool> {
+    if same_line(p, l, opts.ignore_whitespace) {
+        return Some(true);
     }
-    pre.iter().zip(&img[at..at + pre.len()]).all(|(p, l)| {
-        same_line(p, &l.text, opts.ignore_whitespace) && (opts.allow_overlap || !l.patched)
-    })
+    let fix = fix?;
+    (fix(p) == fix(l)).then_some(false)
+}
+
+/// Whether `pre` matches at `at`: `Some(true)` when exactly, `Some(false)`
+/// when only after fixing whitespace (which also lets blank lines at the
+/// end of the preimage lie beyond the end of the image, as long as a
+/// non-blank line matches inside it).
+fn matches_at(
+    img: &[Line],
+    pre: &[&[u8]],
+    at: usize,
+    opts: &ApplyOptions,
+    fix: Option<Fixer>,
+) -> Option<bool> {
+    let inside = img.len().checked_sub(at)?.min(pre.len());
+    let mut exact = true;
+    if inside < pre.len() {
+        fix?;
+        if !pre[inside..].iter().all(|l| is_blank(l)) || pre[..inside].iter().all(|l| is_blank(l)) {
+            return None;
+        }
+        exact = false;
+    }
+    for (p, l) in pre[..inside].iter().zip(&img[at..at + inside]) {
+        if l.patched && !opts.allow_overlap {
+            return None;
+        }
+        exact &= line_matches(p, &l.text, opts, fix)?;
+    }
+    Some(exact)
 }
 
 /// Finds where `pre` matches: at the start only, at the end only, or the
-/// position closest to `pos` (looking forward first on ties).
+/// position closest to `pos` (looking forward first on ties). Returns the
+/// position and whether the match was exact.
 fn find_pos(
     img: &[Line],
     pre: &[&[u8]],
@@ -282,21 +322,28 @@ fn find_pos(
     begin: bool,
     end: bool,
     opts: &ApplyOptions,
-) -> Option<usize> {
-    if pre.len() > img.len() {
-        return None;
-    }
-    let limit = img.len() - pre.len();
+    fix: Option<Fixer>,
+) -> Option<(usize, bool)> {
+    // The last start position: the preimage must fit, unless fixing
+    // whitespace lets its blank tail hang over the end.
+    let fits = img.len().checked_sub(pre.len());
+    let limit = match (fix, img.len().checked_sub(1)) {
+        (Some(_), Some(over)) => Some(fits.map_or(over, |f| f.max(over))),
+        _ => fits,
+    }?;
+    let try_at = |at: usize| matches_at(img, pre, at, opts, fix).map(|e| (at, e));
     if begin || end {
-        let at = if begin { 0 } else { limit };
-        if begin && end && limit != 0 {
-            return None;
+        let ends = |at: usize| at + pre.len() >= img.len();
+        if begin {
+            return if !end || ends(0) { try_at(0) } else { None };
         }
-        return matches_at(img, pre, at, opts).then_some(at);
+        return (fits.unwrap_or(0)..=limit)
+            .filter(|&at| ends(at))
+            .find_map(try_at);
     }
     let start = pos.min(limit);
-    if matches_at(img, pre, start, opts) {
-        return Some(start);
+    if let Some(m) = try_at(start) {
+        return Some(m);
     }
     let mut d = 1;
     loop {
@@ -305,13 +352,13 @@ fn find_pos(
         if fwd > limit && back.is_none() {
             return None;
         }
-        if fwd <= limit && matches_at(img, pre, fwd, opts) {
-            return Some(fwd);
-        }
-        if let Some(b) = back {
-            if matches_at(img, pre, b, opts) {
-                return Some(b);
+        if fwd <= limit {
+            if let Some(m) = try_at(fwd) {
+                return Some(m);
             }
+        }
+        if let Some(m) = back.and_then(try_at) {
+            return Some(m);
         }
         d += 1;
     }
@@ -336,6 +383,24 @@ fn find_pos(
 /// - Lines changed by an earlier hunk do not match again unless
 ///   `allow_overlap` is set.
 pub fn apply_hunks(image: &[u8], hunks: &[Hunk], opts: &ApplyOptions) -> Applied {
+    apply_hunks_fixing(image, hunks, opts, None)
+}
+
+/// [`apply_hunks`] for `--whitespace=fix`: `fix` fixes the whitespace of
+/// a line (added lines are expected to be fixed already).
+///
+/// A preimage that does not match as it is also matches where every line
+/// is the same after fixing the whitespace of both sides, and its blank
+/// lines at the end may then lie beyond the end of the file (one
+/// non-blank line must match). Such a hunk writes its context lines
+/// fixed; with `--ignore-space-change` the file's lines instead (the
+/// patch's for lines beyond the end of the file).
+pub fn apply_hunks_fixing(
+    image: &[u8],
+    hunks: &[Hunk],
+    opts: &ApplyOptions,
+    fix: Option<Fixer>,
+) -> Applied {
     let mut img = split_image(image);
     let mut results = Vec::with_capacity(hunks.len());
     for hunk in hunks {
@@ -364,17 +429,23 @@ pub fn apply_hunks(image: &[u8], hunks: &[Hunk], opts: &ApplyOptions) -> Applied
             let pre = &pre_all[drop_lead..pre_all.len() - drop_trail];
             let post = &post_all[drop_lead..post_all.len() - drop_trail];
             let start = usize::try_from(pos.max(0)).unwrap_or(0);
-            if let Some(at) = find_pos(&img, pre, start, begin, end, opts) {
-                let new_lines: Vec<Line> = if opts.ignore_whitespace {
-                    // Context lines keep the file's whitespace.
+            if let Some((at, exact)) = find_pos(&img, pre, start, begin, end, opts, fix) {
+                let new_lines: Vec<Line> = if opts.ignore_whitespace || !exact {
+                    // Context lines keep the file's whitespace, or are
+                    // fixed after a match that needed fixing.
                     let window = &hunk.lines[drop_lead..hunk.lines.len() - drop_trail];
                     let mut k = at;
                     let mut lines = Vec::with_capacity(post.len());
                     for l in window {
                         match l.kind {
                             LineKind::Context => {
+                                let text = match (img.get(k), fix) {
+                                    (Some(i), _) if opts.ignore_whitespace => i.text.clone(),
+                                    (_, Some(f)) if !opts.ignore_whitespace => f(&l.text),
+                                    _ => l.text.clone(),
+                                };
                                 lines.push(Line {
-                                    text: img[k].text.clone(),
+                                    text,
                                     patched: true,
                                 });
                                 k += 1;
@@ -395,7 +466,8 @@ pub fn apply_hunks(image: &[u8], hunks: &[Hunk], opts: &ApplyOptions) -> Applied
                         })
                         .collect()
                 };
-                img.splice(at..at + pre.len(), new_lines);
+                let stop = (at + pre.len()).min(img.len());
+                img.splice(at..stop, new_lines);
                 break HunkResult::Applied {
                     line: at + 1,
                     offset: at as i64 - pos,

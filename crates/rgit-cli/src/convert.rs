@@ -52,7 +52,8 @@ pub fn config(cfg: &ConfigSet) -> Result<Config, Die> {
         };
     }
     if let Ok(Some(v)) = cfg.string("core.eol") {
-        match v.as_ref() as &[u8] {
+        // Unlike the `eol` attribute, `core.eol` ignores case.
+        match v.to_ascii_lowercase().as_slice() {
             b"native" => out.eol = Eol::native(),
             v => {
                 if let Some(e) = Eol::parse(v) {

@@ -462,6 +462,19 @@ fn subdirectory() {
             case_with(&p, args, |fx| fx, "sub/dir");
         }
     }
+    // Traditional names that already hold the subdirectory (`-p` is
+    // guessed), and ones that do not.
+    let trad = |old: &str, new: &str| format!("--- {old}\n+++ {new}\n@@ -1 +1 @@\n-1\n+2\n");
+    for (old, new) in [
+        ("a/sub/dir/file", "b/sub/dir/file"),
+        ("sub/dir/file", "sub/dir/file"),
+        ("a/x/sub/dir/file", "b/x/sub/dir/file"),
+        ("a/sub/dir/file", "/dev/null"),
+    ] {
+        for args in [&[][..], &["-p1"]] {
+            case_with(&trad(old, new), args, |fx| fx, "sub/dir");
+        }
+    }
 }
 
 #[test]

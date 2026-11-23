@@ -898,6 +898,14 @@ impl<'c> Am<'c> {
         // The constructed base holds only the patched files, so git's
         // am does not look for directory renames.
         opts.directory_renames = rgit_merge::DirectoryRenames::False;
+        // The `merge` and `conflict-marker-size` attributes of the paths.
+        opts.path_merge = Some(crate::commands::merge::attrs::RepoPathMerge::open(
+            self.ctx,
+            &repo,
+            opts.renormalize,
+            Some(&theirs),
+            None,
+        )?);
         let result = rgit_merge::merge_trees(repo.odb(), &base, &head_tree, &theirs, &opts)
             .map_err(|e| Die::Fatal(e.to_string()))?;
         if result.tree == ObjectId::empty_tree(repo.hash) {
