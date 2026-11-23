@@ -96,7 +96,7 @@ pub struct Output<'a> {
     /// (`--output-indicator-*`).
     pub indicators: [u8; 3],
     /// The patterns of `-O<orderfile>` / `diff.orderFile`.
-    order: Vec<Vec<u8>>,
+    pub order: Vec<Vec<u8>>,
     /// `--rotate-to` / `--skip-to` (`true`).
     rotate_to: Option<(bool, Vec<u8>)>,
     /// `--output=<file>`, resolved.
