@@ -21,6 +21,7 @@
 //! Not yet: `--column` and `column.tag`, `trailer.*` configuration for
 //! `--trailer`.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -267,7 +268,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
             // `-n` lists one tag per line whatever the configuration says.
             let columns = (lines.get() == -1 && mode.active()).then_some(mode);
+            let replace = repo.replacements().clone();
             let list = List {
+                replace: &replace,
                 objects: &objects,
                 store: &store,
                 revs: &revs,
@@ -407,6 +410,60 @@ struct List<'a> {
     omit_empty: bool,
     /// `--column`, `column.tag`, `column.ui`.
     columns: Option<crate::column::Mode>,
+    /// Replace refs (`original -> replacement`).
+    replace: &'a HashMap<ObjectId, ObjectId>,
+}
+
+/// Whether `tip` reaches `target` through parents, reading each commit
+/// through its replacement. A commit met again while its own ancestry is
+/// still being searched is a cycle, which is fatal.
+fn contains_replaced(
+    objects: &Objects,
+    replace: &HashMap<ObjectId, ObjectId>,
+    target: &ObjectId,
+    tip: &ObjectId,
+) -> Result<bool, Die> {
+    let parents = |c: &ObjectId| -> Vec<ObjectId> {
+        let mut id = *c;
+        for _ in 0..5 {
+            match replace.get(&id) {
+                Some(next) => id = *next,
+                None => break,
+            }
+        }
+        objects
+            .read(&id)
+            .filter(|(k, _)| *k == ObjectKind::Commit)
+            .and_then(|(_, data)| rgit_object::Commit::parse(objects.hash(), &data).ok()?.parents().ok())
+            .unwrap_or_default()
+    };
+    if tip == target {
+        return Ok(true);
+    }
+    // 1: its ancestry is being searched; 2: it does not reach `target`.
+    let mut state: HashMap<ObjectId, u8> = HashMap::from([(*tip, 1)]);
+    let mut stack = vec![(*tip, parents(tip), 0usize)];
+    while let Some((c, ps, i)) = stack.last_mut() {
+        let Some(p) = ps.get(*i).copied() else {
+            state.insert(*c, 2);
+            stack.pop();
+            continue;
+        };
+        *i += 1;
+        if p == *target {
+            return Ok(true);
+        }
+        match state.get(&p) {
+            Some(1) => return Err(fatal(msg::ANCESTRY_CYCLE)),
+            Some(_) => {}
+            None => {
+                state.insert(p, 1);
+                let next = parents(&p);
+                stack.push((p, next, 0));
+            }
+        }
+    }
+    Ok(false)
 }
 
 impl List<'_> {
@@ -444,11 +501,12 @@ impl List<'_> {
             if !self.filters.points_at.is_empty() && !self.points_at(&oid) {
                 continue;
             }
-            if self.filters.by_commit() && !self.commit_filters(&oid) {
+            if self.filters.by_commit() && !self.commit_filters(&oid)? {
                 continue;
             }
             items.push(Item { name: r.name, oid });
         }
+        values.choose_bases(items.iter().map(|it| (it.name.as_str(), it.oid)));
         let items = self.sort(&values, items)?;
 
         let mut out = std::io::stdout().lock();
@@ -513,27 +571,46 @@ impl List<'_> {
     }
 
     /// `--[no-]contains` and `--[no-]merged`; only tags of commits pass.
-    fn commit_filters(&self, oid: &ObjectId) -> bool {
+    fn commit_filters(&self, oid: &ObjectId) -> Result<bool, Die> {
         let Some(commit) = self.objects.peel(oid) else {
-            return false;
+            return Ok(false);
         };
         if self.objects.kind(&commit) != Some(ObjectKind::Commit) {
-            return false;
+            return Ok(false);
         }
         let f = self.filters;
-        if !f.contains.is_empty() && !f.contains.iter().any(|c| self.revs.is_ancestor(c, &commit)) {
-            return false;
+        // `--[no-]contains` follow replaced commits when there are any.
+        let contains = |c: &ObjectId| -> Result<bool, Die> {
+            if self.replace.is_empty() {
+                Ok(self.revs.is_ancestor(c, &commit))
+            } else {
+                contains_replaced(self.objects, self.replace, c, &commit)
+            }
+        };
+        if !f.contains.is_empty() {
+            let mut any = false;
+            for c in &f.contains {
+                if contains(c)? {
+                    any = true;
+                    break;
+                }
+            }
+            if !any {
+                return Ok(false);
+            }
         }
-        if f.no_contains.iter().any(|c| self.revs.is_ancestor(c, &commit)) {
-            return false;
+        for c in &f.no_contains {
+            if contains(c)? {
+                return Ok(false);
+            }
         }
         if !f.merged.is_empty() && !f.merged.iter().any(|m| self.revs.is_ancestor(&commit, m)) {
-            return false;
+            return Ok(false);
         }
         if f.no_merged.iter().any(|m| self.revs.is_ancestor(&commit, m)) {
-            return false;
+            return Ok(false);
         }
-        true
+        Ok(true)
     }
 
     /// The atom values of this repository.

@@ -635,34 +635,79 @@ pub fn absorb_git_dir(
     name: &[u8],
     shown: Option<&[u8]>,
 ) -> Result<(), Die> {
+    let target = rgit_submodule::gitdir::modules_dir(&repo.setup.absolute_common_dir(), name);
+    move_git_dir(dir, &target, shown)?;
+    if let Some(p) = shown {
+        if let Some(git_dir) = rgit_submodule::gitdir::git_dir_of(dir) {
+            absorb_nested(dir, &git_dir, p)?;
+        }
+    }
+    Ok(())
+}
+
+/// Absorb the embedded `.git` directories of the submodules nested in the
+/// submodule at `dir` (git directory `git_dir`, shown as `shown`) into
+/// `<git_dir>/modules/<name>`, recursively.
+fn absorb_nested(dir: &Path, git_dir: &Path, shown: &[u8]) -> Result<(), Die> {
+    let file = dir.join(rgit_submodule::GITMODULES);
+    let Ok(data) = std::fs::read(&file) else {
+        return Ok(());
+    };
+    let origin = Origin::File(file.to_string_lossy().into_owned());
+    let Ok((gm, _)) = Gitmodules::parse(&data, &origin, Mode::Current) else {
+        return Ok(());
+    };
+    for sub in gm.iter() {
+        let Some(path) = sub.path.as_ref() else {
+            continue;
+        };
+        let sub_dir = crate::diff::collect::os_path(dir, path);
+        let mut sub_shown = shown.to_vec();
+        sub_shown.push(b'/');
+        sub_shown.extend_from_slice(path);
+        let target = rgit_submodule::gitdir::modules_dir(git_dir, &sub.name);
+        move_git_dir(&sub_dir, &target, Some(&sub_shown))?;
+        if let Some(g) = rgit_submodule::gitdir::git_dir_of(&sub_dir) {
+            absorb_nested(&sub_dir, &g, &sub_shown)?;
+        }
+    }
+    Ok(())
+}
+
+/// Move `<dir>/.git` (when it is a directory) to `target`, leaving a `.git`
+/// file and `core.worktree` behind.
+fn move_git_dir(dir: &Path, target: &Path, shown: Option<&[u8]>) -> Result<(), Die> {
     use rgit_config::write::set_in_file;
     use rgit_config::{SetRequest, ValuePattern};
     let dot_git = dir.join(".git");
     if !std::fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_dir()) {
         return Ok(());
     }
-    let target = rgit_submodule::gitdir::modules_dir(&repo.setup.absolute_common_dir(), name);
-    if target.exists() {
-        return Err(Die::Fatal(format!("{}", target.display())));
-    }
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| Die::Fatal(e.to_string()))?;
-    }
-    std::fs::rename(&dot_git, &target).map_err(|e| Die::Fatal(e.to_string()))?;
+    let from =
+        rgit_repo::path::normalize(&std::path::absolute(&dot_git).unwrap_or(dot_git.clone()));
+    let to = rgit_repo::path::normalize(target);
     if let Some(p) = shown {
-        let from =
-            rgit_repo::path::normalize(&std::path::absolute(&dot_git).unwrap_or(dot_git.clone()));
         eprintln!(
             "{}",
             msg::migrating(
                 &String::from_utf8_lossy(p),
                 &from.to_string_lossy(),
-                &rgit_repo::path::normalize(&target).to_string_lossy()
+                &to.to_string_lossy()
             )
         );
     }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| Die::Fatal(e.to_string()))?;
+    }
+    std::fs::rename(&dot_git, target).map_err(|e| {
+        Die::Fatal(msg::could_not_migrate(
+            &from.to_string_lossy(),
+            &to.to_string_lossy(),
+            &crate::global::strerror(&e),
+        ))
+    })?;
     let dir = rgit_repo::path::normalize(&std::path::absolute(dir).unwrap_or(dir.to_path_buf()));
-    let target = rgit_repo::path::normalize(&target);
+    let target = rgit_repo::path::normalize(target);
     let rel = relative_path(&dir, &target);
     std::fs::write(&dot_git, format!("gitdir: {}\n", rel.display()))
         .map_err(|e| Die::Fatal(e.to_string()))?;

@@ -234,8 +234,17 @@ pub fn remove_entry(root: &Path, rel: &[u8], gitlink: bool) -> io::Result<()> {
     let full = join(root, rel);
     match fs::symlink_metadata(&full) {
         Ok(m) if m.is_dir() => {
+            // A populated submodule stays; git warns about it.
             if gitlink {
-                let _ = fs::remove_dir(&full);
+                if let Err(e) = fs::remove_dir(&full) {
+                    eprintln!(
+                        "warning: {}",
+                        crate::messages::unable_to_rmdir(
+                            &String::from_utf8_lossy(rel),
+                            &strerror(&e)
+                        )
+                    );
+                }
             }
         }
         Ok(_) => fs::remove_file(&full)?,

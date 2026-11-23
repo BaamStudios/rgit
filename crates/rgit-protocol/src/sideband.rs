@@ -64,6 +64,65 @@ impl Default for RemoteColors {
 
 static REMOTE_COLORS: Mutex<Option<RemoteColors>> = Mutex::new(None);
 
+/// `sideband.allowControlCharacters`: ANSI colour sequences.
+pub const ALLOW_COLOR: u8 = 1;
+/// Sequences that move the cursor.
+pub const ALLOW_CURSOR: u8 = 2;
+/// Sequences that erase characters.
+pub const ALLOW_ERASE: u8 = 4;
+/// Every control character.
+pub const ALLOW_ALL: u8 = 8;
+
+static ALLOWED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(ALLOW_COLOR);
+
+/// Which control characters of remote messages reach the terminal (a set
+/// of `ALLOW_*`; the default is [`ALLOW_COLOR`]). The others are shown in
+/// caret notation (`^G`, `^[`).
+pub fn set_allowed_controls(allowed: u8) {
+    ALLOWED.store(allowed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `text` with the control characters that are not allowed made visible.
+fn mask_controls(text: &[u8], allowed: u8) -> std::borrow::Cow<'_, [u8]> {
+    let is_ctl = |b: u8| (b < 0x20 && b != b'\t') || b == 0x7f;
+    if allowed & ALLOW_ALL != 0 || !text.iter().any(|&b| is_ctl(b)) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = Vec::with_capacity(text.len() + 8);
+    let mut i = 0;
+    while i < text.len() {
+        let b = text[i];
+        if b == 0x1b && text.get(i + 1) == Some(&b'[') {
+            // A CSI sequence: parameters, then the final byte.
+            let mut j = i + 2;
+            while j < text.len() && matches!(text[j], b'0'..=b'9' | b';') {
+                j += 1;
+            }
+            if let Some(&last) = text.get(j) {
+                let kind = match last {
+                    b'm' => ALLOW_COLOR,
+                    b'K' | b'J' => ALLOW_ERASE,
+                    b'A'..=b'H' => ALLOW_CURSOR,
+                    _ => 0,
+                };
+                if kind != 0 && allowed & kind != 0 {
+                    out.extend_from_slice(&text[i..=j]);
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        if is_ctl(b) {
+            out.push(b'^');
+            out.push(if b == 0x7f { b'?' } else { b + 0x40 });
+        } else {
+            out.push(b);
+        }
+        i += 1;
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Colours remote messages from now on (`None`: no colours).
 pub fn set_remote_colors(colors: Option<RemoteColors>) {
     *REMOTE_COLORS.lock().unwrap_or_else(|e| e.into_inner()) = colors;
@@ -173,6 +232,7 @@ impl<W: Write> Progress<W> {
             out.extend_from_slice(ANSI_CLEAR_LINE);
         }
         out.extend_from_slice(REMOTE_PREFIX);
+        let text = &*mask_controls(text, ALLOWED.load(std::sync::atomic::Ordering::Relaxed));
         let colored = REMOTE_COLORS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -573,6 +633,19 @@ mod tests {
             lens.push(p.data().unwrap().len());
         }
         assert_eq!(lens, vec![996, 996, 11, 4]);
+    }
+
+    #[test]
+    fn masking() {
+        let m = |t: &[u8], a| mask_controls(t, a).into_owned();
+        let t = b"e: \x1b[31mred\x1b[m\x1b[Gx\x1b[K\x07\x1b?25l";
+        assert_eq!(m(t, ALLOW_COLOR), b"e: \x1b[31mred\x1b[m^[[Gx^[[K^G^[?25l");
+        assert_eq!(m(t, 0), b"e: ^[[31mred^[[m^[[Gx^[[K^G^[?25l");
+        assert_eq!(m(t, ALLOW_ALL), t);
+        assert_eq!(
+            m(t, ALLOW_COLOR | ALLOW_CURSOR | ALLOW_ERASE),
+            b"e: \x1b[31mred\x1b[m\x1b[Gx\x1b[K^G^[?25l"
+        );
     }
 
     #[test]

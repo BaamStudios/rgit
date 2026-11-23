@@ -20,6 +20,21 @@ pub fn not_recursive(path: &str) -> String {
     format!("not removing '{path}' recursively without -r")
 }
 
+pub const GITMODULES_UNSTAGED: &str =
+    "please stage your changes to .gitmodules or stash them to proceed";
+
+/// A removed submodule has no section in `.gitmodules` (`warning:`).
+#[must_use]
+pub fn no_gitmodules_section(path: &str) -> String {
+    format!("Could not find section in .gitmodules where path={path}")
+}
+
+/// Removing a file from the work tree failed (`fatal:`).
+#[must_use]
+pub fn unlink_failed(path: &str, reason: &str) -> String {
+    format!("git rm: '{path}': {reason}")
+}
+
 #[must_use]
 pub fn rm(path: &str) -> String {
     format!("rm '{path}'")

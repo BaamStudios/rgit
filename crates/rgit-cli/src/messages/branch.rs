@@ -195,3 +195,19 @@ pub fn bisect_started(on: &str) -> String {
 }
 
 pub use crate::messages::tag::HELP_COLUMN;
+
+/// A linked worktree whose `HEAD` could not follow a renamed branch.
+pub fn head_of_worktree_not_updated(path: &str) -> String {
+    format!("HEAD of working tree {path} is not updated")
+}
+
+pub const SET_UPSTREAM_SINGLE_ARGUMENT: &str =
+    "--set-upstream-to takes a single <remote>/<branch> argument";
+
+pub fn hint_set_upstream_slip(upstream: &str) -> String {
+    format!("Did you mean to use: git branch --set-upstream-to={upstream}?")
+}
+
+pub fn renamed_head_not_updated(new: &str) -> String {
+    format!("branch renamed to {new}, but HEAD is not updated")
+}

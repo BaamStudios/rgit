@@ -619,6 +619,11 @@ fn list(ctx: &mut Context, args: &[String]) -> CmdResult {
     let entries = stash_entries(&repo);
     let count = max.unwrap_or(usize::MAX).min(entries.len());
     let format = format.unwrap_or_else(|| "%gd: %gs".to_owned());
+    // With other diff options (`-p --cc`), `log` shows the patch too.
+    if patch && !extra.is_empty() {
+        extra.push("-p".to_owned());
+        patch = false;
+    }
     let native = extra.is_empty() && is_simple_format(&format);
     let git = child::Git::new(ctx, &repo)?;
     for (n, e) in entries.iter().take(count).enumerate() {

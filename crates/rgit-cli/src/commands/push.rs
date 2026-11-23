@@ -218,6 +218,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::config(ctx, &setup);
     rgit_protocol::sideband::set_remote_colors(crate::color::remote_colors(&config));
+    crate::color::set_sideband_controls(&config, None);
     let advisor = ctx.advisor(&config)?.without_color_ui();
     advisor.check_env().map_err(Die::Fatal)?;
     let hash = setup.format.object_format;

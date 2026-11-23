@@ -709,6 +709,7 @@ pub fn walk_formatted(
             date_ctx: DateContext::from_env(),
             commit_color: None,
             zero: false,
+            tab_width: None,
         },
         decorations: user
             .as_ref()
@@ -2140,6 +2141,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         date_ctx: DateContext::from_env(),
         commit_color,
         zero: opts.zero,
+        tab_width: opts.tab_width,
     };
     let mut p = Printer {
         repo,
