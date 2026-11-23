@@ -246,11 +246,6 @@ pub fn not_supported(what: &str) -> String {
     format!("rgit: rebase: {what} is not supported yet")
 }
 
-/// `what` (an option) on a rebase of the apply back end (#136).
-pub fn with_apply_backend(what: &str) -> String {
-    format!("{what} on a rebase with the apply back end (#136)")
-}
-
 // The status banner.
 
 pub fn in_progress_onto(onto: &str) -> String {
@@ -544,6 +539,53 @@ pub fn update_ref_failed(name: &str, why: &str) -> String {
 pub const UPDATED_REFS: &str = "Updated the following refs with --update-refs:";
 pub const FAILED_REFS: &str = "Failed to update the following refs with --update-refs:";
 pub const REWRITTEN_DURING_REBASE: &str = "rewritten during rebase";
+
+pub const APPLY_AND_MERGE: &str = "apply options and merge options cannot be used together";
+
+pub const C_NOT_A_NUMBER: &str = "switch `C' expects a numerical value";
+
+pub const COULD_NOT_COMMIT_STAGED: &str = "could not commit staged changes.";
+
+pub fn unknown_author_variable(key: &str) -> String {
+    format!("unknown variable '{key}'")
+}
+
+pub fn author_variable_twice(key: &str) -> String {
+    format!("'{key}' already given")
+}
+
+pub fn missing_author_variable(key: &str) -> String {
+    format!("missing '{key}'")
+}
+
+pub fn could_not_write(path: &str, err: &str) -> String {
+    format!("could not open '{path}' for writing: {err}")
+}
+
+pub fn fast_forwarded(branch: &str, onto: &str) -> String {
+    format!("Fast-forwarded {branch} to {onto}.")
+}
+
+pub fn invalid_whitespace(value: &str) -> String {
+    format!("Invalid whitespace option: '{value}'")
+}
+
+pub fn apply_incompatible_config(key: &str, option: &str) -> String {
+    format!("apply options are incompatible with {key}.  Consider adding {option}")
+}
+
+pub fn requires_merge_backend(what: &str) -> String {
+    format!("{what} requires the merge backend")
+}
+
+/// `rebase --apply`, before `am` replays the commits.
+pub const REWINDING: &str = "First, rewinding head to replay your work on top of it...";
+
+/// `--resolvemsg` of the `am` that `rebase --apply` runs.
+pub const APPLY_RESOLVE_MSG: &str = "Resolve all conflicts manually, mark them as resolved with\n\
+\"git add/rm <conflicted_files>\", then run \"git rebase --continue\".\n\
+You can instead skip this commit: run \"git rebase --skip\".\n\
+To abort and get back to the state before \"git rebase\", run \"git rebase --abort\".";
 
 pub fn invalid_rebase_merges(mode: &str) -> String {
     format!("Unknown rebase-merges mode: {mode}")

@@ -25,7 +25,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let signoff = Cell::new(-1);
     let cdate = Cell::new(-1);
     let reset_date = Cell::new(-1);
-    let apply_c: RefCell<Option<String>> = RefCell::new(None);
+    let apply_c = Cell::new(i32::MIN);
     let ignore_ws = Cell::new(-1);
     let whitespace: RefCell<Option<String>> = RefCell::new(None);
     let force = Cell::new(-1);
@@ -90,7 +90,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ),
         Opt::bool(None, "reset-author-date", &reset_date, msg::HELP_RESET_AUTHOR_DATE),
         Opt::bool(None, "ignore-date", &reset_date, msg::HELP_IGNORE_DATE).hidden(),
-        Opt::string('C', None, &apply_c, "n", msg::HELP_C),
+        Opt::callback('C', None, Some("n"), msg::HELP_C, |v, _| {
+            let n = v
+                .unwrap_or_default()
+                .parse::<i32>()
+                .map_err(|_| CallbackError::Fatal(msg::C_NOT_A_NUMBER.to_owned()))?;
+            apply_c.set(n);
+            Ok(())
+        })
+        .noneg(),
         Opt::bool(None, "ignore-whitespace", &ignore_ws, msg::HELP_IGNORE_WHITESPACE),
         Opt::string(None, "whitespace", &whitespace, "action", msg::HELP_WHITESPACE),
         Opt::bool('f', "force-rebase", &force, msg::HELP_FORCE_REBASE),
@@ -208,13 +216,90 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         };
     }
 
-    // Not implemented yet: the interactive machinery (#155), the apply
-    // back end (#136) and a few options.
+    // The apply back end: --apply, -C and --whitespace (the options go
+    // to `am`).
+    let apply_mode = apply.get() || apply_c.get() != i32::MIN || whitespace.borrow().is_some();
+    if let Some(w) = whitespace.borrow().as_deref()
+        && !matches!(w, "nowarn" | "warn" | "fix" | "strip" | "error" | "error-all")
+    {
+        return Err(Die::Fatal(msg::invalid_whitespace(w)));
+    }
+    if apply_mode {
+        // A merge option with an implied --apply.
+        if merge.get() || interactive.get() || (!apply.get() && keep_empty.get() == 1) {
+            return Err(Die::Fatal(msg::APPLY_AND_MERGE.to_owned()));
+        }
+        let configured = |key: &str| -> bool {
+            let Ok(repo) = crate::repository::Repo::open(ctx, crate::repo::Mode::RequiredQuiet) else {
+                return false;
+            };
+            repo.config.string(key).ok().flatten().is_some_and(|v| {
+                let v = v.to_string().to_ascii_lowercase();
+                !matches!(v.as_str(), "false" | "no" | "off" | "0" | "")
+            })
+        };
+        if rebase_merges.borrow().is_none() && configured("rebase.rebasemerges") {
+            return Err(Die::Fatal(msg::apply_incompatible_config(
+                "rebase.rebaseMerges",
+                "--no-rebase-merges",
+            )));
+        }
+        if update_refs.get() == -1 && configured("rebase.updaterefs") {
+            return Err(Die::Fatal(msg::apply_incompatible_config(
+                "rebase.updateRefs",
+                "--no-update-refs",
+            )));
+        }
+        let needs_merge = [
+            ("--exec", !exec.borrow().is_empty()),
+            (
+                "--rebase-merges",
+                rebase_merges
+                    .borrow()
+                    .is_some_and(|m| m != RebaseMerges::Off),
+            ),
+            ("--update-refs", update_refs.get() == 1),
+            (
+                "--strategy",
+                strategy.borrow().is_some() || !xopts.borrow().is_empty(),
+            ),
+            ("--autosquash", autosquash.get() == 1),
+            ("--empty", empty.borrow().is_some()),
+            (
+                "--root without --onto",
+                root.get() == 1 && onto.borrow().is_none(),
+            ),
+            (
+                "--reapply-cherry-picks",
+                reapply.get() != -1 && keep_base.get() != 1,
+            ),
+            ("--no-keep-empty", keep_empty.get() == 0),
+            ("--keep-empty", keep_empty.get() == 1),
+            ("--trailer", !trailers.borrow().is_empty()),
+        ];
+        if let Some((what, _)) = needs_merge.iter().find(|(_, set)| *set) {
+            return Err(Die::Fatal(msg::requires_merge_backend(what)));
+        }
+    }
+    let mut am_opts = Vec::new();
+    if apply_c.get() != i32::MIN {
+        am_opts.push(format!("-C{}", apply_c.get()));
+    }
+    if let Some(w) = whitespace.borrow().as_ref() {
+        am_opts.push(format!("--whitespace={w}"));
+    }
+    let mut xopts_all = xopts.borrow().clone();
+    if ignore_ws.get() == 1 {
+        if apply_mode {
+            am_opts.push("--ignore-whitespace".to_owned());
+        } else {
+            // The merge back end's approximation.
+            xopts_all.push("ignore-space-change".to_owned());
+        }
+    }
+
+    // Not implemented yet: a few options.
     let unsupported = [
-        ("--apply (#136)", apply.get()),
-        ("-C (#136)", apply_c.borrow().is_some()),
-        ("--whitespace (#136)", whitespace.borrow().is_some()),
-        ("--ignore-whitespace", ignore_ws.get() == 1),
         ("--trailer", !trailers.borrow().is_empty()),
         ("--rerere-autoupdate", rerere.get() == 1),
         ("--preserve-merges", preserve.get() == 1),
@@ -266,7 +351,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             -1 => None,
             v => Some(v == 1),
         },
-        force: force.get() == 1 || no_ff.get() == 1,
+        // Fixing whitespace rewrites even commits that need no replaying.
+        force: force.get() == 1
+            || no_ff.get() == 1
+            || matches!(whitespace.borrow().as_deref(), Some("fix" | "strip")),
         quiet: quiet.get() > 0,
         verbose: verbose.get() > 0,
         stat: match stat.get() {
@@ -284,7 +372,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             v => Some(v == 1),
         },
         strategy: strategy.borrow().clone(),
-        xopts: xopts.borrow().clone(),
+        xopts: xopts_all,
         autostash: match autostash.get() {
             -1 => None,
             v => Some(v == 1),
@@ -305,6 +393,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             -1 => None,
             v => Some(v == 1),
         },
+        apply: apply_mode,
+        am_opts,
     };
     rebase::start(ctx, &o)
 }

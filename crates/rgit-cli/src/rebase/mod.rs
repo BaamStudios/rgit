@@ -41,6 +41,7 @@
 //! [`edit_todo`] are the entry points for `git rebase` and
 //! `git pull --rebase`.
 
+mod apply;
 mod merges;
 pub(crate) mod todo;
 mod update_refs;
@@ -121,6 +122,10 @@ pub struct Options {
     pub gpg_sign: Option<Option<Sign>>,
     /// `--[no-]update-refs`; `None`: `rebase.updateRefs`.
     pub update_refs: Option<bool>,
+    /// The apply back end (`--apply`, `-C`, `--whitespace`).
+    pub apply: bool,
+    /// Options for its `am` (`-C<n>`, `--whitespace=`, `--ignore-whitespace`).
+    pub am_opts: Vec<String>,
 }
 
 /// `--rebase-merges[=<mode>]`.
@@ -255,6 +260,26 @@ fn author_script(author: &Signature) -> String {
         sq_quote(&author.email),
         sq_quote(format!("@{}", author.time).as_bytes()),
     )
+}
+
+/// Checks that `author-script` names the author's name, email and date
+/// exactly once each and nothing else.
+fn check_author_script(path: &Path) -> Result<(), String> {
+    const KEYS: [&str; 3] = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE"];
+    let mut seen = [false; 3];
+    for (k, _) in read_author_script(path) {
+        let Some(i) = KEYS.iter().position(|x| *x == k) else {
+            return Err(msg::unknown_author_variable(&k));
+        };
+        if seen[i] {
+            return Err(msg::author_variable_twice(&k));
+        }
+        seen[i] = true;
+    }
+    match seen.iter().position(|s| !s) {
+        Some(i) => Err(msg::missing_author_variable(KEYS[i])),
+        None => Ok(()),
+    }
 }
 
 fn read_author_script(path: &Path) -> Vec<(String, String)> {
@@ -770,7 +795,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
             )?
             .is_empty();
         if linear {
-            if !o.force {
+            if !(o.force || o.signoff || o.committer_date_is_author_date || o.ignore_date) {
                 if let Some(b) = &switch_to {
                     let current = sequencer::head_commit(&mut repo);
                     let old_tree = match current {
@@ -850,6 +875,58 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
             }
         };
         run_child(ctx, &["diff", "--stat", "--summary", &b, &n], false)?;
+    }
+
+    // The apply back end.
+    if o.apply {
+        let state = State {
+            head_name,
+            onto,
+            orig_head,
+            quiet,
+            verbose: o.verbose,
+            signoff: o.signoff,
+            cdate_is_adate: o.committer_date_is_author_date,
+            ignore_date: o.ignore_date,
+            empty: Empty::Drop,
+            strategy: None,
+            xopts: Vec::new(),
+            autostash: stash,
+            squash_onto: None,
+            force: o.force,
+            reschedule_failed_exec: false,
+            gpg_sign: signing::resolve(&repo.config, o.gpg_sign.clone()),
+        };
+        if !quiet {
+            println!("{}", msg::REWINDING);
+        }
+        let action = reflog_action();
+        let fast_forward = is_ancestor(&repo, &orig_head, &onto)?;
+        if let Some(code) = checkout_onto(
+            ctx,
+            &mut repo,
+            onto,
+            orig_head,
+            (&action, &onto_name),
+            state.autostash.as_deref(),
+        )? {
+            return Ok(code);
+        }
+        drop(repo);
+        if fast_forward {
+            // Nothing to replay: the branch moves to the new base.
+            let branch = branch_short.as_deref().unwrap_or("HEAD");
+            println!("{}", msg::fast_forwarded(branch, &onto_name));
+            return apply::finish(ctx, &state);
+        }
+        return apply::start(
+            ctx,
+            &apply::Start {
+                restrict,
+                state: &state,
+                am_opts: &o.am_opts,
+            },
+        );
     }
 
     // The todo list.
@@ -1746,8 +1823,7 @@ struct Rebase<'c> {
     ctx: &'c mut Context,
     state: State,
     action: String,
-    /// The rebase in progress uses the apply back end (`rebase-apply`):
-    /// only `--abort` and `--quit` handle it so far.
+    /// The rebase in progress uses the apply back end (`rebase-apply`).
     apply: bool,
 }
 
@@ -1771,16 +1847,6 @@ impl<'c> Rebase<'c> {
             action: reflog_action(),
             apply,
         })
-    }
-
-    /// Refuses to go on with a rebase of the apply back end (#136).
-    fn refuse_apply(&self, what: &str) -> Result<(), Die> {
-        if self.apply {
-            return Err(Die::Fatal(msg::not_supported(&msg::with_apply_backend(
-                what,
-            ))));
-        }
-        Ok(())
     }
 
     fn repo(&self) -> Result<Repo, Die> {
@@ -1948,6 +2014,24 @@ impl<'c> Rebase<'c> {
             Some(_) => seqmsg::parent_of(&label),
             None => seqmsg::EMPTY_TREE_LABEL.to_owned(),
         };
+        if let Some(name) = self
+            .state
+            .strategy
+            .clone()
+            .filter(|s| !matches!(s.as_str(), "ort" | "recursive" | "subtree"))
+            && let Some(result) = self.custom_strategy(repo, &name, parent, id, head_tree)?
+        {
+            if result.is_none() {
+                // The strategy failed: the pick is rescheduled.
+                let subject = lossy(sequencer::subject_line(commit.message()));
+                eprintln!("error: {}", seqmsg::could_not_apply(&abbrev, &subject));
+                self.ctx
+                    .advisor(&repo.config)?
+                    .advise(Advice::MergeConflict, msg::CONFLICT_ADVICE)
+                    .map_err(Die::Fatal)?;
+            }
+            return Ok(result);
+        }
         let result = sequencer::merge_with(
             repo,
             self.state.strategy.as_deref(),
@@ -1966,17 +2050,77 @@ impl<'c> Rebase<'c> {
             Err(Fail::Printed) => return Ok(None),
             r => r?,
         }
-        self.print_merge_messages(repo, &result)?;
+        // A clean pick is silent (as in git).
+        self.print_merge_messages(repo, &result, !result.clean)?;
         Ok(Some(result))
+    }
+
+    /// A pick with a custom strategy: the `git-merge-<name>` program
+    /// merges in the index and work tree (`--<option>`s, the parent, `--`,
+    /// `HEAD`, the commit). `None` when there is no such program (the
+    /// built-in merge reports the strategy), `Some(None)` when the
+    /// program failed other than with conflicts.
+    fn custom_strategy(
+        &mut self,
+        repo: &Repo,
+        name: &str,
+        parent: Option<ObjectId>,
+        id: &ObjectId,
+        head_tree: ObjectId,
+    ) -> Result<Option<Option<rgit_merge::MergeResult>>, Fail> {
+        let mut cmd = std::process::Command::new(format!("git-merge-{name}"));
+        for x in &self.state.xopts {
+            cmd.arg(format!("--{x}"));
+        }
+        if let Some(p) = parent {
+            cmd.arg(p.to_hex());
+        }
+        cmd.arg("--").arg("HEAD").arg(id.to_hex());
+        cmd.envs(self.ctx.child_env());
+        let _ = std::io::stdout().flush();
+        let code = match cmd.status() {
+            Ok(status) => status.code().unwrap_or(2),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Fail::Die(io_die(e))),
+        };
+        let repo2 = Repo::open(self.ctx, Mode::Required).map_err(Fail::Die)?;
+        let (index, _) = repo2.read_index().map_err(Fail::Die)?;
+        let conflicts: Vec<rgit_merge::ConflictedPath> = index
+            .unmerged()
+            .filter_map(|e| e.first())
+            .map(|e| rgit_merge::ConflictedPath {
+                path: e.path().to_vec(),
+                stages: [None, None, None],
+            })
+            .collect();
+        let clean = code == 0 && conflicts.is_empty();
+        let tree = if clean {
+            crate::commands::write_tree::write_tree(&repo2, &index, false, None)
+                .map_err(Fail::Die)?
+        } else {
+            head_tree
+        };
+        let _ = (repo, name);
+        if code > 1 {
+            return Ok(Some(None));
+        }
+        Ok(Some(Some(rgit_merge::MergeResult {
+            tree,
+            clean,
+            conflicts,
+            messages: Vec::new(),
+            rename_limit_needed: None,
+        })))
     }
 
     fn print_merge_messages(
         &mut self,
         repo: &Repo,
         result: &rgit_merge::MergeResult,
+        show: bool,
     ) -> Result<(), Fail> {
         let mut out = Vec::new();
-        for m in &result.messages {
+        for m in result.messages.iter().filter(|_| show) {
             out.extend_from_slice(&m.text);
             out.push(b'\n');
         }
@@ -2660,10 +2804,13 @@ impl<'c> Rebase<'c> {
             Some(o) => o.author().and_then(|a| a.to_owned()),
             None => None,
         };
-        let author = match author {
+        let mut author = match author {
             Some(a) => a,
             None => sequencer::ident(&repo, Role::Author)?,
         };
+        if self.state.ignore_date {
+            author.time = now();
+        }
         if merged {
             // git leaves the message of a new merge it did not make.
             if item.commit.is_none() {
@@ -2701,7 +2848,7 @@ impl<'c> Rebase<'c> {
             Err(Fail::Printed) => return Ok(Step::Rescheduled),
             r => r?,
         }
-        self.print_merge_messages(&repo, &result)?;
+        self.print_merge_messages(&repo, &result, true)?;
         let gd = git_dir(&repo);
         if !result.clean {
             write(&gd.join("MERGE_HEAD"), target.to_hex())?;
@@ -2791,8 +2938,11 @@ impl<'c> Rebase<'c> {
         let repo = self.repo()?;
         let dir = state_dir(&repo);
         let gd = git_dir(&repo);
+        let edit = item.commit.is_none() || item.flag == Some('c');
         let mut text = message.to_vec();
-        if !text.ends_with(b"\n") {
+        // Like git, a line break separates the message from the help
+        // below it in the editor.
+        if edit || !text.ends_with(b"\n") {
             text.push(b'\n');
         }
         write(&dir.join("message"), text)?;
@@ -2801,7 +2951,6 @@ impl<'c> Rebase<'c> {
             .strategy
             .clone()
             .unwrap_or_else(|| if targets.len() > 1 { "octopus" } else { "ort" }.to_owned());
-        let edit = item.commit.is_none() || item.flag == Some('c');
         let mut args: Vec<String> = [
             "merge",
             if edit { "--edit" } else { "--no-edit" },
@@ -3045,6 +3194,13 @@ impl<'c> Rebase<'c> {
             .args(args)
             .envs(self.ctx.child_env())
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        // `--committer-date-is-author-date`: the date of the author the
+        // commit gets (the amended commit's, else `author-script`'s).
+        if self.state.cdate_is_adate
+            && let Some(date) = self.author_date_for(args.iter().any(|a| a == "--amend"))
+        {
+            cmd.env("GIT_COMMITTER_DATE", date);
+        }
         if to_stderr {
             let out = cmd
                 .stdout(std::process::Stdio::piped())
@@ -3058,6 +3214,29 @@ impl<'c> Rebase<'c> {
         }
         let status = cmd.status().map_err(io_die)?;
         Ok(status.code().unwrap_or(128))
+    }
+
+    /// The author date of the commit `commit_child` makes: `HEAD`'s with
+    /// `--amend`, else the one in `author-script`.
+    fn author_date_for(&self, amend: bool) -> Option<String> {
+        let mut repo = self.repo().ok()?;
+        if amend {
+            let head = sequencer::head_commit(&mut repo)?;
+            let Some(Object::Commit(c)) = repo.read_object(&head) else {
+                return None;
+            };
+            let a = c.author()?.to_owned()?;
+            return Some(format!("@{}", a.time));
+        }
+        if self.state.ignore_date {
+            // The author date is now, so is the committer's.
+            return None;
+        }
+        let dir = state_dir(&repo);
+        read_author_script(&dir.join("author-script"))
+            .into_iter()
+            .find(|(k, _)| k == "GIT_AUTHOR_DATE")
+            .map(|(_, v)| v)
     }
 
     /// Puts the command that could not run back on the todo list.
@@ -3333,7 +3512,10 @@ fn reset_protecting_untracked(
 /// `git rebase --continue`.
 pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
     let mut rb = Rebase::load(ctx)?;
-    rb.refuse_apply("--continue")?;
+    if rb.apply {
+        let state = rb.state.clone();
+        return apply::resume(rb.ctx, &state, "--continue");
+    }
     let mut repo = rb.repo()?;
     let dir = state_dir(&repo);
 
@@ -3450,6 +3632,12 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
                 return Ok(code);
             }
         } else {
+            if let Err(e) = check_author_script(&dir.join("author-script")) {
+                eprintln!("error: {e}");
+                eprintln!("error: {}", msg::STAGED_CHANGES);
+                eprintln!("error: {}", msg::COULD_NOT_COMMIT_STAGED);
+                return Ok(1);
+            }
             let mut env: Vec<(String, String)> = read_author_script(&dir.join("author-script"));
             if rb.state.ignore_date {
                 env.retain(|(k, _)| k != "GIT_AUTHOR_DATE");
@@ -3506,7 +3694,10 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
 /// `git rebase --skip`.
 pub fn skip(ctx: &mut Context) -> CmdResult {
     let mut rb = Rebase::load(ctx)?;
-    rb.refuse_apply("--skip")?;
+    if rb.apply {
+        let state = rb.state.clone();
+        return apply::resume(rb.ctx, &state, "--skip");
+    }
     let mut repo = rb.repo()?;
     if let Some(h) = sequencer::head_commit(&mut repo) {
         let tree = sequencer::tree_of(&repo, &h).map_err(fail_die)?;
