@@ -44,13 +44,25 @@ pub struct Outgoing<'a> {
     /// The shallow commits of the local repository: sent as `shallow`
     /// lines, and their parents are not walked.
     pub shallow: Vec<rgit_hash::ObjectId>,
+    /// Objects the server has, as delta bases for a thin pack (from
+    /// [`pack_objects`]).
+    pub bases: Vec<ListedObject>,
+    /// Send a thin pack (`--thin`, the default) unless the server says
+    /// `no-thin`.
+    pub thin: bool,
+    /// Pack settings (`pack.*` configuration).
+    pub pack: WriteOptions,
 }
 
 /// The objects reachable from the new values, minus everything reachable
-/// from what the server has (that we have too), in pack order. Computed
-/// before anything is sent, so that a failure cannot leave the server
-/// waiting for a pack.
-pub fn pack_objects(out: &Outgoing<'_>, adv: &Advertisement) -> Result<Vec<ListedObject>, String> {
+/// from what the server has (that we have too), in pack order; and for a
+/// thin pack the trees and blobs at the edge of what the server has.
+/// Computed before anything is sent, so that a failure cannot leave the
+/// server waiting for a pack.
+pub fn pack_objects(
+    out: &Outgoing<'_>,
+    adv: &Advertisement,
+) -> Result<(Vec<ListedObject>, Vec<ListedObject>), String> {
     let mut tips: Vec<Tip> = out
         .commands
         .iter()
@@ -61,7 +73,7 @@ pub fn pack_objects(out: &Outgoing<'_>, adv: &Advertisement) -> Result<Vec<Liste
         })
         .collect();
     if tips.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let mut seen = std::collections::HashSet::new();
     for id in adv
@@ -78,20 +90,26 @@ pub fn pack_objects(out: &Outgoing<'_>, adv: &Advertisement) -> Result<Vec<Liste
         inner: out.odb,
         shallow: out.shallow.iter().copied().collect(),
     };
+    if out.thin && !adv.caps.contains("no-thin") {
+        let (listed, bases) =
+            pw::enumerate_with_edges(&source, out.hash, &tips, false).map_err(|e| e.to_string())?;
+        return Ok((pw::pack_order(&listed), bases));
+    }
     let listed = pw::enumerate(&source, out.hash, &tips).map_err(|e| e.to_string())?;
-    Ok(pw::pack_order(&listed))
+    Ok((pw::pack_order(&listed), Vec::new()))
 }
 
 fn write_pack(w: &mut dyn Write, out: &Outgoing<'_>, adv: &Advertisement) -> Result<(), String> {
     let packs = out.odb.packs().map(|p| p.set().packs()).unwrap_or_default();
     let opts = WriteOptions {
         ofs_delta: adv.caps.contains("ofs-delta"),
-        ..WriteOptions::default()
+        ..out.pack.clone()
     };
-    let (_, mut bw) = pw::write_pack(
+    let (_, mut bw) = pw::write_thin_pack(
         BufWriter::new(w),
         out.hash,
         &out.objects,
+        &out.bases,
         out.odb,
         &packs,
         &opts,

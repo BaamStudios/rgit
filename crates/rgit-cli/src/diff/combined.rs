@@ -117,7 +117,7 @@ pub fn raw(repo: &Repo, files: &[File], abbrev: Option<usize>, quote: bool, out:
     let id = |s: Option<Side>| {
         let oid = s.map_or(null, |s| s.oid);
         match abbrev {
-            Some(n) => repo.abbrev(&oid, n),
+            Some(n) => super::output::raw_ellipsis(repo.abbrev(&oid, n), repo.hash),
             None => oid.to_hex(),
         }
     };

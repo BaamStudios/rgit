@@ -318,6 +318,15 @@ pub fn show_main(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
     run_main(ctx, Command::Log, argv, true)
 }
 
+/// `git diff-tree` with `-v`, `--pretty` or `--format`: the given commits
+/// shown like `show` does, but with plumbing diffs (`argv` as for `show`).
+pub fn diff_tree_show(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
+    let mut opts = Options::parse(Command::Log, argv)?;
+    opts.show = true;
+    opts.plumbing = true;
+    run_parsed(ctx, Command::Log, opts)
+}
+
 /// Set up the repository, parse `argv` and run `cmd`.
 pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
     run_main(ctx, cmd, argv, false)
@@ -336,6 +345,10 @@ fn run_main(ctx: &Context, cmd: Command, argv: &[String], show: bool) -> Result<
     }
     let mut opts = Options::parse(cmd, argv)?;
     opts.show = show;
+    run_parsed(ctx, cmd, opts)
+}
+
+fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die> {
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
@@ -1262,19 +1275,32 @@ impl Printer<'_, '_> {
             Some(p) => Some(self.repo.tree_of(&p).ok_or_else(walk_error)?),
             None => None,
         };
+        // diff-tree recurses only when asked to (or for contents).
+        let plumbing = self.opts.plumbing;
+        let recursive = !plumbing
+            || d.opts.recursive
+            || d.opts.show_trees
+            || d.formats.patch
+            || d.formats.summary
+            || d.formats.needs_content();
         let mut w = crate::diff::collect::TreeDiff {
             repo: &d.repo,
             pathspec: &d.pathspec,
-            recursive: true,
-            show_trees: false,
+            recursive,
+            show_trees: plumbing && d.opts.show_trees,
             max_depth: None,
             pairs: Vec::new(),
         };
         w.walk(old_tree.as_ref(), Some(&tree), b"")?;
-        let mut out =
-            crate::diff::output::Output::new(Some(&d.repo), d.repo.hash, &d.opts, d.formats, true)?;
+        let mut out = crate::diff::output::Output::new(
+            Some(&d.repo),
+            d.repo.hash,
+            &d.opts,
+            d.formats,
+            !plumbing,
+        )?;
         // log and show run textconv filters unless told not to.
-        out.textconv = d.opts.textconv.unwrap_or(true);
+        out.textconv = d.opts.textconv.unwrap_or(!plumbing);
         out.set_color(&d.opts)?;
         let (bytes, _) = out.render(std::mem::take(&mut w.pairs))?;
         if bytes.is_empty() {
@@ -1317,6 +1343,8 @@ impl Printer<'_, '_> {
             // log and show abbreviate raw ids unless --full-index.
             let abbrev = match d.opts.abbrev {
                 _ if d.opts.full_index => None,
+                // diff-tree: full ids unless --abbrev.
+                None if self.opts.plumbing => None,
                 Some(Some(n)) => Some(n),
                 _ => Some(d.repo.default_abbrev()),
             };
@@ -1836,7 +1864,9 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
     } else {
         MergeDiff::Off
     });
+    // diff-tree picks the commits to show itself.
     let show_root = opts.root
+        || opts.plumbing
         || repo
             .config
             .bool("log.showRoot")
