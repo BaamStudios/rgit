@@ -332,6 +332,7 @@ fn push_status(
         head: head.as_deref(),
         resolve: &resolve,
         kind: &kind,
+        upstream: None,
     };
     let specs = if remote.push.items.is_empty() {
         RefspecSet::parse([":"], Direction::Push).map_err(|e| Die::Fatal(e.to_string()))?

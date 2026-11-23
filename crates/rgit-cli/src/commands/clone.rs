@@ -389,6 +389,8 @@ struct Junk {
     git_dir: Option<PathBuf>,
     git_dir_existed: bool,
     armed: bool,
+    /// The same directories, removed when a signal kills the clone.
+    on_signal: Vec<rgit_fs::DirGuard>,
 }
 
 impl Junk {
@@ -523,6 +525,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         git_dir: None,
         git_dir_existed: existed,
         armed: true,
+        on_signal: Vec::new(),
     };
     let mut init_git_dir = None;
     let mut init_work_tree = None;
@@ -562,6 +565,17 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             }
         }
     };
+
+    // A clone interrupted by a signal leaves nothing behind either.
+    for (dir, existed) in [
+        (junk.work_tree.clone(), junk.work_tree_existed),
+        (junk.git_dir.clone(), junk.git_dir_existed),
+    ] {
+        if let Some(dir) = dir {
+            let abs = std::path::absolute(&dir).unwrap_or(dir);
+            junk.on_signal.push(rgit_fs::remove_dir_on_signal(&abs, existed));
+        }
+    }
 
     // Create the repository.
     let init_opts = InitOptions {
@@ -1156,6 +1170,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             config_add(&git_dir.join("config"), "submodule.active", spec)?;
         }
     }
+    junk.on_signal.clear();
     if let (Some(oid), false, Some(_)) = (checkout_oid, opts.no_checkout, &work_tree) {
         // An invalid GIT_ADVICE fails the checkout step (observed).
         let advice = match ctx

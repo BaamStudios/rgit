@@ -222,3 +222,40 @@ See the 'Note about fast-forwards' in 'git push --help' for details.";
 pub const HINT_NEEDS_FORCE: &str = "You cannot update a remote ref that points at a non-commit object,\n\
 or update a remote ref to make it point at a non-commit object,\n\
 without using the '--force' option.";
+
+pub const SEND_PACK_USAGE: &[&str] = &["git send-pack [--mirror] [--dry-run] [--force]
+                     [--receive-pack=<git-receive-pack>]
+                     [--verbose] [--thin] [--atomic]
+                     [--[no-]signed | --signed=(true|false|if-asked)]
+                     [<host>:]<directory> (--all | <ref>...)"];
+pub const H_SP_REMOTE: &str = "remote name";
+pub const H_SP_ALL: &str = "push all refs";
+pub const H_SP_STATELESS_RPC: &str = "use stateless RPC protocol";
+pub const H_SP_STDIN: &str = "read refs from stdin";
+pub const H_SP_HELPER_STATUS: &str = "print status from remote helper";
+
+/// `git send-pack` when the refs do not match (exit 255).
+pub const REMOTE_HUNG_UP: &str = "the remote end hung up unexpectedly";
+
+/// `--atomic` with a remote group.
+pub const ATOMIC_ONE_REMOTE: &str = "--atomic can only be used when pushing to one remote";
+
+/// A member of a remote group failed.
+pub fn could_not_push_to(remote: &str) -> String {
+    format!("could not push to {remote}")
+}
+
+/// Status reason of a ref `--force-if-includes` refused.
+pub const REASON_REMOTE_UPDATED: &str = "remote ref updated since checkout";
+
+/// `--force-if-includes` refused a ref (advice.pushRefNeedsUpdate).
+pub const HINT_REF_NEEDS_UPDATE: &str = "Updates were rejected because the tip of the remote-tracking branch has\n\
+been updated since the last checkout. If you want to integrate the\n\
+remote changes, use 'git pull' before pushing again.\n\
+See the 'Note about fast-forwards' in 'git push --help' for details.";
+
+/// `--force-with-lease=<ref>:<expect>` with an `<expect>` that does not
+/// resolve (exit 129).
+pub fn cannot_parse_expected(expect: &str) -> String {
+    format!("cannot parse expected object name '{expect}'")
+}

@@ -48,7 +48,7 @@ pub struct Resolved {
 fn print_diagnostics(resolver: &Resolver<'_>) {
     let mut err = std::io::stderr();
     for d in resolver.take_diagnostics() {
-        let _ = writeln!(err, "{}", d.render());
+        let _ = err.write_all(d.render().as_bytes());
     }
 }
 

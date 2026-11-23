@@ -44,5 +44,5 @@ pub use lock::{
     LOCK_SUFFIX, LockError, LockFile, LockHolder, LockOptions, PID_LOCK_SUFFIX, Timeout,
 };
 pub use perm::{SharedRepository, SharedRepositoryError};
-pub use registry::remove_registered_files;
+pub use registry::{DirGuard, remove_dir_on_signal, remove_registered_files};
 pub use tempfile::{OBJECT_PREFIX, PACK_PREFIX, TempFile};

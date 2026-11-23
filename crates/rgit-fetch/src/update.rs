@@ -6,7 +6,7 @@ use bstr::{BStr, BString, ByteSlice};
 use rgit_hash::ObjectId;
 use rgit_object::ObjectKind;
 use rgit_protocol::v2::RemoteRef;
-use rgit_refs::{NoHooks, RefHooks, RefStore, RefUpdate, Transaction};
+use rgit_refs::{RefHooks, RefStore, RefUpdate, Transaction};
 use rgit_remote::RefspecSet;
 
 use crate::refmap::Entry;
@@ -91,12 +91,20 @@ pub struct RefLine {
     pub local: Option<BString>,
     /// The new object (the old one for a pruned ref).
     pub new: ObjectId,
+    /// The value of the local ref before the fetch.
+    pub old: Option<ObjectId>,
     /// The outcome.
     pub status: Status,
 }
 
 /// Decide the update of `entry` without writing anything.
 pub fn decide(repo: &LocalRepo, entry: &Entry, force: bool) -> Status {
+    decide_with(repo, entry, force, true)
+}
+
+/// [`decide`]; without `check_forced` a forced update is not checked and
+/// counts as a fast-forward (`--no-show-forced-updates`).
+pub fn decide_with(repo: &LocalRepo, entry: &Entry, force: bool, check_forced: bool) -> Status {
     let Some(local) = &entry.local else {
         return Status::FetchHead;
     };
@@ -120,6 +128,9 @@ pub fn decide(repo: &LocalRepo, entry: &Entry, force: bool) -> Status {
         } else {
             Status::RejectedTag
         };
+    }
+    if forced && !check_forced {
+        return Status::FastForward(old);
     }
     let commits = repo.kind(&old) == Some(ObjectKind::Commit)
         && repo.kind(&entry.oid) == Some(ObjectKind::Commit);
@@ -190,16 +201,48 @@ pub fn ref_update(local: &BStr, new: ObjectId, status: &Status, action: &str) ->
     RefUpdate::update(local.to_str_lossy().into_owned(), new, Some(old)).message(msg)
 }
 
+/// The reflog writer and the caller's `reference-transaction` hook.
+struct FetchHooks<'a> {
+    reflog: Option<rgit_refs::reflog::ReflogWriter>,
+    transaction: Option<&'a crate::repo::TransactionHook>,
+}
+
+impl RefHooks for FetchHooks<'_> {
+    fn reflog_append(&mut self, update: &rgit_refs::ReflogUpdate) -> Result<(), String> {
+        match &mut self.reflog {
+            Some(w) => w.reflog_append(update),
+            None => Ok(()),
+        }
+    }
+
+    fn reflog_delete(&mut self, name: &str) {
+        if let Some(w) = &mut self.reflog {
+            w.reflog_delete(name);
+        }
+    }
+
+    fn reference_transaction(
+        &mut self,
+        state: rgit_refs::HookState,
+        updates: &[(String, String, String)],
+    ) -> Result<(), String> {
+        match self.transaction {
+            Some(hook) if !updates.is_empty() => hook(state, updates),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Run several reference updates in one transaction (`--atomic`).
 pub fn write_all(repo: &LocalRepo, updates: Vec<RefUpdate>) -> Result<(), String> {
     if updates.is_empty() {
         return Ok(());
     }
-    let mut writer = repo.reflog_hooks();
-    let hooks: &mut dyn RefHooks = match &mut writer {
-        Some(w) => w,
-        None => &mut NoHooks,
+    let mut hooks = FetchHooks {
+        reflog: repo.reflog_hooks(),
+        transaction: repo.transaction_hook.as_deref(),
     };
+    let hooks: &mut dyn RefHooks = &mut hooks;
     let store: &dyn RefStore = &repo.refs;
     let mut tx = Transaction::new(store);
     for u in updates {
@@ -211,11 +254,11 @@ pub fn write_all(repo: &LocalRepo, updates: Vec<RefUpdate>) -> Result<(), String
 /// Run one reference update (any [`RefUpdate`], e.g. a symref creation)
 /// with the repository's reflog hooks.
 pub fn write(repo: &LocalRepo, update: RefUpdate) -> Result<(), String> {
-    let mut writer = repo.reflog_hooks();
-    let hooks: &mut dyn RefHooks = match &mut writer {
-        Some(w) => w,
-        None => &mut NoHooks,
+    let mut hooks = FetchHooks {
+        reflog: repo.reflog_hooks(),
+        transaction: repo.transaction_hook.as_deref(),
     };
+    let hooks: &mut dyn RefHooks = &mut hooks;
     let store: &dyn RefStore = &repo.refs;
     let mut tx = Transaction::new(store);
     tx.push(update).map_err(|e| e.to_string())?;
@@ -269,6 +312,8 @@ pub fn stale_refs(
             }
         }
     }
+    // git goes through the local refs once, in name order.
+    out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 

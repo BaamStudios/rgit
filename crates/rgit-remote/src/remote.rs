@@ -134,6 +134,8 @@ pub struct Remotes {
     rewrites: UrlRewrites,
     push_default: Option<BString>,
     warnings: Vec<String>,
+    /// The `<head>` of a `$GIT_DIR/branches/<name>` file without `#<head>`.
+    default_branch: BString,
 }
 
 impl Remotes {
@@ -214,11 +216,27 @@ impl Remotes {
             r.fetch = RefspecSet::parse(&fetch[i], Direction::Fetch)?;
             r.push = RefspecSet::parse(&push[i], Direction::Push)?;
         }
+        // A branches file without `#<head>` names the default branch of
+        // new repositories (`GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME`, which
+        // the test suite pins, `init.defaultBranch`, else `master`).
+        let default_branch = std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(BString::from)
+            .or_else(|| {
+                config
+                    .string("init.defaultbranch")
+                    .ok()
+                    .flatten()
+                    .map(|v| v.to_owned())
+            })
+            .unwrap_or_else(|| "master".into());
         Ok(Remotes {
             raw,
             rewrites,
             push_default,
             warnings,
+            default_branch,
         })
     }
 
@@ -256,7 +274,7 @@ impl Remotes {
             ..RawRemote::default()
         });
         if raw.url.is_empty() {
-            match git_dir.and_then(|d| read_legacy(d, name)) {
+            match git_dir.and_then(|d| read_legacy(d, name, &self.default_branch)) {
                 Some(legacy) => {
                     source = legacy.source;
                     warnings.push(messages::legacy_remote_warning(
@@ -358,7 +376,7 @@ struct Legacy {
 }
 
 /// Read `$GIT_DIR/remotes/<name>` or `$GIT_DIR/branches/<name>`.
-fn read_legacy(git_dir: &Path, name: &[u8]) -> Option<Legacy> {
+fn read_legacy(git_dir: &Path, name: &[u8], default_branch: &[u8]) -> Option<Legacy> {
     let file = name.to_str().ok()?;
     if file.is_empty() || file.contains('/') || file == "." || file == ".." {
         return None;
@@ -367,7 +385,7 @@ fn read_legacy(git_dir: &Path, name: &[u8]) -> Option<Legacy> {
         return Some(parse_remotes_file(&data));
     }
     let data = std::fs::read(git_dir.join("branches").join(file)).ok()?;
-    Some(parse_branches_file(&data, name))
+    Some(parse_branches_file(&data, name, default_branch))
 }
 
 /// Parse a `$GIT_DIR/remotes/<name>` file (`URL:`, `Push:`, `Pull:`
@@ -398,7 +416,7 @@ fn parse_remotes_file(data: &[u8]) -> Legacy {
 }
 
 /// Parse a `$GIT_DIR/branches/<name>` file: `<url>[#<head>]`.
-fn parse_branches_file(data: &[u8], name: &[u8]) -> Legacy {
+fn parse_branches_file(data: &[u8], name: &[u8], default_branch: &[u8]) -> Legacy {
     let line = data
         .lines()
         .next()
@@ -406,7 +424,7 @@ fn parse_branches_file(data: &[u8], name: &[u8]) -> Legacy {
         .trim_with(|c| c.is_ascii_whitespace());
     let (url, head) = match line.find_byte(b'#') {
         Some(i) => (&line[..i], &line[i + 1..]),
-        None => (line, &b"master"[..]),
+        None => (line, default_branch),
     };
     let name = name.as_bstr();
     let head = head.as_bstr();

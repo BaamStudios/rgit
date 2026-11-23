@@ -35,7 +35,17 @@ pub struct LocalRepo {
     pub committer: Option<Committer>,
     /// Configuration warnings to print (`warning: ` prefix).
     pub warnings: Vec<String>,
+    /// Runs the `reference-transaction` hook for the ref updates of the
+    /// fetch (set by the caller, which knows how to run hooks).
+    pub transaction_hook: Option<Box<TransactionHook>>,
 }
+
+/// The `reference-transaction` hook: called with the state and the
+/// `(old, new, name)` updates; an `Err` in the `preparing` or `prepared`
+/// state aborts the
+/// transaction with that message.
+pub type TransactionHook =
+    dyn Fn(rgit_refs::HookState, &[(String, String, String)]) -> std::result::Result<(), String>;
 
 impl LocalRepo {
     /// Open the repository described by `setup` with its configuration.
@@ -55,6 +65,7 @@ impl LocalRepo {
             refs,
             committer,
             warnings,
+            transaction_hook: None,
         })
     }
 

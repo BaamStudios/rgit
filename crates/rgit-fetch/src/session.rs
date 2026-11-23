@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
+use bstr::ByteSlice;
 use rgit_config::{ConfigSet, Environment};
 use rgit_fs::TempFile;
 use rgit_hash::{HashKind, ObjectId};
@@ -25,7 +26,7 @@ use rgit_pack::index_pack::{self as ip, IndexVersion, Input, ObjectDb, Options};
 use rgit_protocol::v0::{self, Advertisement};
 use rgit_protocol::v2::{
     Client, ConsecutiveNegotiator, FetchArgs, FetchOutcome, LsRefsArgs, Negotiator, RemoteRef,
-    ShallowInfo,
+    ShallowInfo, SkippingNegotiator,
 };
 use rgit_protocol::{Capabilities, Packet, Progress, ProgressStyle, ProtocolVersion, Reader};
 use rgit_transport::{ConnectOptions, Connection, IpVersion, Service, Settings, Transport};
@@ -244,6 +245,13 @@ impl Session {
         }
     }
 
+    /// Whether the server takes `want-ref` lines (protocol v2 with the
+    /// `ref-in-want` fetch feature).
+    pub fn supports_ref_in_want(&self) -> bool {
+        matches!(self.proto, Proto::V2(_))
+            && self.capabilities().has_feature("fetch", "ref-in-want")
+    }
+
     /// The server's capabilities (v2: the capability advertisement; v0/v1:
     /// the capabilities of the first ref line).
     pub fn capabilities(&self) -> &Capabilities {
@@ -286,11 +294,12 @@ impl Session {
         haves: Option<&[ObjectId]>,
         opts: &PackOptions,
     ) -> Result<Option<ReceivedPack>> {
-        if wants.is_empty() {
+        if wants.is_empty() && opts.want_refs.is_empty() {
             return Ok(None);
         }
         let mut args = FetchArgs {
             wants: wants.to_vec(),
+            want_refs: opts.want_refs.clone(),
             thin_pack: true,
             no_progress: opts.no_progress,
             include_tag: opts.include_tag,
@@ -325,37 +334,54 @@ impl Session {
             Some(info)
         };
         let mut consecutive;
+        let mut skipping;
         let mut noop = rgit_protocol::v2::NoopNegotiator;
-        let negotiator: &mut dyn Negotiator = match haves {
-            Some(advertised) => {
+        // The commits the walk knows to be common (advertised and present
+        // here) and its starting points.
+        let starts = |known: &mut dyn FnMut(ObjectId), tip: &mut dyn FnMut(ObjectId)| {
+            for id in haves.unwrap_or_default() {
+                if repo.has_object(id) {
+                    known(*id);
+                }
+            }
+            if let Some(tips) = &opts.tips {
+                for id in tips {
+                    tip(*id);
+                }
+            } else {
+                if let Some(h) = repo.resolve("HEAD") {
+                    tip(h);
+                }
+                for (_, id) in repo.list_refs("") {
+                    tip(id);
+                }
+                // The refs of alternates are tips too: their history is
+                // here.
+                for id in repo.alternate_tips() {
+                    if repo.has_object(&id) {
+                        tip(id);
+                    }
+                }
+            }
+        };
+        let negotiator: &mut dyn Negotiator = match (haves, opts.negotiation) {
+            (None, _) | (Some(_), Negotiation::Noop) => &mut noop,
+            (Some(_), Negotiation::Consecutive) => {
                 consecutive = ConsecutiveNegotiator::new(&mut source);
-                for id in advertised {
-                    if repo.has_object(id) {
-                        consecutive.known_common(*id);
-                    }
-                }
-                if let Some(tips) = &opts.tips {
-                    for id in tips {
-                        consecutive.add_tip(*id);
-                    }
-                } else {
-                    if let Some(h) = repo.resolve("HEAD") {
-                        consecutive.add_tip(h);
-                    }
-                    for (_, id) in repo.list_refs("") {
-                        consecutive.add_tip(id);
-                    }
-                    // The refs of alternates are tips too: their history
-                    // is here.
-                    for id in repo.alternate_tips() {
-                        if repo.has_object(&id) {
-                            consecutive.add_tip(id);
-                        }
-                    }
-                }
+                let n = std::cell::RefCell::new(&mut consecutive);
+                starts(&mut |id| n.borrow_mut().known_common(id), &mut |id| {
+                    n.borrow_mut().add_tip(id)
+                });
                 &mut consecutive
             }
-            None => &mut noop,
+            (Some(_), Negotiation::Skipping) => {
+                skipping = SkippingNegotiator::new(&mut source);
+                let n = std::cell::RefCell::new(&mut skipping);
+                starts(&mut |id| n.borrow_mut().known_common(id), &mut |id| {
+                    n.borrow_mut().add_tip(id)
+                });
+                &mut skipping
+            }
         };
 
         let pack_dir = repo.objects_dir().join("pack");
@@ -508,6 +534,55 @@ pub struct PackOptions {
     pub deepen_since: Option<i64>,
     /// `deepen-not <rev>` (`--shallow-exclude`).
     pub deepen_not: Vec<String>,
+    /// `fetch.negotiationAlgorithm`.
+    pub negotiation: Negotiation,
+    /// Refs asked for by name (`want-ref`, protocol v2 servers with
+    /// `ref-in-want`) instead of by object.
+    pub want_refs: Vec<String>,
+}
+
+/// The negotiation algorithm (`fetch.negotiationAlgorithm`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Negotiation {
+    /// Every commit, newest first.
+    #[default]
+    Consecutive,
+    /// Skip a growing number of commits after each `have`.
+    Skipping,
+    /// No `have` lines at all.
+    Noop,
+}
+
+impl Negotiation {
+    /// `fetch.negotiationAlgorithm` (`default` and unset: `skipping` under
+    /// `feature.experimental`, else `consecutive`). An unknown value is an
+    /// error.
+    pub fn from_config(config: &ConfigSet) -> Result<Negotiation> {
+        let experimental = config
+            .bool("feature.experimental")
+            .ok()
+            .flatten()
+            .unwrap_or(false);
+        let default = if experimental {
+            Negotiation::Skipping
+        } else {
+            Negotiation::Consecutive
+        };
+        let Some(v) = config
+            .string("fetch.negotiationalgorithm")
+            .map_err(|e| Error::fatal(e.to_string()))?
+        else {
+            return Ok(default);
+        };
+        let v = v.to_str_lossy();
+        Ok(match v.to_ascii_lowercase().as_str() {
+            "consecutive" => Negotiation::Consecutive,
+            "skipping" => Negotiation::Skipping,
+            "noop" => Negotiation::Noop,
+            "default" => default,
+            _ => return Err(Error::fatal(messages::unknown_negotiation_algorithm(&v))),
+        })
+    }
 }
 
 impl PackOptions {
