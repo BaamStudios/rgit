@@ -110,3 +110,7 @@ pub fn cat_file_not_supported(what: &str) -> String {
 pub fn unable_to_write_stdout(err: &str) -> String {
     format!("unable to write to stdout: {err}")
 }
+
+pub fn invalid_mailmap_bool(value: &str) -> String {
+    format!("mailmap: invalid boolean '{value}'")
+}

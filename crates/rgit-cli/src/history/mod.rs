@@ -149,6 +149,8 @@ struct Commits<'r, 'a> {
     patch_ids: Option<crate::patch_id::CommitIds<'r>>,
     /// Path limiting and `--simplify-by-decoration`.
     paths: Option<paths::PathFilter>,
+    /// `--author`/`--committer` match the identities mapped through this.
+    mailmap: Option<mailmap::Mailmap>,
 }
 
 impl CommitSource for Commits<'_, '_> {
@@ -175,7 +177,10 @@ impl CommitSource for Commits<'_, '_> {
             return Ok(true);
         };
         let (_, raw) = self.repo.read_commit(id).ok_or(*id)?;
-        Ok(grep.matches(&raw))
+        Ok(match &self.mailmap {
+            Some(mm) => grep.matches(&mm.rewrite_object(ObjectKind::Commit, &raw)),
+            None => grep.matches(&raw),
+        })
     }
 
     fn patch_equivalent(
@@ -565,6 +570,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
                 None => None,
             },
             paths,
+            mailmap: None,
         },
         walk_opts,
     );
@@ -591,6 +597,162 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
         limited,
         unsorted,
     })
+}
+
+/// One commit of [`walk_formatted`].
+pub struct LogItem {
+    /// The commit in the output encoding.
+    pub commit: Commit,
+    /// Each of the requested user formats expanded for this commit.
+    pub expanded: Vec<Vec<u8>>,
+}
+
+/// The commits `log <args>` shows (from `HEAD` without revisions), each
+/// with the user formats `formats` expanded, and the repository's
+/// mailmap (`shortlog`).
+pub fn walk_formatted(
+    ctx: &Context,
+    args: &[String],
+    formats: &[Vec<u8>],
+) -> Result<(Vec<LogItem>, mailmap::Mailmap), Die> {
+    let mut opts = Options::parse(Command::Log, args)?;
+    let setup = repo::setup(ctx, Mode::Required)?;
+    let kind = setup.format.object_format;
+    let config = revisions::load_config(ctx, &setup)?;
+    opts.apply_config(Command::Log, &config)?;
+    let rev_opts = revisions::options(ctx, &config, kind)?;
+    let shallow = setup.common_dir.join("shallow");
+    let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    let refs = Refs::new(&setup, kind);
+    let cfg = Config(&config);
+    let index = IndexFile::new(&setup, kind);
+    let work_tree = setup.work_tree.clone().map(WorkTree);
+    let rev_repo = revision::Repo {
+        objects: &objects,
+        refs: &refs,
+        config: &cfg,
+        index: Some(&index),
+        work_tree: work_tree
+            .as_ref()
+            .map(|w| w as &dyn revision::WorkTreeLookup),
+        work_tree_info: revisions::work_tree_info(&setup),
+    };
+    let resolver = Resolver::new(rev_repo, rev_opts);
+    let repo = Repo {
+        setup: &setup,
+        config: &config,
+        objects: &objects,
+        refs: &refs,
+        resolver: &resolver,
+    };
+    if opts.has_no_tips() {
+        opts.push_head();
+    }
+    let resolved = tips::resolve(&repo, &opts)?;
+    let grep = if opts.grep.is_empty() {
+        None
+    } else {
+        Some(CommitGrep::new(&opts.grep).map_err(Die::Fatal)?)
+    };
+    let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+    let mut walk = Walk::new(
+        Commits {
+            repo: &repo,
+            grep,
+            patch_ids: None,
+            paths: None,
+            mailmap: None,
+        },
+        opts.walk.clone(),
+    );
+    for (id, negative, side) in &resolved.commits {
+        walk.push_side(id, *negative, *side).map_err(walk_error)?;
+    }
+    let hexlen = repo.objects.hash_kind().hex_len();
+    let abbrev_len = match opts.abbrev {
+        Abbrev::Default => repo.resolver.default_abbrev(),
+        Abbrev::Digits(n) => n.min(hexlen),
+        Abbrev::Full => hexlen,
+    };
+    let pretty = Pretty::User {
+        format: Vec::new(),
+        terminator: true,
+    };
+    let user = if formats.is_empty() {
+        None
+    } else {
+        Some(user_settings(&repo, &opts, &pretty, Command::Log)?)
+    };
+    let p = Printer {
+        repo: &repo,
+        cmd: Command::Log,
+        opts: &opts,
+        abbrev_len,
+        style: Style {
+            mailmap: None,
+            pretty,
+            date_mode: opts.date_mode.clone(),
+            date_ctx: DateContext::from_env(),
+            commit_color: None,
+            zero: false,
+        },
+        decorations: user
+            .as_ref()
+            .map(|_| Decorations::load(&repo, &opts.decorate_filter)),
+        user,
+        decorate: false,
+        deco_colors: None,
+        notes: if formats.is_empty() {
+            None
+        } else {
+            notes_tree(&repo)
+        },
+        sources: None,
+        encoding: recode::output_encoding(repo.config),
+        out: Vec::new(),
+        first: true,
+        dist: None,
+        graph: None,
+        ended_line: true,
+        child_shown: std::collections::HashSet::new(),
+        next: None,
+        diff: None,
+    };
+    let mut items = Vec::new();
+    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+        let (commit, _) = p.read_shown(&s.id).ok_or_else(|| walk_error(s.id))?;
+        let mut expanded = Vec::with_capacity(formats.len());
+        if let Some(settings) = &p.user {
+            let parents = match walk.parents(&s.id) {
+                Some(found) => found.to_vec(),
+                None => repo.parents(&s.id, &commit),
+            };
+            let mark = if s.boundary {
+                b'-'
+            } else if s.same {
+                b'='
+            } else if s.side == Some(Side::Left) {
+                b'<'
+            } else {
+                b'>'
+            };
+            let item = Item {
+                id: &s.id,
+                commit: &commit,
+                parents: &parents,
+                mark,
+                source: None,
+                column: 0,
+            };
+            for fmt in formats {
+                let text = userformat::expand(fmt, settings, &item, &FormatLookup { p: &p })
+                    .map_err(|_| Die::Fatal(msg::UNABLE_TO_PARSE_PRETTY.to_string()))?;
+                expanded.push(text);
+            }
+        }
+        items.push(LogItem { commit, expanded });
+    }
+    Ok((items, mailmap::Mailmap::load(&repo)))
 }
 
 /// See [`sequencer_commits`].
@@ -1329,6 +1491,7 @@ fn show_commit(p: &mut Printer<'_, '_>, id: &ObjectId) -> Result<(), Die> {
         grep: None,
         patch_ids: None,
         paths: None,
+        mailmap: None,
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
@@ -1618,12 +1781,23 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         ),
         None => None,
     };
+    let use_mailmap = opts.mailmap.unwrap_or_else(|| {
+        cmd == Command::Log
+            && repo
+                .config
+                .bool("log.mailmap")
+                .ok()
+                .flatten()
+                .unwrap_or(true)
+    });
+    let ident_grep = !opts.grep.author.is_empty() || !opts.grep.committer.is_empty();
     let mut walk = Walk::new(
         Commits {
             repo,
             grep,
             patch_ids,
             paths,
+            mailmap: (use_mailmap && ident_grep).then(|| mailmap::Mailmap::load(repo)),
         },
         walk_opts,
     );
@@ -1644,15 +1818,6 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         Abbrev::Digits(n) => n.min(hexlen),
         Abbrev::Full => hexlen,
     };
-    let use_mailmap = opts.mailmap.unwrap_or_else(|| {
-        cmd == Command::Log
-            && repo
-                .config
-                .bool("log.mailmap")
-                .ok()
-                .flatten()
-                .unwrap_or(true)
-    });
     let pretty = opts.pretty.clone().unwrap_or(Pretty::Medium);
     let is_user = matches!(pretty, Pretty::User { .. } | Pretty::Reference);
     // `log.decorate` does not apply to the raw format, only `--decorate`.

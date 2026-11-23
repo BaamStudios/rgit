@@ -557,8 +557,13 @@ fn parse_force_date(d: &str) -> Result<(u64, i32), Die> {
 }
 
 /// The author of the most recent reachable commit whose `Name <email>`
-/// matches `pattern` (case-insensitive regular expression).
-fn find_author(repo: &Repo, pattern: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+/// (mapped through the mailmap) matches `pattern` (case-insensitive
+/// regular expression).
+fn find_author(
+    repo: &Repo,
+    mailmap: &crate::history::mailmap::Mailmap,
+    pattern: &str,
+) -> Option<(Vec<u8>, Vec<u8>)> {
     let re = regex::bytes::RegexBuilder::new(pattern)
         .case_insensitive(true)
         .build()
@@ -576,9 +581,10 @@ fn find_author(repo: &Repo, pattern: &str) -> Option<(Vec<u8>, Vec<u8>)> {
             continue;
         };
         if let Some(a) = c.author() {
-            let mut ne = a.name.to_vec();
+            let (name, email) = mailmap.map(a.name, a.email);
+            let mut ne = name.to_vec();
             ne.extend_from_slice(b" <");
-            ne.extend_from_slice(a.email);
+            ne.extend_from_slice(email);
             ne.push(b'>');
             let hit = match &re {
                 Some(re) => re.is_match(&ne),
@@ -588,7 +594,7 @@ fn find_author(repo: &Repo, pattern: &str) -> Option<(Vec<u8>, Vec<u8>)> {
             };
             let when = c.committer().and_then(|s| s.time()).map_or(0, |t| t.seconds);
             if hit && best.as_ref().is_none_or(|b| when > b.0) {
-                best = Some((when, a.name.to_vec(), a.email.to_vec()));
+                best = Some((when, name.to_vec(), email.to_vec()));
             }
         }
         stack.extend(c.parents().unwrap_or_default());
@@ -1323,7 +1329,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             });
         let (n, e) = match parsed {
             Some(p) => p,
-            None => find_author(&repo, a).ok_or_else(|| fatal(msg::no_existing_author(a)))?,
+            None => {
+                let mailmap = crate::history::mailmap::Mailmap::load_for(ctx)?;
+                find_author(&repo, &mailmap, a).ok_or_else(|| fatal(msg::no_existing_author(a)))?
+            }
         };
         author_parts.0 = n;
         author_parts.1 = e;
