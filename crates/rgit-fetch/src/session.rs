@@ -194,14 +194,25 @@ impl Session {
         options.protocol_version = version;
         options.trace_name = Some(program.to_owned());
         options.verbose = settings.verbose;
+        rgit_protocol::session_id::set_advertise(
+            settings
+                .config
+                .bool("transfer.advertiseSID")
+                .ok()
+                .flatten()
+                .unwrap_or(false),
+        );
         let (mut reader, answered) = open(transport.as_mut(), &options, program)?;
+        rgit_protocol::session_id::note_version(answered);
         let proto = match answered {
             ProtocolVersion::V2 => {
                 let caps = Capabilities::read_v2(&mut reader)?;
+                rgit_protocol::session_id::note_server(&caps);
                 Proto::V2(Client::with_capabilities(reader, caps)?)
             }
             v => {
                 let adv = v0::read_advertisement(&mut reader, v)?;
+                rgit_protocol::session_id::note_server(&adv.caps);
                 let client = v0::Client::new(reader, &adv);
                 Proto::V0 {
                     adv,

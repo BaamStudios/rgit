@@ -291,6 +291,7 @@ impl<C: Duplex> Client<C> {
         if has("agent") {
             out.push(format!("agent={}", self.agent));
         }
+        out.extend(crate::session_id::capability(&self.caps));
         if self.format != HashKind::Sha1 {
             out.push(format!("object-format={}", self.format.name()));
         }

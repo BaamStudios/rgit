@@ -640,6 +640,13 @@ impl Push<'_> {
         };
         opts.trace_name = Some("push".into());
         opts.verbosity = f.verbosity;
+        rgit_protocol::session_id::set_advertise(
+            self.config
+                .bool("transfer.advertiseSID")
+                .ok()
+                .flatten()
+                .unwrap_or(false),
+        );
         let conn = transport.connect(&opts).map_err(fatal)?;
         let mut session =
             send::start(conn, hash).map_err(|e| Die::Fatal(send::advertisement_error(&e)))?;

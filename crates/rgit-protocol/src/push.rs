@@ -178,6 +178,7 @@ pub fn request_capabilities(server: &Capabilities, req: &Request) -> Vec<String>
     if server.contains("agent") {
         caps.push(format!("agent={}", agent::agent()));
     }
+    caps.extend(crate::session_id::capability(server));
     caps
 }
 

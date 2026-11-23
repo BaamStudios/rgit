@@ -30,6 +30,7 @@ pub fn start(mut conn: Box<dyn Connection>, hash: HashKind) -> Result<Session, P
         let mut reader = Reader::new(&mut conn, "push");
         push::read_advertisement(&mut reader, hash)?
     };
+    rgit_protocol::session_id::note_server(&adv.caps);
     Ok(Session { conn, adv })
 }
 
