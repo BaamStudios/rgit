@@ -14,17 +14,20 @@ use crate::messages::bisect as msg;
 use crate::prelude::*;
 
 /// The index into `m` candidates that the skip algorithm takes: a
-/// pseudo-random number in [0, 1) from the classic `rand()` linear
-/// congruential step seeded with `m`, biased towards 0 by multiplying it
-/// with its square root (git-bisect-lk2009.adoc, "Skip algorithm").
+/// pseudo-random number `p` in [0, 32768) from the classic `rand()`
+/// linear congruential step seeded with `m`, biased towards 0 by its
+/// square root (git-bisect-lk2009.adoc, "Skip algorithm"). The scaling
+/// was matched against the `git` binary on many generated histories:
+/// `m * p / 32768` in integers, then times `sqrt(p / 32768)`.
 fn skip_index(m: usize) -> usize {
     if m <= 1 {
         return 0;
     }
     let seed = m as u32;
     let x = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-    let r = f64::from((x / 65_536) % 32_768) / 32_768.0;
-    let i = ((m - 1) as f64 * r * r.sqrt()) as usize;
+    let p = (x / 65_536) % 32_768;
+    let scaled = m * p as usize / 32_768;
+    let i = (scaled as f64 * (f64::from(p) / 32_768.0).sqrt()) as usize;
     i.min(m - 1)
 }
 
@@ -300,5 +303,24 @@ mod tests {
         assert_eq!(skip_index(3), 0);
         assert_eq!(skip_index(2), 0);
         assert_eq!(skip_index(1), 0);
+        // Where the order of the integer scaling shows (merge-heavy
+        // histories, git 2.56).
+        let observed = [
+            (7, 3),
+            (9, 3),
+            (11, 5),
+            (13, 6),
+            (14, 0),
+            (15, 8),
+            (17, 10),
+            (18, 1),
+            (19, 12),
+            (21, 14),
+            (23, 16),
+            (25, 19),
+        ];
+        for (m, i) in observed {
+            assert_eq!(skip_index(m), i, "{m}");
+        }
     }
 }

@@ -291,3 +291,168 @@ fn directory_rename_split_and_file_in_the_way() {
         )]
     );
 }
+
+fn true_dirs() -> Options {
+    Options {
+        directory_renames: DirectoryRenames::True,
+        ..opts()
+    }
+}
+
+#[test]
+fn both_sides_move_a_file_to_the_same_place() {
+    // Each side renames the other's directory to x/ and adds a file
+    // there: the add/add conflict names the path each side gave it.
+    let m = Mem::default();
+    let r = merge_with(
+        &m,
+        &true_dirs(),
+        &[("z/b", F::File("b\n")), ("y/d", F::File("d\n"))],
+        &[
+            ("x/b", F::File("b\n")),
+            ("y/d", F::File("d\n")),
+            ("y/wham", F::File("one\n")),
+        ],
+        &[
+            ("z/b", F::File("b\n")),
+            ("x/d", F::File("d\n")),
+            ("z/wham", F::File("two\n")),
+        ],
+    );
+    assert!(!r.clean);
+    assert_eq!(conflicts(&r), ["x/wham 2 3"]);
+    assert_eq!(
+        m.content(&r, "x/wham"),
+        "<<<<<<< main:y/wham\none\n=======\ntwo\n>>>>>>> side:z/wham\n"
+    );
+    // Our paths moved by their directory renames come first.
+    let updated: Vec<String> = messages(&r)
+        .into_iter()
+        .filter(|(k, _)| *k == "Path updated due to directory rename")
+        .map(|(_, t)| t)
+        .collect();
+    assert_eq!(
+        updated,
+        [
+            "Path updated: y/wham added in main inside a directory that was renamed in side; moving it to x/wham.",
+            "Path updated: z/wham added in side inside a directory that was renamed in main; moving it to x/wham.",
+        ]
+    );
+}
+
+#[test]
+fn a_path_the_other_sides_file_moves_to_stays() {
+    // main: sub1/ -> sub3/, adds sub2/new. side: sub2/ -> sub1/sub2/,
+    // adds sub1/sub2/new. Our sub2/new moves to sub1/sub2/new, so their
+    // file there does not move on to sub3/: an add/add (t6423 12l).
+    let m = Mem::default();
+    let r = merge_with(
+        &m,
+        &true_dirs(),
+        &[
+            ("sub1/file", F::File("file\n")),
+            ("sub2/other", F::File("other\n")),
+        ],
+        &[
+            ("sub3/file", F::File("file\n")),
+            ("sub2/other", F::File("other\n")),
+            ("sub2/new", F::File("ours\n")),
+        ],
+        &[
+            ("sub1/file", F::File("file\n")),
+            ("sub1/newfile", F::File("brand\n")),
+            ("sub1/sub2/other", F::File("other\n")),
+            ("sub1/sub2/new", F::File("theirs\n")),
+        ],
+    );
+    assert!(!r.clean);
+    assert_eq!(conflicts(&r), ["sub1/sub2/new 2 3"]);
+    assert_eq!(
+        paths(&m, &r),
+        [
+            "sub1/sub2/new",
+            "sub3/file",
+            "sub3/newfile",
+            "sub3/sub2/other"
+        ]
+    );
+}
+
+#[test]
+fn rename_moved_back_onto_a_deleted_file() {
+    // side: world -> tools/world. main: tools/ -> top level, deletes
+    // world. The directory rename takes the rename back; git reports a
+    // modify/delete (t6423 12n2).
+    let m = Mem::default();
+    let r = merge_with(
+        &m,
+        &true_dirs(),
+        &[
+            ("tools/hello", F::File("hello\n")),
+            ("world", F::File("world\n")),
+        ],
+        &[("hello", F::File("hello\n"))],
+        &[
+            ("tools/hello", F::File("hello\n")),
+            ("tools/world", F::File("world\n")),
+        ],
+    );
+    assert!(!r.clean);
+    assert_eq!(conflicts(&r), ["world 1 3"]);
+    assert_eq!(paths(&m, &r), ["hello", "world"]);
+    assert_eq!(
+        messages(&r)[1],
+        (
+            "CONFLICT (modify/delete)",
+            "CONFLICT (modify/delete): world deleted in main and modified in side.  Version side of world left in tree.".into()
+        )
+    );
+}
+
+#[test]
+fn binary_rename_rename_keeps_both_versions() {
+    let m = Mem::default();
+    let r = merge_with(
+        &m,
+        &opts(),
+        &[("orig", F::Binary("1\n2\n3\n"))],
+        &[("orig-A", F::Binary("1\n2\n3\n4\n"))],
+        &[("orig-B", F::Binary("0\n1\n2\n3\n"))],
+    );
+    assert!(!r.clean);
+    assert_eq!(conflicts(&r), ["orig 1", "orig-A 2", "orig-B 3"]);
+    assert_eq!(m.content(&r, "orig-A"), "1\n2\n3\n4\n\0");
+    assert_eq!(m.content(&r, "orig-B"), "0\n1\n2\n3\n\0");
+    assert_eq!(
+        messages(&r)[0].1,
+        "warning: Cannot merge binary files: orig (main:orig-A vs. side:orig-B)"
+    );
+}
+
+#[test]
+fn duplicate_tree_entries_fail_the_merge() {
+    use crate::Objects;
+    use rgit_object::{EntryMode, ObjectKind, Tree, TreeEntry};
+    let m = Mem::default();
+    let base = m.tree(&[("docs", F::Gitlink(1)), ("file", F::File("base\n"))]);
+    let ours = m.tree(&[
+        ("docs/req", F::File("hello\n")),
+        ("file", F::File("base\n")),
+    ]);
+    let sub = m.tree(&[("req", F::File("world\n"))]);
+    let blob = m.write(ObjectKind::Blob, b"base\n").unwrap();
+    let gitlink = rgit_hash::ObjectId::from_bytes(rgit_hash::HashKind::Sha1, &[1; 20]).unwrap();
+    let raw = Tree {
+        entries: vec![
+            TreeEntry::new(EntryMode::from_bits(0o160000), "docs", gitlink),
+            TreeEntry::new(EntryMode::TREE, "docs", sub),
+            TreeEntry::new(EntryMode::from_bits(0o100644), "file", blob),
+        ],
+    };
+    let theirs = m.write(ObjectKind::Tree, &raw.serialize()).unwrap();
+    let e = merge_trees(&m, &base, &ours, &theirs, &opts()).unwrap_err();
+    assert_eq!(
+        e.collect_errors().unwrap()[0],
+        "tree has duplicate entries for 'docs'"
+    );
+}

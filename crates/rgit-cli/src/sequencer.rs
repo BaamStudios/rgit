@@ -1374,8 +1374,12 @@ pub(crate) fn merge_with(
     ) {
         opts.path_merge = Some(pm);
     }
-    rgit_merge::merge_trees(repo.odb(), base, ours, theirs, &opts)
-        .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))
+    rgit_merge::merge_trees(repo.odb(), base, ours, theirs, &opts).map_err(|e| {
+        for line in e.collect_errors().into_iter().flatten() {
+            eprintln!("error: {line}");
+        }
+        Fail::Die(Die::Fatal(e.to_string()))
+    })
 }
 
 /// `message` with the committer's `Signed-off-by` trailer (`--signoff`).

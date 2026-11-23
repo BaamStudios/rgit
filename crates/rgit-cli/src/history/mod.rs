@@ -228,7 +228,9 @@ fn follow_filter(
     if !wanted {
         return Ok(None);
     }
-    if paths.len() != 1 {
+    // `--full-diff` leaves the diff without the pathspec, which git
+    // reports the same way.
+    if paths.len() != 1 || opts.full_diff {
         return Err(Die::Fatal(msg::FOLLOW_ONE_PATHSPEC.to_string()));
     }
     let pathspec = paths::parse_pathspec(ctx, repo, paths)?;
@@ -734,6 +736,7 @@ pub fn walk_formatted(
         graph: None,
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
+        follow: None,
         next: None,
         reflog: None,
         diff: None,
@@ -825,6 +828,9 @@ struct Printer<'r, 'a> {
     next: Option<graph::Next>,
     /// Diff output after every commit (`-p`, `--stat`, ...).
     diff: Option<LogDiff>,
+    /// `--follow`: the path the commit being shown is followed by, and
+    /// the path its parent had the file at when it was renamed or copied.
+    follow: Option<(Vec<u8>, Option<Vec<u8>>)>,
     /// `--boundary`: parents of the commits shown so far (boundary
     /// commits are drawn with those of their parents).
     child_shown: std::collections::HashSet<ObjectId>,
@@ -1427,19 +1433,50 @@ impl Printer<'_, '_> {
             || d.formats.patch
             || d.formats.summary
             || d.formats.needs_content();
+        // `--follow`: the diff of the followed path, with the file it was
+        // renamed or copied from (found like `--find-copies-harder`).
+        let follow = match &self.follow {
+            Some((path, source)) => {
+                let mut items = vec![[b":(top,literal)".as_slice(), path].concat()];
+                items.extend(
+                    source
+                        .iter()
+                        .map(|s| [b":(top,literal)".as_slice(), s].concat()),
+                );
+                let ps =
+                    rgit_pathspec::Pathspec::parse(items, &rgit_pathspec::ParseOptions::default())
+                        .map_err(|e| Die::Fatal(e.to_string()))?;
+                let mut opts = d.opts.clone();
+                if source.is_some() {
+                    // Even with `--no-renames`.
+                    opts.copies_harder = true;
+                    opts.detect = Some(rgit_diff::diffcore::Detect::Copies);
+                }
+                Some((ps, opts))
+            }
+            None => None,
+        };
+        let (pathspec, diff_opts) = match &follow {
+            Some((ps, opts)) => (ps, opts),
+            None => (&d.pathspec, &d.opts),
+        };
         let mut w = crate::diff::collect::TreeDiff {
             repo: &d.repo,
-            pathspec: &d.pathspec,
+            pathspec,
             recursive,
             show_trees: plumbing && d.opts.show_trees,
             max_depth: None,
             pairs: Vec::new(),
         };
         w.walk(old_tree.as_ref(), Some(tree), b"")?;
+        if let (true, Some(old)) = (follow.is_some() && diff_opts.copies_harder, &old_tree) {
+            let files = crate::diff::collect::tree_files(&d.repo, old, pathspec)?;
+            w.pairs = crate::diff::collect::with_unmodified(std::mem::take(&mut w.pairs), files);
+        }
         let mut out = crate::diff::output::Output::new(
             Some(&d.repo),
             d.repo.hash,
-            &d.opts,
+            diff_opts,
             formats,
             !plumbing,
         )?;
@@ -2209,6 +2246,14 @@ fn user_settings(
 /// Run the walk and print the result.
 fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
     let mut resolved = tips::resolve(repo, opts)?;
+    if opts.merge {
+        let given = if resolved.paths.is_empty() {
+            rgit_pathspec::Pathspec::default()
+        } else {
+            paths::parse_pathspec(ctx, repo, &resolved.paths)?
+        };
+        resolved.paths = tips::merge_paths(repo, &given);
+    }
     if resolved.no_revisions && !opts.stdin && !opts.bisect {
         // Only paths: like no arguments at all.
         match cmd {
@@ -2423,6 +2468,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         graph: None,
         ended_line: true,
         child_shown: std::collections::HashSet::new(),
+        follow: None,
         next: None,
         reflog: None,
         diff: match log_diff(ctx, opts, cmd)? {
@@ -2549,9 +2595,11 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             if opts.walk.first_parent {
                 parents.truncate(1);
             }
+            let path = f.path_of(&s.id).to_vec();
             if !f.show(repo, &s.id, &parents).map_err(walk_error)? {
                 continue;
             }
+            p.follow = Some((path, f.source.take()));
             shown += 1;
         }
         if opts.count {

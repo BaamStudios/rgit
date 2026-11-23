@@ -54,6 +54,10 @@ pub(super) struct Notes {
     pub rename_delete: HashSet<Vec<u8>>,
     /// Moved by a directory rename with `merge.directoryRenames=conflict`.
     pub location: HashSet<Vec<u8>>,
+    /// Renamed on one side and moved back by the other side's directory
+    /// rename, which deleted the file: a modify/delete conflict even when
+    /// the file is unchanged.
+    pub modify_delete: HashSet<Vec<u8>>,
     /// The directories that contain a noted path.
     dirs: HashSet<Vec<u8>>,
 }
@@ -65,6 +69,7 @@ impl Notes {
         self.dirs.contains(path)
             || self.rename_delete.contains(path)
             || self.location.contains(path)
+            || self.modify_delete.contains(path)
     }
 
     fn mark(&mut self, path: &[u8]) {
@@ -110,6 +115,26 @@ fn ancestors(path: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
+/// The directory rename of `side` (0 ours, 1 theirs) that applies to a
+/// path the other side added: the deepest renamed directory above it that
+/// was not split, and the new path (`None` when the other side renamed
+/// the target directory away).
+fn dir_rename_target<'p>(
+    dirs: &[HashMap<Vec<u8>, Option<Vec<u8>>>; 2],
+    side: usize,
+    path: &'p [u8],
+) -> Option<(&'p [u8], Option<Vec<u8>>)> {
+    let (dir, t) = ancestors(path).find_map(|d| match dirs[side].get(d) {
+        Some(Some(t)) => Some((d, t)),
+        _ => None,
+    })?;
+    // A split rename of the target does not count.
+    if matches!(dirs[1 - side].get(t), Some(Some(_))) {
+        return Some((dir, None));
+    }
+    Some((dir, Some(join_path(t, &path[dir.len() + 1..]))))
+}
+
 fn join_path(dir: &[u8], rest: &[u8]) -> Vec<u8> {
     if dir.is_empty() {
         rest.to_vec()
@@ -132,6 +157,12 @@ struct Pass {
 }
 
 impl Engine<'_> {
+    /// Whether directory renames are detected. The merges of merge bases
+    /// skip them (t6423 13e; git behaves so with `true` as well).
+    fn dir_renames_on(&self) -> bool {
+        self.opts.directory_renames != DirectoryRenames::False && self.depth == 0
+    }
+
     /// Finds the renames of both sides and returns the trees to merge
     /// instead of `base`, `ours` and `theirs`, or `None` when nothing was
     /// renamed.
@@ -166,7 +197,7 @@ impl Engine<'_> {
         // Directories each side added paths to directly: only they matter
         // for directory renames of the other side.
         let mut added_dirs: [HashSet<Vec<u8>>; 2] = Default::default();
-        if self.opts.directory_renames != DirectoryRenames::False {
+        if self.dir_renames_on() {
             for (side, c) in changes.iter().enumerate() {
                 for (p, _) in &c.added {
                     let d = dirname(p);
@@ -184,16 +215,39 @@ impl Engine<'_> {
         if renames.iter().all(BTreeMap::is_empty) {
             return Ok(None);
         }
-        if self.opts.directory_renames != DirectoryRenames::False {
+        if self.dir_renames_on() {
             let mut dirs: [HashMap<Vec<u8>, Option<Vec<u8>>>; 2] = Default::default();
             for side in 0..2 {
                 dirs[side] =
                     self.renamed_dirs(&mut pass, side, &renames[side], &added_dirs[1 - side])?;
             }
-            let mut moves: [BTreeMap<Vec<u8>, Vec<u8>>; 2] = Default::default();
+            self.dir_renames_found = dirs.iter().any(|d| !d.is_empty());
+            // Where each side's added paths would go by the other side's
+            // directory renames. A path that the other side's own file
+            // moves to stays (the two meet in an add/add).
+            let mut wanted: [HashSet<Vec<u8>>; 2] = Default::default();
             for side in 0..2 {
-                moves[1 - side] =
-                    self.directory_renames(&mut pass, side, &dirs, &renames, &changes[1 - side])?;
+                wanted[1 - side] = changes[1 - side]
+                    .added
+                    .iter()
+                    .filter_map(|(p, _)| match dir_rename_target(&dirs, side, p) {
+                        Some((_, Some(new))) => Some(new),
+                        _ => None,
+                    })
+                    .collect();
+            }
+            let mut moves: [BTreeMap<Vec<u8>, Vec<u8>>; 2] = Default::default();
+            // Our paths moved by their directory renames are reported
+            // first.
+            for side in [1, 0] {
+                moves[1 - side] = self.directory_renames(
+                    &mut pass,
+                    side,
+                    &dirs,
+                    &renames,
+                    &changes[1 - side],
+                    &wanted[side],
+                )?;
             }
             for (other, m) in moves.iter().enumerate() {
                 for (from, to) in m {
@@ -207,9 +261,22 @@ impl Engine<'_> {
                     }
                 }
             }
-            // A rename that a directory rename took back is none.
-            for r in &mut renames {
-                r.retain(|s, d| s != d);
+            // A rename that a directory rename took back is none. If the
+            // side that renamed the directory deleted the file, git still
+            // reports a modify/delete conflict.
+            for (other, r) in renames.iter_mut().enumerate() {
+                let back: Vec<Vec<u8>> = r
+                    .iter()
+                    .filter(|(s, d)| s == d)
+                    .map(|(s, _)| s.clone())
+                    .collect();
+                for s in back {
+                    r.remove(&s);
+                    if pass.get(self, 2 - other, &s)?.is_none() {
+                        self.notes.modify_delete.insert(s.clone());
+                        self.notes.mark(&s);
+                    }
+                }
             }
         }
         self.pair_renames(&mut pass, &renames)?;
@@ -390,6 +457,7 @@ impl Engine<'_> {
         dirs: &[HashMap<Vec<u8>, Option<Vec<u8>>>; 2],
         renames: &[BTreeMap<Vec<u8>, Vec<u8>>; 2],
         other_changes: &Changes,
+        own_targets: &HashSet<Vec<u8>>,
     ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, Error> {
         let mut moves = BTreeMap::new();
         let renamed = &dirs[side];
@@ -410,29 +478,22 @@ impl Engine<'_> {
         let mut added: Vec<&Vec<u8>> = other_changes.added.iter().map(|(p, _)| p).collect();
         added.sort();
         for path in added {
-            // The deepest renamed directory above the path that was not
-            // split.
-            let Some((dir, target)) = ancestors(path).find_map(|d| match renamed.get(d) {
-                Some(Some(t)) => Some((d, Some(t))),
-                _ => None,
-            }) else {
+            if own_targets.contains(path) {
                 continue;
-            };
-            match target {
+            }
+            match dir_rename_target(dirs, side, path) {
                 None => {}
-                Some(t) if dirs[other].contains_key(t) => {
+                Some((dir, None)) => {
                     // The other side renamed the target away.
-                    let text = messages::directory_rename_skipped(dir, t, path);
+                    let t = renamed[dir].clone().unwrap_or_default();
+                    let text = messages::directory_rename_skipped(dir, &t, path);
                     self.message(
-                        vec![dir.to_vec(), path.clone(), t.clone()],
+                        vec![dir.to_vec(), path.clone(), t],
                         MessageKind::DirectoryRenameSkipped,
                         text,
                     );
                 }
-                Some(t) => {
-                    let new = join_path(t, &path[dir.len() + 1..]);
-                    targets.entry(new).or_default().push(path.clone());
-                }
+                Some((_, Some(new))) => targets.entry(new).or_default().push(path.clone()),
             }
         }
         for (new, paths) in targets {
@@ -466,10 +527,17 @@ impl Engine<'_> {
                 let text = messages::path_updated(path, from, other_label, this_label, &new);
                 self.message(msg_paths, MessageKind::PathUpdated, text);
             }
-            let mut labels = [path.clone(), path.clone(), path.clone()];
-            labels[0].clone_from(&new);
-            labels[side + 1].clone_from(&new);
-            self.notes.labels.insert(new.clone(), labels);
+            // Both sides may move a file to the same place (an add/add):
+            // each side's label keeps the path that side gave its file.
+            match self.notes.labels.get_mut(&new) {
+                Some(labels) => labels[other + 1].clone_from(path),
+                None => {
+                    let mut labels = [path.clone(), path.clone(), path.clone()];
+                    labels[0].clone_from(&new);
+                    labels[side + 1].clone_from(&new);
+                    self.notes.labels.insert(new.clone(), labels);
+                }
+            }
             pass.moved.insert(new.clone(), path.clone());
             moves.insert(path.clone(), new);
         }
@@ -631,12 +699,16 @@ impl Engine<'_> {
                 .insert(src.to_vec(), [src.to_vec(), d1.to_vec(), d2.to_vec()]);
             self.extra_marker = 1;
             self.quiet_conflict = true;
+            self.binary_conflict = false;
             let r = self.merge_regular(src, base, ov, tv);
             self.extra_marker = 0;
             self.quiet_conflict = false;
             self.notes.labels.remove(src);
             let merged = r?.0;
-            (mo, mt) = (Some(merged), Some(merged));
+            // Unmerged binary files keep each side's version.
+            if !std::mem::take(&mut self.binary_conflict) {
+                (mo, mt) = (Some(merged), Some(merged));
+            }
         }
         let text = messages::rename_rename(src, d1, self.labels.ours, d2, self.labels.theirs);
         self.message(

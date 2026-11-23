@@ -23,6 +23,7 @@ usage: git bisect start [--term-(bad|new)=<term-new> --term-(good|old)=<term-old
 pub const NEED_COMMAND: &str = "need a command";
 pub const NOT_BISECTING: &str = "We are not bisecting.";
 pub const NEED_START: &str = "You need to start by \"git bisect start\"\n";
+pub const START_FOR_YOU: &str = "Do you want me to do it for you [Y/n]? ";
 pub const RESET_ARGS: &str = "'git bisect reset' requires either no argument or a commit";
 pub const TERMS_ARGS: &str = "'git bisect terms' requires 0 or 1 argument";
 pub const NEXT_ARGS: &str = "'git bisect next' requires 0 arguments";

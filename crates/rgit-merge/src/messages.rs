@@ -301,6 +301,13 @@ pub fn could_not_read(id: &str) -> String {
     format!("Could not read {id}")
 }
 
+pub fn duplicate_entries(path: &[u8]) -> String {
+    format!(
+        "tree has duplicate entries for '{}'",
+        String::from_utf8_lossy(path)
+    )
+}
+
 pub fn missing_blob(id: &str) -> String {
     format!("unable to read blob object {id}")
 }

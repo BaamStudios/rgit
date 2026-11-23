@@ -49,6 +49,9 @@ pub struct Follow {
     tracked: HashMap<ObjectId, Vec<u8>>,
     /// The path of commits nothing was passed to.
     current: Vec<u8>,
+    /// The path the commit [`Follow::show`] looked at last renamed or
+    /// copied its tracked file from (commits with one parent).
+    pub source: Option<Vec<u8>>,
 }
 
 impl Follow {
@@ -60,6 +63,7 @@ impl Follow {
             path,
             pattern,
             tracked: HashMap::new(),
+            source: None,
         }
     }
 
@@ -80,6 +84,7 @@ impl Follow {
         parents: &[ObjectId],
     ) -> Result<bool, ObjectId> {
         let tree = repo.tree_of(id).ok_or(*id)?;
+        self.source = None;
         if let Some(pattern) = &self.pattern {
             if parents.len() > 1 {
                 return Ok(false);
@@ -117,6 +122,7 @@ impl Follow {
                 {
                     if parents.len() == 1 {
                         self.current.clone_from(&source);
+                        self.source = Some(source.clone());
                     }
                     self.tracked.entry(*p).or_insert(source);
                 }

@@ -516,7 +516,15 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
     let mut out = Resolved::default();
     let mut in_paths = false;
     let mut revisions = false;
-    for tip in &opts.tips {
+    // `--merge`: `HEAD...<other>` before the revisions given.
+    let merge_range = match opts.merge {
+        true => Some(Tip::Rev {
+            arg: format!("HEAD...{}", merge_other(repo)?),
+            negate: false,
+        }),
+        false => None,
+    };
+    for tip in merge_range.iter().chain(&opts.tips) {
         match tip {
             Tip::Rev { arg, .. } if in_paths => {
                 if !names_path(repo, arg) {
@@ -601,6 +609,40 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
     }
     out.paths.extend(opts.paths.iter().cloned());
     Ok(out)
+}
+
+/// `--merge`: the first pseudoref of a merge in progress there is.
+fn merge_other(repo: &Repo<'_>) -> Result<&'static str, Die> {
+    [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "REBASE_HEAD",
+    ]
+    .into_iter()
+    .find(|name| repo.setup.git_dir.join(name).is_file())
+    .ok_or_else(|| Die::Fatal(msg::MERGE_PSEUDOREFS.to_owned()))
+}
+
+/// `--merge`: the conflicted paths of the index that `paths` (if any)
+/// match, as literal pathspecs from the top; none limits nothing.
+pub fn merge_paths(repo: &Repo<'_>, paths: &rgit_pathspec::Pathspec) -> Vec<String> {
+    let kind = repo.objects.hash_kind();
+    let path = std::env::var_os("GIT_INDEX_FILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| repo.setup.git_dir.join("index"));
+    let Ok(index) = rgit_index::Index::read_file(&path, kind, &rgit_index::ReadOptions::default())
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = index
+        .entries()
+        .iter()
+        .filter(|e| e.stage().get() != 0 && (paths.is_empty() || paths.matches(e.path())))
+        .map(|e| format!(":(top,literal){}", String::from_utf8_lossy(e.path())))
+        .collect();
+    out.dedup();
+    out
 }
 
 /// [`resolve_with`] taking paths.

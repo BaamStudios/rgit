@@ -692,6 +692,7 @@ dependencies = [
  "rgit-index",
  "rgit-object",
  "rgit-odb",
+ "rgit-trace",
  "thiserror",
 ]
 
