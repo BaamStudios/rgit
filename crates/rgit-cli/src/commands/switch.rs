@@ -321,7 +321,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(Die::Fatal(msg::CREATE_OPTIONS_SWITCH.to_owned()));
     }
     if merge.get() || conflict.borrow().is_some() {
-        return Err(Die::Fatal(msg::not_supported("git switch --merge")));
+        // Blocking local changes are carried over (like `checkout -m`).
+        sb::set_merge_mode(Some(sb::MergeMode {
+            env: ctx.child_env(),
+            style: conflict.borrow().clone(),
+        }));
     }
     if recurse.borrow().is_some() {
         return Err(Die::Fatal(msg::not_supported(

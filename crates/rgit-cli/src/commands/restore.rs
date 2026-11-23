@@ -467,17 +467,51 @@ fn remerge(
         None => Vec::new(),
     };
     let (ours_data, theirs_data) = (read(ours)?, read(theirs)?);
-    let opts = rgit_diff::merge::MergeOptions {
+    // The `merge` and `conflict-marker-size` attributes of the path.
+    let path_merge = crate::commands::merge::attrs::RepoPathMerge::open(
+        &crate::Context::default(),
+        repo,
+        false,
+        None,
+        None,
+    )
+    .ok();
+    let (driver, marker_size) = path_merge
+        .as_ref()
+        .map_or((rgit_merge::Driver::Text, None), |pm| pm.driver(path, false));
+    let mut opts = rgit_diff::merge::MergeOptions {
         style: how.merge.unwrap_or_default(),
+        marker_size: marker_size.unwrap_or(0),
         ours_label: b"ours",
         base_label: b"base",
         theirs_label: b"theirs",
         diff: rgit_diff::merge::merge_diff_options(),
         ..Default::default()
     };
-    // Binary content cannot be merged: ours stays (as in a merge).
-    let merged = rgit_diff::merge::merge(&base_data, &ours_data, &theirs_data, &opts)
-        .map_or(ours_data, |r| r.content);
+    let merged = match (&driver, &path_merge) {
+        (rgit_merge::Driver::Custom(name), Some(pm)) => {
+            let input = rgit_merge::DriverInput {
+                path,
+                base: &base_data,
+                ours: &ours_data,
+                theirs: &theirs_data,
+                marker_size: marker_size.unwrap_or(rgit_diff::merge::DEFAULT_MARKER_SIZE),
+                base_label: b"base",
+                ours_label: b"ours",
+                theirs_label: b"theirs",
+            };
+            pm.run(name, &input)?.0
+        }
+        // Binary content cannot be merged: ours stays (as in a merge).
+        (rgit_merge::Driver::Binary, _) => ours_data,
+        _ => {
+            if driver == rgit_merge::Driver::Union {
+                opts.favor = rgit_diff::merge::Favor::Union;
+            }
+            rgit_diff::merge::merge(&base_data, &ours_data, &theirs_data, &opts)
+                .map_or(ours_data, |r| r.content)
+        }
+    };
     // Like git, the merged content is stored as a blob.
     let id = repo
         .odb()

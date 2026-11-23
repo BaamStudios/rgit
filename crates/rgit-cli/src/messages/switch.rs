@@ -208,3 +208,11 @@ pub fn leaving_behind_advice(n: usize, abbrev: &str) -> String {
          \x20git branch <new-branch-name> {abbrev}\n"
     )
 }
+
+/// `-m`: the local changes listed after the switch.
+pub const LOCAL_CHANGES_HEADER: &str = "The following paths have local changes:";
+
+/// `-m`: the message of the autostash that carries local changes over.
+pub fn autostash_switching(target: &str) -> String {
+    format!("autostash while switching to '{target}'")
+}
