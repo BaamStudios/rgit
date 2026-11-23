@@ -506,6 +506,22 @@ fn create(
         .and_then(|id| c.objects.peel(&id).or(Some(id)));
     let repo = c.tracking_repo();
     let plan = tracking::plan(&repo, name, &lookup, oid.is_some(), track, &c.auto)?;
+    if oid.is_none() {
+        // A name that only matches a symbolic ref pointing nowhere.
+        for pattern in ["", "refs/", "refs/tags/", "refs/heads/", "refs/remotes/"] {
+            for suffix in ["", "/HEAD"] {
+                if suffix == "/HEAD" && pattern != "refs/remotes/" {
+                    continue;
+                }
+                let full = format!("{pattern}{lookup}{suffix}");
+                if let Ok(Some(Target::Symbolic(_))) = c.store.read_raw(&full) {
+                    if c.revs.resolve(&full).is_none() {
+                        eprintln!("warning: {}", msg::ignoring_dangling_symref(&full));
+                    }
+                }
+            }
+        }
+    }
     let oid = oid.ok_or_else(|| Die::Fatal(msg::not_valid_object_name(start)))?;
     let mut hooks = c.hooks();
     let update = match existing {
