@@ -43,9 +43,11 @@
 //! The behaviour was checked against the `git` binary with differential
 //! tests (`tests/merge.rs`).
 //!
-//! Not yet: `-X renormalize` and merge attributes (#153), `--verify-signatures`
-//! and `-S` (#51), rerere (#156). The octopus messages are rgit's own
-//! approximation.
+//! `-S`/`commit.gpgSign` sign the merge commit and `--verify-signatures`
+//! checks the merged commits ([`crate::signing`]).
+//!
+//! Not yet: `-X renormalize` and merge attributes (#153), rerere (#156).
+//! The octopus messages are rgit's own approximation.
 
 #[path = "merge/attrs.rs"]
 pub(crate) mod attrs;
@@ -109,8 +111,11 @@ struct Args {
     quit: bool,
     cont: bool,
     allow_unrelated: bool,
-    gpg_sign: bool,
-    verify_signatures: bool,
+    /// `-S[<key>]` (`Some(Some(_))`) or `--no-gpg-sign` (`Some(None)`).
+    gpg_sign: Option<Option<crate::signing::Sign>>,
+    /// The resolved signing request (with `commit.gpgSign`).
+    sign: Option<crate::signing::Sign>,
+    verify_signatures: i32,
     autostash: i32,
     overwrite_ignore: bool,
     signoff: bool,
@@ -141,7 +146,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     let cont = Cell::new(0);
     let allow_unrelated = Cell::new(0);
     let progress = Cell::new(-1);
-    let gpg_sign = Cell::new(false);
+    let gpg_sign: RefCell<Option<Option<crate::signing::Sign>>> = RefCell::new(None);
     let autostash = Cell::new(-1);
     let overwrite_ignore = Cell::new(1);
     let signoff = Cell::new(false);
@@ -201,8 +206,8 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
                 msg::HELP_ALLOW_UNRELATED,
             ),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
-            Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |_, unset| {
-                gpg_sign.set(!unset);
+            Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |v, unset| {
+                *gpg_sign.borrow_mut() = Some((!unset).then(|| crate::signing::Sign::from_arg(v)));
                 Ok(())
             })
             .optional(None),
@@ -250,8 +255,9 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
         quit,
         cont,
         allow_unrelated: allow_unrelated.get() == 1,
-        gpg_sign: gpg_sign.get(),
-        verify_signatures: verify_signatures.get() == 1,
+        gpg_sign: gpg_sign.into_inner(),
+        sign: None,
+        verify_signatures: verify_signatures.get(),
         autostash: autostash.get(),
         overwrite_ignore: overwrite_ignore.get() != 0,
         signoff: signoff.get(),
@@ -402,18 +408,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(fatal(msg::incompatible("--squash", "--commit")));
         }
     }
-    if args.gpg_sign {
-        return Err(fatal(msg::option_not_supported("-S/--gpg-sign")));
-    }
-    let verify_signatures = args.verify_signatures
-        || repo
-            .config
-            .bool("merge.verifysignatures")
-            .ok()
-            .flatten()
-            .unwrap_or(false);
-    if verify_signatures {
-        return Err(fatal(msg::option_not_supported("--verify-signatures")));
+    args.sign = crate::signing::resolve(&repo.config, args.gpg_sign.clone());
+    if args.verify_signatures == -1 {
+        args.verify_signatures = i32::from(
+            repo.config
+                .bool("merge.verifysignatures")
+                .ok()
+                .flatten()
+                .unwrap_or(false),
+        );
     }
     let autostash = match args.autostash {
         -1 => repo
@@ -519,6 +522,36 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 }
 
 impl Session<'_> {
+    /// `--verify-signatures`: every merged commit must have a good
+    /// signature of at least `marginal` trust (`gpg.minTrustLevel`).
+    fn verify_signatures(&self, heads: &[Head]) -> Result<(), Die> {
+        let settings = crate::signing::Settings::from_config(&self.repo.config)?;
+        let mut seen = Vec::new();
+        for h in heads {
+            if seen.contains(&h.commit) {
+                continue;
+            }
+            seen.push(h.commit);
+            let raw = self
+                .repo
+                .odb()
+                .read(&h.commit)
+                .ok()
+                .flatten()
+                .map(|o| o.data)
+                .unwrap_or_default();
+            let abbrev = self.repo.abbrev(&h.commit, self.repo.default_abbrev());
+            crate::signing::verify::verify_merge_signature(
+                &settings,
+                self.repo.hash,
+                &raw,
+                &abbrev,
+                self.args.quiet,
+            )?;
+        }
+        Ok(())
+    }
+
     /// The commits named on the command line (or the upstream).
     fn heads(&mut self) -> Result<Vec<Head>, Die> {
         let names = if self.args.heads.is_empty() {
@@ -735,6 +768,9 @@ impl Session<'_> {
             .filter(|_| self.repo.refs.resolve("HEAD").is_some())
             .and_then(|h| self.repo.peel_to(h, ObjectKind::Commit));
         let Some(head) = head else {
+            if self.args.verify_signatures == 1 {
+                self.verify_signatures(&heads)?;
+            }
             return self.merge_into_unborn(&heads);
         };
         self.write_orig_head(head)?;
@@ -762,6 +798,9 @@ impl Session<'_> {
                 println!("{}", msg::ALREADY_UP_TO_DATE);
             }
             return Ok(0);
+        }
+        if self.args.verify_signatures == 1 {
+            self.verify_signatures(&kept)?;
         }
         self.strategies = self.choose_strategies(kept.len() > 1)?;
         self.strategy = self.strategies[0].clone();
@@ -2228,7 +2267,7 @@ impl Session<'_> {
             .and_then(|e| e.value.as_ref())
             .map(|v| v.to_vec())
             .filter(|e| !e.eq_ignore_ascii_case(b"utf-8") && !e.eq_ignore_ascii_case(b"utf8"));
-        let new = rgit_object::Commit::new(
+        let mut new = rgit_object::Commit::new(
             tree,
             parents,
             &author,
@@ -2237,6 +2276,16 @@ impl Session<'_> {
             mergetags,
             cleaned,
         );
+        if let Some(sign) = &self.args.sign {
+            let hash = self.repo.hash;
+            match crate::signing::sign_commit(&self.repo.config, hash, &mut new, sign, &committer) {
+                Ok(()) => {}
+                Err(crate::signing::SignError::Die(d)) => return Err(d),
+                Err(crate::signing::SignError::Failed) => {
+                    return Err(fatal(crate::messages::signing::FAILED_TO_WRITE_COMMIT));
+                }
+            }
+        }
         let oid = self
             .repo
             .odb()

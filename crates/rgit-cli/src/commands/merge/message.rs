@@ -487,10 +487,37 @@ pub(crate) fn default_message(
     out.push(b'\n');
     for head in heads {
         if let Some(t) = &head.tag_message {
-            let body = rgit_commit::message::stripspace(t, None);
+            let (text, sig) = rgit_object::split_signature(t);
+            let body = rgit_commit::message::stripspace(text, None);
             if !body.is_empty() {
                 out.push(b'\n');
                 out.extend_from_slice(&body);
+            }
+            // The signature and what checking it says, as comments
+            // (observed with the `git` binary).
+            if let (Some(sig), Some(raw)) = (sig, &head.signed_tag) {
+                let mut shown = sig.to_vec();
+                if !shown.ends_with(b"\n") {
+                    shown.push(b'\n');
+                }
+                if let (Ok(settings), Some((payload, signature))) = (
+                    crate::signing::Settings::from_config(&repo.config),
+                    crate::signing::verify::tag_signature(raw),
+                ) {
+                    let c = crate::signing::verify::check(&settings, &payload, &signature);
+                    shown.extend_from_slice(&c.output);
+                }
+                let comment = crate::comment::comment(&repo.config)
+                    .map(|c| c.or_hash())
+                    .unwrap_or_else(|_| b"#".to_vec());
+                out.push(b'\n');
+                for line in shown.split_inclusive(|&b| b == b'\n') {
+                    out.extend_from_slice(&comment);
+                    if line != b"\n" {
+                        out.push(b' ');
+                    }
+                    out.extend_from_slice(line);
+                }
             }
         }
     }
@@ -552,6 +579,7 @@ pub(super) fn squash_message(repo: &Repo, theirs: &[ObjectId], ours: Option<&Obj
             commit: &commit,
             raw: &raw,
             decoration: &[],
+            signature: &[],
         };
         pretty::write_entry(&mut out, &style, &entry, first);
         first = false;

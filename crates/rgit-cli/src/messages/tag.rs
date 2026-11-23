@@ -45,7 +45,6 @@ pub const HELP_IGNORE_CASE: &str = "sorting and filtering are case insensitive";
 
 pub const NO_TAG_MESSAGE: &str = "no tag message?";
 pub const TOO_MANY_ARGUMENTS: &str = "too many arguments";
-pub const NO_SIGNATURE: &str = "no signature found";
 pub const SUPPLY_MESSAGE: &str = "Please supply the message using either -m or -F option.";
 
 /// The commented instructions of the editor template (`strip` cleanup).
@@ -132,10 +131,6 @@ pub fn must_point_to_commit(opt: &str) -> String {
     format!("option `{opt}' must point to a commit")
 }
 
-pub fn cannot_verify_non_tag(name: &str, kind: &str) -> String {
-    format!("{name}: cannot verify a non-tag object of type {kind}.")
-}
-
 pub fn rejected_atom(atom: &str) -> String {
     format!("this command reject atom %({atom})")
 }
@@ -153,5 +148,7 @@ pub const REFLOG_TREE: &str = "tree object";
 pub const REFLOG_BLOB: &str = "blob object";
 pub const REFLOG_TAG: &str = "other tag object";
 
-/// rgit wording: signing and verifying signatures come with rgit #51.
-pub const SIGNING_NOT_SUPPORTED: &str = "rgit: signed tags are not supported yet (rgit #51)";
+/// After a failed signature: where the message was kept.
+pub fn message_left_in(path: &str) -> String {
+    format!("The tag message has been left in {path}")
+}

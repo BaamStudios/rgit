@@ -74,7 +74,6 @@ pub const HINT_ALLOW_EMPTY: &str =
 pub const HINT_ABORT: &str =
     "To restore the original branch and stop patching, run \"git am --abort\".";
 pub const INTERACTIVE_UNSUPPORTED: &str = "am --interactive is not supported by rgit yet";
-pub const GPG_UNSUPPORTED: &str = "am -S/--gpg-sign is not supported by rgit yet";
 
 pub fn previous_dir_exists(dir: &str) -> String {
     format!("previous rebase directory {dir} still exists but mbox given.")

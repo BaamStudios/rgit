@@ -18,7 +18,7 @@ use rgit_repo::Setup;
 use rgit_revwalk::walk::{CommitInfo, CommitSource, Walk, WalkOptions};
 
 use super::format::{
-    Abbrev, Atom, Contents, IfCond, Kind, NameMod, PersonPart, Piece, Position, RemoteMod,
+    Abbrev, Atom, Contents, IfCond, Kind, NameMod, PersonPart, Piece, Position, RemoteMod, SigPart,
     TrailerOpts, Who,
 };
 use crate::Die;
@@ -106,6 +106,8 @@ struct Loaded {
 pub(crate) struct ItemCache {
     object: OnceCell<Option<std::rc::Rc<Loaded>>>,
     peeled: OnceCell<Option<std::rc::Rc<Loaded>>>,
+    /// The signature checks of the item's commits (`%(signature)`).
+    signatures: std::cell::RefCell<Vec<(ObjectId, std::rc::Rc<crate::signing::verify::Check>)>>,
 }
 
 /// Evaluates atoms over the references of one repository.
@@ -385,6 +387,46 @@ impl<'a> Env<'a> {
             Kind::Deltabase => Value::text(self.objects.delta_base(&obj.id).to_hex()),
             Kind::Raw { size: false } => Value::text(obj.data.clone()),
             Kind::Raw { size: true } => Value::number(obj.data.len() as u64),
+            Kind::Signature(part) => {
+                if obj.kind != ObjectKind::Commit {
+                    return none();
+                }
+                let Some(r) = self.repo else {
+                    return none();
+                };
+                let cached = cache
+                    .signatures
+                    .borrow()
+                    .iter()
+                    .find(|(id, _)| *id == obj.id)
+                    .map(|(_, c)| c.clone());
+                let c = match cached {
+                    Some(c) => c,
+                    None => {
+                        let settings = crate::signing::Settings::from_config(r.config)?;
+                        let signed = crate::signing::verify::commit_signature(hash, &obj.data);
+                        let c = std::rc::Rc::new(match signed {
+                            Some((payload, sig)) => {
+                                crate::signing::verify::check(&settings, &payload, &sig)
+                            }
+                            None => crate::signing::verify::Check::default(),
+                        });
+                        cache.signatures.borrow_mut().push((obj.id, c.clone()));
+                        c
+                    }
+                };
+                let text =
+                    |v: &Option<String>| Value::text(v.clone().unwrap_or_default().into_bytes());
+                match part {
+                    SigPart::Output => Value::text(c.output.clone()),
+                    SigPart::Grade => Value::text(vec![c.result]),
+                    SigPart::Signer => text(&c.signer),
+                    SigPart::Key => text(&c.key),
+                    SigPart::Fingerprint => text(&c.fingerprint),
+                    SigPart::PrimaryKeyFingerprint => text(&c.primary_key_fingerprint),
+                    SigPart::TrustLevel => Value::text(c.trust.name()),
+                }
+            }
             Kind::Tree(_) | Kind::Parent(_) | Kind::Numparent => {
                 if obj.kind != ObjectKind::Commit {
                     return none();

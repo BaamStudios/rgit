@@ -23,6 +23,7 @@ enum Piece {
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let parents_arg: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let pieces: RefCell<Vec<Piece>> = RefCell::new(Vec::new());
+    let sign: RefCell<Option<crate::signing::Sign>> = RefCell::new(None);
     let mut parser = Parser::new(
         msg::COMMIT_TREE_USAGE,
         vec![
@@ -39,6 +40,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     .push(Piece::File(v.unwrap_or_default().to_string()));
                 Ok(())
             }),
+            Opt::callback(
+                'S',
+                "gpg-sign",
+                Some("key-id"),
+                crate::messages::commit::HELP_GPG_SIGN,
+                |v, unset| {
+                    *sign.borrow_mut() = (!unset).then(|| crate::signing::Sign::from_arg(v));
+                    Ok(())
+                },
+            )
+            .optional(None),
         ],
     );
     let args = parser.parse(argv)?.args;
@@ -121,7 +133,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if !new.conforms() {
         eprintln!("{}", rgit_commit::messages::NOT_UTF8_WARNING);
     }
-    let oid = rgit_commit::create_commit(repo.odb(), &new)
+    // `commit.gpgSign` does not apply to this plumbing command.
+    let mut commit = new.to_commit();
+    if let Some(sign) = sign.borrow().as_ref() {
+        match crate::signing::sign_commit(&repo.config, repo.hash, &mut commit, sign, &committer) {
+            Ok(()) => {}
+            Err(crate::signing::SignError::Die(d)) => return Err(d),
+            Err(crate::signing::SignError::Failed) => return Err(Die::Exit(1)),
+        }
+    }
+    let oid = repo
+        .odb()
+        .write(ObjectKind::Commit, &commit.serialize())
         .map_err(|e| Die::Fatal(e.to_string()))?;
     println!("{oid}");
     Ok(0)

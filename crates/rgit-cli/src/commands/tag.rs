@@ -14,11 +14,12 @@
 //!   (the atoms of `for-each-ref` and `version:` with
 //!   `versionsort.suffix`), `--format` with the format language of
 //!   [`crate::ref_filter`], `--color` (and `color.ui`), `--omit-empty`;
-//! - `-v` for tags without a signature (prints the tag and fails).
+//! - signing (`-s`, `-u`, `tag.gpgSign`, `tag.forceSignAnnotated`; the
+//!   signature is appended to the message) and `-v` (like `verify-tag
+//!   -v`), see [`crate::signing`].
 //!
-//! Not yet: signing and verifying signatures (`-s`, `-u`, `tag.gpgSign`,
-//! `tag.forceSignAnnotated`; rgit #51), `--column` and `column.tag`,
-//! `trailer.*` configuration for `--trailer`.
+//! Not yet: `--column` and `column.tag`, `trailer.*` configuration for
+//! `--trailer`.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -285,7 +286,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             list.run()
         }
         b'd' => delete(&repo, &setup, &config, &store, &objects, &args),
-        b'v' => verify(&repo, &store, &args, format.borrow().is_some()),
+        b'v' => {
+            let mut values = RefValues::new(&objects, &store).with_repo(RepoParts {
+                setup: &setup,
+                config: &config,
+                revs: &revs,
+            });
+            let format = format.borrow().clone();
+            if let Some(f) = &format {
+                values.prepare(RefFormat::parse(f)?.atoms())?;
+            }
+            verify(&values, &objects, &config, &store, &args, format)
+        }
         _ => {
             if args.len() > 2 {
                 return Err(fatal(msg::TOO_MANY_ARGUMENTS));
@@ -313,6 +325,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 object: args.get(1).map_or("HEAD", String::as_str),
                 annotate: annotate.get() || implied,
                 sign,
+                local_user: local_user.borrow().clone(),
                 given,
                 trailers: &trailers.borrow(),
                 edit: edit.get() == 1,
@@ -628,9 +641,19 @@ fn delete(
     Ok(code)
 }
 
-/// `-v`: tags without a signature are printed and fail; signatures need
-/// rgit #51.
-fn verify(repo: &Repo, store: &FilesStore, names: &[String], formatted: bool) -> CmdResult {
+/// `-v`: verifies the signatures of the named tags like `verify-tag -v`
+/// (with `--format`, like `verify-tag --format`).
+fn verify(values: &RefValues<'_>, objects: &Objects, config: &rgit_config::ConfigSet, store: &FilesStore, names: &[String], format: Option<String>) -> CmdResult {
+    let mut settings = None;
+    let format = match format {
+        Some(f) => Some(RefFormat::parse(&f)?),
+        None => None,
+    };
+    let flags = crate::commands::verify_tag::Flags {
+        verbose: format.is_none(),
+        raw: false,
+        quiet: format.is_some(),
+    };
     let mut code = 0;
     for name in names {
         let oid = match store.read_raw(&format!("{TAG_PREFIX}{name}")) {
@@ -641,26 +664,17 @@ fn verify(repo: &Repo, store: &FilesStore, names: &[String], formatted: bool) ->
                 continue;
             }
         };
-        let Some(obj) = repo.read_object(&oid) else {
-            eprintln!("error: {}", msg::not_found(name));
+        if crate::commands::verify_tag::verify_tag(&mut settings, config, objects, name, &oid, flags)? {
+            if let Some(f) = &format {
+                let mut line = values.render(f, name, oid)?;
+                line.push(b'\n');
+                let mut out = std::io::stdout().lock();
+                let _ = out.write_all(&line);
+                let _ = out.flush();
+            }
+        } else {
             code = 1;
-            continue;
-        };
-        let Object::Tag(tag) = obj else {
-            eprintln!("error: {}", msg::cannot_verify_non_tag(name, obj.kind().name()));
-            code = 1;
-            continue;
-        };
-        if tag.message_and_signature().1.is_some() {
-            return Err(fatal(msg::SIGNING_NOT_SUPPORTED));
         }
-        if !formatted {
-            let mut out = std::io::stdout().lock();
-            let _ = out.write_all(&tag.serialize());
-            let _ = out.flush();
-        }
-        eprintln!("error: {}", msg::NO_SIGNATURE);
-        code = 1;
     }
     Ok(code)
 }
@@ -671,6 +685,8 @@ struct Create<'a> {
     object: &'a str,
     annotate: bool,
     sign: bool,
+    /// `-u <key-id>`.
+    local_user: Option<String>,
     given: Option<Vec<u8>>,
     trailers: &'a [String],
     edit: bool,
@@ -720,9 +736,6 @@ impl Create<'_> {
         let editmsg = git_dir.join("TAG_EDITMSG");
         let mut edited = false;
         let new = if self.annotate || self.sign {
-            if self.sign {
-                return Err(fatal(msg::SIGNING_NOT_SUPPORTED));
-            }
             let (oid, used_editor) =
                 self.write_tag(ctx, repo, config, objects, target, kind, existing, cleanup, &editmsg)?;
             edited = used_editor;
@@ -868,7 +881,26 @@ impl Create<'_> {
         let tagger = SignatureRef::parse(&raw)
             .and_then(|s| s.to_owned())
             .ok_or_else(|| fatal(lossy(&raw)))?;
-        let data = Tag::new(target, kind, self.name, Some(&tagger), cleaned).serialize();
+        let mut data = Tag::new(target, kind, self.name, Some(&tagger), cleaned).serialize();
+        if self.sign {
+            let settings = crate::signing::Settings::from_config(config)?;
+            let sign = match &self.local_user {
+                Some(k) => crate::signing::Sign::Key(k.clone()),
+                None => crate::signing::Sign::Default,
+            };
+            let ident = format!("{} <{}>", lossy(&tagger.name), lossy(&tagger.email));
+            let signed = crate::signing::signing_key(&settings, &sign, &ident)
+                .and_then(|k| crate::signing::sign_buffer(&settings, &data, &k));
+            match signed {
+                Ok(sig) => data.extend_from_slice(&sig),
+                Err(crate::signing::SignError::Die(d)) => return Err(d),
+                Err(crate::signing::SignError::Failed) => {
+                    eprintln!("error: {}", crate::messages::signing::UNABLE_TO_SIGN_TAG);
+                    eprintln!("{}", msg::message_left_in(&editmsg_shown(repo)));
+                    return Err(Die::Exit(128));
+                }
+            }
+        }
         // The object must pass the checks of `git mktag`.
         let mut problem = None;
         fsck::check_tag(repo.hash, &data, &mut |f| {
@@ -886,6 +918,11 @@ impl Create<'_> {
             .map_err(|e| fatal(e.to_string()))?;
         Ok((oid, use_editor))
     }
+}
+
+/// `TAG_EDITMSG` as git names it (inside the git directory as given).
+fn editmsg_shown(repo: &Repo) -> String {
+    repo.setup.git_dir.join("TAG_EDITMSG").display().to_string()
 }
 
 /// The message of `-m` (paragraphs) and `-F` (`-`: standard input),

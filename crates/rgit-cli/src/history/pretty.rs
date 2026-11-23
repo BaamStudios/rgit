@@ -231,6 +231,8 @@ pub struct Entry<'a> {
     pub raw: &'a [u8],
     /// `--decorate`: the decoration after the name (may be empty).
     pub decoration: &'a [u8],
+    /// `--show-signature`: lines shown after the name (may be empty).
+    pub signature: &'a [u8],
 }
 
 /// Settings shared by all entries.
@@ -263,6 +265,7 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
         }
         out.extend_from_slice(e.decoration);
         out.push(b' ');
+        out.extend_from_slice(e.signature);
         out.extend_from_slice(&subject(&lines));
         out.push(if style.zero { 0 } else { b'\n' });
         return;
@@ -282,6 +285,7 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
     }
     out.extend_from_slice(e.decoration);
     out.push(b'\n');
+    out.extend_from_slice(e.signature);
     let author = e.commit.author();
     let committer = e.commit.committer();
     match style.pretty {
