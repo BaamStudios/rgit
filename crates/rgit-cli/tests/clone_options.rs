@@ -8,6 +8,9 @@ use std::os::unix::fs::MetadataExt;
 
 use rgit_difftest::{Check, Fixture};
 
+mod common;
+use common::servers::server_path;
+
 fn source() -> Fixture {
     Fixture::new()
         .rgit(env!("CARGO_BIN_EXE_rgit"))
@@ -149,16 +152,24 @@ fn local_clone_of_a_shallow_repository_like_git() {
     if fx.is_skipped() {
         return;
     }
-    fx.compare(["clone", "s", "d"]).repo("d").run();
+    // A local upload-pack runs `git pack-objects`: the reference git.
+    let path = server_path(&fx);
+    fx.compare(["clone", "s", "d"])
+        .repo("d")
+        .env("PATH", &path)
+        .run();
     fx.compare(["clone", "-l", "--depth=1", "s", "d3"])
         .repo("d3")
+        .env("PATH", &path)
         .run();
     fx.compare(["clone", "-l", "--reject-shallow", "s", "d4"])
         .checks(Check::OUTPUT)
+        .env("PATH", &path)
         .run();
     let url = format!("file://{}/src", fx.work_dir().display());
     fx.compare(["clone", "-l", "-s", &url, "d5"])
         .repo("d5")
+        .env("PATH", &path)
         .run();
     let status = std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
         .args(["clone", "-q", "s", "d2"])
@@ -166,6 +177,7 @@ fn local_clone_of_a_shallow_repository_like_git() {
         .env("HOME", fx.home_dir())
         .env("XDG_CONFIG_HOME", fx.home_dir().join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", &path)
         .status()
         .unwrap();
     assert!(status.success());

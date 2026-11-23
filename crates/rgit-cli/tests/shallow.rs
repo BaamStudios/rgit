@@ -125,6 +125,73 @@ fn fetch_from_shallow_repository_same_as_git() {
         .run();
 }
 
+/// A shallow server over protocol v0 (its `shallow` lines in the
+/// advertisement) and v2; a ref rejected for its new shallow root is
+/// fetched again with `--update-shallow` although its objects are already
+/// here. A single branch named by `--branch` gets no `origin/HEAD` over v2.
+#[test]
+fn shallow_server_over_v0_and_v2_same_as_git() {
+    let fx = source().git(["-C", "src", "checkout", "-q", "side"]).git([
+        "clone",
+        "-q",
+        "--no-local",
+        "--depth=1",
+        "--no-single-branch",
+        "src",
+        "server",
+    ]);
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx;
+    let path = server_path(&fx);
+    let url = format!("file://{}/server", fx.work_dir().display());
+    for v in ["0", "2"] {
+        let proto = format!("protocol.version={v}");
+        let dir = format!("c{v}");
+        let deep = format!("d{v}");
+        let refspec = "refs/remotes/origin/main:refs/remotes/origin/m";
+        let steps: Vec<(Vec<&str>, &str)> = vec![
+            (vec!["-c", &proto, "clone", "--depth=1", &url, &deep], &deep),
+            (
+                vec![
+                    "-c",
+                    &proto,
+                    "clone",
+                    "--single-branch",
+                    "-b",
+                    "side",
+                    &url,
+                    &dir,
+                ],
+                &dir,
+            ),
+            (
+                vec!["-C", &dir, "-c", &proto, "fetch", "origin", refspec],
+                &dir,
+            ),
+        ];
+        for (args, repo) in &steps {
+            fx.compare(args).repo(repo).env("PATH", &path).run();
+        }
+        // git v0 also prints an error about the missing parent.
+        fx.compare([
+            "-C",
+            &dir,
+            "-c",
+            &proto,
+            "fetch",
+            "--update-shallow",
+            "origin",
+            refspec,
+        ])
+        .repo(&dir)
+        .env("PATH", &path)
+        .skip(Check::Stderr)
+        .run();
+    }
+}
+
 #[test]
 fn push_from_shallow_clone_same_as_git() {
     let fx = source().git(["clone", "-q", "--bare", "src", "srv.git"]);

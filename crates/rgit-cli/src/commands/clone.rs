@@ -785,10 +785,16 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let mut ls = LsRefsArgs::standard();
     ls.server_options = server_options.clone();
     if !opts.mirror && opts.revision.is_none() {
-        ls.ref_prefixes.push("HEAD".into());
         ls.ref_prefixes.push("refs/heads/".into());
         if opts.tags || opts.branch.is_some() {
             ls.ref_prefixes.push("refs/tags/".into());
+        }
+        // The names `--branch` could stand for.
+        if let Some(b) = &opts.branch {
+            for p in ["", "refs/", "refs/tags/", "refs/heads/", "refs/remotes/"] {
+                ls.ref_prefixes.push(format!("{p}{b}"));
+            }
+            ls.ref_prefixes.push(format!("refs/remotes/{b}/HEAD"));
         }
         for spec in &extra_fetch {
             let src = spec.trim_start_matches('+');
@@ -797,6 +803,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             if !prefix.is_empty() && !src.starts_with('^') {
                 ls.ref_prefixes.push(prefix.to_owned());
             }
+        }
+        // A single branch named by --branch does not need the remote HEAD
+        // (and gets no `refs/remotes/<origin>/HEAD` over protocol v2).
+        if opts.branch.is_none() || !opts.single_branch.unwrap_or(shallow_clone) {
+            ls.ref_prefixes.push("HEAD".into());
         }
     }
     let mut refs: Vec<RemoteRef> = session.list_refs(&ls).map_err(|e| fatal(&e))?;
@@ -817,12 +828,15 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             r.symref_target = None;
         }
     }
-    // A v0/v1 server advertises every ref: keep what v2 would list.
+    // A v0/v1 server advertises every ref (HEAD included): keep what v2
+    // would list.
     if !ls.ref_prefixes.is_empty() {
         refs.retain(|r| {
-            ls.ref_prefixes
-                .iter()
-                .any(|p| r.name.starts_with(p.as_bytes()))
+            r.name == b"HEAD"
+                || ls
+                    .ref_prefixes
+                    .iter()
+                    .any(|p| r.name.starts_with(p.as_bytes()))
         });
     }
 

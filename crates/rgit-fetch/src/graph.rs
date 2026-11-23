@@ -76,6 +76,51 @@ pub fn is_ancestor(odb: &ObjectDatabase, old: &ObjectId, new: &ObjectId) -> bool
     false
 }
 
+/// Whether the history of `tips` is complete: every commit down to a
+/// commit in `complete` (the tips of local refs) or a `shallow` one exists
+/// with its parents. Used when every wanted object is present already (a
+/// commit left behind by a rejected fetch may still miss its parents).
+/// On success everything walked is added to `complete`, so that repeated
+/// calls do not walk the same history again.
+pub fn history_complete(
+    odb: &ObjectDatabase,
+    tips: &[ObjectId],
+    complete: &mut HashSet<ObjectId>,
+    shallow: &HashSet<ObjectId>,
+) -> bool {
+    let hash = odb.hash_kind();
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut stack: Vec<ObjectId> = tips.to_vec();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || complete.contains(&id) {
+            continue;
+        }
+        let Ok(Some(raw)) = odb.read(&id) else {
+            return false;
+        };
+        match raw.kind {
+            ObjectKind::Commit => {
+                if shallow.contains(&id) {
+                    continue;
+                }
+                if let Ok(c) = Commit::parse(hash, &raw.data) {
+                    stack.extend(c.parents().unwrap_or_default());
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(t) = Tag::parse(hash, &raw.data) {
+                    if let Ok(o) = t.object() {
+                        stack.push(o);
+                    }
+                }
+            }
+            ObjectKind::Tree | ObjectKind::Blob => {}
+        }
+    }
+    complete.extend(seen);
+    true
+}
+
 /// Check that everything reachable from `tips` exists locally.
 ///
 /// Objects of the received pack (`received`) are opened and their links

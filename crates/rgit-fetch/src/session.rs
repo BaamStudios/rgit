@@ -139,6 +139,11 @@ fn open(
     let stateless = reader.get_ref().is_stateless();
     // HTTP responses report cut-off packets (observed: t5702).
     reader.partial_errors(stateless);
+    // Over HTTP git's remote helper reads the advertisement (traced as
+    // `git`); see `after_advertisement` for what follows.
+    if stateless {
+        reader.tracer_mut().set_name("git");
+    }
     let first = reader.peek().map_err(|e| hung_up(&read_any, e))?;
     if stateless && matches!(first, Some(Packet::Data(d)) if d.starts_with(b"# service=")) {
         reader.read()?;
@@ -154,6 +159,18 @@ fn open(
     Ok((reader, version))
 }
 
+/// The trace name after the advertisement: over HTTP, git's v0/v1
+/// negotiation runs in a `fetch-pack` process.
+fn after_advertisement(reader: &mut Reader<Box<dyn Connection>>, program: &'static str, v0: bool) {
+    let stateless = reader.get_ref().is_stateless();
+    let name = if stateless && v0 {
+        "fetch-pack"
+    } else {
+        program
+    };
+    reader.tracer_mut().set_name(name);
+}
+
 /// Connect again for another v0/v1 fetch.
 fn reconnect(
     transport: &mut dyn Transport,
@@ -165,6 +182,7 @@ fn reconnect(
         return Err(rgit_protocol::Error::Unexpected("version 2".into()).into());
     }
     let adv = v0::read_advertisement(&mut reader, version)?;
+    after_advertisement(&mut reader, program, true);
     let client = v0::Client::new(reader, &adv);
     Ok((adv, client))
 }
@@ -218,13 +236,13 @@ impl Session {
             ProtocolVersion::V2 => {
                 let caps = Capabilities::read_v2(&mut reader)?;
                 rgit_protocol::session_id::note_server(&caps);
-                reader.tracer_mut().set_name(program);
+                after_advertisement(&mut reader, program, false);
                 Proto::V2(Client::with_capabilities(reader, caps)?)
             }
             v => {
                 let adv = v0::read_advertisement(&mut reader, v)?;
                 rgit_protocol::session_id::note_server(&adv.caps);
-                reader.tracer_mut().set_name(program);
+                after_advertisement(&mut reader, program, true);
                 let client = v0::Client::new(reader, &adv);
                 Proto::V0 {
                     adv,
@@ -377,11 +395,22 @@ impl Session {
         let mut noop = rgit_protocol::v2::NoopNegotiator;
         // The commits the walk knows to be common (advertised and present
         // here) and its starting points.
+        // Advertised objects we have are common, unless their history is
+        // incomplete (left by a fetch whose refs were rejected).
+        let mut complete: HashSet<ObjectId> =
+            repo.list_refs("").into_iter().map(|(_, id)| id).collect();
+        let common: Vec<ObjectId> = haves
+            .unwrap_or_default()
+            .iter()
+            .filter(|id| {
+                repo.has_object(id)
+                    && graph::history_complete(&repo.odb, &[**id], &mut complete, &shallow)
+            })
+            .copied()
+            .collect();
         let starts = |known: &mut dyn FnMut(ObjectId), tip: &mut dyn FnMut(ObjectId)| {
-            for id in haves.unwrap_or_default() {
-                if repo.has_object(id) {
-                    known(*id);
-                }
+            for id in &common {
+                known(*id);
             }
             if let Some(tips) = &opts.tips {
                 for id in tips {
@@ -502,6 +531,25 @@ impl Session {
             return Ok(None);
         }
         let objects: HashSet<ObjectId> = indexed.objects().iter().map(|o| o.id).collect();
+        // A shallow v0/v1 server lists all its shallow commits up front;
+        // those that came with the pack are shallow here too (v2 sends
+        // them in its shallow-info).
+        if let Proto::V0 { adv, .. } = &self.proto {
+            let reached: Vec<ObjectId> = adv
+                .shallow
+                .iter()
+                .filter(|id| objects.contains(id))
+                .copied()
+                .collect();
+            if !reached.is_empty() {
+                let merged = self.shallow_info.get_or_insert_with(ShallowInfo::default);
+                for id in reached {
+                    if !merged.shallow.contains(&id) {
+                        merged.shallow.push(id);
+                    }
+                }
+            }
+        }
         // Objects in the pack as sent (without bases appended for a thin
         // pack): below the unpack limit they become loose objects.
         let sent = indexed.objects().len() as u64 - indexed.local_objects();
