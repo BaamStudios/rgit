@@ -1546,6 +1546,10 @@ impl Printer<'_, '_> {
             formats,
             !plumbing,
         )?;
+        // The terminal width for --stat leaves room for the graph.
+        if let (Some(g), None) = (&self.graph, diff_opts.stat_width) {
+            out.stat.width = out.stat.width.saturating_sub(g.text_width()).max(1);
+        }
         // log and show run textconv filters unless told not to.
         out.textconv = d.opts.textconv.unwrap_or(!plumbing);
         out.set_color(&d.opts)?;

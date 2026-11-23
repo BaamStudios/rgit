@@ -474,6 +474,11 @@ impl Graph {
         }
     }
 
+    /// The width of the drawing beside the current commit's text.
+    pub fn text_width(&self) -> usize {
+        self.width
+    }
+
     /// The line before a commit's separator: the lanes straight down while
     /// the commit's line is next, otherwise the next line of the drawing.
     pub fn padding_line(&mut self) -> Vec<u8> {

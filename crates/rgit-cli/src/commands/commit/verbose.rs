@@ -16,9 +16,11 @@ use crate::diff::output::Output;
 use crate::messages::commit as msg;
 use crate::repository::Repo;
 
+/// The diff of `-v`: a patch, through textconv filters (t4030).
 fn options() -> DiffOpts {
     DiffOpts {
         patch: true,
+        textconv: Some(true),
         ..Default::default()
     }
 }

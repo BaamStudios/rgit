@@ -559,6 +559,88 @@ struct Patch {
     parts: Option<(Vec<u8>, Vec<u8>)>,
 }
 
+/// `--graph`: the mails carry the graph of the walk that found them, as
+/// the reference git draws it (determined by experiment: the graph as
+/// left after the walk, not one per commit): a skip line `...`, then the
+/// mark of the last walked commit before the first line of the first
+/// patch (`o` when the walk went past the series, else `*`), and the
+/// graph's padding before every other line of the patches and before
+/// the diffstat of the cover letter; signatures stay as they are.
+struct GraphMarks {
+    mark: &'static [u8],
+    padding: Vec<u8>,
+    /// The padding in the cover letter, drawn before the walk went past
+    /// the series.
+    cover_padding: Vec<u8>,
+    /// The skip line was already written (into the cover letter).
+    skip_shown: bool,
+}
+
+impl GraphMarks {
+    fn prefix_lines(&self, prefix: &[u8], text: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(text.len() + 16);
+        for line in text.split_inclusive(|&c| c == b'\n') {
+            out.extend_from_slice(prefix);
+            out.extend_from_slice(line);
+        }
+        out
+    }
+
+    /// One mail (without its signature).
+    fn prefix_mail(&mut self, first: bool, mail: &[u8]) -> Vec<u8> {
+        if !first {
+            return self.prefix_lines(&self.padding, mail);
+        }
+        let split = mail
+            .iter()
+            .position(|&c| c == b'\n')
+            .map_or(mail.len(), |k| k + 1);
+        let mut out = Vec::with_capacity(mail.len() + 64);
+        if !self.skip_shown {
+            out.extend_from_slice(b"...\n");
+            self.skip_shown = true;
+        }
+        out.extend_from_slice(self.mark);
+        out.push(b' ');
+        out.extend_from_slice(&mail[..split]);
+        out.extend_from_slice(&self.prefix_lines(&self.padding, &mail[split..]));
+        out
+    }
+}
+
+/// The graph marks for `--graph` (the last of `--graph`/`--no-graph`).
+fn graph_marks(repo: &Repo, o: &Options, patches: &[Patch]) -> Option<GraphMarks> {
+    let on = o
+        .rev_options
+        .iter()
+        .rev()
+        .find(|a| *a == "--graph" || *a == "--no-graph")
+        .is_some_and(|a| a == "--graph");
+    if !on {
+        return None;
+    }
+    let parents = |c: &Commit| c.parents().unwrap_or_default();
+    // The walk shows one commit past the series when the oldest patch
+    // has a parent: a boundary of a range (whose parents end the
+    // graph), or the next commit of a counted walk (whose parents keep a
+    // line going).
+    let past = patches
+        .first()
+        .and_then(|p| parents(&p.commit).first().copied());
+    let counted = o.max_count.is_some() && o.paths.is_empty();
+    let line_goes_on = counted
+        && past.is_some_and(|id| {
+            matches!(repo.read_object(&id), Some(Object::Commit(c)) if !parents(&c).is_empty())
+        });
+    let lines = |on: bool| if on { b"| ".to_vec() } else { b"  ".to_vec() };
+    Some(GraphMarks {
+        cover_padding: lines(past.is_some()),
+        mark: if past.is_some() { b"o" } else { b"*" },
+        padding: lines(line_goes_on),
+        skip_shown: false,
+    })
+}
+
 /// The branch whose description goes into the cover letter.
 fn description_branch(repo: &mut Repo, o: &Options) -> Option<String> {
     let positive: Vec<String> = range(o)
@@ -967,6 +1049,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         *first = false;
     };
 
+    let mut graph = graph_marks(&repo, &o, &patches);
+
     if cover {
         let tip = &patches[count - 1].id;
         let mut out = Vec::new();
@@ -1089,7 +1173,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     ..Formats::default()
                 },
             )?;
-            text.extend_from_slice(&stat);
+            match &graph {
+                Some(g) => text.extend_from_slice(&g.prefix_lines(&g.cover_padding, &stat)),
+                None => text.extend_from_slice(&stat),
+            }
             text.push(b'\n');
         }
         if let Some((header, diff)) = &interdiff {
@@ -1111,6 +1198,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         out.extend_from_slice(&text);
         if let Some(sig) = &s.signature {
             mail::signature_block(&mut out, sig);
+        }
+        if let (Some(g), Some(nl)) = (&mut graph, out.iter().position(|&c| c == b'\n')) {
+            // The graph's skip line ends up before the second line.
+            out.splice(nl + 1..nl + 1, b"...".iter().copied());
+            g.skip_shown = true;
         }
         let name = if s.numbered_files {
             "0".to_string()
@@ -1279,13 +1371,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if let Some(block) = base_block.take() {
             out.extend_from_slice(block);
         }
+        if let Some(g) = &mut graph {
+            out = g.prefix_mail(i == 0, &out);
+        }
         if let Some((boundary, _)) = &s.attach {
             out.extend_from_slice(msg::multipart_end(boundary).as_bytes());
         } else if let Some(sig) = &s.signature {
             mail::signature_block(&mut out, sig);
         }
         if i > 0 {
-            writer.separate();
+            let padding = graph.as_ref().map_or(&b""[..], |g| g.padding.as_slice());
+            writer.separate(padding);
         }
         writer.write(&name, &out)?;
         progress.set(u64::try_from(i + 1).unwrap_or(u64::MAX));
@@ -1577,12 +1673,13 @@ impl Writer {
     }
 
     /// Between two patches on standard output or in one file: an empty
-    /// line.
-    fn separate(&mut self) {
+    /// line (after `prefix`, the graph).
+    fn separate(&mut self, prefix: &[u8]) {
+        let line = [prefix, b"\n"].concat();
         if self.stdout {
-            let _ = std::io::stdout().lock().write_all(b"\n");
+            let _ = std::io::stdout().lock().write_all(&line);
         } else if let Some(f) = &mut self.single {
-            let _ = f.write_all(b"\n");
+            let _ = f.write_all(&line);
         }
     }
 

@@ -122,3 +122,17 @@ fn refreshes_the_index() {
             .run();
     }
 }
+
+/// `-v` and `-vv` show the diffs through textconv filters (t4030).
+#[test]
+fn verbose_uses_textconv() {
+    let fx = || {
+        fixture()
+            .write(".gitattributes", "a diff=up\nb diff=up\n")
+            .git(["config", "diff.up.textconv", "sed s/2/TWO/"])
+            .git(["add", "a"])
+    };
+    for args in [&["status", "-v"][..], &["status", "-vv"]] {
+        fx().compare(args).checks(Check::OUTPUT).run();
+    }
+}
