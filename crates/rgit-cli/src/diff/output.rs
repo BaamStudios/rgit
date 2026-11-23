@@ -135,6 +135,9 @@ pub struct Output<'a> {
     color_moved: (super::moved::Mode, super::moved::MovedWs),
     /// Diff drivers (the `diff` attribute).
     drivers: Drivers,
+    /// `--attr-source` / `GIT_ATTR_SOURCE` / `attr.tree`: the tree the
+    /// `diff` attribute is read from (see [`crate::attributes::tree_source`]).
+    pub attr_tree: Option<Option<ObjectId>>,
     /// Run textconv filters (`--textconv`).
     pub textconv: bool,
     /// External diff programs are allowed (`--ext-diff`): with the
@@ -706,6 +709,7 @@ impl<'a> Output<'a> {
                 .map(|(s, p)| (*s, p.as_bytes().to_vec())),
             output: opts.output.as_ref().map(|o| cwd.join(o)),
             drivers: Drivers::default(),
+            attr_tree: None,
             textconv: opts.textconv.unwrap_or(false),
             external: opts
                 .ext_diff
@@ -1811,7 +1815,15 @@ impl Output<'_> {
         let Some(repo) = self.repo else {
             return Ok(DiffAttr::Unspecified);
         };
-        let state = repo.converter()?.attr(path, b"diff");
+        let state = match self.attr_tree {
+            Some(tree) => {
+                let (index, _) = repo.read_index()?;
+                let mut attrs = crate::attributes::open(repo, &index, Some(tree), false);
+                let id = attrs.id(b"diff");
+                attrs.lookup(path, false).get(id).clone()
+            }
+            None => repo.converter()?.attr(path, b"diff"),
+        };
         self.drivers.resolve(&repo.config, &state)
     }
 
