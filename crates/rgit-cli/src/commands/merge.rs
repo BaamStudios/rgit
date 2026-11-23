@@ -47,8 +47,10 @@
 //! and `-S` (#51), rerere (#156). The octopus messages are rgit's own
 //! approximation.
 
+#[path = "merge/attrs.rs"]
+pub(crate) mod attrs;
 #[path = "merge/message.rs"]
-mod message;
+pub(crate) mod message;
 #[path = "merge/resolve.rs"]
 mod resolve;
 
@@ -1057,12 +1059,13 @@ impl Session<'_> {
         Ok(out)
     }
 
-    fn engine_options(&self, theirs: &Head) -> Result<rgit_merge::Options, Die> {
+    fn engine_options(&mut self, theirs: &Head) -> Result<rgit_merge::Options, Die> {
         let mut opts = rgit_merge::Options {
             branch1: b"HEAD".to_vec(),
             branch2: theirs.arg.as_bytes().to_vec(),
             style: super::merge_file::config_style(&self.repo.config)?,
             allow_unrelated_histories: self.args.allow_unrelated,
+            renormalize: renormalize_config(&self.repo.config),
             ..rgit_merge::Options::default()
         };
         super::merge_tree::apply_rename_config(&self.repo.config, &mut opts);
@@ -1078,6 +1081,15 @@ impl Session<'_> {
                 }
             }
         }
+        let their_tree = self.tree_of(&theirs.commit)?;
+        let attr_tree = crate::attributes::tree_source(self.ctx, &mut self.repo, None)?;
+        opts.path_merge = Some(attrs::RepoPathMerge::open(
+            self.ctx,
+            &self.repo,
+            opts.renormalize,
+            Some(&their_tree),
+            attr_tree,
+        )?);
         Ok(opts)
     }
 
@@ -1281,15 +1293,22 @@ impl Session<'_> {
                     opts.subtree = rgit_merge::Subtree::Guess;
                 }
                 let commits = self.commits();
-                let r = rgit_merge::merge_commits_with_bases(
+                let r = match rgit_merge::merge_commits_with_bases(
                     self.repo.odb(),
                     &commits,
                     &head,
                     &theirs[0].commit,
                     bases,
                     &opts,
-                )
-                .map_err(|e| fatal(e.to_string()))?;
+                ) {
+                    Ok(r) => r,
+                    Err(rgit_merge::Error::Driver(m)) => {
+                        let _ = std::io::stdout().flush();
+                        eprintln!("error: {m}");
+                        return Ok(Attempt::Failed);
+                    }
+                    Err(e) => return Err(fatal(e.to_string())),
+                };
                 drop(commits);
                 let lines = engine_lines(&r);
                 Ok(Attempt::Memory(r, lines))
@@ -1848,7 +1867,7 @@ impl Session<'_> {
                 let path = if path.is_absolute() {
                     path.to_path_buf()
                 } else {
-                    self.repo.setup.cwd.join(path)
+                    self.repo.setup.original_cwd.join(path)
                 };
                 m = std::fs::read(&path).map_err(|e| {
                     fatal(crate::messages::commit::could_not_read_log(
@@ -2268,6 +2287,15 @@ fn engine_lines(result: &MergeResult) -> Vec<resolve::Line> {
             text: lossy(&m.text),
         })
         .collect()
+}
+
+/// `merge.renormalize`.
+pub(crate) fn renormalize_config(config: &rgit_config::ConfigSet) -> bool {
+    config
+        .bool("merge.renormalize")
+        .ok()
+        .flatten()
+        .unwrap_or(false)
 }
 
 /// The built-in strategies.

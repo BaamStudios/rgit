@@ -134,6 +134,12 @@ pub fn unknown_strategy(name: &str, custom: &[String]) -> String {
 /// Custom strategies are programs named this followed by the strategy.
 pub const STRATEGY_PROGRAM_PREFIX: &str = "git-merge-";
 
+// Merge attributes and drivers.
+pub fn invalid_marker_size(v: &str) -> String {
+    format!("invalid marker-size '{v}', expecting an integer")
+}
+pub const FAILED_INTERNAL_MERGE: &str = "failed to execute internal merge";
+
 // Trying several strategies.
 pub fn trying_strategy(name: &str) -> String {
     format!("Trying merge strategy {name}...")
@@ -223,6 +229,20 @@ pub const KIND_TAGS: &str = "tags";
 pub const KIND_REMOTES: &str = "remote-tracking branches";
 pub const KIND_COMMITS: &str = "commits";
 pub const EARLY_PART: &str = "(early part)";
+
+// Credit lines of the merge message log.
+pub fn credit_by_one(name: &str) -> String {
+    format!("By {name}")
+}
+pub fn credit_by_two(a: &str, an: usize, b: &str, bn: usize) -> String {
+    format!("By {a} ({an}) and {b} ({bn})")
+}
+pub fn credit_by_many(a: &str, an: usize) -> String {
+    format!("By {a} ({an}) and others")
+}
+pub fn credit_via(name: &str) -> String {
+    format!("Via {name}")
+}
 
 pub fn commits_count(n: usize) -> String {
     format!(" ({n} commits)")

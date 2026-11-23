@@ -20,7 +20,7 @@ use crate::repository::Repo;
 
 /// How the merge message calls a head.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     Branch,
     EarlyPart,
     Tag,
@@ -33,7 +33,7 @@ pub(super) enum Kind {
 
 /// A commit to merge, with the name it was given.
 #[derive(Debug, Clone)]
-pub(super) struct Head {
+pub(crate) struct Head {
     /// The argument as given (the conflict label, the reflog).
     pub arg: String,
     /// The name in the message.
@@ -49,7 +49,7 @@ pub(super) struct Head {
 
 /// The raw tag `object` when it is a signed tag of `commit` (checked
 /// against the `git` binary: only signed tags give a `mergetag` header).
-pub(super) fn signed_tag(repo: &Repo, object: ObjectId, commit: ObjectId) -> Option<Vec<u8>> {
+pub(crate) fn signed_tag(repo: &Repo, object: ObjectId, commit: ObjectId) -> Option<Vec<u8>> {
     if object == commit {
         return None;
     }
@@ -134,6 +134,11 @@ pub(super) fn name_head(repo: &Repo, arg: &str, object: ObjectId, commit: Object
         } else {
             Kind::Commit
         };
+        return head;
+    }
+    if head.tag_message.is_some() {
+        // An annotated tag named otherwise (by its id): a tag.
+        head.kind = Kind::Tag;
         return head;
     }
     if let Some(base) = strip_ancestry(arg) {
@@ -362,19 +367,85 @@ fn read_commit(repo: &Repo, id: &ObjectId) -> Option<Commit> {
     }
 }
 
-/// The `--log` part: "* side:" and up to `limit` subjects of the commits
-/// merged (merges left out).
-fn shortlog(repo: &Repo, head: &Head, ours: Option<&ObjectId>, limit: usize) -> Vec<u8> {
-    let subjects: Vec<Vec<u8>> = new_commits(repo, &head.commit, ours)
+/// A name and address.
+type Ident = (Vec<u8>, Vec<u8>);
+
+/// The name and address of the current author and committer.
+fn current_idents(repo: &Repo) -> [Option<Ident>; 2] {
+    use rgit_ident::ident::{IdentConfig, Resolver, Role, Strictness};
+    let env = rgit_config::SystemEnv::default();
+    let Ok(cfg) = IdentConfig::from_config(&repo.config) else {
+        return [None, None];
+    };
+    let r = Resolver::new(&cfg, &env);
+    [Role::Author, Role::Committer].map(|role| {
+        r.name_email(role, Strictness::Lenient)
+            .ok()
+            .map(|(n, e)| (n.to_vec(), e.to_vec()))
+    })
+}
+
+/// The credit lines before a shortlog (observed with the `git` binary):
+/// "By <author>" when somebody else wrote some of the commits (with
+/// counts for two authors, "and others" for more; most commits first,
+/// then the newest), and "Via <committer>" when somebody else committed
+/// the newest one.
+fn credits(commits: &[Commit], me: &[Option<Ident>; 2], comment: &str) -> Vec<u8> {
+    let mut authors: Vec<(Ident, usize)> = Vec::new();
+    for c in commits {
+        let Some(a) = c.author() else { continue };
+        let key = (a.name.to_vec(), a.email.to_vec());
+        match authors.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, n)) => *n += 1,
+            None => authors.push((key, 1)),
+        }
+    }
+    let mut out = Vec::new();
+    let all_mine = authors.iter().all(|(k, _)| Some(k) == me[0].as_ref());
+    if !authors.is_empty() && !all_mine {
+        authors.sort_by_key(|a| std::cmp::Reverse(a.1));
+        let name = |i: usize| String::from_utf8_lossy(&authors[i].0.0).into_owned();
+        let line = match authors.len() {
+            1 => msg::credit_by_one(&name(0)),
+            2 => msg::credit_by_two(&name(0), authors[0].1, &name(1), authors[1].1),
+            _ => msg::credit_by_many(&name(0), authors[0].1),
+        };
+        out.extend_from_slice(format!("{comment} {line}\n").as_bytes());
+    }
+    if let Some(c) = commits.first().and_then(|c| c.committer()) {
+        let key = (c.name.to_vec(), c.email.to_vec());
+        if Some(&key) != me[1].as_ref() {
+            let line = msg::credit_via(&String::from_utf8_lossy(&key.0));
+            out.extend_from_slice(format!("{comment} {line}\n").as_bytes());
+        }
+    }
+    out
+}
+
+/// The `--log` part: the credit lines, "* side:" and up to `limit`
+/// subjects of the commits merged (merges left out).
+fn shortlog(
+    repo: &Repo,
+    head: &Head,
+    ours: Option<&ObjectId>,
+    limit: usize,
+    me: &[Option<Ident>; 2],
+    comment: &str,
+) -> Vec<u8> {
+    let commits: Vec<Commit> = new_commits(repo, &head.commit, ours)
         .iter()
         .filter_map(|id| read_commit(repo, id))
         .filter(|c| c.parents().map_or(0, |p| p.len()) < 2)
+        .collect();
+    let subjects: Vec<Vec<u8>> = commits
+        .iter()
         .map(|c| pretty::subject(&pretty::message_lines(c.message())))
         .collect();
     if subjects.is_empty() {
         return Vec::new();
     }
-    let mut out = b"* ".to_vec();
+    let mut out = credits(&commits, me, comment);
+    out.extend_from_slice(b"* ");
     match head.kind {
         Kind::Branch | Kind::Remote => out.extend_from_slice(head.name.as_bytes()),
         Kind::Fetch => out.extend_from_slice(fetch_log_heading(&head.name).as_bytes()),
@@ -405,7 +476,7 @@ fn shortlog(repo: &Repo, head: &Head, ours: Option<&ObjectId>, limit: usize) -> 
 /// The default message of merging `head` into `into` (`HEAD` when
 /// detached), with the tag message and a shortlog of at most `log`
 /// commits.
-pub(super) fn default_message(
+pub(crate) fn default_message(
     repo: &Repo,
     heads: &[Head],
     into: &str,
@@ -428,13 +499,15 @@ pub(super) fn default_message(
 }
 
 /// The shortlog to append to a message (with its leading empty line).
-pub(super) fn log_part(repo: &Repo, heads: &[Head], ours: Option<&ObjectId>, log: usize) -> Vec<u8> {
+pub(crate) fn log_part(repo: &Repo, heads: &[Head], ours: Option<&ObjectId>, log: usize) -> Vec<u8> {
     let mut out = Vec::new();
     if log == 0 {
         return out;
     }
+    let me = current_idents(repo);
+    let comment = crate::commands::commit::comment_string(repo, b"").unwrap_or_else(|_| "#".to_owned());
     for head in heads {
-        let s = shortlog(repo, head, ours, log);
+        let s = shortlog(repo, head, ours, log, &me, &comment);
         if !s.is_empty() {
             out.push(b'\n');
             out.extend_from_slice(&s);

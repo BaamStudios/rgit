@@ -1323,6 +1323,7 @@ pub(crate) fn merge_with(
         ancestor: base_label.as_bytes().to_vec(),
         style: crate::commands::merge_file::config_style(&repo.config)?,
         subtree,
+        renormalize: crate::commands::merge::renormalize_config(&repo.config),
         ..rgit_merge::Options::default()
     };
     crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);
@@ -1341,6 +1342,15 @@ pub(crate) fn merge_with(
                 )))));
             }
         }
+    }
+    if let Ok(pm) = crate::commands::merge::attrs::RepoPathMerge::open(
+        &crate::Context::default(),
+        repo,
+        opts.renormalize,
+        Some(theirs),
+        None,
+    ) {
+        opts.path_merge = Some(pm);
     }
     rgit_merge::merge_trees(repo.odb(), base, ours, theirs, &opts)
         .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))
