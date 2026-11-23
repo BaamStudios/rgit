@@ -2,8 +2,8 @@
 //! Differential tests of the apply back end of `rebase` (#154) against
 //! the reference git: `--apply`, `-C<n>`, `--ignore-whitespace`, the
 //! fast-forward message, conflicts with `--continue`/`--skip`/`--abort`,
-//! the status banner, the options it refuses, and the date and sign-off
-//! options with both back ends.
+//! the status banner, the options it refuses, and the date, sign-off and
+//! `--trailer` options.
 
 use rgit_difftest::{Comparison, Fixture};
 
@@ -129,6 +129,12 @@ fn dates_and_signoff() {
             "git rebase --apply --signoff HEAD~1",
             "git rebase -r --committer-date-is-author-date HEAD~1",
             "git rebase --committer-date-is-author-date main; git checkout --theirs f; git add f; git rebase --continue",
+            "git rebase --trailer 'Reviewed-by: R <r@e>' HEAD~1",
+            "git rebase --trailer 'Reviewed-by: R <r@e>' main; git checkout --theirs f; git add f; git rebase --continue",
+            "git rebase --trailer 'Bug: 1' --trailer 'Bug: 2' --signoff HEAD~2",
+            "git rebase --trailer '' HEAD~1",
+            "git rebase --trailer ': x' HEAD~1",
+            "git rebase --apply --trailer 'a: b' HEAD~1",
         ],
     );
 }

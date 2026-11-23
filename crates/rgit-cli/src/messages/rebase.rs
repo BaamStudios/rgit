@@ -574,6 +574,12 @@ pub fn apply_incompatible_config(key: &str, option: &str) -> String {
     format!("apply options are incompatible with {key}.  Consider adding {option}")
 }
 
+pub const EMPTY_TRAILER: &str = "empty --trailer argument";
+
+pub fn trailer_missing_key(trailer: &str) -> String {
+    format!("invalid trailer '{trailer}': missing key before separator")
+}
+
 pub fn requires_merge_backend(what: &str) -> String {
     format!("{what} requires the merge backend")
 }

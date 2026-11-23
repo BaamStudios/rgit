@@ -299,8 +299,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     // Not implemented yet: a few options.
+    for t in trailers.borrow().iter() {
+        if t.is_empty() {
+            return Err(Die::Error(msg::EMPTY_TRAILER.to_owned(), 128));
+        }
+        if t.starts_with([':', '=']) {
+            return Err(Die::Error(msg::trailer_missing_key(t), 128));
+        }
+    }
     let unsupported = [
-        ("--trailer", !trailers.borrow().is_empty()),
         ("--rerere-autoupdate", rerere.get() == 1),
         ("--preserve-merges", preserve.get() == 1),
     ];
@@ -395,6 +402,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         },
         apply: apply_mode,
         am_opts,
+        trailers: trailers.borrow().clone(),
     };
     rebase::start(ctx, &o)
 }
