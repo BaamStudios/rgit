@@ -555,6 +555,7 @@ pub(super) fn squash_message(repo: &Repo, theirs: &[ObjectId], ours: Option<&Obj
         date_ctx: rgit_date::DateContext::from_env(),
         commit_color: None,
         zero: false,
+        tab_width: None,
     };
     let mut first = true;
     // Like `log --no-merges`.
