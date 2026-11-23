@@ -89,6 +89,21 @@ pub enum MergeDiff {
     Combined,
     /// Dense combined (`--cc`, the default of `show`).
     Dense,
+    /// Against the tree of merging the parents again (`--remerge-diff`).
+    Remerge,
+}
+
+/// Which commits a merge-diff option gives a patch when no diff format
+/// was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MergesPatch {
+    /// None (`-m`, `--no-diff-merges`).
+    #[default]
+    None,
+    /// Merges only (`--diff-merges=<format>`).
+    Merges,
+    /// Every commit (`-c`, `--cc`, `--dd`, `--remerge-diff`).
+    All,
 }
 
 /// Parsed options.
@@ -159,6 +174,13 @@ pub struct Options {
     pub diff: crate::diff::options::DiffOpts,
     /// `--diff-merges` and friends, when given.
     pub merges: Option<MergeDiff>,
+    /// The merge format came from `-m` or `--diff-merges=on` (it is
+    /// `log.diffMerges`).
+    merges_on: bool,
+    /// The patch the merge-diff options imply.
+    pub merges_patch: MergesPatch,
+    /// `--combined-all-paths`.
+    pub combined_all_paths: bool,
     /// `git show`: objects one by one, with diffs by default.
     pub show: bool,
     /// `diff-tree` with a pretty format: plumbing diffs (full raw ids,
@@ -318,6 +340,9 @@ impl Options {
             order_given: false,
             diff: crate::diff::options::DiffOpts::default(),
             merges: None,
+            merges_on: false,
+            merges_patch: MergesPatch::None,
+            combined_all_paths: false,
             show: false,
             plumbing: false,
             root: false,
@@ -764,8 +789,18 @@ impl Options {
                         o.decorate_filter.include.push(v);
                     } else if cmd == Command::RevList {
                         return Err(usage(cmd, a));
-                    } else if let Some(m) = merge_option(a)? {
+                    } else if a == "--combined-all-paths" {
+                        o.combined_all_paths = true;
+                    } else if let Some((m, on, patch)) = merge_option(a)? {
                         o.merges = Some(m);
+                        o.merges_on = on;
+                        o.merges_patch = match (o.merges_patch, patch) {
+                            (MergesPatch::All, _) | (_, MergesPatch::All) => MergesPatch::All,
+                            (MergesPatch::Merges, _) | (_, MergesPatch::Merges) => {
+                                MergesPatch::Merges
+                            }
+                            _ => MergesPatch::None,
+                        };
                     } else if !o.diff.parse_arg(a)? {
                         return Err(usage(cmd, a));
                     }
@@ -941,12 +976,35 @@ impl Options {
             (None, Command::RevList) => None,
         };
         self.pretty = arg.map(|a| parse_pretty(&a, config)).transpose()?;
+        if cmd == Command::Log {
+            self.apply_diff_merges_config(config)?;
+        }
         if cmd == Command::Log
             && !self.date_given
             && let Ok(Some(v)) = config.string("log.date")
         {
             self.date_mode = rgit_date::parse_date_mode(&v.to_string(), false)
                 .map_err(|e| Die::Fatal(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// `log.diffMerges`: the format of `-m` and `--diff-merges=on`
+    /// (`separate` by default; `on` itself means that). An unknown value
+    /// is fatal even when no merge diff is asked for.
+    fn apply_diff_merges_config(&mut self, config: &ConfigSet) -> Result<(), Die> {
+        let Some(e) = config.get("log.diffmerges") else {
+            return Ok(());
+        };
+        let value = e.string().map(|v| v.to_string()).unwrap_or_default();
+        let format = match value.as_str() {
+            "on" | "m" | "separate" => MergeDiff::Separate,
+            v => merge_format(v).ok_or_else(|| {
+                Die::Fatal(crate::revisions::unable_to_parse("log.diffmerges", e))
+            })?,
+        };
+        if self.merges_on {
+            self.merges = Some(format);
         }
         Ok(())
     }
@@ -1000,26 +1058,46 @@ impl Options {
     }
 }
 
-/// `-m`, `-c`, `--cc`, `--diff-merges=<mode>`, `--no-diff-merges`.
-fn merge_option(arg: &str) -> Result<Option<MergeDiff>, Die> {
-    let mode = match arg {
-        "-m" => "separate",
-        "-c" => "combined",
-        "--cc" => "dense-combined",
-        "--no-diff-merges" => "off",
+/// `-m`, `-c`, `--cc`, `--dd`, `--remerge-diff`, `--diff-merges=<mode>`,
+/// `--no-diff-merges`: the format, whether it is `log.diffMerges`
+/// (`on`), and the patch it implies.
+fn merge_option(arg: &str) -> Result<Option<(MergeDiff, bool, MergesPatch)>, Die> {
+    let (mode, patch) = match arg {
+        "-m" => ("on", MergesPatch::None),
+        "-c" => ("combined", MergesPatch::All),
+        "--cc" => ("dense-combined", MergesPatch::All),
+        "--dd" => ("first-parent", MergesPatch::All),
+        "--remerge-diff" => ("remerge", MergesPatch::All),
+        "--no-diff-merges" => ("off", MergesPatch::None),
         _ => match arg.strip_prefix("--diff-merges=") {
-            Some(v) => v,
+            Some(v) => (v, MergesPatch::Merges),
             None => return Ok(None),
         },
     };
-    Ok(Some(match mode {
+    let on = matches!(mode, "on" | "m");
+    let format = match mode {
+        "on" | "m" => MergeDiff::Separate,
+        _ => merge_format(mode).ok_or_else(|| Die::Fatal(msg::unknown_diff_merges(mode)))?,
+    };
+    let patch = if format == MergeDiff::Off {
+        MergesPatch::None
+    } else {
+        patch
+    };
+    Ok(Some((format, on, patch)))
+}
+
+/// A merge-diff format by name (`--diff-merges=<format>`, `log.diffMerges`).
+fn merge_format(name: &str) -> Option<MergeDiff> {
+    Some(match name {
         "off" | "none" => MergeDiff::Off,
         "first-parent" | "1" => MergeDiff::FirstParent,
-        "separate" | "m" | "on" => MergeDiff::Separate,
+        "separate" => MergeDiff::Separate,
         "combined" | "c" => MergeDiff::Combined,
         "dense-combined" | "cc" => MergeDiff::Dense,
-        _ => return Err(Die::Fatal(msg::unknown_diff_merges(mode))),
-    }))
+        "remerge" | "r" => MergeDiff::Remerge,
+        _ => return None,
+    })
 }
 
 fn ref_prefix(option: &str) -> &'static str {

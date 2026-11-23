@@ -15,7 +15,7 @@
 //! its last character) were derived from the documentation and the `git`
 //! binary.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use rgit_diff::{DiffOptions, diff_lines, is_binary, split_lines};
 use rgit_hash::ObjectId;
@@ -38,68 +38,13 @@ pub struct File {
     pub path: Vec<u8>,
     pub parents: Vec<Option<Side>>,
     pub result: Option<Side>,
-}
-
-fn flat(repo: &Repo, tree: Option<&ObjectId>) -> HashMap<Vec<u8>, Side> {
-    let Some(tree) = tree else {
-        return HashMap::new();
-    };
-    rgit_unpack::tree_entries(repo.odb(), tree)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|e| {
-            (
-                e.path().to_vec(),
-                Side {
-                    mode: e.mode.0,
-                    oid: e.id,
-                },
-            )
-        })
-        .collect()
-}
-
-/// The paths of `tree` that differ from every one of `parents` (trees),
-/// in path order. With `renames`, a path added or deleted relative to a
-/// parent counts as unchanged there when the parent has the same blob at
-/// a path the result lacks (or the other way round): an exact rename, as
-/// the patch formats of git's `log` and `show` see it.
-pub fn collect(repo: &Repo, parents: &[ObjectId], tree: &ObjectId, renames: bool) -> Vec<File> {
-    let result = flat(repo, Some(tree));
-    let ps: Vec<HashMap<Vec<u8>, Side>> = parents.iter().map(|p| flat(repo, Some(p))).collect();
-    let mut paths: BTreeSet<&Vec<u8>> = result.keys().collect();
-    for p in &ps {
-        paths.extend(p.keys());
-    }
-    let mut out = Vec::new();
-    for path in paths {
-        let r = result.get(path).copied();
-        let sides: Vec<Option<Side>> = ps.iter().map(|p| p.get(path).copied()).collect();
-        let renamed = |p: usize| {
-            renames
-                && match (sides[p], r) {
-                    // Added here: the parent has the blob at a path the
-                    // result lacks.
-                    (None, Some(rv)) => ps[p]
-                        .iter()
-                        .any(|(q, v)| v.oid == rv.oid && !result.contains_key(q)),
-                    // Deleted here: the result has the blob at a path the
-                    // parent lacks.
-                    (Some(pv), None) => result
-                        .iter()
-                        .any(|(q, v)| v.oid == pv.oid && !ps[p].contains_key(q)),
-                    _ => false,
-                }
-        };
-        if sides.iter().all(|s| *s != r) && !(0..sides.len()).any(renamed) {
-            out.push(File {
-                path: path.clone(),
-                parents: sides,
-                result: r,
-            });
-        }
-    }
-    out
+    /// The path in each parent (another one after rename detection).
+    pub parent_paths: Vec<Vec<u8>>,
+    /// The status against each parent (`R` for a rename).
+    pub statuses: Vec<u8>,
+    /// The result's contents when they are not in the object database
+    /// (a work tree file).
+    pub result_data: Option<Vec<u8>>,
 }
 
 fn status(parent: Option<Side>, result: Option<Side>) -> char {
@@ -111,8 +56,276 @@ fn status(parent: Option<Side>, result: Option<Side>) -> char {
     }
 }
 
+/// The paths of `tree` that differ from every one of `parents` (trees),
+/// in path order, from the pairs of each parent's diff after the
+/// diffcore transformations of `out` (rename detection): a renamed path
+/// is compared with its source in that parent. A path whose content and
+/// mode a parent already has (also after an exact rename) is not shown.
+/// The comparison is recursive; `show_trees` (`-t`) adds the
+/// directories that differ.
+pub fn collect(
+    repo: &Repo,
+    out: &super::output::Output<'_>,
+    pathspec: &rgit_pathspec::Pathspec,
+    parents: &[ObjectId],
+    tree: &ObjectId,
+    show_trees: bool,
+) -> Result<Vec<File>, crate::Die> {
+    type Entry = (Option<Side>, Option<Side>, Vec<u8>, u8);
+    let mut maps: Vec<HashMap<Vec<u8>, Entry>> = Vec::new();
+    for p in parents {
+        let mut w = super::collect::TreeDiff {
+            repo,
+            pathspec,
+            recursive: true,
+            show_trees,
+            max_depth: None,
+            pairs: Vec::new(),
+        };
+        w.walk(Some(p), Some(tree), b"")?;
+        let pairs = out.diffcore(std::mem::take(&mut w.pairs))?;
+        let mut m = HashMap::new();
+        for pr in pairs {
+            let side = |s: &Option<super::collect::Side>| {
+                s.as_ref().map(|s| Side {
+                    mode: s.mode,
+                    oid: s.oid,
+                })
+            };
+            let (old, new) = (side(&pr.old), side(&pr.new));
+            if old == new {
+                continue;
+            }
+            let key = if new.is_some() {
+                pr.path.clone()
+            } else {
+                pr.old_path.clone()
+            };
+            let status = match pr.renamed {
+                Some(c) => c,
+                None => status(old, new) as u8,
+            };
+            m.insert(key, (old, new, pr.old_path.clone(), status));
+        }
+        maps.push(m);
+    }
+    let Some((first, rest)) = maps.split_first() else {
+        return Ok(Vec::new());
+    };
+    let mut keys: Vec<&Vec<u8>> = first
+        .keys()
+        .filter(|k| rest.iter().all(|m| m.contains_key(*k)))
+        .collect();
+    keys.sort();
+    Ok(keys
+        .into_iter()
+        .map(|k| {
+            let entries: Vec<&Entry> = maps.iter().map(|m| &m[k]).collect();
+            File {
+                path: k.clone(),
+                parents: entries.iter().map(|e| e.0).collect(),
+                result: entries[0].1,
+                parent_paths: entries.iter().map(|e| e.2.clone()).collect(),
+                statuses: entries.iter().map(|e| e.3).collect(),
+                result_data: None,
+            }
+        })
+        .collect())
+}
+
+/// How a work tree diff shows unmerged paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnmergedAs {
+    /// "Unmerged" and the diff against stage 2 (ours).
+    Default,
+    /// "Unmerged" and the diff against stage 1, 2 or 3 (`-1`, `-2`,
+    /// `-3`), or nothing more (`-0`).
+    Stage(usize),
+    /// The combined diff of stages 2 and 3 with the work tree file
+    /// (`-c`, `--cc`, the patch of `git diff`), where it differs from
+    /// both.
+    Combined,
+}
+
+/// Work tree diffs (`diff`, `diff-files`) with unmerged paths: replaces
+/// the pairs `collect::files` made for them according to `how`, and
+/// returns the paths shown as combined diffs.
+pub fn worktree(
+    repo: &Repo,
+    out: &super::output::Output<'_>,
+    unmerged: &[super::collect::Unmerged],
+    pairs: Vec<super::collect::Pair>,
+    how: UnmergedAs,
+) -> Result<(Vec<File>, Vec<super::collect::Pair>), crate::Die> {
+    use super::collect::Pair;
+    if how == UnmergedAs::Default || unmerged.is_empty() {
+        return Ok((Vec::new(), pairs));
+    }
+    let side = |s: &super::collect::Side| Side {
+        mode: s.mode,
+        oid: s.oid,
+    };
+    let mut files = Vec::new();
+    let mut combined: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+    if how == UnmergedAs::Combined {
+        for u in unmerged {
+            let parents = [
+                u.stages[1].as_ref().map(side),
+                u.stages[2].as_ref().map(side),
+            ];
+            let (result, data) = match &u.file {
+                Some(f) => {
+                    let data = out.contents(f, &u.path)?;
+                    let oid = rgit_hash::hash_object(repo.hash, "blob", &data)
+                        .map_err(|e| crate::Die::Fatal(e.to_string()))?;
+                    (Some(Side { mode: f.mode, oid }), Some(data))
+                }
+                None => (None, None),
+            };
+            if parents.contains(&result) {
+                continue;
+            }
+            // The work tree file is not hashed: its id shows as zeros.
+            let result = result.map(|r| Side {
+                mode: r.mode,
+                oid: ObjectId::null(repo.hash),
+            });
+            combined.insert(&u.path);
+            files.push(File {
+                path: u.path.clone(),
+                parent_paths: vec![u.path.clone(); 2],
+                statuses: parents.iter().map(|p| status(*p, result) as u8).collect(),
+                parents: parents.to_vec(),
+                result,
+                result_data: data,
+            });
+        }
+    }
+    let mut rest = Vec::with_capacity(pairs.len());
+    let mut last_unmerged: Option<Vec<u8>> = None;
+    for p in pairs {
+        if combined.contains(&p.path[..]) {
+            continue;
+        }
+        if p.unmerged {
+            last_unmerged = Some(p.path.clone());
+            let path = p.path.clone();
+            rest.push(p);
+            if let UnmergedAs::Stage(n @ 1..=3) = how {
+                let u = unmerged.iter().find(|u| u.path == path);
+                if let Some((Some(s), Some(f))) = u.map(|u| (&u.stages[n - 1], &u.file)) {
+                    rest.push(Pair::new(path, Some(s.clone()), Some(f.clone())));
+                }
+            }
+            continue;
+        }
+        // The pair against "ours" that follows the "Unmerged" one.
+        if matches!(how, UnmergedAs::Stage(_)) && last_unmerged.as_deref() == Some(&p.path[..]) {
+            continue;
+        }
+        rest.push(p);
+    }
+    Ok((files, rest))
+}
+
+/// Writes the combined diffs of a work tree diff in the first of the
+/// formats that has one (raw, patch, names); statistics have none.
+pub fn worktree_output(
+    repo: &Repo,
+    out: &super::output::Output<'_>,
+    files: &[File],
+    dense: bool,
+    out_bytes: &mut Vec<u8>,
+) {
+    let mut bytes = Vec::new();
+    let bytes = &mut bytes;
+    let f = out.formats;
+    let style = PathStyle {
+        quote: out.quote_high,
+        nul: out.nul,
+        all_paths: false,
+    };
+    if f.raw {
+        let abbrev = (out.raw_abbrev != 0).then_some(out.raw_abbrev);
+        raw(repo, files, abbrev, style, bytes);
+    } else if f.name_only || f.name_status {
+        names(files, f.name_status, style, bytes);
+    } else if f.patch {
+        let opts = PatchOptions {
+            dense,
+            all_paths: false,
+            abbrev: match out.index_abbrev {
+                0 => ObjectId::null(repo.hash).to_hex().len(),
+                n => n,
+            },
+            quote: style.quote,
+            diff: &out.patch.diff,
+        };
+        patch(repo, files, &opts, bytes);
+    }
+    // `--line-prefix`.
+    for line in bytes.split_inclusive(|&c| c == b'\n') {
+        out_bytes.extend_from_slice(out.line_prefix.as_deref().unwrap_or_default());
+        out_bytes.extend_from_slice(line);
+    }
+}
+
+/// How [`raw`] and [`names`] write paths.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PathStyle {
+    /// Quote unusual paths (`core.quotePath` for bytes >= 0x80).
+    pub quote: bool,
+    /// `-z`: NUL after fields and paths, no quoting.
+    pub nul: bool,
+    /// `--combined-all-paths`: the path in every parent before the
+    /// result's.
+    pub all_paths: bool,
+}
+
+impl PathStyle {
+    fn write_paths(&self, f: &File, out: &mut Vec<u8>) {
+        let write = |path: &[u8], out: &mut Vec<u8>| {
+            if self.nul {
+                out.extend_from_slice(path);
+                out.push(0);
+            } else {
+                rgit_diff::quote_path(out, path, self.quote);
+            }
+        };
+        if self.all_paths {
+            for p in &f.parent_paths {
+                write(p, out);
+                if !self.nul {
+                    out.push(b'\t');
+                }
+            }
+        }
+        write(&f.path, out);
+        if !self.nul {
+            out.push(b'\n');
+        }
+    }
+}
+
+/// `--name-only` and `--name-status` of combined diffs.
+pub fn names(files: &[File], status: bool, style: PathStyle, out: &mut Vec<u8>) {
+    for f in files {
+        if status {
+            out.extend_from_slice(&f.statuses);
+            out.push(if style.nul { 0 } else { b'\t' });
+        }
+        style.write_paths(f, out);
+    }
+}
+
 /// The raw lines: `::<modes> <ids> <statuses>\t<path>`.
-pub fn raw(repo: &Repo, files: &[File], abbrev: Option<usize>, quote: bool, out: &mut Vec<u8>) {
+pub fn raw(
+    repo: &Repo,
+    files: &[File],
+    abbrev: Option<usize>,
+    style: PathStyle,
+    out: &mut Vec<u8>,
+) {
     let null = ObjectId::null(repo.hash);
     let id = |s: Option<Side>| {
         let oid = s.map_or(null, |s| s.oid);
@@ -139,12 +352,9 @@ pub fn raw(repo: &Repo, files: &[File], abbrev: Option<usize>, quote: bool, out:
         out.push(b' ');
         out.extend_from_slice(id(f.result).as_bytes());
         out.push(b' ');
-        for s in &f.parents {
-            out.push(status(*s, f.result) as u8);
-        }
-        out.push(b'\t');
-        rgit_diff::quote_path(out, &f.path, quote);
-        out.push(b'\n');
+        out.extend_from_slice(&f.statuses);
+        out.push(if style.nul { 0 } else { b'\t' });
+        style.write_paths(f, out);
     }
 }
 
@@ -163,8 +373,18 @@ struct Row<'a> {
 /// Merges `new` (lost lines of parent `bit`) into `rows` by their longest
 /// common subsequence: equal lines share a row. Matches are taken as late
 /// as possible, and where both lists have lines of their own the earlier
-/// parents' lines come first (as git shows them).
-fn merge_lost<'a>(rows: &mut Vec<(&'a [u8], u64)>, new: &[&'a [u8]], bit: u64) {
+/// parents' lines come first (as git shows them). Lines are compared
+/// with the whitespace options `ws` (the earlier parent's text is kept).
+fn merge_lost<'a>(
+    rows: &mut Vec<(&'a [u8], u64)>,
+    new: &[&'a [u8]],
+    bit: u64,
+    ws: &rgit_diff::Whitespace,
+) {
+    let same = |a: &[u8], b: &[u8]| match rgit_diff::whitespace::key(a, ws) {
+        Some(k) => rgit_diff::whitespace::key(b, ws) == Some(k),
+        None => a == b,
+    };
     if rows.is_empty() {
         rows.extend(new.iter().map(|l| (*l, bit)));
         return;
@@ -176,7 +396,7 @@ fn merge_lost<'a>(rows: &mut Vec<(&'a [u8], u64)>, new: &[&'a [u8]], bit: u64) {
     let mut lcs = vec![vec![0usize; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            lcs[i][j] = if old[i].0 == new[j] {
+            lcs[i][j] = if same(old[i].0, new[j]) {
                 lcs[i + 1][j + 1] + 1
             } else {
                 lcs[i + 1][j].max(lcs[i][j + 1])
@@ -186,7 +406,7 @@ fn merge_lost<'a>(rows: &mut Vec<(&'a [u8], u64)>, new: &[&'a [u8]], bit: u64) {
     let mut out = Vec::with_capacity(n + m);
     let (mut i, mut j) = (0, 0);
     while i < n || j < m {
-        if i < n && j < m && old[i].0 == new[j] {
+        if i < n && j < m && same(old[i].0, new[j]) {
             out.push((old[i].0, old[i].1 | bit));
             i += 1;
             j += 1;
@@ -211,6 +431,8 @@ fn read(repo: &Repo, s: Option<Side>) -> Vec<u8> {
 /// What the combined patch shows.
 pub struct PatchOptions<'a> {
     pub dense: bool,
+    /// `--combined-all-paths`: a `---` line for every parent.
+    pub all_paths: bool,
     pub abbrev: usize,
     pub quote: bool,
     pub diff: &'a DiffOptions,
@@ -224,7 +446,10 @@ pub fn patch(repo: &Repo, files: &[File], opts: &PatchOptions<'_>, out: &mut Vec
 }
 
 fn file_patch(repo: &Repo, f: &File, opts: &PatchOptions<'_>, out: &mut Vec<u8>) {
-    let result = read(repo, f.result);
+    let result = match &f.result_data {
+        Some(d) => d.clone(),
+        None => read(repo, f.result),
+    };
     let parents: Vec<Vec<u8>> = f.parents.iter().map(|s| read(repo, *s)).collect();
     let binary = is_binary(&result) || parents.iter().any(|p| is_binary(p));
     let r_lines = split_lines(&result);
@@ -245,6 +470,7 @@ fn file_patch(repo: &Repo, f: &File, opts: &PatchOptions<'_>, out: &mut Vec<u8>)
                         &mut lost[c.b_start],
                         &pl[c.a_start..c.a_start + c.a_len],
                         bit,
+                        &opts.diff.whitespace,
                     );
                 }
             }
@@ -351,7 +577,19 @@ fn file_patch(repo: &Repo, f: &File, opts: &PatchOptions<'_>, out: &mut Vec<u8>)
         out.extend_from_slice(b"Binary files differ\n");
         return;
     }
-    if added_file {
+    if opts.all_paths {
+        for (s, p) in f.parents.iter().zip(&f.parent_paths) {
+            if s.is_none() {
+                out.extend_from_slice(b"--- /dev/null\n");
+            } else {
+                out.extend_from_slice(b"--- ");
+                let mut full = b"a/".to_vec();
+                full.extend_from_slice(p);
+                rgit_diff::quote_path(out, &full, opts.quote);
+                out.push(b'\n');
+            }
+        }
+    } else if added_file {
         out.extend_from_slice(b"--- /dev/null\n");
     } else {
         out.extend_from_slice(b"--- ");

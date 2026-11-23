@@ -39,7 +39,7 @@ use crate::signing::verify::{self, Check};
 use crate::{Context, Die};
 use decorate::{Colors, Decorations, Parts};
 pub use options::Options;
-use options::{Abbrev, Decorate, MergeDiff, ObjectsMode};
+use options::{Abbrev, Decorate, MergeDiff, MergesPatch, ObjectsMode};
 use pretty::{Entry, Pretty, Style};
 use userformat::{BadColor, Item, Lookup, Settings};
 
@@ -1042,6 +1042,29 @@ impl Printer<'_, '_> {
         walk: &Walk<S>,
         s: &Shown,
     ) -> Result<(), Die> {
+        match self.separate_diffs(&s.id)? {
+            Some(parts) => {
+                // `-m`: an entry for every parent that differs.
+                for (i, (parent, diff)) in parts.into_iter().enumerate() {
+                    self.commit_entry(walk, s, Some((parent, i > 0)), Some(diff))?;
+                }
+                Ok(())
+            }
+            None => self.commit_entry(walk, s, None, None),
+        }
+    }
+
+    /// One entry of commit `s`: its header and its diff (`diff`, else
+    /// computed). `from`: the parent the diff is against with `-m`
+    /// (shown as `(from <parent>)`), and whether an entry of the same
+    /// commit came before (then the graph is not advanced).
+    fn commit_entry<S: CommitSource<Error = ObjectId>>(
+        &mut self,
+        walk: &Walk<S>,
+        s: &Shown,
+        from: Option<(ObjectId, bool)>,
+        diff: Option<Vec<u8>>,
+    ) -> Result<(), Die> {
         let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
         let id = s.id;
         if !s.boundary && self.diverted(&id) {
@@ -1050,7 +1073,8 @@ impl Printer<'_, '_> {
         let opts = self.opts;
         let was_first = self.first;
         let start = self.out.len();
-        if self.graph.is_some() {
+        let again = from.is_some_and(|(_, again)| again);
+        if self.graph.is_some() && !again {
             let parents = self.graph_parents(walk, &id);
             let mark = self.graph_mark(s);
             if let Some(g) = &mut self.graph {
@@ -1113,10 +1137,15 @@ impl Printer<'_, '_> {
             Some(_) => {
                 let (commit, raw) = self.read_shown(&id).ok_or_else(|| walk_error(id))?;
                 let parents = self.repo.parents(&id, &commit);
-                let shown: Vec<String> = related
+                let mut shown: Vec<String> = related
                     .iter()
                     .map(|p| self.name(p, opts.abbrev_commit))
                     .collect();
+                if let Some((parent, _)) = from {
+                    // `-m`: the parent of this entry's diff, after the
+                    // parents.
+                    shown.push(format!("(from {})", self.name(&parent, opts.abbrev_commit)));
+                }
                 let merge: Vec<String> = if parents.len() > 1 {
                     parents.iter().map(|p| self.name(p, true)).collect()
                 } else {
@@ -1159,8 +1188,14 @@ impl Printer<'_, '_> {
                 self.first = false;
             }
         }
-        let diff = self.commit_diff(&id)?;
-        if self.graph.is_some() {
+        let diff = match diff {
+            Some(d) => d,
+            None => self.commit_diff(&id)?,
+        };
+        if again && self.graph.is_some() {
+            let text = self.out.split_off(start);
+            self.emit_graph_again(&text, &diff);
+        } else if self.graph.is_some() {
             let mut text = self.out.split_off(start);
             // Entries are separated (multi-line formats, `format:`) or
             // terminated (one-line formats, `tformat:`); the terminator is
@@ -1255,23 +1290,97 @@ impl Printer<'_, '_> {
         let (commit, _) = self.repo.read_commit(id).ok_or_else(walk_error)?;
         let parents = self.repo.parents(id, &commit);
         let tree = commit.tree().map_err(|_| walk_error())?;
+        if d.merges_only && parents.len() < 2 {
+            return Ok(Vec::new());
+        }
         let old = match parents.len() {
             0 if !d.show_root => return Ok(Vec::new()),
             0 => None,
             1 => Some(parents[0]),
             _ => match d.merges {
-                MergeDiff::Off => return Ok(Vec::new()),
+                // `-m` where no parent differs: nothing.
+                MergeDiff::Off | MergeDiff::Separate => return Ok(Vec::new()),
                 MergeDiff::FirstParent => Some(parents[0]),
-                MergeDiff::Combined | MergeDiff::Dense if d.formats.patch || d.formats.raw => {
+                MergeDiff::Combined | MergeDiff::Dense
+                    if d.formats.patch
+                        || d.formats.raw
+                        || d.formats.name_only
+                        || d.formats.name_status =>
+                {
                     return self.combined_diff(d, &parents, &tree, walk_error);
                 }
                 // Other formats compare with the first parent.
                 MergeDiff::Combined | MergeDiff::Dense => Some(parents[0]),
-                MergeDiff::Separate => {
-                    return Err(Die::Fatal(msg::not_supported("-m")));
-                }
+                MergeDiff::Remerge => return self.remerge_diff(d, id, &parents, &tree),
             },
         };
+        self.diff_against(d, old, &tree, walk_error)
+    }
+
+    /// `-m`: the diff of merge `id` against each of its parents, for the
+    /// parents it differs from; `None` when `-m` does not apply.
+    #[allow(clippy::type_complexity)]
+    fn separate_diffs(&self, id: &ObjectId) -> Result<Option<Vec<(ObjectId, Vec<u8>)>>, Die> {
+        let Some(d) = &self.diff else {
+            return Ok(None);
+        };
+        if d.merges != MergeDiff::Separate {
+            return Ok(None);
+        }
+        let walk_error = || Die::Fatal(msg::bad_object(&id.to_hex()));
+        let (commit, _) = self.repo.read_commit(id).ok_or_else(walk_error)?;
+        let parents = self.repo.parents(id, &commit);
+        if parents.len() < 2 {
+            return Ok(None);
+        }
+        let tree = commit.tree().map_err(|_| walk_error())?;
+        let mut parts = Vec::new();
+        for p in parents {
+            let bytes = self.diff_against(d, Some(p), &tree, walk_error)?;
+            if !bytes.is_empty() {
+                parts.push((p, bytes));
+            }
+        }
+        Ok((!parts.is_empty()).then_some(parts))
+    }
+
+    /// The diff of `tree` against the tree of commit `old` (none: the
+    /// empty tree), with the line that separates it from the message.
+    fn diff_against(
+        &self,
+        d: &LogDiff,
+        old: Option<ObjectId>,
+        tree: &ObjectId,
+        walk_error: impl Fn() -> Die,
+    ) -> Result<Vec<u8>, Die> {
+        let bytes = self.render_diff(d, old, tree, d.formats, walk_error)?;
+        if bytes.is_empty() {
+            return Ok(bytes);
+        }
+        let mut text = Vec::new();
+        if self.style.pretty == Pretty::Oneline && self.cmd != Command::RevList
+            || self.empty_format()
+        {
+            // Right after the one-line entry, or with no entry at all.
+        } else if d.formats.stat && d.formats.patch {
+            text.extend_from_slice(b"---\n");
+        } else {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(&bytes);
+        Ok(text)
+    }
+
+    /// The diff of `tree` against the tree of commit `old` (none: the
+    /// empty tree) in `formats`.
+    fn render_diff(
+        &self,
+        d: &LogDiff,
+        old: Option<ObjectId>,
+        tree: &ObjectId,
+        formats: crate::diff::options::Formats,
+        walk_error: impl Fn() -> Die,
+    ) -> Result<Vec<u8>, Die> {
         let old_tree = match old {
             Some(p) => Some(self.repo.tree_of(&p).ok_or_else(walk_error)?),
             None => None,
@@ -1292,29 +1401,22 @@ impl Printer<'_, '_> {
             max_depth: None,
             pairs: Vec::new(),
         };
-        w.walk(old_tree.as_ref(), Some(&tree), b"")?;
+        w.walk(old_tree.as_ref(), Some(tree), b"")?;
         let mut out = crate::diff::output::Output::new(
             Some(&d.repo),
             d.repo.hash,
             &d.opts,
-            d.formats,
+            formats,
             !plumbing,
         )?;
         out.set_color(&d.opts)?;
         let (bytes, _) = out.render(std::mem::take(&mut w.pairs))?;
-        if bytes.is_empty() {
-            return Ok(bytes);
-        }
-        let mut text = Vec::new();
-        if self.style.pretty == Pretty::Oneline && self.cmd != Command::RevList {
-            // Right after the one-line entry.
-        } else if d.formats.stat && d.formats.patch {
-            text.extend_from_slice(b"---\n");
-        } else {
-            text.push(b'\n');
-        }
-        text.extend_from_slice(&bytes);
-        Ok(text)
+        Ok(bytes)
+    }
+
+    /// The entries are empty (`--format=`): no line separates the diff.
+    fn empty_format(&self) -> bool {
+        matches!(&self.style.pretty, Pretty::User { format, .. } if format.is_empty())
     }
 
     /// The combined diff (`-c`, `--cc`) of a merge with `parents` and
@@ -1330,44 +1432,108 @@ impl Printer<'_, '_> {
         for p in parents {
             trees.push(self.repo.tree_of(p).ok_or_else(&walk_error)?);
         }
-        let renames =
-            d.formats.patch && !matches!(d.opts.detect, Some(rgit_diff::diffcore::Detect::Off));
-        let files: Vec<_> = crate::diff::combined::collect(&d.repo, &trees, tree, renames)
-            .into_iter()
-            .filter(|f| d.pathspec.is_empty() || d.pathspec.matches(&f.path))
-            .collect();
-        let quote = d.repo.quote_path();
+        // Rename detection and the line diff options come from the
+        // diff options.
+        let out =
+            crate::diff::output::Output::new(Some(&d.repo), d.repo.hash, &d.opts, d.formats, true)?;
+        let files = crate::diff::combined::collect(
+            &d.repo,
+            &out,
+            &d.pathspec,
+            &trees,
+            tree,
+            d.opts.show_trees,
+        )?;
+        let style = crate::diff::combined::PathStyle {
+            quote: d.repo.quote_path(),
+            nul: d.opts.nul,
+            all_paths: d.combined_all_paths,
+        };
         let mut bytes = Vec::new();
-        if d.formats.raw {
-            // log and show abbreviate raw ids unless --full-index.
-            let abbrev = match d.opts.abbrev {
-                _ if d.opts.full_index => None,
-                // diff-tree: full ids unless --abbrev.
-                None if self.opts.plumbing => None,
-                Some(Some(n)) => Some(n),
-                _ => Some(d.repo.default_abbrev()),
-            };
-            crate::diff::combined::raw(&d.repo, &files, abbrev, quote, &mut bytes);
-        }
-        if d.formats.patch {
-            if d.formats.raw && !bytes.is_empty() {
-                bytes.push(b'\n');
-            }
-            let diff = rgit_diff::DiffOptions::default();
-            let opts = crate::diff::combined::PatchOptions {
-                dense: d.merges == MergeDiff::Dense,
-                abbrev: d.repo.default_abbrev(),
-                quote,
-                diff: &diff,
-            };
-            crate::diff::combined::patch(&d.repo, &files, &opts, &mut bytes);
-        }
-        let mut text = Vec::new();
-        if self.style.pretty == Pretty::Oneline && self.cmd != Command::RevList && !bytes.is_empty()
-        {
-            // Right after the one-line entry.
+        if d.formats.name_only || d.formats.name_status {
+            crate::diff::combined::names(&files, d.formats.name_status, style, &mut bytes);
         } else {
-            // A merge without differences still gets the separator.
+            // The statistics compare with the first parent and come first.
+            let statistics = crate::diff::options::Formats {
+                raw: false,
+                patch: false,
+                name_only: false,
+                name_status: false,
+                check: false,
+                ..d.formats
+            };
+            if statistics.any() {
+                bytes = self.render_diff(d, Some(parents[0]), tree, statistics, &walk_error)?;
+            }
+            let before_raw = bytes.len();
+            if d.formats.raw {
+                // log and show abbreviate raw ids unless --full-index.
+                let abbrev = match d.opts.abbrev {
+                    _ if d.opts.full_index => None,
+                    // diff-tree: full ids unless --abbrev.
+                    None if self.opts.plumbing => None,
+                    Some(Some(n)) => Some(n),
+                    _ => Some(d.repo.default_abbrev()),
+                };
+                crate::diff::combined::raw(&d.repo, &files, abbrev, style, &mut bytes);
+            }
+            if d.formats.patch {
+                if statistics.any() || (d.formats.raw && bytes.len() > before_raw) {
+                    bytes.push(b'\n');
+                }
+                let opts = crate::diff::combined::PatchOptions {
+                    dense: d.merges == MergeDiff::Dense,
+                    all_paths: d.combined_all_paths,
+                    abbrev: d.repo.default_abbrev(),
+                    quote: style.quote,
+                    diff: &out.patch.diff,
+                };
+                crate::diff::combined::patch(&d.repo, &files, &opts, &mut bytes);
+            }
+        }
+        // Always separated from the entry, even a one-line one, and also
+        // when the merge has no differences (by NUL with `-z`).
+        let mut text = Vec::new();
+        if !self.empty_format() {
+            text.push(if self.opts.zero { 0 } else { b'\n' });
+        }
+        text.extend_from_slice(&bytes);
+        Ok(text)
+    }
+
+    /// `--remerge-diff` (see [`crate::diff::remerge`]); merges of other
+    /// than two parents get no diff.
+    fn remerge_diff(
+        &self,
+        d: &LogDiff,
+        _id: &ObjectId,
+        parents: &[ObjectId],
+        tree: &ObjectId,
+    ) -> Result<Vec<u8>, Die> {
+        let [ours, theirs] = parents else {
+            return Ok(Vec::new());
+        };
+        let bytes = crate::diff::remerge::diff(
+            &d.repo,
+            &d.opts,
+            d.formats,
+            &d.pathspec,
+            [ours, theirs],
+            tree,
+        )?;
+        if bytes.is_empty() {
+            return Ok(bytes);
+        }
+        let others = crate::diff::options::Formats {
+            patch: false,
+            ..d.formats
+        };
+        let mut text = Vec::new();
+        if self.style.pretty == Pretty::Oneline || self.empty_format() {
+            // Right after the one-line entry, or with no entry at all.
+        } else if d.formats.patch && (others.stat || others.shortstat || others.numstat) {
+            text.extend_from_slice(b"---\n");
+        } else {
             text.push(b'\n');
         }
         text.extend_from_slice(&bytes);
@@ -1436,6 +1602,39 @@ impl Printer<'_, '_> {
             return;
         }
         self.ended_line = ended;
+    }
+
+    /// Write a further entry of the commit just drawn (`-m`): every line
+    /// after the next line of the drawing, after a separating line for
+    /// multi-line formats.
+    fn emit_graph_again(&mut self, text: &[u8], diff: &[u8]) {
+        let Some(g) = self.graph.as_mut() else {
+            return;
+        };
+        let separated = !matches!(
+            self.style.pretty,
+            Pretty::Oneline | Pretty::Reference | Pretty::User { .. }
+        );
+        if separated {
+            self.out.extend_from_slice(&g.next_line());
+            self.out.push(b'\n');
+        }
+        for line in text.split_inclusive(|&b| b == b'\n') {
+            self.out.extend_from_slice(&g.next_line());
+            self.out.extend_from_slice(line);
+        }
+        if !text.is_empty() && !text.ends_with(b"\n") {
+            self.out.push(b'\n');
+        }
+        for line in diff.split_inclusive(|&b| b == b'\n') {
+            self.out.extend_from_slice(&g.next_line());
+            self.out.extend_from_slice(line);
+        }
+        self.ended_line = if diff.is_empty() {
+            text.is_empty() || text.ends_with(b"\n")
+        } else {
+            diff.ends_with(b"\n")
+        };
     }
 
     /// `--bisect-all`: the decorations of `id` followed by its distance,
@@ -1797,6 +1996,11 @@ struct LogDiff {
     opts: crate::diff::options::DiffOpts,
     formats: crate::diff::options::Formats,
     merges: MergeDiff,
+    /// Only merges get a diff (`--diff-merges=<format>` without a diff
+    /// format).
+    merges_only: bool,
+    /// `--combined-all-paths`.
+    combined_all_paths: bool,
     /// Root commits get a diff against the empty tree.
     show_root: bool,
     /// The paths the diffs are limited to (the walk's, unless
@@ -1820,30 +2024,19 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
         })));
     }
     let mut d = opts.diff.clone();
-    // `-c` and `--cc` imply `-p`.
-    let combined = matches!(opts.merges, Some(MergeDiff::Combined | MergeDiff::Dense));
-    if (opts.show || combined) && !d.no_output {
+    // `-c`, `--cc`, `--dd` and `--remerge-diff` imply `-p`; `--diff-merges`
+    // only for merges.
+    let mut merges_only = false;
+    if opts.merges_patch == MergesPatch::Merges && !opts.show && !d.no_output && !any_format(&d) {
+        d.patch = true;
+        merges_only = true;
+    }
+    if (opts.show || opts.merges_patch == MergesPatch::All) && !d.no_output {
         // `show` defaults to a patch.
-        let none = !(d.raw
-            || d.patch
-            || d.name_only
-            || d.name_status
-            || d.numstat
-            || d.stat
-            || d.shortstat
-            || d.summary);
-        d.patch |= none;
+        d.patch |= !any_format(&d);
     }
     let d = &d;
-    let asked = d.raw
-        || d.patch
-        || d.name_only
-        || d.name_status
-        || d.numstat
-        || d.stat
-        || d.shortstat
-        || d.summary;
-    if !asked {
+    if !any_format(d) {
         return Ok(None);
     }
     let formats = d.formats(false)?;
@@ -1854,15 +2047,22 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
     if diff_opts.color.is_none() {
         diff_opts.color = opts.color;
     }
+    // `-z` also ends the paths of raw and name output with NUL.
+    diff_opts.nul |= opts.zero;
+    if let (None, Abbrev::Digits(n)) = (diff_opts.abbrev, opts.abbrev) {
+        // `--abbrev=<n>` also abbreviates the ids of raw output.
+        diff_opts.abbrev = Some(Some(n));
+    }
     let mut repo = crate::repository::Repo::open(ctx, Mode::Required)?;
     diff_opts.resolve_objects(&mut repo)?;
-    let merges = opts.merges.unwrap_or(if opts.walk.first_parent {
-        MergeDiff::FirstParent
-    } else if opts.show {
-        MergeDiff::Dense
-    } else {
-        MergeDiff::Off
-    });
+    let merges = match opts.merges {
+        // Only the first parent is walked.
+        Some(MergeDiff::Separate) if opts.walk.first_parent => MergeDiff::FirstParent,
+        Some(m) => m,
+        None if opts.walk.first_parent => MergeDiff::FirstParent,
+        None if opts.show => MergeDiff::Dense,
+        None => MergeDiff::Off,
+    };
     // diff-tree picks the commits to show itself.
     let show_root = opts.root
         || opts.plumbing
@@ -1877,9 +2077,23 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
         opts: diff_opts,
         formats,
         merges,
+        merges_only,
+        combined_all_paths: opts.combined_all_paths,
         show_root,
         pathspec: rgit_pathspec::Pathspec::default(),
     }))
+}
+
+/// A diff format was asked for.
+fn any_format(d: &crate::diff::options::DiffOpts) -> bool {
+    d.raw
+        || d.patch
+        || d.name_only
+        || d.name_status
+        || d.numstat
+        || d.stat
+        || d.shortstat
+        || d.summary
 }
 
 /// The lane colours of `--graph` (`log.graphColors`, comma-separated

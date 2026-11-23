@@ -544,7 +544,7 @@ impl Engine<'_> {
                     let text = messages::submodule_conflict(&path);
                     self.message(vec![path.clone()], MessageKind::Contents, text);
                 } else if k == Kind::Gitlink {
-                    let text = messages::submodule_failed(&path);
+                    let text = self.submodule_failure(&path, b, o, t);
                     self.message(vec![path.clone()], MessageKind::SubmoduleConflict, text);
                     let text = messages::submodule_conflict(&path);
                     self.message(vec![path.clone()], MessageKind::Contents, text);
@@ -598,6 +598,28 @@ impl Engine<'_> {
         let text = messages::submodule_fast_forward(path, &pick.oid.to_hex());
         self.message(vec![path.to_vec()], MessageKind::SubmoduleFastForward, text);
         Ok(Some(pick))
+    }
+
+    /// Why the submodule commits at `path` could not be merged: they do
+    /// not both descend from the base's, or merge commits in the
+    /// submodule that combine them are suggested.
+    fn submodule_failure(&self, path: &[u8], b: Entry, o: Version, t: Entry) -> Vec<u8> {
+        let (Some(pm), Some(b), Some(t)) = (&self.opts.path_merge, b, t) else {
+            return messages::submodule_failed(path);
+        };
+        if kind(b.mode) == Kind::Gitlink && kind(t.mode) == Kind::Gitlink {
+            let behind =
+                |a: &ObjectId, d: &ObjectId| pm.submodule_is_ancestor(path, a, d) == Some(false);
+            if behind(&b.oid, &o.oid) || behind(&b.oid, &t.oid) {
+                return messages::submodule_not_following(path);
+            }
+        }
+        let lines = pm.submodule_merges(path, &o.oid, &t.oid);
+        if lines.is_empty() {
+            messages::submodule_failed(path)
+        } else {
+            messages::submodule_resolutions(path, &lines)
+        }
     }
 
     /// With renormalization: whether the regular files `b` and `v` of

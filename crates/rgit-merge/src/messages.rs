@@ -58,6 +58,33 @@ pub fn submodule_failed(path: &[u8]) -> Vec<u8> {
     join(&[b"Failed to merge submodule ", path])
 }
 
+/// The submodule commits do not both descend from the base's.
+pub fn submodule_not_following(path: &[u8]) -> Vec<u8> {
+    join(&[
+        b"Failed to merge submodule ",
+        path,
+        b" (commits don't follow merge-base)",
+    ])
+}
+
+/// Merge commits in the submodule that already combine both sides
+/// (`"<abbrev> <subject>"` lines): one is offered on the line itself,
+/// several each on a line of their own.
+pub fn submodule_resolutions(path: &[u8], lines: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = join(&[b"Failed to merge submodule ", path]);
+    if lines.len() == 1 {
+        out.extend_from_slice(b", but a possible merge resolution exists: ");
+    } else {
+        out.extend_from_slice(b", but multiple possible merges exist:\n");
+    }
+    for l in lines {
+        out.extend_from_slice(b"    ");
+        out.extend_from_slice(l);
+        out.push(b'\n');
+    }
+    out
+}
+
 pub fn submodule_fast_forward(path: &[u8], to: &str) -> Vec<u8> {
     join(&[
         b"Note: Fast-forwarding submodule ",

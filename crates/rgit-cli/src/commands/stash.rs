@@ -644,7 +644,7 @@ fn list(ctx: &mut Context, args: &[String]) -> CmdResult {
                 "--first-parent".into(),
                 // Diffs against the first parent, like git's `log -g
                 // --first-parent -m`.
-                "--diff-merges=first-parent".into(),
+                "-m".into(),
                 os_from_bytes(fmt),
             ];
             argv.extend(extra.iter().map(Into::into));
