@@ -28,7 +28,10 @@ fn output<'a>(repo: &'a Repo, opts: &DiffOpts) -> Result<Output<'a>, Die> {
         patch: true,
         ..Default::default()
     };
-    Output::new(Some(repo), repo.hash, opts, formats, true)
+    let mut out = Output::new(Some(repo), repo.hash, opts, formats, true)?;
+    // Like `diff`, the verbose diff runs textconv filters (t4030).
+    out.textconv = true;
+    Ok(out)
 }
 
 fn prefixes(out: &mut Output<'_>, src: &str, dst: &str) {

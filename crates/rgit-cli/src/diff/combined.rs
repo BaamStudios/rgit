@@ -73,6 +73,10 @@ pub fn collect(
 ) -> Result<Vec<File>, crate::Die> {
     type Entry = (Option<Side>, Option<Side>, Vec<u8>, u8);
     let mut maps: Vec<HashMap<Vec<u8>, Entry>> = Vec::new();
+    // A pickaxe keeps the paths it matches against any parent (the
+    // paths themselves come from the diffs without it, t4064).
+    let pickaxe = out.has_pickaxe();
+    let mut picked: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
     for p in parents {
         let mut w = super::collect::TreeDiff {
             repo,
@@ -83,7 +87,17 @@ pub fn collect(
             pairs: Vec::new(),
         };
         w.walk(Some(p), Some(tree), b"")?;
-        let pairs = out.diffcore(std::mem::take(&mut w.pairs))?;
+        let all = std::mem::take(&mut w.pairs);
+        if pickaxe {
+            for pr in out.diffcore(all.clone())? {
+                picked.insert(if pr.new.is_some() {
+                    pr.path.clone()
+                } else {
+                    pr.old_path.clone()
+                });
+            }
+        }
+        let pairs = out.diffcore_with(all, false)?;
         let mut m = HashMap::new();
         for pr in pairs {
             let side = |s: &Option<super::collect::Side>| {
@@ -115,6 +129,7 @@ pub fn collect(
     let mut keys: Vec<&Vec<u8>> = first
         .keys()
         .filter(|k| rest.iter().all(|m| m.contains_key(*k)))
+        .filter(|k| !pickaxe || picked.contains(*k))
         .collect();
     keys.sort();
     // `-O<orderfile>` / `diff.orderFile`.

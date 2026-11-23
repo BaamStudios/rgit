@@ -95,3 +95,71 @@ fn log_merge_shows_the_conflicting_commits() {
         ],
     );
 }
+
+/// Merges under a diff limit follow the diff format for merges: none
+/// without one, any parent with `-m` (only those get an entry), the first
+/// parent, combined diffs always, the remerge diff; `show` is limited too.
+#[test]
+fn log_limited_merges_and_show() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .write("f", "base\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "base"])
+        .tick()
+        .git(["switch", "-q", "-c", "side"])
+        .write("g", "foo\n")
+        .git(["add", "g"])
+        .git(["commit", "-q", "-m", "side adds foo"])
+        .tick()
+        .git(["switch", "-q", "main"])
+        .write("h", "bar\n")
+        .git(["add", "h"])
+        .git(["commit", "-q", "-m", "main adds bar"])
+        .tick()
+        .git(["merge", "-q", "--no-edit", "side", "-m", "merge"]);
+    compare_all(
+        &mut fx,
+        &[
+            &["log", "--format=%s", "-S", "foo"],
+            &["log", "--format=%s", "-S", "foo", "-m"],
+            &["log", "--oneline", "-S", "foo", "-m"],
+            &["log", "--format=%s", "-S", "foo", "-m", "-p"],
+            &["log", "--format=%s", "-S", "foo", "--first-parent"],
+            &["log", "--format=%s", "-S", "nothing", "-c"],
+            &["log", "--format=%s", "-S", "foo", "--cc"],
+            &["log", "--format=%s", "-S", "foo", "--remerge-diff"],
+            &[
+                "log",
+                "--format=%s",
+                "-S",
+                "foo",
+                "--diff-merges=first-parent",
+            ],
+            &[
+                "log",
+                "--format=%s",
+                "--diff-filter=A",
+                "--diff-merges=first-parent",
+            ],
+            &["log", "--format=%s", "-S", "bar", "-m", "--raw"],
+            &["log", "--format=%s", "-S", "nothing", "--cc", "--stat"],
+            &["log", "--format=%s", "-S", "foo", "--cc", "--stat"],
+            &["log", "--format=%s", "--cc", "--stat"],
+            &["log", "--format=%s", "--summary"],
+            &["log", "--format=%s", "-S", "FOO", "-i"],
+            &["log", "--format=%s", "-G", "FO+", "--regexp-ignore-case"],
+            &["show", "--format=%s", "-S", "foo", "HEAD"],
+            &["show", "--format=%s", "-S", "nothing", "HEAD~1"],
+            &["show", "--format=%s", "-S", "bar", "HEAD~1"],
+            &[
+                "diff-tree",
+                "-c",
+                "--name-status",
+                "--find-object=HEAD:g",
+                "HEAD",
+            ],
+        ],
+    );
+}

@@ -977,7 +977,18 @@ impl<'a> Output<'a> {
     /// Run the diffcore transformations (break, rename/copy detection,
     /// pickaxe, `--diff-filter`) on the pairs.
     pub fn diffcore(&self, pairs: Vec<Pair>) -> Result<Vec<Pair>, Die> {
-        if !self.core.active() && self.pickaxe.is_none() && !self.filter.is_active() {
+        self.diffcore_with(pairs, true)
+    }
+
+    /// Whether a pickaxe (`-S`, `-G`, `--find-object`) is set.
+    pub fn has_pickaxe(&self) -> bool {
+        self.pickaxe.is_some()
+    }
+
+    /// [`Output::diffcore`], with the pickaxe only when `pickaxe`.
+    pub fn diffcore_with(&self, pairs: Vec<Pair>, pickaxe: bool) -> Result<Vec<Pair>, Die> {
+        let pick = self.pickaxe.as_ref().filter(|_| pickaxe);
+        if !self.core.active() && pick.is_none() && !self.filter.is_active() {
             return Ok(pairs);
         }
         type Extra = (usize, Option<std::path::PathBuf>);
@@ -1034,7 +1045,7 @@ impl<'a> Output<'a> {
                 .set(Some((n, report.copies_from_modified_only)));
         }
         let mut pickaxe_hit = true;
-        if let Some(how) = &self.pickaxe {
+        if let Some(how) = pick {
             // With textconv the pickaxe looks at the converted text (and a
             // failing filter is fatal).
             let conv_failed = std::cell::Cell::new(false);
@@ -1071,8 +1082,8 @@ impl<'a> Output<'a> {
                     grep_re = move |l: &[u8]| re.is_match(l);
                     Criterion::Grep {
                         matches: &grep_re,
-                        // Textconv output counts as text.
-                        text: self.textconv && self.any_textconv(),
+                        // `-a`, and textconv output, count as text.
+                        text: self.text || (self.textconv && self.any_textconv()),
                     }
                 }
                 Pickaxe::Objects(ids) => Criterion::Objects(ids),
@@ -1137,7 +1148,7 @@ impl<'a> Output<'a> {
             ));
         }
         // Unmerged paths never match a pickaxe.
-        if self.pickaxe.is_none() || (self.pickaxe_all && pickaxe_hit) {
+        if pick.is_none() || (self.pickaxe_all && pickaxe_hit) {
             for (i, p) in unmerged {
                 let pos = out.partition_point(|(a, _)| *a < i);
                 out.insert(pos, (i, p));
