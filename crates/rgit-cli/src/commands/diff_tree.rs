@@ -53,6 +53,8 @@ fn split_header(argv: &[String]) -> (Vec<String>, Header) {
                 h.show_args.push("--pretty".into());
             }
             "--always" => h.always = true,
+            // Accepted and without effect (observed: t4202 "diff-tree --graph").
+            "--graph" => {}
             "--pretty" | "--oneline" => {
                 h.pretty = true;
                 h.show_args.push(a.clone());

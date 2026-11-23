@@ -724,8 +724,8 @@ pub static CATALOG: &[Entry] = &[
 ];
 
 /// Built-ins that may be shadowed by aliases (`--list-cmds=deprecated`),
-/// git's deprecated commands. rgit does not implement them, so an alias of
-/// that name always applies.
+/// git's deprecated commands: an alias of that name always applies (also
+/// for `whatchanged`, which rgit implements).
 pub const DEPRECATED: &[&str] = &["pack-redundant", "whatchanged"];
 
 /// The catalogue entry of `name`.

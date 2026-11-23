@@ -647,7 +647,10 @@ impl Options {
                 "--no-merges" => o.walk.max_parents = Some(1),
                 "--no-min-parents" => o.walk.min_parents = None,
                 "--no-max-parents" => o.walk.max_parents = None,
-                "-i" | "--regexp-ignore-case" => o.grep.ignore_case = true,
+                "-i" | "--regexp-ignore-case" => {
+                    o.grep.ignore_case = true;
+                    o.diff.pickaxe_icase = true;
+                }
                 "-E" | "--extended-regexp" => {
                     o.grep.syntax = Syntax::Extended;
                     o.syntax_given = true;

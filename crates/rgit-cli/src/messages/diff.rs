@@ -182,6 +182,17 @@ pub fn invalid_regex(_pattern: &str, reason: &str) -> String {
     format!("invalid regex: {reason}")
 }
 
+pub const CORRUPTED_CACHE_TREE: &str = "corrupted cache-tree has entries not present in index";
+
+pub fn pickaxe_needs_argument(option: &str) -> String {
+    format!("error: {option} requires a non-empty argument\n")
+}
+
+pub const PICKAXE_EXCLUSIVE: &str =
+    "options '-G', '-S', and '--find-object' cannot be used together";
+
+pub const PICKAXE_ALL_WITH_FIND_OBJECT: &str = "options '--pickaxe-all' and '--find-object' cannot be used together, use '--pickaxe-all' with '-G' and '-S'";
+
 pub const G_WITH_PICKAXE_REGEX: &str =
     "options '-G' and '--pickaxe-regex' cannot be used together, use '--pickaxe-regex' with '-S'";
 

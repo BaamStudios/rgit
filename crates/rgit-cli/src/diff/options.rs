@@ -65,6 +65,10 @@ pub struct DiffOpts {
     pub rename_empty: Option<bool>,
     /// `-S<string>` (`false`) or `-G<regex>` (`true`).
     pub pickaxe: Option<(bool, String)>,
+    /// Both `-S` and `-G` were given (an error).
+    pub pickaxe_both: bool,
+    /// `log -i` / `--regexp-ignore-case`: `-S`/`-G` ignore case.
+    pub pickaxe_icase: bool,
     pub pickaxe_all: bool,
     pub pickaxe_regex: bool,
     /// `--find-object=<object>`, unresolved.
@@ -533,10 +537,16 @@ impl DiffOpts {
         } else if let Some(v) = arg.strip_prefix("-l") {
             self.rename_limit =
                 Some(magnitude(v).ok_or_else(|| usage_exit(msg::switch_expects_integer('l')))?);
-        } else if let Some(v) = arg.strip_prefix("-S") {
-            self.pickaxe = Some((false, v.to_string()));
-        } else if let Some(v) = arg.strip_prefix("-G") {
-            self.pickaxe = Some((true, v.to_string()));
+        } else if let Some((grep, v)) = arg
+            .strip_prefix("-S")
+            .map(|v| (false, v))
+            .or_else(|| arg.strip_prefix("-G").map(|v| (true, v)))
+        {
+            if v.is_empty() {
+                return Err(usage_exit(msg::pickaxe_needs_argument(&arg[..2])));
+            }
+            self.pickaxe_both |= self.pickaxe.as_ref().is_some_and(|(g, _)| *g != grep);
+            self.pickaxe = Some((grep, v.to_string()));
         } else if let Some(v) = arg
             .strip_prefix("--ignore-matching-lines=")
             .or_else(|| arg.strip_prefix("-I"))

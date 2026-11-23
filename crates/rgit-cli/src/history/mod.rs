@@ -2436,6 +2436,14 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         let mut drepo = crate::repository::Repo::open(ctx, Mode::Required)?;
         let mut dopts = d.clone();
         dopts.resolve_objects(&mut drepo)?;
+        // Option conflicts (`-G` with `-S`, ...) are fatal before the walk.
+        crate::diff::output::Output::new(
+            Some(&drepo),
+            drepo.hash,
+            &dopts,
+            crate::diff::options::Formats::default(),
+            true,
+        )?;
         let show_root = opts.root
             || drepo
                 .config

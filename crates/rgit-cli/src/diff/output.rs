@@ -153,11 +153,12 @@ pub enum Pickaxe {
 }
 
 /// Compile a pickaxe pattern (an extended POSIX regular expression).
-fn pickaxe_regex(pattern: &str) -> Result<regex::bytes::Regex, Die> {
+fn pickaxe_regex(pattern: &str, icase: bool) -> Result<regex::bytes::Regex, Die> {
     let translated = rgit_revwalk::walk::grep::translate(pattern, true)
         .map_err(|reason| Die::Fatal(msg::invalid_regex(pattern, reason)))?;
     regex::bytes::RegexBuilder::new(&translated)
         .unicode(false)
+        .case_insensitive(icase)
         .build()
         .map_err(|e| {
             let reason = rgit_revwalk::walk::grep::reason(&e.to_string());
@@ -615,6 +616,13 @@ impl<'a> Output<'a> {
                 None => super::color::HIGHLIGHT_NEW,
             },
         };
+        if opts.pickaxe_both || (opts.pickaxe.is_some() && !opts.find_object.is_empty()) {
+            return Err(Die::Fatal(msg::PICKAXE_EXCLUSIVE.to_string()));
+        }
+        if opts.pickaxe_all && !opts.find_object.is_empty() {
+            return Err(Die::Fatal(msg::PICKAXE_ALL_WITH_FIND_OBJECT.to_string()));
+        }
+        let icase = opts.pickaxe_icase;
         let pickaxe = if !opts.find_object.is_empty() {
             if opts.found_objects.len() != opts.find_object.len() {
                 return Err(usage_exit(msg::unable_to_resolve(&opts.find_object[0])));
@@ -626,8 +634,18 @@ impl<'a> Output<'a> {
                 Some((true, _)) if opts.pickaxe_regex => {
                     return Err(Die::Fatal(msg::G_WITH_PICKAXE_REGEX.to_string()));
                 }
-                Some((true, p)) => Some(Pickaxe::Grep(pickaxe_regex(p)?)),
-                Some((false, p)) if opts.pickaxe_regex => Some(Pickaxe::Count(pickaxe_regex(p)?)),
+                Some((true, p)) => Some(Pickaxe::Grep(pickaxe_regex(p, icase)?)),
+                Some((false, p)) if opts.pickaxe_regex => {
+                    Some(Pickaxe::Count(pickaxe_regex(p, icase)?))
+                }
+                // A literal string ignoring case: the escaped pattern.
+                Some((false, p)) if icase => Some(Pickaxe::Count(
+                    regex::bytes::RegexBuilder::new(&regex::escape(p))
+                        .unicode(false)
+                        .case_insensitive(true)
+                        .build()
+                        .map_err(|e| Die::Fatal(msg::invalid_regex(p, &e.to_string())))?,
+                )),
                 Some((false, p)) => Some(Pickaxe::Literal(p.as_bytes().to_vec())),
             }
         };
