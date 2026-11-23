@@ -18,6 +18,7 @@ pub use pack::PackFilter;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use rgit_fs::{FsyncMethod, SharedRepository, Timeout};
 use rgit_hash::HashKind;
@@ -68,6 +69,39 @@ pub struct FilesStore {
     worktree_dir: Option<PathBuf>,
     kind: HashKind,
     options: FilesOptions,
+    /// The last `packed-refs` read for lookups, shared by clones.
+    packed_cache: Arc<Mutex<PackedCache>>,
+}
+
+/// The parsed `packed-refs` with the stamp of the file it came from.
+type PackedCache = Option<(PackedStamp, Arc<PackedRefs>)>;
+
+/// What identifies one version of `packed-refs` on disk: a rewrite renames
+/// a new file over it, which changes these (as with git's own snapshot of
+/// the file, a change that keeps all of them is not noticed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PackedStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    dev: u64,
+}
+
+impl PackedStamp {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+        Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            #[cfg(unix)]
+            ino: meta.ino(),
+            #[cfg(unix)]
+            dev: meta.dev(),
+        }
+    }
 }
 
 /// A loose file read from disk.
@@ -96,6 +130,7 @@ impl FilesStore {
             worktree_dir: None,
             kind,
             options,
+            packed_cache: Arc::default(),
         }
     }
 
@@ -173,6 +208,42 @@ impl FilesStore {
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(PackedRefs::default()),
             Err(source) => Err(Error::Io { path, source }),
+        }
+    }
+
+    /// `packed-refs` for lookups: parsed once and reused while the file
+    /// on disk stays the same (a fetch looks up every advertised tag).
+    /// Transactions read the file themselves under its lock.
+    fn packed_snapshot(&self) -> Result<Arc<PackedRefs>, Error> {
+        let path = self.packed_refs_path();
+        let stamp = match std::fs::metadata(&path) {
+            Ok(meta) => PackedStamp::of(&meta),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                self.forget_packed();
+                return Ok(Arc::default());
+            }
+            Err(source) => return Err(Error::Io { path, source }),
+        };
+        if let Ok(cache) = self.packed_cache.lock() {
+            if let Some((s, refs)) = cache.as_ref() {
+                if *s == stamp {
+                    return Ok(Arc::clone(refs));
+                }
+            }
+        }
+        // Read after the stat: a file replaced in between is cached with
+        // the older stamp and read again next time.
+        let refs = Arc::new(self.packed_refs()?);
+        if let Ok(mut cache) = self.packed_cache.lock() {
+            *cache = Some((stamp, Arc::clone(&refs)));
+        }
+        Ok(refs)
+    }
+
+    /// Drops the cached `packed-refs` (after writing it).
+    pub(crate) fn forget_packed(&self) {
+        if let Ok(mut cache) = self.packed_cache.lock() {
+            *cache = None;
         }
     }
 
@@ -367,7 +438,7 @@ impl RefStore for FilesStore {
                     return Ok(None);
                 }
                 Ok(self
-                    .packed_refs()?
+                    .packed_snapshot()?
                     .find(name)
                     .map(|r| Target::Object(r.oid)))
             }
@@ -375,7 +446,7 @@ impl RefStore for FilesStore {
     }
 
     fn iter(&self, options: &IterOptions) -> Result<Vec<IterItem>, Error> {
-        let packed = self.packed_refs()?;
+        let packed = self.packed_snapshot()?;
         let prefix = options.prefix.as_str();
         let mut loose = BTreeMap::new();
         // Walk only the directory that can contain the prefix.

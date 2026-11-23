@@ -421,7 +421,14 @@ pub fn fetch(
     }
     // Everything is here: unless its history is incomplete (objects of a
     // fetch whose refs were rejected), then all of it is asked for.
-    if wants.is_empty() && !entries.is_empty() {
+    // A tip that is already the value of its own destination is complete
+    // (the usual no-op fetch); only otherwise all local refs are listed.
+    let up_to_date = entries.iter().all(|e| {
+        e.local
+            .as_ref()
+            .is_some_and(|l| repo.resolve(&l.to_str_lossy()) == Some(e.oid))
+    });
+    if wants.is_empty() && !entries.is_empty() && !up_to_date {
         let tips: Vec<ObjectId> = entries.iter().map(|e| e.oid).collect();
         let mut complete: HashSet<ObjectId> =
             repo.list_refs("").into_iter().map(|(_, id)| id).collect();
@@ -437,9 +444,27 @@ pub fn fetch(
     // Order (as observed from git): refspec entries, tags pointing at
     // wanted or present objects, opportunistic remote-tracking updates,
     // then tags whose target only arrived with the pack.
+    // Local tags, listed once for both rounds of tag following (no ref
+    // changes in between).
+    let local_tags: HashSet<BString> = if follow_tags {
+        repo.list_refs("refs/tags/")
+            .into_iter()
+            .map(|(name, _)| BString::from(name))
+            .collect()
+    } else {
+        HashSet::new()
+    };
     if follow_tags {
         let mut tags = Vec::new();
-        add_followed_tags(repo, &refs, &entries, &mut tags, &mut wants, false);
+        add_followed_tags(
+            repo,
+            &refs,
+            &entries,
+            &local_tags,
+            &mut tags,
+            &mut wants,
+            false,
+        );
         entries.extend(tags);
     }
     if cmdline && !opts.prefetch {
@@ -494,7 +519,7 @@ pub fn fetch(
         let mut more = Vec::new();
         let mut tags = Vec::new();
         let seen: &[Entry] = if opts.dry_run { &[] } else { &entries };
-        add_followed_tags(repo, &refs, seen, &mut tags, &mut more, true);
+        add_followed_tags(repo, &refs, seen, &local_tags, &mut tags, &mut more, true);
         entries.extend(tags);
         let tag_opts = PackOptions {
             want_refs: Vec::new(),
@@ -770,42 +795,45 @@ fn rgit_transport_strerror(e: &std::io::Error) -> String {
 }
 
 /// Add tags of `refs` that point into the fetched history: tags missing
-/// locally whose (peeled) target is wanted or present. With `after_pack`
-/// only targets present locally count (the pack has arrived). Tag objects
-/// that are not present are added to `wants`. Tags already in `seen` are
-/// skipped; new entries go to `out`.
+/// locally (not in `local_tags`) whose (peeled) target is wanted or
+/// present. With `after_pack` only targets present locally count (the pack
+/// has arrived). Tag objects that are not present are added to `wants`.
+/// Tags already in `seen` are skipped; new entries go to `out`.
 fn add_followed_tags(
     repo: &LocalRepo,
     refs: &[RemoteRef],
     seen: &[Entry],
+    local_tags: &HashSet<BString>,
     out: &mut Vec<Entry>,
     wants: &mut Vec<ObjectId>,
     after_pack: bool,
 ) {
+    // A tag counts as seen when an entry stores into it, or fetches it
+    // without storing it under another name.
+    let mut seen_names: HashSet<&[u8]> = HashSet::new();
+    for e in seen {
+        if let Some(l) = &e.local {
+            seen_names.insert(l.as_slice());
+        }
+        if e.local.as_ref().is_none_or(|l| l == &e.remote) {
+            seen_names.insert(e.remote.as_slice());
+        }
+    }
+    let wanted: HashSet<ObjectId> = if after_pack {
+        HashSet::new()
+    } else {
+        wants.iter().copied().collect()
+    };
     for r in refs {
         let Some(oid) = r.oid else { continue };
         if !r.name.starts_with(b"refs/tags/") || r.name.ends_with(b"^{}") {
             continue;
         }
-        let stored_elsewhere = |e: &Entry| {
-            e.local
-                .as_ref()
-                .is_some_and(|l| l.as_slice() != r.name.as_slice())
-        };
-        if seen.iter().any(|e| {
-            e.local
-                .as_ref()
-                .is_some_and(|l| l.as_slice() == r.name.as_slice())
-                || (e.remote == r.name.as_slice() && !stored_elsewhere(e))
-        }) {
-            continue;
-        }
-        let name = String::from_utf8_lossy(&r.name);
-        if repo.resolve(&name).is_some() {
+        if seen_names.contains(r.name.as_slice()) || local_tags.contains(r.name.as_bstr()) {
             continue;
         }
         let peeled = r.peeled.unwrap_or(oid);
-        let reachable = repo.has_object(&peeled) || (!after_pack && wants.contains(&peeled));
+        let reachable = repo.has_object(&peeled) || wanted.contains(&peeled);
         if !reachable {
             continue;
         }
