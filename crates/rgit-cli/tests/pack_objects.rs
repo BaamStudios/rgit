@@ -88,7 +88,7 @@ fn same_objects(fx: Fixture, args: &[&str], input: &str) -> Fixture {
     let (fx, ours) = check_pack(fx, &outcome.rgit.stdout, "ours");
     let (fx, theirs) = check_pack(fx, &outcome.git.stdout, "theirs");
     assert_eq!(ours, theirs, "pack-objects {args:?} <<< {input:?}");
-    assert!(!ours.is_empty() || input.is_empty());
+    assert!(!ours.is_empty() || input.is_empty(), "empty pack: {args:?}");
     // Same content through cat-file: one bare repository per pack.
     let mut fx = fx;
     let mut dumps = Vec::new();
@@ -630,4 +630,82 @@ fn progress_case(fx: &mut Fixture, args: &[&str]) {
         cmp = cmp.normalize_stderr(n);
     }
     cmp.run();
+}
+
+/// `--include-tag`, `--incremental`, `--unpacked`, `--honor-pack-keep`,
+/// `--keep-pack=<name>`, `--keep-true-parents`.
+#[test]
+fn selection_options() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx;
+    for args in [
+        &["--revs", "--stdout", "--include-tag"][..],
+        &["--revs", "--stdout", "--incremental"],
+        &["--revs", "--stdout", "--unpacked"],
+        &["--revs", "--stdout", "--keep-true-parents"],
+    ] {
+        fx = same_objects(fx, args, "HEAD~1\n");
+    }
+    // Object list input with --include-tag.
+    let list = String::from_utf8(fx.git_stdout(["rev-list", "--objects", "main~2"])).unwrap();
+    fx = same_objects(fx, &["--stdout", "--include-tag"], &list);
+    let pack_dir = fx.work_dir().join(".git/objects/pack");
+    let pack = std::fs::read_dir(&pack_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .find(|n| n.ends_with(".pack"))
+        .unwrap();
+    let keep = format!("--keep-pack={pack}");
+    fx = same_objects(fx, &["--revs", "--stdout", &keep], "HEAD\n");
+    std::fs::write(pack_dir.join(pack.replace(".pack", ".keep")), "").unwrap();
+    fx = same_objects(fx, &["--revs", "--stdout", "--honor-pack-keep"], "HEAD\n");
+    // Reflog entries and index entries as further starting points.
+    fx = fx
+        .git(["reset", "-q", "--hard", "HEAD~2"])
+        .write("staged", "staged\n")
+        .git(["add", "staged"]);
+    fx = same_objects(fx, &["--stdout", "--reflog"], "");
+    fx = same_objects(fx, &["--stdout", "--indexed-objects"], "");
+    fx = same_objects(
+        fx,
+        &["--stdout", "--reflog", "--indexed-objects"],
+        "HEAD~1\n",
+    );
+    same_objects(fx, &["--revs", "--stdout"], "HEAD\n");
+}
+
+/// `--local` leaves out objects the alternates have, even with a local
+/// copy.
+#[test]
+fn local_option() {
+    let fx = fixture().git(["init", "-q", "alt"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx
+        .write("alt/f", "one\n")
+        .git(["-C", "alt", "add", "f"])
+        .git(["-C", "alt", "commit", "-q", "-m", "one"])
+        .tick()
+        .git(["clone", "-q", "--shared", "alt", "o"])
+        .write("o/g", "two\n")
+        .git(["-C", "o", "add", "g"])
+        .git(["-C", "o", "commit", "-q", "-m", "two"])
+        .tick()
+        .git(["-C", "o", "repack", "-adq"]);
+    let args = ["pack-objects", "--revs", "--stdout", "--local", "-q"];
+    let Some(out) = fx
+        .compare(args)
+        .in_dir("o")
+        .stdin("HEAD\n")
+        .checks([Check::ExitCode, Check::Stderr])
+        .run()
+    else {
+        return;
+    };
+    // Same number of objects in the pack header.
+    assert_eq!(out.git.stdout[8..12], out.rgit.stdout[8..12]);
 }
