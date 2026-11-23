@@ -259,3 +259,10 @@ See the 'Note about fast-forwards' in 'git push --help' for details.";
 pub fn cannot_parse_expected(expect: &str) -> String {
     format!("cannot parse expected object name '{expect}'")
 }
+
+/// git: progress meter while listing the objects to send.
+pub const PROGRESS_ENUMERATING: &str = "Enumerating objects";
+/// git: progress meter while looking up the objects to send.
+pub const PROGRESS_COUNTING: &str = "Counting objects";
+/// git: progress meter while writing the pack.
+pub const PROGRESS_WRITING: &str = "Writing objects";
