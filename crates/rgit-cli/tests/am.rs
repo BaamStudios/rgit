@@ -109,6 +109,30 @@ fn three_way_already_applied() {
     am(&mut fx, &["-3", "series.mbox"]);
 }
 
+/// `--interactive`: answers from standard input (yes, no, an unknown
+/// answer, view, accept all, end of input), `--continue -i` after a
+/// conflict.
+#[test]
+fn interactive() {
+    for answers in ["y\nn\n", "x\nv\ny\ny\n", "A\n", "n\ny\n", "y\n", ""] {
+        let mut fx = base();
+        fx.compare(["am", "-i", "series.mbox"])
+            .stdin(answers)
+            .checks(STATE)
+            .run();
+    }
+    let mut fx = conflicting();
+    fx.compare(["am", "-i", "series.mbox"])
+        .stdin("y\n")
+        .checks(STATE)
+        .run();
+    let mut fx = fx.write("f", "resolved\n").git(["add", "f"]);
+    fx.compare(["am", "-i", "--continue"])
+        .stdin("y\nn\n")
+        .checks(STATE)
+        .run();
+}
+
 /// The base repository with `empty.mbox`, a mail without a patch.
 fn with_empty_mail() -> Fixture {
     let fx = base()

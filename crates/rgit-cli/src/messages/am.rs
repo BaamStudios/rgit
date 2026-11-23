@@ -68,13 +68,25 @@ pub const FORMAT_FLOWED: &str =
 pub const BINARY_NOOP: &str = "The -b/--binary option has been a no-op for long time, and\n\
 it will be removed. Please do not use it anymore.";
 pub const HINT_SHOW_PATCH: &str = "Use 'git am --show-current-patch=diff' to see the failed patch";
-pub const HINT_CONTINUE: &str = "When you have resolved this problem, run \"git am --continue\".";
-pub const HINT_SKIP: &str = "If you prefer to skip this patch, run \"git am --skip\" instead.";
-pub const HINT_ALLOW_EMPTY: &str =
-    "To record the empty patch as an empty commit, run \"git am --allow-empty\".";
-pub const HINT_ABORT: &str =
-    "To restore the original branch and stop patching, run \"git am --abort\".";
-pub const INTERACTIVE_UNSUPPORTED: &str = "am --interactive is not supported by rgit yet";
+/// The hints after a failed patch; `cmd` is `git am` or `git am -i`.
+pub fn hint_continue(cmd: &str) -> String {
+    format!("When you have resolved this problem, run \"{cmd} --continue\".")
+}
+pub fn hint_skip(cmd: &str) -> String {
+    format!("If you prefer to skip this patch, run \"{cmd} --skip\" instead.")
+}
+pub fn hint_allow_empty(cmd: &str) -> String {
+    format!("To record the empty patch as an empty commit, run \"{cmd} --allow-empty\".")
+}
+pub fn hint_abort(cmd: &str) -> String {
+    format!("To restore the original branch and stop patching, run \"{cmd} --abort\".")
+}
+
+/// `--interactive`.
+pub const COMMIT_BODY_IS: &str = "Commit Body is:";
+pub const BODY_RULE: &str = "--------------------------";
+pub const APPLY_PROMPT: &str = "Apply? [y]es/[n]o/[e]dit/[v]iew patch/[a]ccept all: ";
+pub const CANNOT_READ_STDIN: &str = "unable to read from stdin; aborting";
 
 pub fn previous_dir_exists(dir: &str) -> String {
     format!("previous rebase directory {dir} still exists but mbox given.")

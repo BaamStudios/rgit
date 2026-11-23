@@ -21,7 +21,10 @@
 //! (`original-commit`), the rewritten commits are listed in `rewritten`
 //! for the `post-rewrite` hook, and `ORIG_HEAD` stays rebase's.
 //!
-//! Not done yet (#136): `--interactive`, rerere.
+//! `--interactive` asks before each patch (not kept in the state, like
+//! git).
+//!
+//! Not done yet (#136): rerere.
 
 use std::ffi::OsString;
 use std::io::{IsTerminal as _, Read, Write};
@@ -330,6 +333,14 @@ struct Am<'c> {
     sign: Option<crate::signing::Sign>,
     /// `--rebasing`, or a session it started.
     rebasing: bool,
+    /// `-i`: ask before each patch (until "accept all").
+    interactive: bool,
+}
+
+/// An answer to the `--interactive` question.
+enum Answer {
+    Yes,
+    No,
 }
 
 /// What applying a patch did.
@@ -478,15 +489,16 @@ impl<'c> Am<'c> {
                 text.push('\n');
             }
             None => {
-                text.push_str(msg::HINT_CONTINUE);
+                let cmd = if self.interactive { "git am -i" } else { "git am" };
+                text.push_str(&msg::hint_continue(cmd));
                 text.push('\n');
-                text.push_str(msg::HINT_SKIP);
+                text.push_str(&msg::hint_skip(cmd));
                 text.push('\n');
                 if empty {
-                    text.push_str(msg::HINT_ALLOW_EMPTY);
+                    text.push_str(&msg::hint_allow_empty(cmd));
                     text.push('\n');
                 }
-                text.push_str(msg::HINT_ABORT);
+                text.push_str(&msg::hint_abort(cmd));
                 text.push('\n');
             }
         }
@@ -698,6 +710,72 @@ impl<'c> Am<'c> {
         line.push(b'>');
         let conf = seq::trailer_config(&repo)?;
         Ok(rgit_trailer::append_signoff(message, &line, &conf, b"#"))
+    }
+
+    // ------------------------------------------------------------------
+    // `--interactive`.
+
+    /// Shows the message of the current patch and asks whether to apply
+    /// it: `e` edits the message, `v` shows the patch (after a conflict:
+    /// the resolution), `a` applies this and all further patches.
+    fn ask(&mut self, resolved: bool) -> Result<Answer, Die> {
+        loop {
+            let mut message = std::fs::read(self.path("final-commit")).unwrap_or_default();
+            if !message.is_empty() && !message.ends_with(b"\n") {
+                message.push(b'\n');
+            }
+            let mut text = format!("{}\n{}\n", msg::COMMIT_BODY_IS, msg::BODY_RULE).into_bytes();
+            text.extend_from_slice(&message);
+            text.extend_from_slice(format!("{}\n{}", msg::BODY_RULE, msg::APPLY_PROMPT).as_bytes());
+            {
+                let mut o = std::io::stdout().lock();
+                let _ = o.write_all(&text);
+                let _ = o.flush();
+            }
+            let mut line = String::new();
+            let read = std::io::stdin().read_line(&mut line).map_err(io_die)?;
+            if read == 0 {
+                return Err(Die::Fatal(msg::CANNOT_READ_STDIN.to_owned()));
+            }
+            match line.trim_start().chars().next().map(|c| c.to_ascii_lowercase()) {
+                Some('y') => return Ok(Answer::Yes),
+                Some('n') => return Ok(Answer::No),
+                Some('a') => {
+                    self.interactive = false;
+                    return Ok(Answer::Yes);
+                }
+                Some('e') => self.edit_message()?,
+                Some('v') if resolved => {
+                    self.run_self(&["diff".into(), "--cached".into()], &[], false, false)?;
+                }
+                Some('v') => {
+                    let patch = std::fs::read(self.path("patch")).unwrap_or_default();
+                    let mut o = std::io::stdout().lock();
+                    let _ = o.write_all(&patch);
+                    let _ = o.flush();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `e`: the message of the current patch in the editor.
+    fn edit_message(&self) -> Result<(), Die> {
+        let env = SystemEnv::default();
+        let editor = rgit_ident::editor::editor(&self.config, &env).map_err(|p| {
+            p.print();
+            Die::Exit(rgit_options::EXIT_FATAL)
+        })?;
+        let opts = rgit_ident::editor::LaunchOptions {
+            hint: rgit_ident::editor::waiting_hint_enabled(&self.config, &env),
+            env: self.ctx.child_env(),
+            cwd: None,
+        };
+        if let Err(e) = rgit_ident::editor::launch(editor.as_deref(), &self.path("final-commit"), &opts) {
+            e.print();
+            return Err(Die::Exit(rgit_options::EXIT_FATAL));
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1015,6 +1093,12 @@ impl<'c> Am<'c> {
                 }
             }
             retry = false;
+            if self.interactive {
+                if let Answer::No = self.ask(false)? {
+                    self.next_patch()?;
+                    continue;
+                }
+            }
             let message = std::fs::read(self.path("final-commit")).unwrap_or_default();
             let subject = lossy(first_line(&message));
             let patch_empty = std::fs::metadata(self.path("patch"))
@@ -1065,9 +1149,17 @@ impl<'c> Am<'c> {
 
     /// `--continue` (and `--allow-empty`).
     fn resolved(&mut self, allow_empty: bool) -> CmdResult {
-        let mut message = std::fs::read(self.path("final-commit")).unwrap_or_default();
+        let message = std::fs::read(self.path("final-commit")).unwrap_or_default();
         let subject = lossy(first_line(&message));
         out(&msg::applying(&subject));
+        if self.interactive {
+            if let Answer::No = self.ask(true)? {
+                self.next_patch()?;
+                return self.run(false);
+            }
+        }
+        // The message may have been edited.
+        let mut message = std::fs::read(self.path("final-commit")).unwrap_or_default();
         let repo = self.repo()?;
         let (index, _) = repo.read_index()?;
         if index.has_conflicts() {
@@ -1674,9 +1766,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if binary.get() == 1 {
         eprintln!("{}", msg::BINARY_NOOP);
     }
-    if interactive.get() == 1 {
-        return Err(Die::Fatal(msg::INTERACTIVE_UNSUPPORTED.to_owned()));
-    }
     let format = match patch_format.borrow().as_deref() {
         None => None,
         Some("mbox") => Some(Format::Mbox),
@@ -1752,6 +1841,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         sign: None,
         empty: empty.get(),
         rebasing: rebasing.get() == 1 || dir.join("rebasing").exists(),
+        interactive: interactive.get() == 1,
     };
     am.sign = crate::signing::resolve(&am.config, gpg_sign.into_inner());
 
