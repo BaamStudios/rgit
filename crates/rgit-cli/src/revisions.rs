@@ -6,7 +6,7 @@
 //! Objects come from `rgit-odb` (loose objects, packs and alternates).
 //! Reflogs are read from `logs/` directly until #30 provides them.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -34,6 +34,8 @@ pub struct Objects {
     /// Replacements (`refs/replace/<id>`), see [`Objects::use_replace_refs`].
     replace: std::collections::HashMap<ObjectId, ObjectId>,
     replacing: bool,
+    /// Commits read last (a walk reads each one several times).
+    recent: RefCell<crate::objects::Recent>,
 }
 
 impl Objects {
@@ -96,6 +98,7 @@ impl Objects {
             shallow,
             replace: std::collections::HashMap::new(),
             replacing: false,
+            recent: RefCell::new(crate::objects::Recent::new(1024, 4 << 20)),
         }
     }
 }
@@ -117,8 +120,20 @@ impl ObjectLookup for Objects {
     }
 
     fn read(&self, oid: &ObjectId) -> Result<Option<(ObjectKind, Vec<u8>)>, LookupError> {
-        match self.odb.read(self.replaced(oid)) {
-            Ok(r) => Ok(r.map(|r| (r.kind, r.data))),
+        let oid = self.replaced(oid);
+        if let Some((kind, data)) = self.recent.borrow_mut().get(oid) {
+            return Ok(Some((kind, data.to_vec())));
+        }
+        match self.odb.read(oid) {
+            Ok(Some(r)) => {
+                if r.kind == ObjectKind::Commit {
+                    self.recent
+                        .borrow_mut()
+                        .insert(*oid, r.kind, r.data.as_slice().into());
+                }
+                Ok(Some((r.kind, r.data)))
+            }
+            Ok(None) => Ok(None),
             Err(e) => Err(odb_error(e)),
         }
     }

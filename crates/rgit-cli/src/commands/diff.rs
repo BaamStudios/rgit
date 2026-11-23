@@ -336,6 +336,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
         }
         (2, false) => {
+            repo.attributes_without_index()?;
             let mut w = TreeDiff {
                 repo: &repo,
                 pathspec: &pathspec,

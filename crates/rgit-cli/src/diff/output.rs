@@ -135,6 +135,9 @@ pub struct Output<'a> {
     color_moved: (super::moved::Mode, super::moved::MovedWs),
     /// Diff drivers (the `diff` attribute).
     drivers: Drivers,
+    /// The path the `diff` attribute was looked up for last, and the
+    /// answer.
+    last_diff_attr: std::cell::RefCell<Option<(Vec<u8>, DiffAttr)>>,
     /// `--attr-source` / `GIT_ATTR_SOURCE` / `attr.tree`: the tree the
     /// `diff` attribute is read from (see [`crate::attributes::tree_source`]).
     pub attr_tree: Option<Option<ObjectId>>,
@@ -720,6 +723,7 @@ impl<'a> Output<'a> {
                 .map(|(s, p)| (*s, p.as_bytes().to_vec())),
             output: opts.output.as_ref().map(|o| cwd.join(o)),
             drivers: Drivers::default(),
+            last_diff_attr: Default::default(),
             attr_tree: None,
             outside: None,
             textconv_caches: Default::default(),
@@ -1876,7 +1880,19 @@ impl Output<'_> {
                 let id = attrs.id(b"diff");
                 attrs.lookup(path, false).get(id).clone()
             }
-            None => repo.converter()?.attr(path, b"diff"),
+            None => {
+                // Asked several times per file (textconv of both sides,
+                // binary check, ...): the last answer is kept.
+                if let Some((p, attr)) = self.last_diff_attr.borrow().as_ref() {
+                    if p == path {
+                        return Ok(attr.clone());
+                    }
+                }
+                let state = repo.converter()?.attr(path, b"diff");
+                let attr = self.drivers.resolve(&repo.config, &state)?;
+                *self.last_diff_attr.borrow_mut() = Some((path.to_vec(), attr.clone()));
+                return Ok(attr);
+            }
         };
         self.drivers.resolve(&repo.config, &state)
     }

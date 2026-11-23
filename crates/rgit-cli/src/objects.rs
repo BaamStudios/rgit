@@ -5,7 +5,9 @@
 //!
 //! Interim glue until the object database serves packs itself.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::ObjectKind;
@@ -83,5 +85,58 @@ impl Objects {
             len += 1;
         }
         id.to_hex_with_len(len)
+    }
+}
+
+/// An object kept by [`Recent`].
+type Kept = (ObjectKind, Rc<[u8]>);
+
+/// The objects read last, by id: `log -p` reads every commit several
+/// times (walk, entry, parent tree) and most trees twice (as the new side
+/// of one commit's diff and the old side of the next). Two generations
+/// bound the memory: when the current one is full it becomes the old one
+/// and the previous old one is dropped.
+pub struct Recent {
+    cur: HashMap<ObjectId, Kept>,
+    old: HashMap<ObjectId, Kept>,
+    bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+}
+
+impl Recent {
+    /// A cache whose generations hold up to `max_entries` objects or
+    /// `max_bytes` bytes of content.
+    pub fn new(max_entries: usize, max_bytes: usize) -> Recent {
+        Recent {
+            cur: HashMap::new(),
+            old: HashMap::new(),
+            bytes: 0,
+            max_entries,
+            max_bytes,
+        }
+    }
+
+    /// The object `id`, if it was read recently.
+    pub fn get(&mut self, id: &ObjectId) -> Option<Kept> {
+        if let Some(v) = self.cur.get(id) {
+            return Some(v.clone());
+        }
+        let v = self.old.remove(id)?;
+        self.insert(*id, v.0, v.1.clone());
+        Some(v)
+    }
+
+    /// Remembers object `id`.
+    pub fn insert(&mut self, id: ObjectId, kind: ObjectKind, data: Rc<[u8]>) {
+        if data.len() > self.max_bytes {
+            return;
+        }
+        if self.cur.len() >= self.max_entries || self.bytes + data.len() > self.max_bytes {
+            self.old = std::mem::take(&mut self.cur);
+            self.bytes = 0;
+        }
+        self.bytes += data.len();
+        self.cur.insert(id, (kind, data));
     }
 }

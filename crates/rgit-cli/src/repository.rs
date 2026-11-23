@@ -4,7 +4,7 @@
 //! packs and alternates) plus revision lookup, abbreviations and output
 //! settings.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::ops::{Deref, DerefMut};
 
 use std::path::PathBuf;
@@ -60,6 +60,8 @@ pub struct Repo {
     inner: repo_objects::Repo,
     auto_abbrev: OnceCell<usize>,
     converter: OnceCell<Rc<Converter>>,
+    /// Trees read last (see [`Repo::read_tree_data`]).
+    trees: RefCell<crate::objects::Recent>,
 }
 
 impl Deref for Repo {
@@ -84,6 +86,7 @@ impl Repo {
             inner: repo_objects::Repo::open(ctx, setup)?,
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
+            trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
         })
     }
 
@@ -94,6 +97,7 @@ impl Repo {
             inner: repo_objects::Repo::open(ctx, setup)?,
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
+            trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
         })
     }
 
@@ -106,7 +110,28 @@ impl Repo {
             inner: repo_objects::Repo::open(ctx, setup)?,
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
+            trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
         }))
+    }
+
+    /// The content of tree `id` (the empty tree even when it is not
+    /// stored), `None` when it is missing, unreadable or not a tree.
+    /// Trees read last are kept: comparing the trees of a series of
+    /// commits reads most of them twice.
+    pub fn read_tree_data(&self, id: &ObjectId) -> Option<Rc<[u8]>> {
+        if let Some((_, data)) = self.trees.borrow_mut().get(id) {
+            return Some(data);
+        }
+        match self.inner.odb.read(id) {
+            Ok(Some(raw)) if raw.kind == ObjectKind::Tree => {
+                let data: Rc<[u8]> = raw.data.into();
+                self.trees
+                    .borrow_mut()
+                    .insert(*id, ObjectKind::Tree, data.clone());
+                Some(data)
+            }
+            _ => None,
+        }
     }
 
     /// The object database (loose objects, packs, alternates).
@@ -303,6 +328,21 @@ impl Repo {
         let c = Rc::new(Converter::worktree(self)?);
         let _ = self.converter.set(c.clone());
         Ok(c)
+    }
+
+    /// Makes [`Repo::converter`] read `.gitattributes` from the work tree
+    /// only, for commands that compare commits without reading the index
+    /// (`log`, `show`, `diff <commit> <commit>`): git has no index loaded
+    /// there, so an index copy of a `.gitattributes` file missing from the
+    /// work tree does not count. Does nothing once the converter exists.
+    ///
+    /// # Errors
+    /// Invalid `core.autocrlf` or `core.safecrlf`.
+    pub fn attributes_without_index(&self) -> Result<(), Die> {
+        if self.converter.get().is_none() {
+            let _ = self.converter.set(Rc::new(Converter::without_index(self)?));
+        }
+        Ok(())
     }
 
     /// `core.quotePath` (default true).

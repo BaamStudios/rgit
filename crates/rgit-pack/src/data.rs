@@ -263,7 +263,29 @@ pub(crate) fn inflate_exact(
     size: usize,
     offset: u64,
 ) -> Result<(Vec<u8>, u64), Error> {
-    let mut d = Decompress::new(true);
+    thread_local! {
+        /// One inflater per thread, reset for every entry: setting one up
+        /// costs about as much as inflating a small object.
+        static INFLATER: std::cell::RefCell<Option<Decompress>> = const { std::cell::RefCell::new(None) };
+    }
+    let mut d = match INFLATER.with_borrow_mut(Option::take) {
+        Some(mut d) => {
+            d.reset(true);
+            d
+        }
+        None => Decompress::new(true),
+    };
+    let r = inflate_with(&mut d, input, size, offset);
+    INFLATER.with_borrow_mut(|slot| *slot = Some(d));
+    r
+}
+
+fn inflate_with(
+    d: &mut Decompress,
+    input: &[u8],
+    size: usize,
+    offset: u64,
+) -> Result<(Vec<u8>, u64), Error> {
     // zlib cannot expand by more than about 1032:1; do not trust a huge
     // size from a corrupt header for the initial allocation.
     let first = size

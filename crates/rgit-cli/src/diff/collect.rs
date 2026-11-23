@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use rgit_hash::ObjectId;
 use rgit_index::{Entry, Index};
-use rgit_object::{Object, TreeEntry};
+use rgit_object::{EntryMode, Object, TreeEntry, TreeEntryRef, TreeIter, entry_cmp};
 use rgit_pathspec::{DirInterest, Pathspec};
 use rgit_worktree::stat::{Checker, Status, mode_from_metadata};
 
@@ -155,6 +155,128 @@ fn read_tree(repo: &Repo, id: &ObjectId) -> Result<Vec<TreeEntry>, Die> {
     }
 }
 
+/// The content of tree `id` (for [`TreeEntryRef`]s borrowing from it).
+fn read_tree_data(repo: &Repo, id: &ObjectId) -> Result<std::rc::Rc<[u8]>, Die> {
+    match repo.read_tree_data(id) {
+        Some(data) => Ok(data),
+        None if rgit_hash::hash_object(id.kind(), "tree", b"").ok() == Some(*id) => {
+            Ok(Vec::new().into())
+        }
+        None => Err(Die::Fatal(msg::could_not_read(&id.to_hex()))),
+    }
+}
+
+/// The length of the common prefix of `a` and `b`.
+fn common_prefix(a: &[u8], b: &[u8]) -> usize {
+    const STEP: usize = 64;
+    let max = a.len().min(b.len());
+    let mut n = 0;
+    while n + STEP <= max && a[n..n + STEP] == b[n..n + STEP] {
+        n += STEP;
+    }
+    while n < max && a[n] == b[n] {
+        n += 1;
+    }
+    n
+}
+
+/// The length of the common suffix of `a` and `b`.
+fn common_suffix(a: &[u8], b: &[u8]) -> usize {
+    const STEP: usize = 64;
+    let max = a.len().min(b.len());
+    let mut n = 0;
+    while n + STEP <= max
+        && a[a.len() - n - STEP..a.len() - n] == b[b.len() - n - STEP..b.len() - n]
+    {
+        n += STEP;
+    }
+    while n < max && a[a.len() - 1 - n] == b[b.len() - 1 - n] {
+        n += 1;
+    }
+    n
+}
+
+/// Checks every entry of the tree `id` with the content `data`.
+fn check_tree(id: &ObjectId, data: &[u8]) -> Result<(), Die> {
+    let mut iter = TreeIter::new(id.kind(), data);
+    while let Some(r) = iter.skip_entry() {
+        r.map_err(|_| Die::Fatal(msg::could_not_read(&id.to_hex())))?;
+    }
+    Ok(())
+}
+
+/// The entries in which the trees `a` and `b` (contents `da` and `db`)
+/// may differ. Runs of entries that are byte for byte the same at the
+/// start and at the end of both trees are left out without being
+/// compared. Every entry of `a` is checked and the left-out entries of
+/// `b` are the same bytes, so a malformed tree is still found.
+fn differing_entries<'d>(
+    a: Option<&ObjectId>,
+    da: &'d [u8],
+    b: Option<&ObjectId>,
+    db: &'d [u8],
+) -> Result<(Vec<TreeEntryRef<'d>>, Vec<TreeEntryRef<'d>>), Die> {
+    let bad = |id: &ObjectId| Die::Fatal(msg::could_not_read(&id.to_hex()));
+    let pre = if b.is_some() {
+        common_prefix(da, db)
+    } else {
+        0
+    };
+    // `a` is checked; entries that end inside the common prefix are the
+    // same in `b` (both trees start with the same bytes up to there).
+    // For the others the length of the content after them is kept.
+    let mut skip = 0;
+    let mut a_rests: Vec<usize> = Vec::new();
+    if let Some(a) = a {
+        let mut iter = TreeIter::new(a.kind(), da);
+        while let Some(r) = iter.skip_entry() {
+            r.map_err(|_| bad(a))?;
+            let rest = iter.rest().len();
+            if a_rests.is_empty() && da.len() - rest <= pre {
+                skip = da.len() - rest;
+            } else {
+                a_rests.push(rest);
+            }
+        }
+    }
+    let mut a_end = a_rests.len();
+    let mut eb = Vec::new();
+    if let Some(b) = b {
+        let suf = common_suffix(&da[skip..], &db[skip..]);
+        let a_rest = da.len() - skip;
+        let mut iter = TreeIter::new(b.kind(), &db[skip..]);
+        loop {
+            let rest = iter.rest().len();
+            if rest <= suf {
+                // The rest of `b` is the same as the rest of `a` from
+                // where as much content is left (`a_rests` decrease).
+                if rest == a_rest {
+                    a_end = 0;
+                    break;
+                }
+                if let Ok(n) = a_rests.binary_search_by(|r| rest.cmp(r)) {
+                    a_end = n + 1;
+                    break;
+                }
+            }
+            match iter.next() {
+                Some(e) => eb.push(e.map_err(|_| bad(b))?),
+                None => break,
+            }
+        }
+    }
+    let ea = match (a, a_end) {
+        (Some(a), n) if n > 0 => {
+            let end = da.len() - a_rests[n - 1];
+            TreeIter::new(a.kind(), &da[skip..end])
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| bad(a))?
+        }
+        _ => Vec::new(),
+    };
+    Ok((ea, eb))
+}
+
 fn join(base: &[u8], name: &[u8]) -> Vec<u8> {
     let mut p = base.to_vec();
     p.extend_from_slice(name);
@@ -278,34 +400,47 @@ impl TreeDiff<'_> {
         b: Option<&ObjectId>,
         base: &[u8],
     ) -> Result<(), Die> {
-        let ea = match a {
-            Some(id) => read_tree(self.repo, id)?,
-            None => Vec::new(),
+        // The entries borrow from the tree contents; only changed ones
+        // are copied.
+        let da = match a {
+            Some(id) => read_tree_data(self.repo, id)?,
+            None => Vec::new().into(),
         };
-        let eb = match b {
-            Some(id) => read_tree(self.repo, id)?,
-            None => Vec::new(),
+        let db = match b {
+            Some(id) => match read_tree_data(self.repo, id) {
+                Ok(d) => d,
+                Err(e) => {
+                    // A malformed `a` is reported first.
+                    if let Some(a) = a {
+                        check_tree(a, &da)?;
+                    }
+                    return Err(e);
+                }
+            },
+            None => Vec::new().into(),
         };
+        let (ea, eb) = differing_entries(a, &da, b, &db)?;
+        let canonical = |e: &TreeEntryRef<'_>| EntryMode::from_bits(e.mode_bits).canonical();
         let (mut i, mut j) = (0, 0);
         while i < ea.len() || j < eb.len() {
             let ord = match (ea.get(i), eb.get(j)) {
-                (Some(x), Some(y)) => x.cmp_tree_order(y),
+                (Some(x), Some(y)) => entry_cmp(x.name, x.is_tree(), y.name, y.is_tree()),
                 (Some(_), None) => Ordering::Less,
                 _ => Ordering::Greater,
             };
             match ord {
                 Ordering::Less => {
-                    self.one(join(base, &ea[i].name), Some(&ea[i]), None)?;
+                    self.one(join(base, ea[i].name), Some(&ea[i].to_owned()), None)?;
                     i += 1;
                 }
                 Ordering::Greater => {
-                    self.one(join(base, &eb[j].name), None, Some(&eb[j]))?;
+                    self.one(join(base, eb[j].name), None, Some(&eb[j].to_owned()))?;
                     j += 1;
                 }
                 Ordering::Equal => {
                     let (x, y) = (&ea[i], &eb[j]);
-                    if x.oid != y.oid || x.mode.canonical() != y.mode.canonical() {
-                        self.one(join(base, &x.name), Some(x), Some(y))?;
+                    if x.oid != y.oid || canonical(x) != canonical(y) {
+                        self.one(join(base, x.name), Some(&x.to_owned()), Some(&y.to_owned()))?;
                     }
                     i += 1;
                     j += 1;

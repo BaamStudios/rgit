@@ -53,9 +53,10 @@ impl EntryMode {
             }
             bits = bits.checked_mul(8)?.checked_add(u32::from(d - b'0'))?;
         }
-        let canonical = EntryMode::from_bits(bits);
-        if canonical.canonical_digits().as_bytes() == digits {
-            Some(canonical)
+        // The digits are the canonical text of `bits` unless they are
+        // zero padded.
+        if digits[0] != b'0' || digits.len() == 1 {
+            Some(EntryMode::from_bits(bits))
         } else {
             Some(EntryMode {
                 bits,
@@ -308,13 +309,37 @@ impl<'a> TreeIter<'a> {
         TreeIter { hash, data }
     }
 
-    fn next_entry(&mut self) -> Result<TreeEntryRef<'a>, Error> {
+    /// The content not iterated over yet.
+    pub fn rest(&self) -> &'a [u8] {
+        self.data
+    }
+
+    /// Skip the next entry, checked like [`Iterator::next`] checks it but
+    /// not built; `None` at the end. After an error the iterator is
+    /// exhausted.
+    pub fn skip_entry(&mut self) -> Option<Result<(), Error>> {
+        if self.data.is_empty() {
+            return None;
+        }
+        Some(match self.split_entry() {
+            Ok((_, _, nul)) => {
+                self.data = &self.data[nul + 1 + self.hash.byte_len()..];
+                Ok(())
+            }
+            Err(e) => {
+                self.data = &[];
+                Err(e)
+            }
+        })
+    }
+
+    /// Checks the next entry: the position of the space after the mode,
+    /// the mode and the position of the NUL after the name.
+    #[inline]
+    fn split_entry(&self) -> Result<(usize, u32, usize), Error> {
         let data = self.data;
         let hash_len = self.hash.byte_len();
-        let nul = data
-            .iter()
-            .position(|&b| b == 0)
-            .ok_or(Error::TreeTooShort)?;
+        let nul = memchr::memchr(0, data).ok_or(Error::TreeTooShort)?;
         if data.len() - nul - 1 < hash_len {
             return Err(Error::TreeTooShort);
         }
@@ -323,19 +348,23 @@ impl<'a> TreeIter<'a> {
             .iter()
             .position(|&b| b == b' ')
             .ok_or(Error::TreeMalformedMode)?;
-        let mode_digits = &head[..sp];
-        let mode = EntryMode::from_octal(mode_digits).ok_or(Error::TreeMalformedMode)?;
-        let name = &head[sp + 1..];
-        if name.is_empty() {
+        let mode = EntryMode::from_octal(&head[..sp]).ok_or(Error::TreeMalformedMode)?;
+        if sp + 1 == nul {
             return Err(Error::TreeEmptyFilename);
         }
-        let oid = ObjectId::from_bytes(self.hash, &data[nul + 1..nul + 1 + hash_len])
-            .expect("length checked");
-        self.data = &data[nul + 1 + hash_len..];
+        Ok((sp, mode.bits(), nul))
+    }
+
+    fn next_entry(&mut self) -> Result<TreeEntryRef<'a>, Error> {
+        let (sp, mode_bits, nul) = self.split_entry()?;
+        let data = self.data;
+        let end = nul + 1 + self.hash.byte_len();
+        let oid = ObjectId::from_bytes(self.hash, &data[nul + 1..end]).expect("length checked");
+        self.data = &data[end..];
         Ok(TreeEntryRef {
-            mode_digits,
-            mode_bits: mode.bits(),
-            name,
+            mode_digits: &data[..sp],
+            mode_bits,
+            name: &data[sp + 1..nul],
             oid,
         })
     }

@@ -197,6 +197,90 @@ impl Pack {
                 data: bytes.to_vec(),
             });
         }
+        if let Some(obj) = self.read_chain_fast(data, offset, cache, &mut *external) {
+            return Ok(obj);
+        }
+        self.read_chain(data, offset, cache, external)
+    }
+
+    /// [`Pack::read_at`] for an intact chain: no object ids are looked up,
+    /// so the reverse index (a sort of every offset in the pack) is not
+    /// built. Gives up with `None` on the first problem; the careful
+    /// [`Pack::read_chain`] then reads the entry again and recovers or
+    /// reports it.
+    fn read_chain_fast(
+        &self,
+        data: &PackData,
+        offset: u64,
+        cache: &mut DeltaBaseCache,
+        external: ExternalBase<'_>,
+    ) -> Option<Object> {
+        let mut chain: Vec<EntryHeader> = Vec::new();
+        let mut cur = offset;
+        let max_depth = self.index.len() as usize + 1;
+        let (kind, mut base, from_cache): (ObjectKind, Arc<[u8]>, bool) = loop {
+            if !chain.is_empty() {
+                if let Some((k, b)) = cache.get(self.uid, cur) {
+                    break (k, b, true);
+                }
+            }
+            let h = data.entry_header(cur).ok()?;
+            match h.kind {
+                EntryKind::Base(k) => {
+                    let (bytes, _) = data.inflate(&h).ok()?;
+                    break (k, bytes.into(), false);
+                }
+                EntryKind::OfsDelta { base_offset } => {
+                    chain.push(h);
+                    cur = base_offset;
+                }
+                EntryKind::RefDelta { base: base_id } => {
+                    chain.push(h);
+                    match self.index.lookup(&base_id) {
+                        Some(pos) => cur = self.index.offset_at(pos).ok()?,
+                        None => {
+                            let obj = external(&base_id)?;
+                            break (obj.kind, obj.data.into(), true);
+                        }
+                    }
+                }
+            }
+            if chain.len() > max_depth {
+                return None;
+            }
+        };
+        if chain.is_empty() {
+            return Some(Object {
+                kind,
+                data: base.to_vec(),
+            });
+        }
+        if !from_cache {
+            cache.insert(self.uid, cur, kind, base.clone());
+        }
+        for i in (0..chain.len()).rev() {
+            let h = &chain[i];
+            let (delta, _) = data.inflate(h).ok()?;
+            let result = apply_delta(&base, &delta).ok()?;
+            if i == 0 {
+                return Some(Object { kind, data: result });
+            }
+            base = result.into();
+            cache.insert(self.uid, h.offset, kind, base.clone());
+        }
+        unreachable!("chain is not empty")
+    }
+
+    /// The careful walk behind [`Pack::read_at`]: checks every delta base
+    /// offset against the reverse index and falls back to other copies of
+    /// unreadable objects.
+    fn read_chain(
+        &self,
+        data: &PackData,
+        offset: u64,
+        cache: &mut DeltaBaseCache,
+        external: ExternalBase<'_>,
+    ) -> Result<Object, Error> {
         // Walk down to a whole object (or a cached base), remembering the
         // deltas on the way.
         let mut chain: Vec<EntryHeader> = Vec::new();

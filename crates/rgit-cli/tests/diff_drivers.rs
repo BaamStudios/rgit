@@ -434,3 +434,32 @@ fn no_index_outside_repository_uses_global_attributes() {
             .run();
     }
 }
+
+/// `log`, `show` and `diff <commit> <commit>` do not read the index, so
+/// a `.gitattributes` file that is only in the index (deleted from the
+/// work tree) does not count there; `diff <commit>` against the work
+/// tree uses it.
+#[test]
+fn index_attributes_only_where_the_index_is_read() {
+    let mut fx = fixture()
+        .write(".gitattributes", "plain.txt diff=up\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "second"])
+        .remove(".gitattributes");
+    let mut failures = Vec::new();
+    let cases: &[&[&str]] = &[
+        &["log", "-p", "-1", "--", "plain.txt"],
+        &["show", "HEAD", "--", "plain.txt"],
+        &["diff", "HEAD^", "HEAD", "--", "plain.txt"],
+        &["diff", "HEAD^", "--", "plain.txt"],
+        &["diff-tree", "-p", "--textconv", "HEAD", "--", "plain.txt"],
+    ];
+    for case in cases {
+        let mut argv = vec!["-c", "diff.up.textconv=tr a-z A-Z <"];
+        argv.extend_from_slice(case);
+        if let Err(m) = fx.compare(&argv).checks(Check::OUTPUT).try_run() {
+            failures.push(format!("{argv:?}\n{}", m.report()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
