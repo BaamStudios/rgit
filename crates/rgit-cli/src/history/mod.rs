@@ -14,7 +14,7 @@ pub mod mailmap;
 mod options;
 mod paths;
 pub mod pretty;
-mod recode;
+pub(crate) mod recode;
 mod tips;
 mod userformat;
 
@@ -35,6 +35,7 @@ use rgit_revwalk::walk::{CommitInfo, CommitSource, Shown, Side, Walk};
 use crate::messages::rev_list as msg;
 use crate::repo::{self, Mode};
 use crate::revisions::{self, Config, IndexFile, Objects, Refs, WorkTree};
+use crate::signing::verify::{self, Check};
 use crate::{Context, Die};
 use decorate::{Colors, Decorations, Parts};
 pub use options::Options;
@@ -149,6 +150,8 @@ struct Commits<'r, 'a> {
     patch_ids: Option<crate::patch_id::CommitIds<'r>>,
     /// Path limiting and `--simplify-by-decoration`.
     paths: Option<paths::PathFilter>,
+    /// `--author`/`--committer` match the identities mapped through this.
+    mailmap: Option<mailmap::Mailmap>,
 }
 
 impl CommitSource for Commits<'_, '_> {
@@ -175,7 +178,10 @@ impl CommitSource for Commits<'_, '_> {
             return Ok(true);
         };
         let (_, raw) = self.repo.read_commit(id).ok_or(*id)?;
-        Ok(grep.matches(&raw))
+        Ok(match &self.mailmap {
+            Some(mm) => grep.matches(&mm.rewrite_object(ObjectKind::Commit, &raw)),
+            None => grep.matches(&raw),
+        })
     }
 
     fn patch_equivalent(
@@ -312,6 +318,15 @@ pub fn show_main(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
     run_main(ctx, Command::Log, argv, true)
 }
 
+/// `git diff-tree` with `-v`, `--pretty` or `--format`: the given commits
+/// shown like `show` does, but with plumbing diffs (`argv` as for `show`).
+pub fn diff_tree_show(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
+    let mut opts = Options::parse(Command::Log, argv)?;
+    opts.show = true;
+    opts.plumbing = true;
+    run_parsed(ctx, Command::Log, opts)
+}
+
 /// Set up the repository, parse `argv` and run `cmd`.
 pub fn main(ctx: &Context, cmd: Command, argv: &[String]) -> Result<i32, Die> {
     run_main(ctx, cmd, argv, false)
@@ -330,6 +345,10 @@ fn run_main(ctx: &Context, cmd: Command, argv: &[String], show: bool) -> Result<
     }
     let mut opts = Options::parse(cmd, argv)?;
     opts.show = show;
+    run_parsed(ctx, cmd, opts)
+}
+
+fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die> {
     let setup = repo::setup(ctx, Mode::Required)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
@@ -565,6 +584,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
                 None => None,
             },
             paths,
+            mailmap: None,
         },
         walk_opts,
     );
@@ -591,6 +611,173 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
         limited,
         unsorted,
     })
+}
+
+/// One commit of [`walk_formatted`].
+pub struct LogItem {
+    /// The commit in the output encoding.
+    pub commit: Commit,
+    /// Each of the requested user formats expanded for this commit.
+    pub expanded: Vec<Vec<u8>>,
+}
+
+/// The commits `log <args>` shows (from `HEAD` without revisions), each
+/// with the user formats `formats` expanded, and the repository's
+/// mailmap (`shortlog`).
+pub fn walk_formatted(
+    ctx: &Context,
+    args: &[String],
+    formats: &[Vec<u8>],
+) -> Result<(Vec<LogItem>, mailmap::Mailmap), Die> {
+    let mut opts = Options::parse(Command::Log, args)?;
+    let setup = repo::setup(ctx, Mode::Required)?;
+    let kind = setup.format.object_format;
+    let config = revisions::load_config(ctx, &setup)?;
+    opts.apply_config(Command::Log, &config)?;
+    let rev_opts = revisions::options(ctx, &config, kind)?;
+    let shallow = setup.common_dir.join("shallow");
+    let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    let refs = Refs::new(&setup, kind);
+    let cfg = Config(&config);
+    let index = IndexFile::new(&setup, kind);
+    let work_tree = setup.work_tree.clone().map(WorkTree);
+    let rev_repo = revision::Repo {
+        objects: &objects,
+        refs: &refs,
+        config: &cfg,
+        index: Some(&index),
+        work_tree: work_tree
+            .as_ref()
+            .map(|w| w as &dyn revision::WorkTreeLookup),
+        work_tree_info: revisions::work_tree_info(&setup),
+    };
+    let resolver = Resolver::new(rev_repo, rev_opts);
+    let repo = Repo {
+        setup: &setup,
+        config: &config,
+        objects: &objects,
+        refs: &refs,
+        resolver: &resolver,
+    };
+    if opts.has_no_tips() {
+        opts.push_head();
+    }
+    let resolved = tips::resolve(&repo, &opts)?;
+    let grep = if opts.grep.is_empty() {
+        None
+    } else {
+        Some(CommitGrep::new(&opts.grep).map_err(Die::Fatal)?)
+    };
+    let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+    let mut walk = Walk::new(
+        Commits {
+            repo: &repo,
+            grep,
+            patch_ids: None,
+            paths: None,
+            mailmap: None,
+        },
+        opts.walk.clone(),
+    );
+    for (id, negative, side) in &resolved.commits {
+        walk.push_side(id, *negative, *side).map_err(walk_error)?;
+    }
+    let hexlen = repo.objects.hash_kind().hex_len();
+    let abbrev_len = match opts.abbrev {
+        Abbrev::Default => repo.resolver.default_abbrev(),
+        Abbrev::Digits(n) => n.min(hexlen),
+        Abbrev::Full => hexlen,
+    };
+    let pretty = Pretty::User {
+        format: Vec::new(),
+        terminator: true,
+    };
+    let user = if formats.is_empty() {
+        None
+    } else {
+        Some(user_settings(&repo, &opts, &pretty, Command::Log)?)
+    };
+    let p = Printer {
+        repo: &repo,
+        cmd: Command::Log,
+        opts: &opts,
+        abbrev_len,
+        style: Style {
+            mailmap: None,
+            pretty,
+            date_mode: opts.date_mode.clone(),
+            date_ctx: DateContext::from_env(),
+            commit_color: None,
+            zero: false,
+        },
+        decorations: user
+            .as_ref()
+            .map(|_| Decorations::load(&repo, &opts.decorate_filter)),
+        user,
+        decorate: false,
+        deco_colors: None,
+        notes: if formats.is_empty() {
+            None
+        } else {
+            notes_tree(&repo)
+        },
+        sources: None,
+        encoding: recode::output_encoding(repo.config),
+        out: Vec::new(),
+        first: true,
+        dist: None,
+        graph: None,
+        ended_line: true,
+        child_shown: std::collections::HashSet::new(),
+        next: None,
+        diff: None,
+        store: None,
+        usage: None,
+        // `%G` placeholders check signatures.
+        signing: if formats.iter().any(|f| f.windows(2).any(|w| w == b"%G")) {
+            Some(crate::signing::Settings::from_config(repo.config)?)
+        } else {
+            None
+        },
+        show_signature: false,
+        signature_colors: None,
+        signature_cache: std::cell::RefCell::new(None),
+    };
+    let mut items = Vec::new();
+    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+        let (commit, _) = p.read_shown(&s.id).ok_or_else(|| walk_error(s.id))?;
+        let mut expanded = Vec::with_capacity(formats.len());
+        if let Some(settings) = &p.user {
+            let parents = match walk.parents(&s.id) {
+                Some(found) => found.to_vec(),
+                None => repo.parents(&s.id, &commit),
+            };
+            let mark = if s.boundary {
+                b'-'
+            } else if s.same {
+                b'='
+            } else if s.side == Some(Side::Left) {
+                b'<'
+            } else {
+                b'>'
+            };
+            let item = Item {
+                id: &s.id,
+                commit: &commit,
+                parents: &parents,
+                mark,
+                source: None,
+                column: 0,
+            };
+            for fmt in formats {
+                let text = userformat::expand(fmt, settings, &item, &FormatLookup { p: &p })
+                    .map_err(|_| Die::Fatal(msg::UNABLE_TO_PARSE_PRETTY.to_string()))?;
+                expanded.push(text);
+            }
+        }
+        items.push(LogItem { commit, expanded });
+    }
+    Ok((items, mailmap::Mailmap::load(&repo)))
 }
 
 /// See [`sequencer_commits`].
@@ -634,6 +821,18 @@ struct Printer<'r, 'a> {
     /// `--boundary`: parents of the commits shown so far (boundary
     /// commits are drawn with those of their parents).
     child_shown: std::collections::HashSet<ObjectId>,
+    /// The object store, for `--unpacked` and `--disk-usage`.
+    store: Option<crate::repo_objects::Repo>,
+    /// `--disk-usage`: the bytes of the objects selected so far.
+    usage: Option<u64>,
+    /// The `gpg.*` settings, when signatures are shown or formatted.
+    signing: Option<crate::signing::Settings>,
+    /// `--show-signature` (`log.showSignature`).
+    show_signature: bool,
+    /// The colours of good and bad signatures (when colouring).
+    signature_colors: Option<(String, String)>,
+    /// The last signature check (`%G?` and friends ask repeatedly).
+    signature_cache: std::cell::RefCell<Option<(ObjectId, std::rc::Rc<Check>)>>,
 }
 
 /// The `reference` format.
@@ -659,6 +858,10 @@ impl Lookup for FormatLookup<'_, '_, '_> {
     fn notes(&self, id: &ObjectId) -> Option<Vec<u8>> {
         let tree = self.p.notes?;
         note(self.p.repo, &tree, &id.to_hex())
+    }
+
+    fn signature(&self, id: &ObjectId, commit: &rgit_object::Commit) -> std::rc::Rc<Check> {
+        self.p.signature_check(id, &commit.serialize())
     }
 }
 
@@ -704,6 +907,76 @@ fn notes_tree(repo: &Repo<'_>) -> Option<ObjectId> {
 }
 
 impl Printer<'_, '_> {
+    /// The signature check of commit `id` (raw object `raw`), cached for
+    /// the placeholders of one commit.
+    fn signature_check(&self, id: &ObjectId, raw: &[u8]) -> std::rc::Rc<Check> {
+        if let Some((cached, c)) = &*self.signature_cache.borrow() {
+            if cached == id {
+                return c.clone();
+            }
+        }
+        let check = match (
+            &self.signing,
+            verify::commit_signature(self.repo.objects.hash_kind(), raw),
+        ) {
+            (Some(settings), Some((payload, sig))) => verify::check(settings, &payload, &sig),
+            _ => Check::default(),
+        };
+        let check = std::rc::Rc::new(check);
+        *self.signature_cache.borrow_mut() = Some((*id, check.clone()));
+        check
+    }
+
+    /// The `--show-signature` lines of commit `id`: the check of its own
+    /// signature and of the signed tags it merged (`mergetag`).
+    fn signature_block(&self, id: &ObjectId, commit: &rgit_object::Commit, raw: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        if !self.show_signature {
+            return out;
+        }
+        let Some(settings) = &self.signing else {
+            return out;
+        };
+        let min = settings.min_trust_or(crate::signing::Trust::Undefined);
+        let color = |good: bool| {
+            self.signature_colors
+                .as_ref()
+                .map(|(g, b)| if good { g.as_str() } else { b.as_str() })
+        };
+        for tag in commit.mergetags() {
+            let mut data = tag.to_vec();
+            if !data.ends_with(b"\n") {
+                data.push(b'\n');
+            }
+            let name = rgit_object::Tag::parse(self.repo.objects.hash_kind(), &data)
+                .ok()
+                .and_then(|t| t.name().map(|n| String::from_utf8_lossy(n).into_owned()))
+                .unwrap_or_default();
+            let mut text = crate::messages::signing::merged_tag(&name).into_bytes();
+            text.push(b'\n');
+            let good = match verify::tag_signature(&data) {
+                Some((payload, sig)) => {
+                    let c = verify::check(settings, &payload, &sig);
+                    if c.not_run {
+                        text.extend_from_slice(
+                            crate::messages::signing::NO_SIGNATURE_SHOWN.as_bytes(),
+                        );
+                        text.push(b'\n');
+                    }
+                    text.extend_from_slice(&c.output);
+                    c.good(min)
+                }
+                None => false,
+            };
+            verify::show_lines(&text, color(good), &mut out);
+        }
+        if verify::commit_signature(self.repo.objects.hash_kind(), raw).is_some() {
+            let c = self.signature_check(id, raw);
+            verify::show_lines(&c.output, color(c.good(min)), &mut out);
+        }
+        out
+    }
+
     fn name(&self, id: &ObjectId, abbreviate: bool) -> String {
         if abbreviate {
             self.repo.abbrev(id, self.abbrev_len)
@@ -728,6 +1001,41 @@ impl Printer<'_, '_> {
         }
     }
 
+    /// `--unpacked` leaves out `id`, or `--disk-usage` counts it instead
+    /// of showing it.
+    fn diverted(&mut self, id: &ObjectId) -> bool {
+        let Some(store) = &self.store else {
+            return false;
+        };
+        if self.opts.unpacked
+            && matches!(
+                store.locate(id),
+                Some(crate::repo_objects::Location::Packed(..))
+            )
+        {
+            return true;
+        }
+        if let Some(total) = &mut self.usage {
+            *total += store.disk_size(id);
+            return true;
+        }
+        false
+    }
+
+    /// `--disk-usage`: the total, in bytes or (`=human`) larger units.
+    fn finish_usage(&mut self) {
+        let Some(total) = self.usage else {
+            return;
+        };
+        let text = if self.opts.disk_usage == Some(true) {
+            human_size(total)
+        } else {
+            total.to_string()
+        };
+        self.out.extend_from_slice(text.as_bytes());
+        self.out.push(b'\n');
+    }
+
     fn commit<S: CommitSource<Error = ObjectId>>(
         &mut self,
         walk: &Walk<S>,
@@ -735,6 +1043,9 @@ impl Printer<'_, '_> {
     ) -> Result<(), Die> {
         let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
         let id = s.id;
+        if !s.boundary && self.diverted(&id) {
+            return Ok(());
+        }
         let opts = self.opts;
         let was_first = self.first;
         let start = self.out.len();
@@ -762,6 +1073,20 @@ impl Printer<'_, '_> {
             Vec::new()
         };
         match opts.pretty {
+            None if self.cmd == Command::RevList && opts.zero => {
+                // `-z`: NUL-terminated fields; the boundary mark is a field
+                // of its own after the name (the parents follow it).
+                line.extend_from_slice(self.name(&id, opts.abbrev_commit).as_bytes());
+                if s.boundary {
+                    line.extend_from_slice(b"\0boundary=yes");
+                }
+                for p in &related {
+                    line.push(b' ');
+                    line.extend_from_slice(p.to_hex().as_bytes());
+                }
+                line.push(0);
+                self.out.extend_from_slice(&line);
+            }
             None => {
                 line.extend_from_slice(mark.as_bytes());
                 line.extend_from_slice(self.name(&id, opts.abbrev_commit).as_bytes());
@@ -809,6 +1134,7 @@ impl Printer<'_, '_> {
                     (Some(d), true) => d.format(&id, &Parts::default(), self.deco_colors.as_ref()),
                     _ => Vec::new(),
                 };
+                let signature = self.signature_block(&id, &commit, &raw);
                 let entry = Entry {
                     name: &commit_name,
                     shown_parents: &shown,
@@ -816,6 +1142,7 @@ impl Printer<'_, '_> {
                     commit: &commit,
                     raw: &raw,
                     decoration: &decoration,
+                    signature: &signature,
                 };
                 if self.cmd == Command::RevList {
                     // rev-list ends every multi-line entry with an empty line
@@ -934,8 +1261,11 @@ impl Printer<'_, '_> {
             _ => match d.merges {
                 MergeDiff::Off => return Ok(Vec::new()),
                 MergeDiff::FirstParent => Some(parents[0]),
-                // Combined diffs need #148; a clean merge has none.
-                MergeDiff::Combined | MergeDiff::Dense => return Ok(b"\n".to_vec()),
+                MergeDiff::Combined | MergeDiff::Dense if d.formats.patch || d.formats.raw => {
+                    return self.combined_diff(d, &parents, &tree, walk_error);
+                }
+                // Other formats compare with the first parent.
+                MergeDiff::Combined | MergeDiff::Dense => Some(parents[0]),
                 MergeDiff::Separate => {
                     return Err(Die::Fatal(msg::not_supported("-m")));
                 }
@@ -945,16 +1275,30 @@ impl Printer<'_, '_> {
             Some(p) => Some(self.repo.tree_of(&p).ok_or_else(walk_error)?),
             None => None,
         };
+        // diff-tree recurses only when asked to (or for contents).
+        let plumbing = self.opts.plumbing;
+        let recursive = !plumbing
+            || d.opts.recursive
+            || d.opts.show_trees
+            || d.formats.patch
+            || d.formats.summary
+            || d.formats.needs_content();
         let mut w = crate::diff::collect::TreeDiff {
             repo: &d.repo,
             pathspec: &d.pathspec,
-            recursive: true,
-            show_trees: false,
+            recursive,
+            show_trees: plumbing && d.opts.show_trees,
+            max_depth: None,
             pairs: Vec::new(),
         };
         w.walk(old_tree.as_ref(), Some(&tree), b"")?;
-        let mut out =
-            crate::diff::output::Output::new(Some(&d.repo), d.repo.hash, &d.opts, d.formats, true)?;
+        let mut out = crate::diff::output::Output::new(
+            Some(&d.repo),
+            d.repo.hash,
+            &d.opts,
+            d.formats,
+            !plumbing,
+        )?;
         out.set_color(&d.opts)?;
         let (bytes, _) = out.render(std::mem::take(&mut w.pairs))?;
         if bytes.is_empty() {
@@ -966,6 +1310,63 @@ impl Printer<'_, '_> {
         } else if d.formats.stat && d.formats.patch {
             text.extend_from_slice(b"---\n");
         } else {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(&bytes);
+        Ok(text)
+    }
+
+    /// The combined diff (`-c`, `--cc`) of a merge with `parents` and
+    /// tree `tree`: raw lines and/or the combined patch.
+    fn combined_diff(
+        &self,
+        d: &LogDiff,
+        parents: &[ObjectId],
+        tree: &ObjectId,
+        walk_error: impl Fn() -> Die,
+    ) -> Result<Vec<u8>, Die> {
+        let mut trees = Vec::new();
+        for p in parents {
+            trees.push(self.repo.tree_of(p).ok_or_else(&walk_error)?);
+        }
+        let renames =
+            d.formats.patch && !matches!(d.opts.detect, Some(rgit_diff::diffcore::Detect::Off));
+        let files: Vec<_> = crate::diff::combined::collect(&d.repo, &trees, tree, renames)
+            .into_iter()
+            .filter(|f| d.pathspec.is_empty() || d.pathspec.matches(&f.path))
+            .collect();
+        let quote = d.repo.quote_path();
+        let mut bytes = Vec::new();
+        if d.formats.raw {
+            // log and show abbreviate raw ids unless --full-index.
+            let abbrev = match d.opts.abbrev {
+                _ if d.opts.full_index => None,
+                // diff-tree: full ids unless --abbrev.
+                None if self.opts.plumbing => None,
+                Some(Some(n)) => Some(n),
+                _ => Some(d.repo.default_abbrev()),
+            };
+            crate::diff::combined::raw(&d.repo, &files, abbrev, quote, &mut bytes);
+        }
+        if d.formats.patch {
+            if d.formats.raw && !bytes.is_empty() {
+                bytes.push(b'\n');
+            }
+            let diff = rgit_diff::DiffOptions::default();
+            let opts = crate::diff::combined::PatchOptions {
+                dense: d.merges == MergeDiff::Dense,
+                abbrev: d.repo.default_abbrev(),
+                quote,
+                diff: &diff,
+            };
+            crate::diff::combined::patch(&d.repo, &files, &opts, &mut bytes);
+        }
+        let mut text = Vec::new();
+        if self.style.pretty == Pretty::Oneline && self.cmd != Command::RevList && !bytes.is_empty()
+        {
+            // Right after the one-line entry.
+        } else {
+            // A merge without differences still gets the separator.
             text.push(b'\n');
         }
         text.extend_from_slice(&bytes);
@@ -1060,7 +1461,13 @@ impl Printer<'_, '_> {
     /// Read commit `id` for showing, converted to the output encoding.
     fn read_shown(&self, id: &ObjectId) -> Option<(Commit, Vec<u8>)> {
         let (commit, raw) = self.repo.read_commit(id)?;
-        match recode::reencode(&raw, commit.encoding(), &self.encoding) {
+        let user_format = matches!(self.style.pretty, Pretty::User { .. });
+        let converted = if user_format {
+            recode::reencode_for_format(&raw, commit.encoding(), &self.encoding)
+        } else {
+            recode::reencode(&raw, commit.encoding(), &self.encoding)
+        };
+        match converted {
             Some(data) => {
                 let converted = Commit::parse(self.repo.objects.hash_kind(), &data).ok()?;
                 Some((converted, raw))
@@ -1114,6 +1521,12 @@ impl Printer<'_, '_> {
             parents: &parents,
             mark,
             source: source.as_deref(),
+            // The graph's part of the commit line counts for `%>|(...)`.
+            column: layout::width(&prefix)
+                + self
+                    .graph
+                    .as_ref()
+                    .map_or(0, |g| layout::width(&g.clone().lines_to_commit().1)),
         };
         let settings = self.user.as_ref().expect("user format settings");
         let expanded = userformat::expand(&fmt, settings, &item, &FormatLookup { p: self })
@@ -1153,6 +1566,10 @@ impl Printer<'_, '_> {
                 if !terminator && !self.first && self.graph.is_none() {
                     self.out.push(end);
                 }
+                if self.show_signature {
+                    let block = self.signature_block(&s.id, commit, &commit.serialize());
+                    self.out.extend_from_slice(&block);
+                }
                 self.out.extend_from_slice(&prefix);
                 self.out.extend_from_slice(&expanded);
                 if terminator && self.graph.is_none() {
@@ -1165,7 +1582,20 @@ impl Printer<'_, '_> {
     }
 
     fn object(&mut self, id: &ObjectId, name: &[u8]) {
+        if self.diverted(id) {
+            return;
+        }
         self.out.extend_from_slice(id.to_hex().as_bytes());
+        if self.cmd == Command::RevList && self.opts.zero {
+            self.out.push(0);
+            if self.opts.object_names && !name.is_empty() {
+                self.out.extend_from_slice(b"path=");
+                self.out.extend_from_slice(name);
+                self.out.push(0);
+            }
+            self.flush_if_full();
+            return;
+        }
         if self.opts.object_names {
             self.out.push(b' ');
             // Names are cut at a newline.
@@ -1316,6 +1746,7 @@ fn show_commit(p: &mut Printer<'_, '_>, id: &ObjectId) -> Result<(), Die> {
         grep: None,
         patch_ids: None,
         paths: None,
+        mailmap: None,
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
@@ -1431,7 +1862,9 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
     } else {
         MergeDiff::Off
     });
+    // diff-tree picks the commits to show itself.
     let show_root = opts.root
+        || opts.plumbing
         || repo
             .config
             .bool("log.showRoot")
@@ -1534,6 +1967,14 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             }
         }
     }
+    if cmd == Command::RevList
+        && opts.only_alternate_refs()
+        && resolved.commits.is_empty()
+        && resolved.pending.is_empty()
+    {
+        let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
+        return Err(Die::Exit(rgit_options::EXIT_USAGE));
+    }
     let commit_color = match cmd {
         Command::Log => {
             let pager = if opts.show { "show" } else { "log" };
@@ -1605,12 +2046,23 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         ),
         None => None,
     };
+    let use_mailmap = opts.mailmap.unwrap_or_else(|| {
+        cmd == Command::Log
+            && repo
+                .config
+                .bool("log.mailmap")
+                .ok()
+                .flatten()
+                .unwrap_or(true)
+    });
+    let ident_grep = !opts.grep.author.is_empty() || !opts.grep.committer.is_empty();
     let mut walk = Walk::new(
         Commits {
             repo,
             grep,
             patch_ids,
             paths,
+            mailmap: (use_mailmap && ident_grep).then(|| mailmap::Mailmap::load(repo)),
         },
         walk_opts,
     );
@@ -1631,15 +2083,6 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         Abbrev::Digits(n) => n.min(hexlen),
         Abbrev::Full => hexlen,
     };
-    let use_mailmap = opts.mailmap.unwrap_or_else(|| {
-        cmd == Command::Log
-            && repo
-                .config
-                .bool("log.mailmap")
-                .ok()
-                .flatten()
-                .unwrap_or(true)
-    });
     let pretty = opts.pretty.clone().unwrap_or(Pretty::Medium);
     let is_user = matches!(pretty, Pretty::User { .. } | Pretty::Reference);
     // `log.decorate` does not apply to the raw format, only `--decorate`.
@@ -1666,6 +2109,30 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         None
     };
     let notes = if is_user { notes_tree(repo) } else { None };
+    let show_signature = cmd == Command::Log
+        && opts.show_signature.unwrap_or_else(|| {
+            repo.config
+                .bool("log.showsignature")
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+        });
+    let formats_signature = match &pretty {
+        Pretty::User { format, .. } => format.windows(2).any(|w| w == b"%G"),
+        _ => false,
+    };
+    let signing = if show_signature || formats_signature {
+        Some(crate::signing::Settings::from_config(repo.config)?)
+    } else {
+        None
+    };
+    let signature_colors = match &commit_color {
+        Some(_) if show_signature => {
+            let colors = crate::diff::color::DiffColors::from_config(repo.config)?;
+            Some((colors.frag, colors.whitespace))
+        }
+        _ => None,
+    };
     let style = Style {
         mailmap: use_mailmap.then(|| mailmap::Mailmap::load(repo)),
         pretty,
@@ -1686,7 +2153,11 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         deco_colors,
         notes,
         sources: None,
-        encoding: recode::output_encoding(repo.config),
+        encoding: opts
+            .encoding
+            .as_ref()
+            .map(|e| e.as_bytes().to_vec())
+            .unwrap_or_else(|| recode::output_encoding(repo.config)),
         out: Vec::with_capacity(1 << 16),
         first: true,
         dist: None,
@@ -1701,6 +2172,12 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             }
             d => d,
         },
+        store: None,
+        usage: opts.disk_usage.map(|_| 0),
+        signing,
+        show_signature,
+        signature_colors,
+        signature_cache: std::cell::RefCell::new(None),
     };
     if opts.graph {
         let palette = p
@@ -1718,6 +2195,10 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         });
         g.set_indent(indent);
         p.graph = Some(g);
+    }
+    if opts.unpacked || opts.disk_usage.is_some() {
+        let setup = repo.setup.clone();
+        p.store = Some(crate::repo_objects::Repo::open(ctx, setup)?);
     }
     if is_user && cmd == Command::Log {
         let mut map = HashMap::new();
@@ -1783,6 +2264,13 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         p.flush();
         return Ok(0);
     }
+    if opts.maximal_only {
+        let mut all = Vec::new();
+        while let Some(s) = next_shown(&mut walk, &mut kept)? {
+            all.push(s);
+        }
+        kept = Some(maximal(&walk, all).into());
+    }
     let (mut left, mut right, mut same) = (0usize, 0usize, 0usize);
     let mut shown = 0usize;
     while let Some(s) = next_shown(&mut walk, &mut kept)? {
@@ -1820,6 +2308,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         };
         p.out.extend_from_slice(text.as_bytes());
     }
+    p.finish_usage();
     p.flush();
     Ok(0)
 }
@@ -1873,6 +2362,43 @@ fn keep_oldest(
         out.make_contiguous().reverse();
     }
     Ok(out)
+}
+
+/// `--maximal-only`: the commits of `shown` no other one of them reaches.
+fn maximal<S: CommitSource>(walk: &Walk<S>, shown: Vec<Shown>) -> Vec<Shown> {
+    let mut reached = std::collections::HashSet::new();
+    let mut stack: Vec<ObjectId> = shown
+        .iter()
+        .flat_map(|s| walk.parents(&s.id).unwrap_or_default().to_vec())
+        .collect();
+    while let Some(id) = stack.pop() {
+        if reached.insert(id) {
+            stack.extend(walk.parents(&id).unwrap_or_default().iter().copied());
+        }
+    }
+    shown
+        .into_iter()
+        .filter(|s| !reached.contains(&s.id))
+        .collect()
+}
+
+/// A byte count in the largest binary unit it reaches, with two
+/// decimals (`--disk-usage=human`).
+fn human_size(n: u64) -> String {
+    const UNITS: [(u32, &str); 3] = [(30, "GiB"), (20, "MiB"), (10, "KiB")];
+    for (shift, unit) in UNITS {
+        if n >= 1 << shift {
+            // Hundredths, rounded.
+            let unit_size = 1u128 << shift;
+            let h = (u128::from(n) * 100 + unit_size / 2) / unit_size;
+            return format!("{}.{:02} {unit}", h / 100, h % 100);
+        }
+    }
+    if n == 1 {
+        "1 byte".to_string()
+    } else {
+        format!("{n} bytes")
+    }
 }
 
 /// `--objects`: the commits, then the tags, trees and blobs they need.
@@ -2088,6 +2614,7 @@ fn run_objects(
     if counting {
         p.out.extend_from_slice(format!("{count}\n").as_bytes());
     }
+    p.finish_usage();
     p.flush();
     Ok(0)
 }

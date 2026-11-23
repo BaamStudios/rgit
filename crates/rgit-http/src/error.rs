@@ -95,6 +95,16 @@ pub enum Error {
         /// Lines of a plain-text error body.
         remote: Vec<String>,
     },
+    /// `429` after `http.maxRetries` attempts.
+    #[error("{}", messages::rate_limited_by(.url, *.secs))]
+    RateLimited {
+        /// Repository URL as git prints it.
+        url: String,
+        /// The delay the server asked for.
+        secs: u64,
+        /// Lines of a plain-text error body.
+        remote: Vec<String>,
+    },
     /// The credential provider failed; its message is printed verbatim.
     #[error("{0}")]
     Credential(String),
@@ -111,7 +121,9 @@ impl Error {
     /// `remote: <line>` before the error itself.
     pub fn remote_lines(&self) -> &[String] {
         match self {
-            Error::Access { remote, .. } | Error::Rpc { remote, .. } => remote,
+            Error::Access { remote, .. }
+            | Error::Rpc { remote, .. }
+            | Error::RateLimited { remote, .. } => remote,
             _ => &[],
         }
     }
@@ -122,6 +134,7 @@ impl Error {
             Error::Access { status, .. } | Error::Rpc { status, .. } => *status,
             Error::RepositoryNotFound { .. } => Some(404),
             Error::AuthenticationFailed { .. } => Some(401),
+            Error::RateLimited { .. } => Some(429),
             _ => None,
         }
     }

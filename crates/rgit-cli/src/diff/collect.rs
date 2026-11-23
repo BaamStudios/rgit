@@ -176,10 +176,40 @@ pub struct TreeDiff<'a> {
     pub pathspec: &'a Pathspec,
     pub recursive: bool,
     pub show_trees: bool,
+    /// `--max-depth=<n>`: directories this deep below a pathspec item (or
+    /// the top) are shown as trees instead of being entered.
+    pub max_depth: Option<usize>,
     pub pairs: Vec<Pair>,
 }
 
 impl TreeDiff<'_> {
+    /// The depth of the directory `path` for `--max-depth`: below the
+    /// closest pathspec item that contains it (top-level entries count 0
+    /// without pathspecs); `None` for a directory leading to an item.
+    fn depth(&self, path: &[u8]) -> Option<usize> {
+        let components = |p: &[u8]| p.iter().filter(|&&c| c == b'/').count();
+        if self.pathspec.is_empty() {
+            return Some(components(path));
+        }
+        self.pathspec
+            .items()
+            .iter()
+            .filter(|i| !i.is_exclude())
+            .filter_map(|i| {
+                let lit = i.pattern().strip_suffix(b"/").unwrap_or(i.pattern());
+                if lit.is_empty() {
+                    Some(components(path))
+                } else if path == lit {
+                    Some(0)
+                } else if path.starts_with(lit) && path.get(lit.len()) == Some(&b'/') {
+                    Some(components(&path[lit.len() + 1..]) + 1)
+                } else {
+                    None
+                }
+            })
+            .min()
+    }
+
     fn side(e: &TreeEntry) -> Side {
         Side::object(e.mode.canonical().bits(), e.oid)
     }
@@ -212,6 +242,14 @@ impl TreeDiff<'_> {
                         .push(Pair::new(path, old.map(Self::side), new.map(Self::side)));
                 }
                 return Ok(());
+            }
+            if let (true, Some(max), Some(d)) = (self.recursive, self.max_depth, self.depth(&path))
+            {
+                if d >= max {
+                    self.pairs
+                        .push(Pair::new(path, old.map(Self::side), new.map(Self::side)));
+                    return Ok(());
+                }
             }
             if self.recursive {
                 if self.show_trees {
@@ -350,9 +388,6 @@ pub fn index_files(index: &Index, ps: &Pathspec) -> Vec<(Vec<u8>, u32, ObjectId)
 pub struct WorkTree<'a> {
     pub root: &'a Path,
     pub checker: &'a Checker,
-    /// `git diff`: a file whose stat data changed but whose contents and
-    /// mode did not is not a change (git refreshes the index first).
-    pub porcelain: bool,
     pub hash: rgit_hash::HashKind,
     /// The `ignore` settings of submodules (none: count everything but
     /// untracked content).
@@ -425,13 +460,12 @@ impl WorkTree<'_> {
             }
         }
         let status = self.checker.check_with(e, &meta).map_err(io)?;
-        // A converted file whose stat data changed is read again for the
-        // output, where git prints its conversion warnings (and drops it
-        // as unchanged).
-        let converted = || self.checker.filter().is_some_and(|f| f.converts(e.path()));
+        // A file whose stat data changed is not known to match the entry
+        // (git does not refresh the index): it is shown without an id and
+        // read again for the output, where `git diff` drops it as
+        // unchanged (and prints conversion warnings).
         Ok(match status {
             Status::Unchanged => None,
-            Status::StatOnly if self.porcelain && !converted() => None,
             Status::Deleted => Some(None),
             _ => Some(Some(self.file_side(e.path(), &meta, Some(e.mode.0)))),
         })
@@ -505,6 +539,18 @@ pub fn files(
     wt: &WorkTree<'_>,
     skip_deleted: bool,
 ) -> Result<Vec<Pair>, Die> {
+    files_stage(index, ps, wt, skip_deleted, 2)
+}
+
+/// [`files`] comparing unmerged paths' conflict `stage` (1 base, 2 ours,
+/// 3 theirs; 0 none) against the work tree (`diff-files -0`..`-3`).
+pub fn files_stage(
+    index: &Index,
+    ps: &Pathspec,
+    wt: &WorkTree<'_>,
+    skip_deleted: bool,
+    stage: usize,
+) -> Result<Vec<Pair>, Die> {
     let mut pairs = Vec::new();
     for ip in index_paths(index, ps) {
         let path = ip.path.to_vec();
@@ -524,8 +570,9 @@ pub fn files(
             }
             continue;
         }
-        // Unmerged: the `U` line, then "ours" against the work tree.
-        let ours = ip.stages[1];
+        // Unmerged: the `U` line, then the chosen stage ("ours" by default)
+        // against the work tree.
+        let ours = stage.checked_sub(1).and_then(|s| ip.stages[s]);
         let file = wt.unmerged_file(&path, ours.map(|e| e.mode.0))?;
         let shown = file.as_ref().map(|s| Side {
             mode: s.mode,
@@ -632,20 +679,6 @@ pub fn index(
                 continue;
             }
         }
-        // `git diff <commit>` shows the work tree side without an id even
-        // when it matches the index.
-        let new = match (new, wt) {
-            (Some(n), Some(wt))
-                if wt.porcelain && n.file.is_none() && type_bits(n.mode) != GITLINK_MODE =>
-            {
-                Some(Side {
-                    oid: ObjectId::null(wt.hash),
-                    file: Some(os_path(wt.root, &path)),
-                    ..n
-                })
-            }
-            (n, _) => n,
-        };
         pairs.push(Pair::new(path, old, new));
     }
     if let Some(wt) = wt {

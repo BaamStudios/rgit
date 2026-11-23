@@ -24,6 +24,16 @@ pub struct Credential {
     pub username: Option<String>,
     /// Password or token.
     pub password: Option<String>,
+    /// `authtype` from a helper (`Bearer`, ...), used with `credential`.
+    pub authtype: Option<String>,
+    /// `credential`: the pre-encoded value after the scheme.
+    pub credential: Option<String>,
+    /// `wwwauth[]`: the `WWW-Authenticate` values of the last response.
+    pub wwwauth: Vec<String>,
+    /// `state[]` of the helper (multistage authentication).
+    pub state: Vec<String>,
+    /// `continue=1`: another round follows after the next `401`.
+    pub multistage: bool,
 }
 
 impl Credential {
@@ -32,6 +42,18 @@ impl Credential {
         let user = self.username.as_deref().unwrap_or("");
         let pass = self.password.as_deref().unwrap_or("");
         format!("Basic {}", base64(format!("{user}:{pass}").as_bytes()))
+    }
+
+    /// The `Authorization` value: `<authtype> <credential>` for a
+    /// pre-encoded credential, Basic for a user name and password.
+    pub fn authorization(&self) -> Option<String> {
+        if let Some(c) = &self.credential {
+            return Some(format!(
+                "{} {c}",
+                self.authtype.as_deref().unwrap_or("Basic")
+            ));
+        }
+        self.password.as_ref().map(|_| self.basic_authorization())
     }
 }
 

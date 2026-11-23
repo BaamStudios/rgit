@@ -238,7 +238,7 @@ pub fn create_and_switch(
     // `--track` or `branch.autoSetupMerge=always` says so).
     let track_start = match &nb.start {
         Some(_) => start_name.clone(),
-        None => tracking::default_start(&store),
+        None => tracking::default_start_ref(&store),
     };
     let trepo = tracking::Repo {
         setup: &repo.setup,
@@ -310,6 +310,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
     sb::set_ignore_other_worktrees(ignore_other.get());
     let quiet = quiet.get() > 0;
+    sb::set_progress(progress.get(), quiet);
     let force = force.get() || discard.get();
     let track = track.get();
     let mut create = create.borrow().clone();

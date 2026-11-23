@@ -77,6 +77,10 @@ pub fn could_not_read(id: &str) -> String {
     format!("unable to read tree ({id})")
 }
 
+pub fn unable_to_read_blob(hex: &str) -> String {
+    format!("unable to read {hex}")
+}
+
 pub fn read_failed(path: &str) -> String {
     format!("cannot read '{path}'")
 }
@@ -115,6 +119,21 @@ pub const NO_INDEX_USAGE: &str =
 
 pub fn no_merge_base(a: &str, b: &str) -> String {
     format!("{a}...{b}: no merge base")
+}
+
+pub const NO_MERGE_BASE_FOUND: &str = "no merge base found";
+pub const MULTIPLE_MERGE_BASES_FOUND: &str = "multiple merge bases found";
+pub const MERGE_BASE_WITH_RANGES: &str = "--merge-base does not work with ranges";
+pub const MERGE_BASE_TWO_COMMITS: &str = "--merge-base only works with two commits";
+pub const STDIN_WITH_MERGE_BASE: &str =
+    "options '--stdin' and '--merge-base' cannot be used together";
+
+pub fn not_a_commit(hex: &str, kind: &str) -> String {
+    format!("error: object {hex} is a {kind}, not a commit")
+}
+
+pub fn more_than_two_blobs(name: &str) -> String {
+    format!("more than two blobs given: '{name}'")
 }
 
 pub fn multiple_merge_bases(a: &str, b: &str, base: &str) -> String {
@@ -185,6 +204,10 @@ pub fn ws_check_line(path: &str, line: usize, what: &str) -> String {
     format!("{path}:{line}: {what}.\n")
 }
 
+pub fn leftover_conflict_marker(path: &str, line: usize) -> String {
+    format!("{path}:{line}: leftover conflict marker\n")
+}
+
 pub const WS_TRAILING: &str = "trailing whitespace";
 pub const WS_SPACE_BEFORE_TAB: &str = "space before tab in indent";
 pub const WS_INDENT_WITH_SPACES: &str = "indent with spaces";
@@ -222,3 +245,51 @@ pub const COLOR_MOVED_WS_INDENT_COMBINED: &str =
 pub fn bad_color_moved_ws(reason: &str, value: &str) -> String {
     format!("error: {reason}\nerror: invalid mode '{value}' in --color-moved-ws\n")
 }
+
+pub fn dirstat_unknown(param: &str) -> String {
+    format!("  Unknown dirstat parameter '{param}'\n")
+}
+
+pub fn dirstat_bad_percentage(param: &str) -> String {
+    format!("  Failed to parse dirstat cut-off percentage '{param}'\n")
+}
+
+pub fn dirstat_option_errors(errors: &str) -> String {
+    format!("Failed to parse --dirstat/-X option parameter:\n{errors}")
+}
+
+pub fn dirstat_config_errors(errors: &str) -> String {
+    format!("warning: Found errors in 'diff.dirstat' config variable:\n{errors}\n")
+}
+
+pub fn expects_non_negative(option: &str) -> String {
+    format!("error: {option} expects a non-negative integer\n")
+}
+
+pub fn expects_magnitude(option: &str) -> String {
+    format!(
+        "error: option `{option}' expects a non-negative integer value with an optional k/m/g suffix\n"
+    )
+}
+
+pub const FIND_OBJECT_NEEDS_REPO: &str = "error: --find-object requires a git repository\n";
+
+pub const NO_INDEX_STDIN_DIR: &str = "cannot compare stdin to a directory";
+
+pub const NO_INDEX_PIPE_DIR: &str = "cannot compare a named pipe to a directory";
+
+pub fn orderfile_failed(path: &str) -> String {
+    format!("failed to read orderfile '{path}'")
+}
+
+pub fn no_such_path_in_diff(path: &str) -> String {
+    format!("No such path '{path}' in the diff")
+}
+
+pub fn could_not_open_output(path: &str) -> String {
+    format!("could not open '{path}'")
+}
+
+pub const MAX_DEPTH_WILDCARD: &str = "--max-depth cannot be used with wildcard pathspecs";
+
+pub const NO_INDEX_PATHSPEC_NEEDS_DIRS: &str = "warning: Limiting comparison with pathspecs is only supported if both paths are directories.\n";

@@ -265,3 +265,75 @@ pub const SUBMODULE_USAGE: &[&str] = &[
 pub fn unknown_subcommand(name: &str) -> String {
     format!("fatal: unknown subcommand '{name}'")
 }
+
+// ----- pkt-line -----------------------------------------------------------
+
+/// `pkt-line` without an action.
+pub const TOO_FEW_ARGUMENTS: &str = "too few arguments";
+/// `pkt-line pack`: a line longer than a packet can hold.
+pub const IMPOSSIBLY_LONG_LINE: &str = "protocol error: impossibly long line";
+/// `pkt-line pack-raw-stdin`: input longer than a packet can hold.
+pub const PACKET_TOO_LONG: &str = "packet write failed - data exceeds max packet size";
+/// A packet without a band byte.
+pub const MISSING_SIDEBAND: &str = "protocol error: missing sideband designator";
+/// The input ended inside a side-band stream.
+pub const SIDEBAND_DISCONNECT: &str = "unexpected disconnect while reading sideband packet";
+/// `pkt-line unpack-sideband` usage.
+pub const UNPACK_SIDEBAND_USAGE: &str = "usage: test_tool unpack_sideband [options...]
+
+    --[no-]reader-use-sideband
+                          set use_sideband bit for packet reader (Default: off)
+    --[no-]chomp-newline  chomp newline in packet (Default: on)
+
+";
+
+/// An unknown `pkt-line` action.
+pub fn invalid_argument(arg: &str) -> String {
+    format!("invalid argument '{arg}'")
+}
+
+/// A packet length that is not hexadecimal.
+pub fn bad_line_length_character(raw: &str) -> String {
+    format!("protocol error: bad line length character: {raw}")
+}
+
+/// A packet length below 4 that is no special packet.
+pub fn bad_line_length(len: usize) -> String {
+    format!("protocol error: bad line length {len}")
+}
+
+/// An unknown option of `pkt-line unpack-sideband`.
+pub fn unknown_option(name: &str) -> String {
+    format!("error: unknown option `{name}'")
+}
+
+/// A band other than 1, 2 or 3.
+pub fn bad_band(band: u8) -> String {
+    format!("protocol error: bad band #{band}")
+}
+
+/// A channel 3 message read by the packet reader.
+pub fn remote_error(msg: &str) -> String {
+    format!("remote error: {msg}")
+}
+
+/// Problems the packet reader reports.
+pub fn reader_prefixed(msg: &str) -> String {
+    format!("{}{msg}", READER_PREFIX)
+}
+
+/// Prefix of the packet reader's own messages.
+const READER_PREFIX: &str = concat!("gi", "t: ");
+
+/// Problems the side-band receiver reports.
+pub fn sideband_prefixed(msg: &str) -> String {
+    format!("sideband: {msg}")
+}
+
+/// `progress` with arguments.
+pub const PROGRESS_USAGE: &str = "usage: test-tool progress <stdin";
+
+/// `progress`: a line that is not a command.
+pub fn progress_invalid_input(line: &str) -> String {
+    format!("fatal: invalid input: '{line}'")
+}

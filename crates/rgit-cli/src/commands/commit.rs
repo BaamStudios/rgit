@@ -64,7 +64,7 @@ use crate::wt_status::{self, Render};
 #[path = "commit/dry_run.rs"]
 mod dry_run;
 #[path = "commit/verbose.rs"]
-mod verbose;
+pub(crate) mod verbose;
 
 /// A piece of the message in command-line order.
 enum Piece {
@@ -420,25 +420,61 @@ pub(crate) fn warn_comment_char_auto(repo: &Repo) {
             "core.commentString"
         }
     };
-    let scope = |e: &rgit_config::Entry| match e.source.scope {
-        Scope::Global => Some("--global "),
-        Scope::System => Some("--system "),
-        Scope::Worktree => Some("--worktree "),
-        Scope::Local => Some(""),
-        _ => None,
+    // The option that names an entry's file: the scope for its standard
+    // file, `--file <path>` (with `~` for the home directory) for an
+    // included one; nothing for the command line.
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let shown = |p: &std::path::Path| -> String {
+        match home.as_deref().and_then(|h| p.strip_prefix(h).ok()) {
+            Some(rest) => format!("~/{}", rest.display()),
+            None => p.display().to_string(),
+        }
+    };
+    let same = |a: &std::path::Path, b: &std::path::Path| {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+    };
+    let local = repo.setup.cwd.join(&repo.setup.git_dir).join("config");
+    let scope = |e: &rgit_config::Entry| -> Option<String> {
+        let rgit_config::Origin::File(path) = &e.source.origin else {
+            return None;
+        };
+        let standard = match e.source.scope {
+            Scope::Local => same(path, &local),
+            Scope::Global => {
+                home.as_ref()
+                    .is_some_and(|h| same(path, &h.join(".gitconfig")))
+                    || path.ends_with("git/config")
+            }
+            Scope::Worktree => return Some("--worktree ".to_owned()),
+            Scope::System => return Some("--system ".to_owned()),
+            _ => return None,
+        };
+        Some(match (standard, e.source.scope) {
+            (true, Scope::Global) => "--global ".to_owned(),
+            (true, _) => String::new(),
+            (false, _) => format!("--file {} ", shown(path)),
+        })
     };
     let mut out = format!("warning: {}\n", msg::comment_auto_deprecated(key(last)));
-    let in_files: Vec<_> = entries.iter().filter(|e| scope(e).is_some()).collect();
+    let in_files: Vec<(String, &str)> = entries
+        .iter()
+        .filter_map(|e| scope(e).map(|s| (s, key(e))))
+        .collect();
     if let Some(set) = in_files.last() {
-        let mut unset = String::new();
-        for e in &in_files {
-            unset.push_str(&format!(
-                "    git config unset {}{}\n",
-                scope(e).unwrap_or_default(),
-                key(e)
-            ));
+        // One line per file and key, `--all` for several values.
+        let mut groups: Vec<(&(String, &str), usize)> = Vec::new();
+        for item in &in_files {
+            match groups.iter_mut().find(|(g, _)| *g == item) {
+                Some((_, n)) => *n += 1,
+                None => groups.push((item, 1)),
+            }
         }
-        let set = format!("{}{}", scope(set).unwrap_or_default(), key(set));
+        let mut unset = String::new();
+        for ((option, k), n) in &groups {
+            let all = if *n > 1 { "--all " } else { "" };
+            unset.push_str(&format!("    git config unset {option}{all}{k}\n"));
+        }
+        let set = format!("{}{}", set.0, set.1);
         for line in msg::comment_auto_hint(&unset, &set).lines() {
             if line.is_empty() {
                 out.push_str("hint:\n");
@@ -521,8 +557,13 @@ fn parse_force_date(d: &str) -> Result<(u64, i32), Die> {
 }
 
 /// The author of the most recent reachable commit whose `Name <email>`
-/// matches `pattern` (case-insensitive regular expression).
-fn find_author(repo: &Repo, pattern: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+/// (mapped through the mailmap) matches `pattern` (case-insensitive
+/// regular expression).
+fn find_author(
+    repo: &Repo,
+    mailmap: &crate::history::mailmap::Mailmap,
+    pattern: &str,
+) -> Option<(Vec<u8>, Vec<u8>)> {
     let re = regex::bytes::RegexBuilder::new(pattern)
         .case_insensitive(true)
         .build()
@@ -540,9 +581,10 @@ fn find_author(repo: &Repo, pattern: &str) -> Option<(Vec<u8>, Vec<u8>)> {
             continue;
         };
         if let Some(a) = c.author() {
-            let mut ne = a.name.to_vec();
+            let (name, email) = mailmap.map(a.name, a.email);
+            let mut ne = name.to_vec();
             ne.extend_from_slice(b" <");
-            ne.extend_from_slice(a.email);
+            ne.extend_from_slice(email);
             ne.push(b'>');
             let hit = match &re {
                 Some(re) => re.is_match(&ne),
@@ -552,7 +594,7 @@ fn find_author(repo: &Repo, pattern: &str) -> Option<(Vec<u8>, Vec<u8>)> {
             };
             let when = c.committer().and_then(|s| s.time()).map_or(0, |t| t.seconds);
             if hit && best.as_ref().is_none_or(|b| when > b.0) {
-                best = Some((when, a.name.to_vec(), a.email.to_vec()));
+                best = Some((when, name.to_vec(), email.to_vec()));
             }
         }
         stack.extend(c.parents().unwrap_or_default());
@@ -911,7 +953,11 @@ fn lookup_commit(repo: &mut Repo, name: &str) -> Result<(ObjectId, rgit_object::
         .and_then(|i| repo.peel_to(i, ObjectKind::Commit))
         .ok_or_else(|| fatal(msg::could_not_lookup(name)))?;
     match repo.read_object(&id) {
-        Some(Object::Commit(c)) => Ok((id, c)),
+        // Its message is reused in the commit encoding.
+        Some(Object::Commit(c)) => Ok((
+            id,
+            crate::history::recode::for_new_commit(&repo.config, repo.hash, c),
+        )),
         _ => Err(fatal(msg::could_not_lookup(name))),
     }
 }
@@ -966,8 +1012,12 @@ fn without_first_line(text: &[u8]) -> &[u8] {
 
 /// The `Signed-off-by` line of the committer.
 fn signoff_line(committer: &Signature) -> Vec<u8> {
+    // Bytes as they are (the name may be in the commit encoding).
     let mut v = b"Signed-off-by: ".to_vec();
-    v.extend_from_slice(name_email(committer).as_bytes());
+    v.extend_from_slice(&committer.name);
+    v.extend_from_slice(b" <");
+    v.extend_from_slice(&committer.email);
+    v.push(b'>');
     v
 }
 
@@ -1042,7 +1092,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
     if matches!(args.fixup, Some((FixupKind::Reword, _))) {
-        if args.all || args.include || args.only {
+        if args.patch.is_some() || args.all || args.include || args.only {
             return Err(fatal(msg::REWORD_WITH_CONTENTS));
         }
         if let Some(p) = args.paths.first() {
@@ -1231,12 +1281,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Die::Exit(rgit_options::EXIT_FATAL)
         })
     };
+    // git resolves the author first unless it is given or reused.
+    let author_from_env = args.author.is_none()
+        && (args.reset_author || (reused.is_none() && old_commit.is_none() && picked_commit.is_none()));
+    if author_from_env {
+        ident(Role::Author)?;
+    }
     let committer_ident = ident(Role::Committer)?;
+    let committer_implicit = !resolver.is_explicit(Role::Committer);
     let committer = signature_from(&committer_ident.to_bstring())?;
+    // `--fixup` makes a new commit even with `--amend`: the author is not
+    // taken over (observed with the git binary).
     let author_commit = reused
         .as_ref()
         .map(|(_, c)| c)
-        .or(old_commit.as_ref())
+        .or(old_commit.as_ref().filter(|_| args.fixup.is_none()))
         .or(picked_commit.as_ref());
     let author_from_commit = author_commit.is_some() && !args.reset_author;
     let mut author_parts: (Vec<u8>, Vec<u8>, u64, i32) = match author_commit {
@@ -1257,18 +1316,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     };
     if let Some(a) = &args.author {
-        let parsed = a
-            .find('<')
-            .and_then(|lt| a[lt..].find('>').map(|gt| (lt, lt + gt)))
+        let raw = crate::argv::bytes(a);
+        let parsed = raw
+            .iter()
+            .position(|&b| b == b'<')
+            .and_then(|lt| raw[lt..].iter().position(|&b| b == b'>').map(|gt| (lt, lt + gt)))
             .map(|(lt, gt)| {
                 (
-                    rgit_ident::ident::sanitize(&a.as_bytes()[..lt]).to_vec(),
-                    rgit_ident::ident::sanitize(&a.as_bytes()[lt + 1..gt]).to_vec(),
+                    rgit_ident::ident::sanitize(&raw[..lt]).to_vec(),
+                    rgit_ident::ident::sanitize(&raw[lt + 1..gt]).to_vec(),
                 )
             });
         let (n, e) = match parsed {
             Some(p) => p,
-            None => find_author(&repo, a).ok_or_else(|| fatal(msg::no_existing_author(a)))?,
+            None => {
+                let mailmap = crate::history::mailmap::Mailmap::load_for(ctx)?;
+                find_author(&repo, &mailmap, a).ok_or_else(|| fatal(msg::no_existing_author(a)))?
+            }
         };
         author_parts.0 = n;
         author_parts.1 = e;
@@ -1426,6 +1490,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut header = wt_status::header(&repo, head);
     header.merging = merging;
     header.amend = args.amend;
+    // Amending a root commit compares with nothing, like a first commit.
+    header.initial |= args.amend && parents.is_empty();
     let prefix = repo.prefix();
     let quote_high = repo.quote_path();
 
@@ -1553,7 +1619,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 if !given.is_empty() {
                     given.push(b'\n');
                 }
-                given.extend_from_slice(m.as_bytes());
+                given.extend_from_slice(&crate::argv::bytes(m));
                 if !given.is_empty() && !given.ends_with(b"\n") {
                     given.push(b'\n');
                 }
@@ -1726,6 +1792,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             if show_author_date {
                 idents.push(msg::template_date(&show_date(&author)));
             }
+            if committer_implicit {
+                idents.push(msg::template_committer(&name_email(&committer)));
+            }
             if !idents.is_empty() {
                 lines.push(String::new());
                 lines.extend(idents);
@@ -1801,7 +1870,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             ..Default::default()
         };
         let mut on_error = |m: &str| eprintln!("error: {m}");
-        let out = rgit_trailer::process(&data, &trailer_conf, &opts, &new, &mut on_error);
+        let mut out = rgit_trailer::process(&data, &trailer_conf, &opts, &new, &mut on_error);
+        // A message without a final newline (`--cleanup=verbatim`) gets
+        // the trailers on the next line, without the empty line before
+        // them (observed with the git binary).
+        if !data.is_empty() && !data.ends_with(b"\n") {
+            let mut ended = data.clone();
+            ended.push(b'\n');
+            let mut separated = ended.clone();
+            separated.push(b'\n');
+            if out.starts_with(&separated) {
+                let rest = out.split_off(separated.len());
+                out = ended;
+                out.extend_from_slice(&rest);
+            }
+        }
         std::fs::write(&editmsg, &out).map_err(|e| fatal(e.to_string()))?;
     }
     // Nothing to commit: git has written COMMIT_EDITMSG by now.
@@ -1934,6 +2017,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         encoding: encoding.as_deref(),
         message: &cleaned,
     };
+    if new.message.contains(&0) {
+        eprintln!("error: {}", rgit_commit::messages::NUL_IN_MESSAGE);
+        return Err(fatal(crate::messages::signing::FAILED_TO_WRITE_COMMIT));
+    }
+    if !new.conforms() {
+        eprintln!("{}", rgit_commit::messages::NOT_UTF8_WARNING);
+    }
     let mut object = new.to_commit();
     if let Some(sign) = &sign {
         match signing::sign_commit(&repo.config, repo.hash, &mut object, sign, &committer) {
@@ -2041,6 +2131,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if show_author_date {
         out.extend_from_slice(msg::summary_date(&show_date(&author)).as_bytes());
         out.push(b'\n');
+    }
+    if committer_implicit {
+        out.extend_from_slice(msg::summary_committer(&name_email(&committer)).as_bytes());
+        out.push(b'\n');
+        if advisor.enabled(Advice::ImplicitIdentity).map_err(Die::Fatal)? {
+            out.extend_from_slice(msg::IMPLICIT_IDENT_ADVICE.as_bytes());
+        }
     }
     let new_flat = wt_status::index_flat(commit_index);
     // The summary detects renames even with diff.renames=false.

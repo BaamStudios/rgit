@@ -80,6 +80,8 @@ struct RevOpts {
     minimal: bool,
     algorithm: Option<Algorithm>,
     indent_heuristic: Option<bool>,
+    /// `--encoding=<encoding>` (`none`: as stored).
+    encoding: Option<String>,
 }
 
 pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdResult {
@@ -214,7 +216,9 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             rev.indent_heuristic = Some(true);
         } else if a == "--no-indent-heuristic" {
             rev.indent_heuristic = Some(false);
-        } else if value(&["--encoding="]).is_some() || a == "--no-progress" {
+        } else if let Some(v) = value(&["--encoding="]) {
+            rev.encoding = Some(v.to_owned());
+        } else if a == "--no-progress" {
         } else {
             return Err(parser.error_with_usage(&msg::unknown_option(&a)).into());
         }
@@ -410,8 +414,19 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     let lines = final_blob.lines();
     let mut ranges = Vec::new();
     let mut anchor = 0;
+    // `-L :<funcname>` uses the function lines of the path's diff driver.
+    let funcname = if cli.ranges.borrow().iter().any(|r| r.starts_with(':') || r.starts_with("^:")) {
+        match repo.converter()?.attr(&path, b"diff") {
+            rgit_attr::State::Value(v) => {
+                crate::diff::driver::load(&repo.config, &String::from_utf8_lossy(&v))?.funcname
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     for spec in cli.ranges.borrow().iter() {
-        match range::parse(spec, &lines, anchor, &path_str) {
+        match range::parse(spec, &lines, anchor, &path_str, funcname.as_ref()) {
             Ok(r) => {
                 anchor = r.1;
                 ranges.push(r);
@@ -464,12 +479,21 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
     if let Some((n, info)) = fake {
         infos.insert(n, info);
     }
+    // Names and summaries in the log output encoding.
+    let encoding = match &rev.encoding {
+        Some(e) => e.as_bytes().to_vec(),
+        None => crate::history::recode::output_encoding(&repo.config),
+    };
+    let convert = rev.encoding.as_deref() != Some("none");
     for e in &entries {
         let n = sb.origins[e.suspect].commit;
         if !infos.contains_key(&n)
             && let Some(c) = &sb.nodes[n].commit
         {
-            infos.insert(n, Info::of_commit(c, &mailmap));
+            let shown = convert
+                .then(|| crate::history::recode::for_output(c, &encoding, repo.hash))
+                .flatten();
+            infos.insert(n, Info::of_commit(shown.as_ref().unwrap_or(c), &mailmap));
         }
     }
 

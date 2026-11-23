@@ -114,6 +114,23 @@ fn local_clone_refuses_symlinks_like_git() {
 }
 
 #[test]
+fn local_clone_checks_ownership_like_git() {
+    let mut fx = source();
+    if fx.is_skipped() {
+        return;
+    }
+    fx.compare(["clone", "--local", "src", "o1"])
+        .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+        .checks(Check::OUTPUT)
+        .run();
+    let safe = format!("safe.directory={}/src/.git", fx.work_dir().display());
+    fx.compare(["-c", &safe, "clone", "--local", "src", "o2"])
+        .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+        .repo("o2")
+        .run();
+}
+
+#[test]
 fn clone_layout_options_same_as_git() {
     let mut fx = source().git(["clone", "-q", "--separate-git-dir", "real4", "src", "d4"]);
     if fx.is_skipped() {

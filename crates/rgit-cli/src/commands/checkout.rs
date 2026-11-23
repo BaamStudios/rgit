@@ -44,6 +44,8 @@ struct Modes {
     overlay: Option<bool>,
     /// `-m`/`--conflict`.
     merge: bool,
+    /// `--conflict=<style>`.
+    conflict: Option<String>,
     force: bool,
     quiet: bool,
     ignore_skip_worktree: bool,
@@ -87,9 +89,6 @@ impl Modes {
         if tree.is_some() && (self.stage.is_some() || self.merge) {
             return Err(Die::Fatal(rsmsg::FROM_TREE.to_owned()));
         }
-        if self.merge {
-            return Err(Die::Fatal(msg::not_supported("git checkout --merge")));
-        }
         let rc = rs::checkout_paths(
             self.globals,
             repo,
@@ -105,6 +104,9 @@ impl Modes {
                 ignore_skip_worktree: self.ignore_skip_worktree,
                 report: report && !self.quiet,
                 quiet: self.quiet,
+                merge: self
+                    .merge
+                    .then(|| rs::conflict_style(&repo.config, self.conflict.as_deref())),
             },
         )?;
         // `post-checkout` with `HEAD` twice and flag 0 (not `restore`).
@@ -156,8 +158,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string(None, "recurse-submodules", &recurse, "checkout", msg::HELP_RECURSE)
                 .optional(Some("")),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
-            Opt::flag('m', "merge", &merge, msg::HELP_MERGE),
-            Opt::string(None, "conflict", &conflict, "style", msg::HELP_CONFLICT),
+            // `--conflict` implies `--merge`; `--no-merge` undoes both,
+            // `--no-conflict` only the implied merge (t7201 41-44).
+            Opt::callback('m', "merge", None, msg::HELP_MERGE, |_, unset| {
+                merge.set(!unset);
+                if unset {
+                    *conflict.borrow_mut() = None;
+                }
+                Ok(())
+            })
+            .noarg(),
+            Opt::callback(None, "conflict", Some("style"), msg::HELP_CONFLICT, |v, unset| {
+                *conflict.borrow_mut() = (!unset).then(|| v.unwrap_or_default().to_owned());
+                Ok(())
+            }),
             Opt::flag('d', "detach", &detach, msg::HELP_DETACH),
             Track::option(&track),
             Opt::flag('f', "force", &force, msg::HELP_FORCE),
@@ -183,6 +197,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     crate::switch_branch::set_ignore_other_worktrees(ignore_other.get());
     rs::check_conflict_style(conflict.borrow().as_deref())?;
     let quiet = quiet.get() > 0;
+    sb::set_progress(progress.get(), quiet);
     let force = force.get();
     let track = track.get();
     let mut new_b = new_b.borrow().clone();
@@ -222,12 +237,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         stage: Stage::new(stage.get() as u8).filter(|s| s.is_conflict()),
         overlay: (overlay.get() >= 0).then_some(overlay.get() == 1),
         merge: merge.get() || conflict.borrow().is_some(),
+        conflict: conflict.borrow().clone(),
         force,
         quiet,
         ignore_skip_worktree: skip_worktree_bits.get(),
         globals: repository::pathspec_globals(ctx),
     };
-    let implied = track.is_given() && new_b.is_none() && new_bb.is_none() && orphan_name.is_none();
+    let implied =track.is_given() && new_b.is_none() && new_bb.is_none() && orphan_name.is_none();
     let creating = implied || new_b.is_some() || new_bb.is_some() || orphan_name.is_some();
     if detach.get() && creating {
         return Err(Die::Fatal(msg::DETACH_WITH_CREATE.to_owned()));

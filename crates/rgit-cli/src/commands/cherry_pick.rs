@@ -28,7 +28,7 @@ pub(crate) fn run_action(ctx: &mut Context, argv: &[String], action: Action) -> 
     let rerere = Cell::new(-1);
     let strategy = RefCell::new(None);
     let xopts = RefCell::new(Vec::new());
-    let gpg_sign = Cell::new(false);
+    let gpg_sign: RefCell<Option<Option<crate::signing::Sign>>> = RefCell::new(None);
     let record_origin = Cell::new(-1);
     let ff = Cell::new(-1);
     let allow_empty = Cell::new(-1);
@@ -67,8 +67,8 @@ pub(crate) fn run_action(ctx: &mut Context, argv: &[String], action: Action) -> 
         Opt::bool(None, "rerere-autoupdate", &rerere, msg::HELP_RERERE),
         Opt::string(None, "strategy", &strategy, "strategy", msg::HELP_STRATEGY),
         Opt::string_list('X', "strategy-option", &xopts, "option", msg::HELP_STRATEGY_OPTION),
-        Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |_, unset| {
-            gpg_sign.set(!unset);
+        Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |v, unset| {
+            *gpg_sign.borrow_mut() = Some((!unset).then(|| crate::signing::Sign::from_arg(v)));
             Ok(())
         })
         .optional(None),
@@ -166,9 +166,6 @@ pub(crate) fn run_action(ctx: &mut Context, argv: &[String], action: Action) -> 
             }
         }
     }
-    if gpg_sign.get() {
-        return Err(Die::Fatal(msg::option_not_supported("-S/--gpg-sign")));
-    }
     if let Some(c) = cleanup.borrow().as_deref()
         && rgit_commit::message::Cleanup::parse(c).is_none()
     {
@@ -203,6 +200,10 @@ pub(crate) fn run_action(ctx: &mut Context, argv: &[String], action: Action) -> 
     }
 
     let mut seq = Sequencer::new(ctx, o)?;
+    {
+        let repo = crate::repository::Repo::open(seq.ctx, crate::repo::Mode::Required)?;
+        seq.opts.gpg_sign = crate::signing::resolve(&repo.config, gpg_sign.borrow().clone());
+    }
     if action == Action::Revert {
         let repo = crate::repository::Repo::open(seq.ctx, crate::repo::Mode::Required)?;
         seq.opts.reference = match reference.get() {

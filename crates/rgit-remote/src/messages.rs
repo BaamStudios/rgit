@@ -109,3 +109,8 @@ pub(crate) fn malformed_push_default(value: &BStr) -> [String; 2] {
         "must be one of nothing, matching, simple, upstream or current".to_string(),
     ]
 }
+
+/// `unrecognized followRemoteHEAD value '<value>' ignored`.
+pub(crate) fn unknown_follow_remote_head(value: &BStr) -> String {
+    format!("unrecognized followRemoteHEAD value '{value}' ignored")
+}

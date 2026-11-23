@@ -14,7 +14,7 @@
 //! the pack then find the objects of recent history close together.
 
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::{Commit, Tag, TreeIter};
@@ -41,6 +41,50 @@ pub struct ListedObject {
     pub kind: ObjectKind,
     /// For an annotated tag: the object it points to.
     pub tag_target: Option<ObjectId>,
+    /// [`name_hash`] of the path the object was found under (0: none).
+    /// Objects with equal or similar names are compared in the delta
+    /// search.
+    pub name_hash: u32,
+}
+
+impl ListedObject {
+    /// An object without a path.
+    pub fn new(id: ObjectId, kind: ObjectKind) -> ListedObject {
+        ListedObject {
+            id,
+            kind,
+            tag_target: None,
+            name_hash: 0,
+        }
+    }
+}
+
+/// The sort key of a path for the delta search: equal for equal file
+/// names (in any directory), close for names that end alike. The high 16
+/// bits are the last two bytes of the name (so `*.c` files sort near each
+/// other), the low 16 bits a hash of the whole file name. Whitespace is
+/// ignored; the empty path gives 0.
+pub fn name_hash(path: &[u8]) -> u32 {
+    let base = match path.iter().rposition(|&b| b == b'/') {
+        Some(slash) if slash + 1 < path.len() => &path[slash + 1..],
+        Some(_) => {
+            let trimmed = &path[..path.len() - 1];
+            return name_hash(trimmed);
+        }
+        None => path,
+    };
+    let mut tail = [0u8; 2];
+    let mut n = 0;
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in base.iter().filter(|b| !b.is_ascii_whitespace()) {
+        h = (h ^ b as u32).wrapping_mul(0x0100_0193);
+        tail = [tail[1], b];
+        n += 1;
+    }
+    if n == 0 {
+        return 0;
+    }
+    (u32::from(tail[1]) << 24) | (u32::from(tail[0]) << 16) | ((h ^ (h >> 16)) & 0xffff)
 }
 
 /// Steps the commit walk goes on once only excluded commits are queued.
@@ -149,9 +193,8 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
                     kind: ObjectKind::Tag,
                 })?;
             tags.push(ListedObject {
-                id: cur,
-                kind: ObjectKind::Tag,
                 tag_target: Some(target),
+                ..ListedObject::new(cur, ObjectKind::Tag)
             });
             if tags.len() > 10_000 {
                 return Err(WriteError::Corrupt {
@@ -161,6 +204,89 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
             }
             cur = target;
         }
+    }
+
+    /// The entries of a tree: name, id, and whether it is a tree.
+    /// Submodule commits (gitlinks) are left out.
+    fn tree_entries(&self, id: &ObjectId) -> Result<Vec<(Vec<u8>, ObjectId, bool)>, WriteError> {
+        let data = self.read_kind(id, ObjectKind::Tree)?;
+        let mut out = Vec::new();
+        for entry in TreeIter::new(self.hash, &data) {
+            let entry = entry.map_err(|_| WriteError::Corrupt {
+                id: *id,
+                kind: ObjectKind::Tree,
+            })?;
+            match entry.mode_bits & 0o170000 {
+                0o160000 => {}
+                0o040000 => out.push((entry.name.to_vec(), entry.oid, true)),
+                _ => out.push((entry.name.to_vec(), entry.oid, false)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// The sparse walk of the excluded side: starting with the root trees,
+    /// add the entries of the `excluded` trees to `seen` (and `edges`),
+    /// and descend only into names where an `included` tree has a tree
+    /// not seen yet and an excluded tree has a tree too.
+    fn mark_sparse(
+        &self,
+        included: Vec<ObjectId>,
+        excluded: Vec<ObjectId>,
+        seen: &mut HashSet<ObjectId>,
+        mut edges: Option<&mut Vec<ListedObject>>,
+    ) -> Result<(), WriteError> {
+        let mut mark = |seen: &mut HashSet<ObjectId>, id: ObjectId, kind, name: &[u8]| {
+            if seen.insert(id) {
+                if let Some(e) = edges.as_deref_mut() {
+                    e.push(ListedObject {
+                        name_hash: name_hash(name),
+                        ..ListedObject::new(id, kind)
+                    });
+                }
+            }
+        };
+        for t in &excluded {
+            mark(seen, *t, ObjectKind::Tree, b"");
+        }
+        let mut groups = vec![(included, excluded)];
+        while let Some((inc, exc)) = groups.pop() {
+            type Sides = (Vec<ObjectId>, Vec<ObjectId>);
+            let mut by_name: BTreeMap<Vec<u8>, Sides> = BTreeMap::new();
+            let mut done: HashSet<ObjectId> = HashSet::new();
+            for t in exc.iter().filter(|t| done.insert(**t)) {
+                for (name, id, is_tree) in self.tree_entries(t)? {
+                    let kind = if is_tree {
+                        ObjectKind::Tree
+                    } else {
+                        ObjectKind::Blob
+                    };
+                    mark(seen, id, kind, &name);
+                    if is_tree {
+                        by_name.entry(name).or_default().1.push(id);
+                    }
+                }
+            }
+            let mut done: HashSet<ObjectId> = HashSet::new();
+            for t in inc
+                .iter()
+                .filter(|t| !seen.contains(*t) && done.insert(**t))
+            {
+                for (name, id, is_tree) in self.tree_entries(t)? {
+                    if is_tree && !seen.contains(&id) {
+                        if let Some(sides) = by_name.get_mut(&name) {
+                            sides.0.push(id);
+                        }
+                    }
+                }
+            }
+            for (_, (inc, exc)) in by_name {
+                if !inc.is_empty() && !exc.is_empty() {
+                    groups.push((inc, exc));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Add `root` and everything below it to `seen`, appending the objects
@@ -175,16 +301,15 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
         if !seen.insert(root) {
             return Ok(());
         }
-        let push = |out: &mut Option<&mut Vec<ListedObject>>, id, kind| {
+        let push = |out: &mut Option<&mut Vec<ListedObject>>, id, kind, name: &[u8]| {
             if let Some(o) = out.as_deref_mut() {
                 o.push(ListedObject {
-                    id,
-                    kind,
-                    tag_target: None,
+                    name_hash: name_hash(name),
+                    ..ListedObject::new(id, kind)
                 });
             }
         };
-        push(&mut out, root, ObjectKind::Tree);
+        push(&mut out, root, ObjectKind::Tree, b"");
         // Depth-first with an explicit stack of (tree content, position).
         let mut stack: Vec<(ObjectId, Vec<u8>, usize)> =
             vec![(root, self.read_kind(&root, ObjectKind::Tree)?, 0)];
@@ -208,14 +333,14 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
                 0o160000 => {}
                 0o040000 => {
                     if seen.insert(id) {
-                        push(&mut out, id, ObjectKind::Tree);
+                        push(&mut out, id, ObjectKind::Tree, entry.name);
                         let sub = self.read_kind(&id, ObjectKind::Tree)?;
                         stack.push((id, sub, 0));
                     }
                 }
                 _ => {
                     if seen.insert(id) {
-                        push(&mut out, id, ObjectKind::Blob);
+                        push(&mut out, id, ObjectKind::Blob, entry.name);
                     }
                 }
             }
@@ -239,6 +364,38 @@ pub fn enumerate<S: ObjectSource + ?Sized>(
     source: &S,
     hash: HashKind,
     tips: &[Tip],
+) -> Result<Vec<ListedObject>, WriteError> {
+    walk_objects(source, hash, tips, false, None)
+}
+
+/// Like [`enumerate`], and also returns the trees and blobs of the edge:
+/// the excluded parents of listed commits, and excluded trees named as
+/// tips. The other side has them, so they can serve as delta bases of a
+/// thin pack ([`write_thin_pack`](super::write_thin_pack)).
+///
+/// With `sparse` (`pack-objects --sparse`, `pack.useSparse`) the trees of
+/// excluded parents are only walked along the paths where the listed
+/// commits have trees that differ from them: an object that the other
+/// side has only under another path is listed again (a copied directory,
+/// for example), but the walk stays small for a small change in a big
+/// tree. Only the objects seen on those paths are returned as edge.
+pub fn enumerate_with_edges<S: ObjectSource + ?Sized>(
+    source: &S,
+    hash: HashKind,
+    tips: &[Tip],
+    sparse: bool,
+) -> Result<(Vec<ListedObject>, Vec<ListedObject>), WriteError> {
+    let mut edges = Vec::new();
+    let listed = walk_objects(source, hash, tips, sparse, Some(&mut edges))?;
+    Ok((listed, edges))
+}
+
+fn walk_objects<S: ObjectSource + ?Sized>(
+    source: &S,
+    hash: HashKind,
+    tips: &[Tip],
+    sparse: bool,
+    mut edge_objects: Option<&mut Vec<ListedObject>>,
 ) -> Result<Vec<ListedObject>, WriteError> {
     let mut w = Walker {
         source,
@@ -265,11 +422,7 @@ pub fn enumerate<S: ObjectSource + ?Sized>(
         pending.extend(tags);
         match kind {
             ObjectKind::Commit => include_commits.push(id),
-            _ => pending.push(ListedObject {
-                id,
-                kind,
-                tag_target: None,
-            }),
+            _ => pending.push(ListedObject::new(id, kind)),
         }
     }
 
@@ -358,19 +511,32 @@ pub fn enumerate<S: ObjectSource + ?Sized>(
     // parents of the listed commits (the edge of the excluded history).
     let mut seen: HashSet<ObjectId> = HashSet::new();
     let mut edges = HashSet::new();
+    let mut edge_trees = Vec::new();
     for id in &commits {
         for p in w.commit(id)?.parents.clone() {
             if excluded.contains(&p) && edges.insert(p) {
+                // A shallow history may lack the excluded parent.
                 if let Ok(c) = w.commit(&p) {
                     let tree = c.tree;
-                    let _ = w.walk_tree(tree, &mut seen, None);
+                    if sparse {
+                        edge_trees.push(tree);
+                    } else {
+                        let _ = w.walk_tree(tree, &mut seen, edge_objects.as_deref_mut());
+                    }
                 }
             }
         }
     }
+    if sparse && !edge_trees.is_empty() {
+        let mut included = Vec::with_capacity(commits.len());
+        for id in &commits {
+            included.push(w.commit(id)?.tree);
+        }
+        w.mark_sparse(included, edge_trees, &mut seen, edge_objects.as_deref_mut())?;
+    }
     for (id, kind) in excluded_roots {
         match kind {
-            ObjectKind::Tree => w.walk_tree(id, &mut seen, None)?,
+            ObjectKind::Tree => w.walk_tree(id, &mut seen, edge_objects.as_deref_mut())?,
             _ => {
                 seen.insert(id);
             }
@@ -380,11 +546,7 @@ pub fn enumerate<S: ObjectSource + ?Sized>(
     let mut out: Vec<ListedObject> = Vec::with_capacity(commits.len() * 4);
     let mut listed: HashSet<ObjectId> = HashSet::new();
     for id in &commits {
-        out.push(ListedObject {
-            id: *id,
-            kind: ObjectKind::Commit,
-            tag_target: None,
-        });
+        out.push(ListedObject::new(*id, ObjectKind::Commit));
     }
     let mut trees_from_tips = Vec::new();
     for o in pending {
@@ -510,9 +672,8 @@ pub fn describe<S: ObjectSource + ?Sized>(
             None
         };
         out.push(ListedObject {
-            id: *id,
-            kind,
             tag_target,
+            ..ListedObject::new(*id, kind)
         });
     }
     Ok(out)

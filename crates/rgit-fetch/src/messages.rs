@@ -86,6 +86,23 @@ pub fn rejected_shallow_root(name: &str) -> String {
     format!("rejected {name} because shallow roots are not allowed to be updated")
 }
 
+/// A fetch would store a tag (or another non-commit) in `refs/heads/`.
+pub fn non_commit_to_branch(oid: &str, refname: &str) -> String {
+    format!("trying to write non-commit object {oid} to branch '{refname}'")
+}
+
+/// `followRemoteHEAD=warn`: the remote's `HEAD` is not ours.
+pub fn remote_head_differs(remote: &str, theirs: &str, ours: &str) -> String {
+    format!("'HEAD' at '{remote}' is '{theirs}', but we have '{ours}' locally.")
+}
+
+/// `followRemoteHEAD=warn` with a detached `refs/remotes/<name>/HEAD`.
+pub fn remote_head_detached(remote: &str, theirs: &str, oid: &str) -> String {
+    format!(
+        "'HEAD' at '{remote}' is '{theirs}', but we have a detached HEAD pointing to '{oid}' locally."
+    )
+}
+
 /// The first line of the summary.
 pub fn from_url(url: &str) -> String {
     format!("From {url}")

@@ -104,6 +104,9 @@ pub struct Opts {
     pub cleanup: Option<String>,
     /// `revert --reference`, `revert.reference`.
     pub reference: bool,
+    /// `-S[<key>]` or `commit.gpgSign` (resolved when the operation
+    /// starts).
+    pub gpg_sign: Option<crate::signing::Sign>,
 }
 
 impl Opts {
@@ -124,6 +127,7 @@ impl Opts {
             xopts: Vec::new(),
             cleanup: None,
             reference: false,
+            gpg_sign: None,
         }
     }
 
@@ -176,6 +180,11 @@ impl Opts {
         if let Some(c) = &self.cleanup {
             kv("default-msg-cleanup", c);
         }
+        match &self.gpg_sign {
+            Some(crate::signing::Sign::Key(k)) => kv("gpg-sign", k),
+            Some(crate::signing::Sign::Default) => kv("gpg-sign", ""),
+            None => {}
+        }
         out
     }
 
@@ -215,6 +224,7 @@ impl Opts {
                 "strategy" => self.strategy = Some(value),
                 "strategy-option" => self.xopts.push(value),
                 "default-msg-cleanup" => self.cleanup = Some(value),
+                "gpg-sign" => self.gpg_sign = Some(crate::signing::Sign::from_arg(Some(&value))),
                 _ => {}
             }
         }
@@ -748,6 +758,7 @@ impl<'c> Sequencer<'c> {
             if self.opts.allow_empty_message {
                 args.push("--allow-empty-message".into());
             }
+            args.push(self.sign_arg());
             let env = vec![("GIT_REFLOG_ACTION".to_owned(), self.reflog_action.clone())];
             let code = self.run_commit(&args, &env)?;
             if code != 0 {
@@ -976,10 +987,10 @@ impl<'c> Sequencer<'c> {
             return Err(Fail::Printed);
         }
         let parents: Vec<ObjectId> = head.into_iter().collect();
-        let encoding = picked
-            .encoding()
-            .filter(|_| self.opts.action == Action::Pick)
-            .map(|e| e.to_vec());
+        // Messages are reused in the commit encoding (see `read_commit`).
+        let encoding = Some(crate::history::recode::commit_encoding(&repo.config))
+            .filter(|e| !rgit_convert::encoding::same_encoding(e, "UTF-8"))
+            .map(String::into_bytes);
         let new = rgit_commit::NewCommit {
             tree,
             parents: &parents,
@@ -988,8 +999,8 @@ impl<'c> Sequencer<'c> {
             encoding: encoding.as_deref(),
             message: &cleaned,
         };
-        let oid = rgit_commit::create_commit(repo.odb(), &new)
-            .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))?;
+        let oid = crate::signing::create_commit(repo, &new, self.opts.gpg_sign.as_ref())
+            .map_err(Fail::Die)?;
         let what = msg::reflog(&self.reflog_action, &lossy(cmsg::first_line(&cleaned)));
         update_head(self.ctx, repo, oid, head, &what)?;
         let o = RunOptions::with_args(std::iter::empty::<&str>());
@@ -1168,7 +1179,18 @@ impl<'c> Sequencer<'c> {
         if self.opts.allow_empty_message {
             args.push("--allow-empty-message".into());
         }
+        args.push(self.sign_arg());
         self.run_commit(&args, &[]).map_err(|f| self.fail(f))
+    }
+
+    /// The signing option for `git commit`: `-S[<key>]`, else
+    /// `--no-gpg-sign` (the request was resolved when the operation
+    /// started).
+    fn sign_arg(&self) -> String {
+        match &self.opts.gpg_sign {
+            Some(s) => s.to_opt(),
+            None => "--no-gpg-sign".to_owned(),
+        }
     }
 
     /// `--skip`: drop the commit that stopped and go on.
@@ -1312,15 +1334,18 @@ pub(crate) fn merge_with(
     labels: (&str, &str),
 ) -> Result<MergeResult, Fail> {
     let (base_label, their_label) = labels;
-    match strategy {
-        None | Some("ort" | "recursive") => {}
+    let subtree = match strategy {
+        None | Some("ort" | "recursive") => rgit_merge::Subtree::None,
+        Some("subtree") => rgit_merge::Subtree::Guess,
         Some(s) => return Err(Fail::Die(Die::Fatal(msg::strategy_not_supported(s)))),
-    }
+    };
     let mut opts = rgit_merge::Options {
         branch1: b"HEAD".to_vec(),
         branch2: their_label.as_bytes().to_vec(),
         ancestor: base_label.as_bytes().to_vec(),
         style: crate::commands::merge_file::config_style(&repo.config)?,
+        subtree,
+        renormalize: crate::commands::merge::renormalize_config(&repo.config),
         ..rgit_merge::Options::default()
     };
     crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);
@@ -1339,6 +1364,15 @@ pub(crate) fn merge_with(
                 )))));
             }
         }
+    }
+    if let Ok(pm) = crate::commands::merge::attrs::RepoPathMerge::open(
+        &crate::Context::default(),
+        repo,
+        opts.renormalize,
+        Some(theirs),
+        None,
+    ) {
+        opts.path_merge = Some(pm);
     }
     rgit_merge::merge_trees(repo.odb(), base, ours, theirs, &opts)
         .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))
@@ -1414,7 +1448,12 @@ pub(crate) fn head_commit(repo: &mut Repo) -> Option<ObjectId> {
 
 pub(crate) fn read_commit(repo: &Repo, id: &ObjectId) -> Result<Commit, Fail> {
     match repo.read_object(id) {
-        Some(Object::Commit(c)) => Ok(c),
+        // The message is reused in the commit encoding.
+        Some(Object::Commit(c)) => Ok(crate::history::recode::for_new_commit(
+            &repo.config,
+            repo.hash,
+            c,
+        )),
         _ => Err(Fail::Error(rgit_merge::messages::not_a_commit(
             &id.to_hex(),
         ))),

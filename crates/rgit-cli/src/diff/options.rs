@@ -96,6 +96,40 @@ pub struct DiffOpts {
     pub color_moved: Option<Option<super::moved::Mode>>,
     /// `--color-moved-ws=<modes>`.
     pub color_moved_ws: Option<super::moved::MovedWs>,
+    /// The options are format-patch's (it reads `diff.relative`).
+    pub format_patch: bool,
+    /// `--compact-summary` (implies `--stat`).
+    pub compact_summary: bool,
+    /// `--relative[=<path>]` (`Some(Some(..))`) or `--no-relative`
+    /// (`Some(None)`).
+    pub relative: Option<Option<Option<String>>>,
+    /// `--line-prefix=<prefix>`.
+    pub line_prefix: Option<Vec<u8>>,
+    /// `--output-indicator-new/old/context=<char>`.
+    pub indicators: [Option<u8>; 3],
+    /// `-a` / `--text`.
+    pub text: bool,
+    /// `--ita-invisible-in-index` (`true`) / `--ita-visible-in-index`.
+    pub ita_invisible: Option<bool>,
+    /// `-W` / `--function-context`.
+    pub function_context: Option<bool>,
+    /// `--max-depth` was given (it implies `-r`).
+    pub max_depth_given: bool,
+    /// `--max-depth=<n>` (`-1`: no limit).
+    pub max_depth: Option<usize>,
+    /// `-O<orderfile>` (`/dev/null` cancels `diff.orderFile`).
+    pub orderfile: Option<String>,
+    /// `--output=<file>`.
+    pub output: Option<String>,
+    /// `--rotate-to=<path>` (`false`) or `--skip-to=<path>` (`true`).
+    pub rotate_to: Option<(bool, String)>,
+    /// `--dirstat`, `-X`, `--cumulative`, `--dirstat-by-file`: the
+    /// parameters given, in order (applied over `diff.dirstat`).
+    pub dirstat: Option<Vec<String>>,
+    /// `--[no-]textconv` (`git diff` defaults to on).
+    pub textconv: Option<bool>,
+    /// `--[no-]ext-diff` (`git diff` defaults to on).
+    pub ext_diff: Option<bool>,
 }
 
 /// How submodule changes are shown (`--submodule`, `diff.submodule`).
@@ -173,12 +207,13 @@ pub struct Formats {
     pub summary: bool,
     /// `--check`: whitespace errors instead of any other format.
     pub check: bool,
+    pub dirstat: bool,
 }
 
 impl Formats {
     /// Whether any format needs file contents.
     pub fn needs_content(&self) -> bool {
-        self.patch || self.numstat || self.stat || self.shortstat || self.check
+        self.patch || self.numstat || self.stat || self.shortstat || self.check || self.dirstat
     }
 
     /// Any output at all.
@@ -192,6 +227,7 @@ impl Formats {
             || self.shortstat
             || self.summary
             || self.check
+            || self.dirstat
     }
 }
 
@@ -199,6 +235,16 @@ impl Formats {
 pub fn usage_exit(text: String) -> Die {
     let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
     Die::Exit(rgit_options::EXIT_USAGE)
+}
+
+/// A `--dirstat` parameter list with errors is fatal.
+fn dirstat_check(value: &str) -> Result<(), Die> {
+    let errors = super::dirstat::Params::default().apply(value);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(Die::Fatal(msg::dirstat_option_errors(&errors.concat())))
+    }
 }
 
 /// A word regex (POSIX extended syntax); an invalid one is fatal.
@@ -222,6 +268,14 @@ fn ignore_regex(pattern: &str) -> Option<regex::bytes::Regex> {
         .multi_line(true)
         .build()
         .ok()
+}
+
+/// `-U<n>` / `--unified=<n>`.
+fn context_number(value: &str) -> Result<usize, Die> {
+    match value.parse::<i64>() {
+        Ok(n) if n < 0 => Err(usage_exit(msg::expects_non_negative("--unified"))),
+        _ => number(value, "--unified"),
+    }
 }
 
 fn number(value: &str, option: &str) -> Result<usize, Die> {
@@ -251,6 +305,8 @@ impl DiffOpts {
                     stat: false,
                     shortstat: false,
                     summary: false,
+                    check: false,
+                    dirstat: None,
                     ..std::mem::take(self)
                 };
             }
@@ -269,6 +325,31 @@ impl DiffOpts {
             "--name-only" => self.name_only = true,
             "--name-status" => self.name_status = true,
             "--check" => self.check = true,
+            "-a" | "--text" => self.text = true,
+            "--no-text" => self.text = false,
+            "--ita-invisible-in-index" => self.ita_invisible = Some(true),
+            "--ita-visible-in-index" => self.ita_invisible = Some(false),
+            "-W" | "--function-context" => self.function_context = Some(true),
+            "--no-function-context" => self.function_context = Some(false),
+            "--dirstat" | "-X" => {
+                self.format().dirstat.get_or_insert_with(Vec::new);
+            }
+            "--cumulative" => self
+                .format()
+                .dirstat
+                .get_or_insert_with(Vec::new)
+                .push("cumulative".into()),
+            "--dirstat-by-file" => self
+                .format()
+                .dirstat
+                .get_or_insert_with(Vec::new)
+                .push("files".into()),
+            "--relative" => self.relative = Some(Some(None)),
+            "--no-relative" => self.relative = Some(None),
+            "--compact-summary" => {
+                self.format().stat = true;
+                self.compact_summary = true;
+            }
             "--color-moved" => self.color_moved = Some(None),
             "--no-color-moved" => self.color_moved = Some(Some(super::moved::Mode::No)),
             "--no-color-moved-ws" => {
@@ -301,7 +382,11 @@ impl DiffOpts {
             "--no-indent-heuristic" => self.indent_heuristic = Some(false),
             "--no-prefix" => self.no_prefix = true,
             "--default-prefix" => self.default_prefix = true,
-            "--no-ext-diff" | "--no-textconv" | "--myers" | "--default" => {}
+            "--myers" | "--default" => {}
+            "--textconv" => self.textconv = Some(true),
+            "--no-textconv" => self.textconv = Some(false),
+            "--ext-diff" => self.ext_diff = Some(true),
+            "--no-ext-diff" => self.ext_diff = Some(false),
             "--no-renames" => self.detect = Some(Detect::Off),
             "-M" | "--find-renames" => self.detect = Some(Detect::Renames),
             "-C" | "--find-copies" => {
@@ -369,17 +454,21 @@ impl DiffOpts {
                 .map_err(|_| usage_exit(msg::expects_numerical("--abbrev")))?;
             self.abbrev = Some(Some(usize::try_from(n.max(0)).unwrap_or(0)));
         } else if let Some(v) = arg.strip_prefix("--unified=") {
-            self.context = Some(number(v, "--unified")?);
+            self.context = Some(context_number(v)?);
             self.format().patch = true;
         } else if let Some(v) = arg.strip_prefix("-U") {
             if !v.is_empty() {
-                self.context = Some(number(v, "--unified")?);
+                self.context = Some(context_number(v)?);
             }
             self.format().patch = true;
         } else if arg == "--unified" {
             self.format().patch = true;
         } else if let Some(v) = arg.strip_prefix("--inter-hunk-context=") {
-            self.interhunk = Some(number(v, "--inter-hunk-context")?);
+            self.interhunk = Some(
+                magnitude(v)
+                    .filter(|_| !v.starts_with('-'))
+                    .ok_or_else(|| usage_exit(msg::expects_magnitude("inter-hunk-context")))?,
+            );
         } else if let Some(v) = arg.strip_prefix("--src-prefix=") {
             self.src_prefix = Some(v.as_bytes().to_vec());
         } else if let Some(v) = arg.strip_prefix("--dst-prefix=") {
@@ -400,7 +489,11 @@ impl DiffOpts {
             field(&mut self.stat_count)?;
             self.format().stat = true;
         } else if let Some(v) = arg.strip_prefix("--stat-width=") {
-            self.stat_width = Some(number(v, "--stat-width")?);
+            // A negative width means the default.
+            self.stat_width = match v.parse::<i64>() {
+                Ok(n) if n < 0 => None,
+                _ => Some(number(v, "--stat-width")?),
+            };
             self.format().stat = true;
         } else if let Some(v) = arg.strip_prefix("--stat-name-width=") {
             self.stat_name_width = Some(number(v, "--stat-name-width")?);
@@ -444,6 +537,48 @@ impl DiffOpts {
         {
             let re = ignore_regex(v).ok_or_else(|| usage_exit(msg::invalid_ignore_regex(v)))?;
             self.ignore_regex.push(re);
+        } else if let Some(v) = arg
+            .strip_prefix("--dirstat=")
+            .or_else(|| arg.strip_prefix("-X"))
+        {
+            dirstat_check(v)?;
+            self.format()
+                .dirstat
+                .get_or_insert_with(Vec::new)
+                .push(v.to_string());
+        } else if let Some(v) = arg.strip_prefix("--line-prefix=") {
+            self.line_prefix = Some(v.as_bytes().to_vec());
+        } else if let Some((k, v)) = arg
+            .strip_prefix("--output-indicator-new=")
+            .map(|v| (0, v))
+            .or_else(|| arg.strip_prefix("--output-indicator-old=").map(|v| (1, v)))
+            .or_else(|| {
+                arg.strip_prefix("--output-indicator-context=")
+                    .map(|v| (2, v))
+            })
+        {
+            self.indicators[k] = v.bytes().next();
+        } else if let Some(v) = arg.strip_prefix("--max-depth=") {
+            let n = v
+                .parse::<i64>()
+                .map_err(|_| usage_exit(msg::expects_numerical("--max-depth")))?;
+            self.max_depth = usize::try_from(n).ok();
+            self.max_depth_given = true;
+        } else if let Some(v) = arg.strip_prefix("-O") {
+            self.orderfile = Some(v.to_string());
+        } else if let Some(v) = arg.strip_prefix("--output=") {
+            self.output = Some(v.to_string());
+        } else if let Some(v) = arg.strip_prefix("--rotate-to=") {
+            self.rotate_to = Some((false, v.to_string()));
+        } else if let Some(v) = arg.strip_prefix("--skip-to=") {
+            self.rotate_to = Some((true, v.to_string()));
+        } else if let Some(v) = arg.strip_prefix("--relative=") {
+            self.relative = Some(Some(Some(v.to_string())));
+        } else if let Some(v) = arg.strip_prefix("--dirstat-by-file=") {
+            dirstat_check(v)?;
+            let d = self.format().dirstat.get_or_insert_with(Vec::new);
+            d.push("files".into());
+            d.push(v.to_string());
         } else if let Some(v) = arg.strip_prefix("--color-moved=") {
             let mode = super::moved::Mode::parse(v, false)
                 .ok_or_else(|| usage_exit(msg::bad_color_moved(v)))?;
@@ -526,6 +661,7 @@ impl DiffOpts {
             raw: self.raw,
             patch: self.patch,
             numstat: self.numstat,
+            dirstat: self.dirstat.is_some(),
             stat: self.stat,
             shortstat: self.shortstat,
             summary: self.summary,
@@ -559,6 +695,13 @@ impl DiffOpts {
             .as_deref()
             .map(crate::submodules::parse_ignore_arg)
             .transpose()
+    }
+
+    /// `git diff` runs textconv filters and external diff programs unless
+    /// told otherwise.
+    pub fn porcelain_drivers(&mut self) {
+        self.textconv.get_or_insert(true);
+        self.ext_diff.get_or_insert(true);
     }
 
     pub fn wants_exit_code(&self) -> bool {

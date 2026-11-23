@@ -38,7 +38,7 @@ fn prefixes(out: &mut Output<'_>, src: &str, dst: &str) {
 
 /// The diff from `base` (the parent's tree) to the index being committed;
 /// `mnemonic` names the sides `c/` and `i/`.
-pub(super) fn staged_diff(
+pub(crate) fn staged_diff(
     repo: &Repo,
     base: &ObjectId,
     index: &Index,
@@ -78,6 +78,48 @@ pub(super) fn template_diff(
     heading(&mut out, msg::DIFF_STAGED);
     out.extend_from_slice(&staged_diff(repo, base, index, true)?);
 
+    let text = unstaged_diff(repo, index)?;
+    if !text.is_empty() {
+        heading(&mut out, msg::DIFF_SEPARATOR);
+        heading(&mut out, msg::DIFF_UNSTAGED);
+        out.extend_from_slice(&text);
+    }
+    Ok(out)
+}
+
+/// `status -v`: the staged diff; with `-v -v` (`verbose` times) under a
+/// heading with the sides named `c/` and `i/`, followed by the changes
+/// not staged (`i/`, `w/`), each part only when it is not empty.
+pub(crate) fn status_diff(
+    repo: &Repo,
+    base: &ObjectId,
+    index: &Index,
+    verbose: i32,
+) -> Result<Vec<u8>, Die> {
+    if verbose < 2 {
+        return staged_diff(repo, base, index, false);
+    }
+    let line = |out: &mut Vec<u8>, text: &str| {
+        out.extend_from_slice(text.as_bytes());
+        out.push(b'\n');
+    };
+    let mut out = Vec::new();
+    let staged = staged_diff(repo, base, index, true)?;
+    if !staged.is_empty() {
+        line(&mut out, msg::DIFF_STAGED);
+        out.extend_from_slice(&staged);
+    }
+    let unstaged = unstaged_diff(repo, index)?;
+    if !unstaged.is_empty() {
+        line(&mut out, msg::DIFF_SEPARATOR);
+        line(&mut out, msg::DIFF_UNSTAGED);
+        out.extend_from_slice(&unstaged);
+    }
+    Ok(out)
+}
+
+/// The changes of the work tree against `index`, sides named `i/`, `w/`.
+fn unstaged_diff(repo: &Repo, index: &Index) -> Result<Vec<u8>, Die> {
     let opts = options();
     let root = repo.work_tree()?;
     let checker = repo.checker(None)?;
@@ -85,7 +127,6 @@ pub(super) fn template_diff(
     let wt = WorkTree {
         root: &root,
         checker: &checker,
-        porcelain: true,
         hash: repo.hash,
         submodules: submodules.as_ref(),
         dirty: Default::default(),
@@ -93,11 +134,5 @@ pub(super) fn template_diff(
     let pairs = collect::files(index, &Pathspec::default(), &wt, false)?;
     let mut unstaged = output(repo, &opts)?;
     prefixes(&mut unstaged, "i/", "w/");
-    let text = unstaged.render(pairs)?.0;
-    if !text.is_empty() {
-        heading(&mut out, msg::DIFF_SEPARATOR);
-        heading(&mut out, msg::DIFF_UNSTAGED);
-        out.extend_from_slice(&text);
-    }
-    Ok(out)
+    Ok(unstaged.render(pairs)?.0)
 }

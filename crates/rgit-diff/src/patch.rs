@@ -37,6 +37,8 @@ pub struct PatchOptions {
     pub src_prefix: Vec<u8>,
     /// Prefix of the new path (`b/`).
     pub dst_prefix: Vec<u8>,
+    /// `-a` / `--text`: binary files get a text patch too.
+    pub text: bool,
 }
 
 impl Default for PatchOptions {
@@ -47,6 +49,7 @@ impl Default for PatchOptions {
             quote_path: true,
             src_prefix: b"a/".to_vec(),
             dst_prefix: b"b/".to_vec(),
+            text: false,
         }
     }
 }
@@ -145,6 +148,9 @@ pub struct PatchExtra {
     /// The contents differ although the object ids are equal (a dirty
     /// submodule): show them without an `index` line.
     pub same_id_differs: bool,
+    /// Whether the pair is binary, when the caller decided it (the `diff`
+    /// attribute, `--text`, textconv); `None` looks at the contents.
+    pub binary: Option<bool>,
 }
 
 /// Lines of a complete rewrite: `-` lines of the old, then `+` lines of
@@ -214,6 +220,8 @@ pub fn write_file_patch_extra(
     let old_data = old.map_or(empty, |f| f.data);
     let new_data = new.map_or(empty, |f| f.data);
     let content_changed = match (old, new) {
+        // Sides without an id (standard input, pipes) compare by data.
+        (Some(o), Some(n)) if o.oid.is_null() || n.oid.is_null() => o.data != n.data,
         (Some(o), Some(n)) => o.oid != n.oid,
         _ => true,
     };
@@ -247,11 +255,13 @@ pub fn write_file_patch_extra(
     if !content_changed && !extra.same_id_differs {
         return Stats::default();
     }
-    if content_changed {
-        let kind = old.or(new).map(|f| f.oid.kind()).unwrap();
-        let null = ObjectId::null(kind);
-        let oa = old.map_or(null, |f| f.oid);
-        let ob = new.map_or(null, |f| f.oid);
+    let kind = old.or(new).map(|f| f.oid.kind()).unwrap();
+    let null = ObjectId::null(kind);
+    let oa = old.map_or(null, |f| f.oid);
+    let ob = new.map_or(null, |f| f.oid);
+    // Without any object id (standard input against nothing) there is no
+    // index line.
+    if content_changed && !(oa.is_null() && ob.is_null()) {
         write!(out, "index {}..{}", abbrev(&oa), abbrev(&ob)).unwrap();
         if let (Some(o), Some(n)) = (old, new) {
             if o.mode == n.mode {
@@ -274,7 +284,10 @@ pub fn write_file_patch_extra(
     if new.is_none() && extra.irreversible_delete {
         return Stats::default();
     }
-    if is_binary(old_data) || is_binary(new_data) {
+    if extra
+        .binary
+        .unwrap_or_else(|| !opts.text && (is_binary(old_data) || is_binary(new_data)))
+    {
         messages::binary_files_differ(out, &a_shown, &b_shown);
         return Stats::default();
     }

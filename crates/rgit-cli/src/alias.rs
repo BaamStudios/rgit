@@ -319,7 +319,12 @@ pub fn run_shell(
         }
     }
     command.env("GIT_PREFIX", prefix);
-    let status = match command.status() {
+    let info = rgit_trace::trace2::ChildInfo {
+        class: "shell_alias",
+        use_shell: true,
+        ..Default::default()
+    };
+    let status = match rgit_trace::trace2::status(&mut command, info, &shown) {
         Ok(s) => s,
         Err(e) => {
             let err = crate::global::strerror(&e);

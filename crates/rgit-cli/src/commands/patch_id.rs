@@ -26,11 +26,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Arguments are ignored.
     parser.parse(argv)?;
     drop(parser);
-    let setup = crate::repo::setup_gently(ctx)?;
+    let setup = crate::repo::setup_gently_quiet(ctx)?;
     let kind = setup
         .as_ref()
         .map_or(rgit_hash::HashKind::Sha1, |s| s.format.object_format);
-    let config = crate::comment::gentle_config(ctx)?;
+    let config = match &setup {
+        Some(s) => crate::repo::load_config(ctx, s)?,
+        None => crate::comment::config_without_repo(ctx)?,
+    };
     let config_bool = |key: &str| config.bool(key).ok().flatten().unwrap_or(false);
     let mode = match mode.get() {
         UNSTABLE => Mode::Unstable,

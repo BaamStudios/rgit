@@ -610,6 +610,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if o.diff.stat_width.is_none() {
         o.diff.stat_width = Some(72);
     }
+    o.diff.format_patch = true;
     o.diff.resolve_objects(&mut repo)?;
     let branch = description_branch(&mut repo, &o);
     let repo = repo;
@@ -622,6 +623,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 pathspec: &pathspec,
                 recursive: true,
                 show_trees: false,
+                max_depth: None,
                 pairs: Vec::new(),
             };
             w.walk(old, Some(new), b"")?;
@@ -650,6 +652,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         (Some(n), false) => n.parse::<usize>().ok(),
         _ => None,
     };
+    // Patches are written in the log output encoding (`--encoding`).
+    let encoding = match &o.encoding {
+        Some(e) => e.as_bytes().to_vec(),
+        None => crate::history::recode::output_encoding(&repo.config),
+    };
+    let charset = String::from_utf8_lossy(&encoding).into_owned();
     let mut patches = Vec::new();
     for id in ids {
         if limit.is_some_and(|l| patches.len() >= l) {
@@ -660,6 +668,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 &id.to_hex(),
             )));
         };
+        let commit =
+            crate::history::recode::for_output(&commit, &encoding, repo.hash).unwrap_or(commit);
         let tree = commit.tree().map_err(|e| Die::Fatal(e.to_string()))?;
         let parent_tree = match first_parent(&id, &commit).as_ref() {
             Some(p) => match repo.read_object(p) {
@@ -704,6 +714,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 pathspec: &pathspec,
                 recursive: true,
                 show_trees: false,
+                max_depth: None,
                 pairs: Vec::new(),
             };
             w.walk(parent_tree.as_ref(), Some(&tree), b"")?;
@@ -983,7 +994,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let sender = s.from.clone().or_else(|| author_person.clone());
         if let Some(sender) = &sender {
             out.extend_from_slice(b"From: ");
-            rgit_mail::write_address(&mut out, &sender.name, &sender.email, CHARSET, s.encode);
+            rgit_mail::write_address(&mut out, &sender.name, &sender.email, &charset, s.encode);
             out.push(b'\n');
         }
         if let Some(t) = author.and_then(|a| a.time()) {
@@ -997,7 +1008,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let number = numbered.then_some((n, total));
             out.extend_from_slice(mail::subject_tag(&s.prefix, number).as_bytes());
         }
-        rgit_mail::write_text(&mut out, &subject, CHARSET, s.encode);
+        rgit_mail::write_text(&mut out, &subject, &charset, s.encode);
         out.push(b'\n');
 
         let mut text = Vec::new();
@@ -1014,7 +1025,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             text.extend_from_slice(&body);
         }
         if !subject.is_ascii() || !text.is_ascii() {
-            out.extend_from_slice(MIME_HEADERS);
+            out.extend_from_slice(msg::mime_headers(&charset).as_bytes());
         }
         extra_headers(&mut out, &s);
         out.push(b'\n');

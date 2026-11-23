@@ -118,11 +118,80 @@ pub fn no_remote_tracking_branch(merge: &str, remote: &str) -> String {
     format!("No remote-tracking branch for {merge} from {remote}")
 }
 
-pub fn unknown_strategy(name: &str) -> String {
-    format!(
+pub fn unknown_strategy(name: &str, custom: &[String]) -> String {
+    let mut s = format!(
         "Could not find merge strategy '{name}'.\n\
          Available strategies are: octopus ours recursive resolve subtree."
-    )
+    );
+    if !custom.is_empty() {
+        s.push_str("\nAvailable custom strategies are: ");
+        s.push_str(&custom.join(" "));
+        s.push('.');
+    }
+    s
+}
+
+/// Custom strategies are programs named this followed by the strategy.
+pub const STRATEGY_PROGRAM_PREFIX: &str = "git-merge-";
+
+// Merge attributes and drivers.
+pub fn invalid_marker_size(v: &str) -> String {
+    format!("invalid marker-size '{v}', expecting an integer")
+}
+pub const FAILED_INTERNAL_MERGE: &str = "failed to execute internal merge";
+
+// Trying several strategies.
+pub fn trying_strategy(name: &str) -> String {
+    format!("Trying merge strategy {name}...")
+}
+pub const REWINDING: &str = "Rewinding the tree to pristine...";
+/// Reflog message of putting saved local changes back.
+pub const UPDATING_HEAD: &str = "updating HEAD";
+pub fn using_strategy(name: &str) -> String {
+    format!("Using the {name} strategy to prepare resolving by hand.")
+}
+pub const NO_STRATEGY_HANDLED: &str = "No merge strategy handled the merge.";
+
+// The trivial in-index merge.
+pub const TRYING_TRIVIAL: &str = "Trying really trivial in-index merge...";
+pub const WONDERFUL: &str = "Wonderful.";
+pub const NOPE: &str = "Nope.";
+pub const IN_INDEX_MERGE: &str = "In-index merge";
+pub const FILE_LEVEL_MERGING: &str = "Merge requires file-level merging";
+
+// The resolve strategy.
+pub const TRYING_SIMPLE: &str = "Trying simple merge.";
+pub const SIMPLE_FAILED: &str = "Simple merge failed, trying Automatic merge.";
+pub fn resolve_local_changes(paths: &[String]) -> String {
+    let mut s =
+        "Error: Your local changes to the following files would be overwritten by merge".to_owned();
+    for p in paths {
+        s.push_str("\n    ");
+        s.push_str(p);
+    }
+    s
+}
+pub fn resolve_unreadable_blob(id: &str) -> String {
+    format!("unable to read blob object {id}")
+}
+pub const RESOLVE_COULD_NOT_STAT: &str = "Could not stat : No such file or directory";
+pub fn added_differently(path: &str) -> String {
+    format!("Added {path} in both, but differently.")
+}
+pub fn resolve_auto_merging(path: &str) -> String {
+    format!("Auto-merging {path}")
+}
+pub fn resolve_content_conflict(path: &str) -> String {
+    format!("ERROR: content conflict in {path}")
+}
+pub fn resolve_not_handling(path: &str, base: &str, ours: &str, theirs: &str) -> String {
+    format!("ERROR: {path}: Not handling case {base} -> {ours} -> {theirs}")
+}
+pub fn resolve_symlink(path: &str) -> String {
+    format!("ERROR: {path}: Not merging symbolic link changes.")
+}
+pub fn resolve_permissions(path: &str, base: &str, ours: &str, theirs: &str) -> String {
+    format!("ERROR: permissions conflict: {base}->{ours},{theirs} in {path}")
 }
 
 pub const UNRELATED_HISTORIES: &str = "refusing to merge unrelated histories";
@@ -161,14 +230,25 @@ pub const KIND_REMOTES: &str = "remote-tracking branches";
 pub const KIND_COMMITS: &str = "commits";
 pub const EARLY_PART: &str = "(early part)";
 
+// Credit lines of the merge message log.
+pub fn credit_by_one(name: &str) -> String {
+    format!("By {name}")
+}
+pub fn credit_by_two(a: &str, an: usize, b: &str, bn: usize) -> String {
+    format!("By {a} ({an}) and {b} ({bn})")
+}
+pub fn credit_by_many(a: &str, an: usize) -> String {
+    format!("By {a} ({an}) and others")
+}
+pub fn credit_via(name: &str) -> String {
+    format!("Via {name}")
+}
+
 pub fn commits_count(n: usize) -> String {
     format!(" ({n} commits)")
 }
 
 // rgit's own messages for what is not implemented yet.
-pub fn strategy_not_supported(name: &str) -> String {
-    format!("rgit merge: strategy '{name}' is not supported yet (#153)")
-}
 pub fn octopus_trying(name: &str) -> String {
     format!("Trying simple merge with {name}\n")
 }

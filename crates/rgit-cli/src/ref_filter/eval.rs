@@ -18,7 +18,7 @@ use rgit_repo::Setup;
 use rgit_revwalk::walk::{CommitInfo, CommitSource, Walk, WalkOptions};
 
 use super::format::{
-    Abbrev, Atom, Contents, IfCond, Kind, NameMod, PersonPart, Piece, Position, RemoteMod,
+    Abbrev, Atom, Contents, IfCond, Kind, NameMod, PersonPart, Piece, Position, RemoteMod, SigPart,
     TrailerOpts, Who,
 };
 use crate::Die;
@@ -106,6 +106,8 @@ struct Loaded {
 pub(crate) struct ItemCache {
     object: OnceCell<Option<std::rc::Rc<Loaded>>>,
     peeled: OnceCell<Option<std::rc::Rc<Loaded>>>,
+    /// The signature checks of the item's commits (`%(signature)`).
+    signatures: std::cell::RefCell<Vec<(ObjectId, std::rc::Rc<crate::signing::verify::Check>)>>,
 }
 
 /// Evaluates atoms over the references of one repository.
@@ -300,7 +302,13 @@ impl<'a> Env<'a> {
             Kind::Upstream(m) => return Ok(self.upstream(it, *m, false)),
             Kind::Push(m) => return Ok(self.upstream(it, *m, true)),
             Kind::Head => {
-                let is_head = matches!(self.head(), Some(Target::Symbolic(t)) if *t == it.name);
+                // `branch --format` names a detached `HEAD` "(HEAD detached
+                // at ...)", which no reference name can start with.
+                let is_head = match self.head() {
+                    Some(Target::Symbolic(t)) => *t == it.name,
+                    Some(Target::Object(_)) => it.name.starts_with('('),
+                    None => false,
+                };
                 return Ok(Value::text(if is_head { "*" } else { " " }));
             }
             Kind::Color(seq) => {
@@ -379,6 +387,46 @@ impl<'a> Env<'a> {
             Kind::Deltabase => Value::text(self.objects.delta_base(&obj.id).to_hex()),
             Kind::Raw { size: false } => Value::text(obj.data.clone()),
             Kind::Raw { size: true } => Value::number(obj.data.len() as u64),
+            Kind::Signature(part) => {
+                if obj.kind != ObjectKind::Commit {
+                    return none();
+                }
+                let Some(r) = self.repo else {
+                    return none();
+                };
+                let cached = cache
+                    .signatures
+                    .borrow()
+                    .iter()
+                    .find(|(id, _)| *id == obj.id)
+                    .map(|(_, c)| c.clone());
+                let c = match cached {
+                    Some(c) => c,
+                    None => {
+                        let settings = crate::signing::Settings::from_config(r.config)?;
+                        let signed = crate::signing::verify::commit_signature(hash, &obj.data);
+                        let c = std::rc::Rc::new(match signed {
+                            Some((payload, sig)) => {
+                                crate::signing::verify::check(&settings, &payload, &sig)
+                            }
+                            None => crate::signing::verify::Check::default(),
+                        });
+                        cache.signatures.borrow_mut().push((obj.id, c.clone()));
+                        c
+                    }
+                };
+                let text =
+                    |v: &Option<String>| Value::text(v.clone().unwrap_or_default().into_bytes());
+                match part {
+                    SigPart::Output => Value::text(c.output.clone()),
+                    SigPart::Grade => Value::text(vec![c.result]),
+                    SigPart::Signer => text(&c.signer),
+                    SigPart::Key => text(&c.key),
+                    SigPart::Fingerprint => text(&c.fingerprint),
+                    SigPart::PrimaryKeyFingerprint => text(&c.primary_key_fingerprint),
+                    SigPart::TrustLevel => Value::text(c.trust.name()),
+                }
+            }
             Kind::Tree(_) | Kind::Parent(_) | Kind::Numparent => {
                 if obj.kind != ObjectKind::Commit {
                     return none();
@@ -403,6 +451,7 @@ impl<'a> Env<'a> {
                     _ => Value::number(c.parents().map_or(0, |p| p.len() as u64)),
                 }
             }
+            Kind::Describe(args) => Value::text(describe(&obj.id, args)),
             Kind::Object | Kind::Type | Kind::Tag => {
                 if obj.kind != ObjectKind::Tag {
                     return none();
@@ -1184,6 +1233,31 @@ fn message(obj: &Loaded, hash: rgit_hash::HashKind) -> Option<Vec<u8>> {
             .ok()
             .map(|t| t.message().to_vec()),
         _ => None,
+    }
+}
+
+/// `git describe <args> <id>` (by running this program), empty when the
+/// object cannot be described.
+fn describe(id: &ObjectId, args: &[String]) -> Vec<u8> {
+    let Ok(exe) = std::env::current_exe() else {
+        return Vec::new();
+    };
+    let out = std::process::Command::new(exe)
+        .arg("describe")
+        .args(args)
+        .arg(id.to_hex())
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let mut v = o.stdout;
+            while v.last() == Some(&b'\n') {
+                v.pop();
+            }
+            v
+        }
+        _ => Vec::new(),
     }
 }
 

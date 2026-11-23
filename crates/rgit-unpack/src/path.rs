@@ -44,7 +44,11 @@ pub fn verify_checkout_path(path: &[u8], mode: Mode, opts: PathOptions) -> bool 
     let mut comps = path.split(|&b| b == b'/').peekable();
     while let Some(c) = comps.next() {
         let last = comps.peek().is_none();
-        if opts.protect_ntfs && ntfs_equivalent(c, b"git", b"git~1") {
+        // NTFS also separates directories with backslashes.
+        if opts.protect_ntfs
+            && c.split(|&b| b == b'\\')
+                .any(|part| ntfs_equivalent(part, b"git", b"git~1"))
+        {
             return false;
         }
         if opts.protect_hfs && hfs_equivalent(c, b".git") {

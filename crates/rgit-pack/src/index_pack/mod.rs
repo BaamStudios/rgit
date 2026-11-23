@@ -33,6 +33,7 @@
 
 mod error;
 pub mod messages;
+pub mod meter;
 mod output;
 mod parse;
 mod resolve;
@@ -184,6 +185,26 @@ pub struct IndexedPack {
 }
 
 impl IndexedPack {
+    /// Describe a pack written elsewhere (by the pack writer), to write
+    /// its `.idx` and `.rev` files. `objects` are in pack order.
+    pub fn from_parts(
+        hash: HashKind,
+        objects: Vec<IndexedObject>,
+        checksum: ObjectId,
+        pack_len: u64,
+    ) -> IndexedPack {
+        let deltas = objects.iter().filter(|o| o.delta).count() as u64;
+        IndexedPack {
+            hash,
+            objects,
+            checksum,
+            local_objects: 0,
+            deltas,
+            pack_len,
+            trailing: Vec::new(),
+        }
+    }
+
     /// Hash algorithm.
     pub fn hash_kind(&self) -> HashKind {
         self.hash

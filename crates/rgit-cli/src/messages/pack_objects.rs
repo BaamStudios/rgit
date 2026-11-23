@@ -67,6 +67,11 @@ pub fn expected_object_id(line: &str) -> String {
     format!("expected object ID, got garbage:\n {line}")
 }
 
+/// git: a `-<id>` line of the object list is not an object id.
+pub fn expected_edge_id(line: &str) -> String {
+    format!("expected edge object ID, got garbage:\n {line}")
+}
+
 /// git: a revision on standard input (`--revs`) cannot be resolved.
 pub fn bad_revision(rev: &str) -> String {
     format!("bad revision '{rev}'")
@@ -88,7 +93,7 @@ pub fn bad_object(hex: &str) -> String {
 }
 
 /// git: `--depth` above the maximum.
-pub fn depth_too_large(depth: i32, max: u32) -> String {
+pub fn depth_too_large(depth: u32, max: u32) -> String {
     format!("delta chain depth {depth} is too deep, forcing {max}")
 }
 
@@ -100,4 +105,35 @@ pub fn not_supported(what: &str) -> String {
 /// rgit: a revision syntax not implemented yet.
 pub fn rev_not_supported(rev: &str) -> String {
     format!("rgit pack-objects: revision syntax '{rev}' is not supported yet")
+}
+
+/// git: `--thin` without `--stdout`.
+pub const THIN_NOT_INDEXABLE: &str = "--thin cannot be used to build an indexable pack";
+
+/// git: `--index-version` that does not parse.
+pub fn bad_index_version(v: &str) -> String {
+    format!("bad index version '{v}'")
+}
+
+/// git: `--index-version` above 2.
+pub fn unsupported_index_version(v: i64) -> String {
+    format!("unsupported index version {v}")
+}
+
+/// git: `pack.indexVersion` out of range.
+pub fn bad_config_index_version(v: i64) -> String {
+    format!("bad pack.indexVersion={v}")
+}
+
+/// git: a pack file cannot be written.
+pub fn unable_to_write(path: &str, err: &str) -> String {
+    format!("unable to write file {path}: {err}")
+}
+
+/// git: the summary after writing a pack (with progress).
+pub fn total(objects: usize, deltas: u32, reused: u32, reused_deltas: u32) -> String {
+    format!(
+        "Total {objects} (delta {deltas}), reused {reused} (delta {reused_deltas}), \
+         pack-reused 0 (from 0)"
+    )
 }

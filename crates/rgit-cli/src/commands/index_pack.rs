@@ -16,14 +16,13 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Instant;
 
 use rgit_config::{ConfigSet, LoadOptions, StaticRepoFacts, SystemEnv, sources};
 use rgit_fs::TempFile;
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::fsck::{self, Control, MsgId, Severity};
 use rgit_pack::index_pack::{
-    self as ip, IndexVersion, IndexedPack, Input, ObjectDb, ObjectHook, Options, Phase, Progress,
+    self as ip, IndexVersion, IndexedPack, Input, ObjectDb, ObjectHook, Options, Progress,
     messages as m,
 };
 use rgit_odb::{LooseOptions, ObjectDatabase};
@@ -408,67 +407,6 @@ impl ObjectHook for Checks {
     }
 }
 
-/// git-style progress on stderr.
-struct Meter {
-    title: String,
-    reading_title: String,
-    total: u64,
-    done: u64,
-    bytes: u64,
-    last_percent: Option<u64>,
-    start: Instant,
-    throughput: bool,
-    phase: Phase,
-}
-
-impl Meter {
-    fn line(&self) -> String {
-        let pct = (self.done * 100).checked_div(self.total).unwrap_or(100);
-        format!("{}: {pct:3}% ({}/{})", self.title, self.done, self.total)
-    }
-}
-
-impl Progress for Meter {
-    fn start(&mut self, phase: Phase, total: u64) {
-        self.phase = phase;
-        self.title = match phase {
-            Phase::Reading => self.reading_title.clone(),
-            Phase::Resolving => m::PROGRESS_RESOLVING.to_string(),
-        };
-        self.total = total;
-        self.done = 0;
-        self.bytes = 0;
-        self.last_percent = None;
-        self.start = Instant::now();
-    }
-
-    fn update(&mut self, done: u64, bytes: u64) {
-        self.done = done;
-        if self.phase == Phase::Reading {
-            self.bytes = bytes;
-        }
-        let pct = (done * 100).checked_div(self.total).unwrap_or(100);
-        if self.last_percent != Some(pct) {
-            self.last_percent = Some(pct);
-            let _ = write!(io::stderr(), "{}\r", self.line());
-        }
-    }
-
-    fn finish(&mut self, suffix: Option<String>) {
-        let mut line = self.line();
-        if self.phase == Phase::Reading && self.throughput && self.bytes >= 1 << 20 {
-            let secs = self.start.elapsed().as_secs_f64().max(1e-3);
-            line.push_str(&format!(
-                ", {} | {}",
-                m::humanise_bytes(self.bytes),
-                m::humanise_rate((self.bytes as f64 / secs) as u64)
-            ));
-        }
-        let end = suffix.unwrap_or_else(|| "done".to_string());
-        let _ = writeln!(io::stderr(), "{line}, {end}.");
-    }
-}
-
 /// Removes a file on drop unless disarmed.
 struct RemoveOnDrop(Option<PathBuf>);
 
@@ -667,23 +605,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // on to stdout; in a regular file it is junk.
     opts.allow_trailing_data = args.stdin && !stdin_is_file();
 
-    let mut meter = Meter {
-        title: String::new(),
-        reading_title: args.progress_title.clone().unwrap_or_else(|| {
-            if args.stdin {
-                m::PROGRESS_RECEIVING.to_string()
-            } else {
-                m::PROGRESS_INDEXING.to_string()
-            }
-        }),
-        total: 0,
-        done: 0,
-        bytes: 0,
-        last_percent: None,
-        start: Instant::now(),
-        throughput: args.stdin,
-        phase: Phase::Reading,
-    };
+    let mut meter = rgit_pack::index_pack::meter::PackMeter::new(
+        args.progress_title.as_deref(),
+        args.stdin,
+        true,
+    );
     let progress: Option<&mut (dyn Progress + 'static)> =
         args.verbose.then_some(&mut meter as &mut (dyn Progress + 'static));
     let db: Option<&dyn ObjectDb> = odb.as_ref().map(|o| o as &dyn ObjectDb);

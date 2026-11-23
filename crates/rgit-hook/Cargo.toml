@@ -15,6 +15,7 @@ bstr = { version = "1.13", default-features = false, features = ["std"] }
 rgit-config = { path = "../rgit-config" }
 rgit-ident = { path = "../rgit-ident" }
 rgit-messages = { path = "../rgit-messages" }
+rgit-trace = { path = "../rgit-trace" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

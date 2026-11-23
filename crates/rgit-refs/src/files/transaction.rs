@@ -62,7 +62,7 @@ pub(super) struct Prepared<'s> {
     store: &'s FilesStore,
     items: Vec<Item>,
     packed: Option<(LockFile, PackedRefs)>,
-    hook_updates: Vec<(ObjectId, ObjectId, String)>,
+    hook_updates: Vec<(String, String, String)>,
 }
 
 impl Prepared<'_> {
@@ -645,8 +645,19 @@ impl State<'_, '_> {
         let opts = self.store.options.log_all_ref_updates;
         let mut hook_updates = Vec::new();
         // The hook sees the references actually written (`HEAD`'s branch).
-        for o in self.results.iter().take(updates.len()).flatten() {
-            hook_updates.push((o.old, o.new, o.final_name.clone()));
+        // The old value is the one given with the update (zero for none).
+        for (k, o) in self.results.iter().take(updates.len()).enumerate() {
+            let Some(o) = o else { continue };
+            let old = match &updates[k].old {
+                Some(OldValue::Object(id)) => id.to_hex(),
+                Some(OldValue::Symbolic(t)) => format!("ref:{t}"),
+                _ => ObjectId::null(crate::store::RefStore::hash_kind(self.store)).to_hex(),
+            };
+            let new = match &updates[k].new {
+                Some(NewValue::Symbolic(t)) => format!("ref:{t}"),
+                _ => o.new.to_hex(),
+            };
+            hook_updates.push((old, new, o.final_name.clone()));
         }
         for item in &mut self.prepared.items {
             let Some(o) = &self.results[item.update] else {
@@ -778,6 +789,12 @@ pub(super) fn prepare<'s>(
         }
     }
     check_duplicates(&updates)?;
+    // The `preparing` state sees the updates as queued.
+    let queued =
+        crate::store::queued_hook_lines(&updates, crate::store::RefStore::hash_kind(store));
+    hooks
+        .reference_transaction(HookState::Preparing, &queued)
+        .map_err(TransactionError::Rejected)?;
     let packed = store.packed_refs()?;
     let head_referent = match store.read_loose_ref("HEAD") {
         Ok(Some(Target::Symbolic(t))) => Some(t),

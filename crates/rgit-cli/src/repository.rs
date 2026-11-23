@@ -124,6 +124,39 @@ impl Repo {
             .map(|r| r.oid)
     }
 
+    /// Resolve an object name with the tree entry mode and the path a
+    /// `<tree-ish>:<path>` or `:<path>` name gives.
+    pub fn resolve_entry(&mut self, name: &str) -> Option<(ObjectId, Option<u32>, Option<String>)> {
+        let mut r = Resolver::new(&mut self.inner);
+        let resolved = r.resolve(name).ok()?;
+        let path = r.object_path(name);
+        Some((resolved.oid, resolved.mode, path))
+    }
+
+    /// Why `name` does not resolve, when git says more than "ambiguous
+    /// argument" (`path 'x' does not exist in 'HEAD'`).
+    pub fn resolve_diagnosis(&mut self, name: &str) -> Option<String> {
+        match Resolver::new(&mut self.inner).resolve(name) {
+            Err(crate::revision::Failure::Missing { diagnosis }) => diagnosis,
+            Err(crate::revision::Failure::Fatal(m)) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// The type of an object, `None` if it is missing.
+    pub fn object_kind(&self, id: &ObjectId) -> Option<ObjectKind> {
+        self.odb().header(id).ok().flatten().map(|h| h.kind)
+    }
+
+    /// Resolve `name` to an object of type `kind`; an ambiguous short id
+    /// is narrowed to the candidates that peel to `kind`.
+    pub fn resolve_as(&mut self, name: &str, kind: ObjectKind) -> Option<ObjectId> {
+        let mut r = Resolver::new(&mut self.inner);
+        r.want = Some(kind);
+        let id = r.resolve(name).ok()?.oid;
+        r.peel_to(id, kind, None)
+    }
+
     /// Peel tags and commits down to an object of type `kind`.
     pub fn peel_to(&mut self, id: ObjectId, kind: ObjectKind) -> Option<ObjectId> {
         Resolver::new(&mut self.inner).peel_to(id, kind, None)
@@ -220,8 +253,21 @@ impl Repo {
     pub fn read_index(&self) -> Result<(Index, Option<Time>), Die> {
         let path = self.index_path();
         let mtime = index_mtime(&path).ok().flatten();
-        let index = Index::read_file(&path, self.hash, &ReadOptions::default())
-            .map_err(|e| Die::Fatal(e.to_string()))?;
+        let index = Index::read_file(&path, self.hash, &ReadOptions::default()).map_err(|e| {
+            // git's lines; the last one ends the command.
+            let mut lines = e.report(&path.display().to_string());
+            let last = lines.pop().unwrap_or_default();
+            for l in lines {
+                eprintln!("{l}");
+            }
+            match last.strip_prefix("fatal: ") {
+                Some(m) => Die::Fatal(m.to_owned()),
+                None => Die::Error(
+                    last.strip_prefix("error: ").unwrap_or(&last).to_owned(),
+                    128,
+                ),
+            }
+        })?;
         Ok((index, mtime))
     }
 

@@ -171,3 +171,6 @@ pub fn rebase_mode_not_supported(mode: &str) -> String {
          (rgit #155); use --rebase or --no-rebase instead"
     )
 }
+
+/// `pull --rebase --verify-signatures`.
+pub const IGNORING_VERIFY_SIGNATURES: &str = "ignoring --verify-signatures for rebase";

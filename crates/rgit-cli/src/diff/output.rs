@@ -18,6 +18,8 @@ use rgit_config::ConfigSet;
 
 use super::collect::{GITLINK_MODE, Pair, Side, TREE_MODE, type_bits};
 use super::color::{DiffColors, WsContext};
+use super::driver::{DiffAttr, Drivers};
+use super::external;
 use super::options::SubmoduleFormat;
 use super::options::{DiffOpts, Formats, usage_exit};
 use super::stat::{self, FileStat, StatKind, StatLayout};
@@ -25,6 +27,17 @@ use crate::Die;
 use crate::messages::diff as msg;
 use crate::repository::Repo;
 use rgit_diff::ws_rule::{self, WsRule};
+
+/// An abbreviated object id of a raw line, followed by "..." when
+/// `GIT_PRINT_SHA1_ELLIPSIS` is `yes` (git(1), ENVIRONMENT).
+pub fn raw_ellipsis(mut id: String, hash: HashKind) -> String {
+    if id.len() < hash.hex_len()
+        && std::env::var("GIT_PRINT_SHA1_ELLIPSIS").is_ok_and(|v| v.eq_ignore_ascii_case("yes"))
+    {
+        id.push_str("...");
+    }
+    id
+}
 
 /// Output settings, resolved from options and configuration.
 pub struct Output<'a> {
@@ -77,9 +90,43 @@ pub struct Output<'a> {
     /// The word regex came from the command line (it beats the diff
     /// driver's `wordRegex`).
     word_regex_cli: bool,
+    /// `--line-prefix`.
+    line_prefix: Option<Vec<u8>>,
+    /// The signs of added, removed and context lines
+    /// (`--output-indicator-*`).
+    pub indicators: [u8; 3],
+    /// The patterns of `-O<orderfile>` / `diff.orderFile`.
+    order: Vec<Vec<u8>>,
+    /// `--rotate-to` / `--skip-to` (`true`).
+    rotate_to: Option<(bool, Vec<u8>)>,
+    /// `--output=<file>`, resolved.
+    output: Option<std::path::PathBuf>,
+    /// Standard input (`-`) and named pipes of `--no-index`, read once;
+    /// they have no object id.
+    pub streams: Vec<(std::path::PathBuf, Vec<u8>)>,
+    /// `--relative[=<path>]` / `diff.relative`: the directory prefix.
+    pub relative: Option<Vec<u8>>,
+    /// `--dirstat` parameters (with `diff.dirstat`).
+    dirstat: super::dirstat::Params,
     /// `--color-moved` / `diff.colorMoved` and `--color-moved-ws` /
     /// `diff.colorMovedWS`.
     color_moved: (super::moved::Mode, super::moved::MovedWs),
+    /// Diff drivers (the `diff` attribute).
+    drivers: Drivers,
+    /// Run textconv filters (`--textconv`).
+    pub textconv: bool,
+    /// External diff programs are allowed (`--ext-diff`): with the
+    /// program of `GIT_EXTERNAL_DIFF` / `diff.external`, if any.
+    pub external: Option<Option<external::Program>>,
+    /// `-a`: no file is binary.
+    pub text: bool,
+    /// `--quiet`.
+    pub quiet: bool,
+    /// The command line chose the diff algorithm (it beats the driver's).
+    cli_algorithm: bool,
+    /// Output was written to `--output` already (by external diff
+    /// programs): the rest is appended.
+    output_started: std::cell::Cell<bool>,
 }
 
 /// `diff.submodule` (an unknown value is warned about and ignored).
@@ -171,6 +218,34 @@ fn core_options(
     Ok(core)
 }
 
+/// Columns a prefix takes on the terminal (colour sequences take none).
+fn visible_width(text: &[u8]) -> usize {
+    let mut n = 0;
+    let mut i = 0;
+    while i < text.len() {
+        if text[i] == 0x1b && text.get(i + 1) == Some(&b'[') {
+            i += 2;
+            while i < text.len() && !text[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        n += 1;
+        i += 1;
+    }
+    n
+}
+
+/// The width of the terminal for `--stat`: `$COLUMNS`, else 80.
+fn terminal_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(80)
+}
+
 /// The `--compact-summary` note of a pair, if any.
 fn compact_note(old: Option<&Side>, new: Option<&Side>) -> Option<String> {
     let flags = |mode: u32| match mode & 0o170000 {
@@ -200,6 +275,17 @@ struct Loaded {
     mode: u32,
     oid: ObjectId,
     data: Vec<u8>,
+    /// The output of the textconv filter, if one ran.
+    conv: Option<Vec<u8>>,
+    /// The textconv filter failed (fatal when the pair is shown).
+    conv_failed: bool,
+}
+
+impl Loaded {
+    /// The contents shown in patches.
+    fn shown(&self) -> &[u8] {
+        self.conv.as_deref().unwrap_or(&self.data)
+    }
 }
 
 /// A coloured patch that waits for --color-moved.
@@ -210,6 +296,23 @@ struct Pending {
     new_data: Vec<u8>,
     new_symlink: bool,
     old_symlink: bool,
+}
+
+/// The top of the work tree (the current directory) for relative
+/// configured paths.
+fn r_top(repo: Option<&Repo>) -> std::path::PathBuf {
+    repo.and_then(|r| r.setup.work_tree.clone())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+}
+
+/// Whether two loaded sides have the same contents (by id; standard
+/// input and pipes have none, their data decides).
+fn same_contents(o: &Loaded, n: &Loaded) -> bool {
+    if o.oid.is_null() || n.oid.is_null() {
+        o.data == n.data
+    } else {
+        o.oid == n.oid
+    }
 }
 
 fn is_file_mode(mode: u32) -> bool {
@@ -251,10 +354,22 @@ impl<'a> Output<'a> {
         };
         let mut diff = DiffOptions::default();
         if porcelain {
-            if let Some(c) = config_int("diff.context") {
+            // A value that is no integer or is negative is fatal.
+            let strict_int = |key: &str| -> Result<Option<usize>, Die> {
+                let Some(e) = repo.and_then(|r| r.config.get(key)) else {
+                    return Ok(None);
+                };
+                let n = e
+                    .int(rgit_config::IntWidth::I32)
+                    .map_err(|err| Die::Fatal(err.to_string()))?;
+                usize::try_from(n)
+                    .map(Some)
+                    .map_err(|_| Die::Fatal(crate::revisions::unable_to_parse(key, e)))
+            };
+            if let Some(c) = strict_int("diff.context")? {
                 diff.context = c;
             }
-            if let Some(c) = config_int("diff.interhunkcontext") {
+            if let Some(c) = strict_int("diff.interhunkcontext")? {
                 diff.interhunk_context = c;
             }
         }
@@ -304,6 +419,7 @@ impl<'a> Output<'a> {
         }
         diff.anchors = opts.anchors.clone();
         diff.whitespace = opts.whitespace;
+        diff.function_context = opts.function_context.unwrap_or(false);
         diff.ignore_blank_lines = opts.ignore_blank_lines;
         diff.ignore_regex = rgit_diff::IgnoreRegexes(opts.ignore_regex.clone());
         let quote_high = repo.is_none_or(|r| r.quote_path());
@@ -312,6 +428,18 @@ impl<'a> Output<'a> {
         if porcelain && !opts.default_prefix && config_bool("diff.noprefix") == Some(true) {
             src.clear();
             dst.clear();
+        } else if porcelain && !opts.default_prefix {
+            // diff.srcPrefix / diff.dstPrefix (config/diff.adoc).
+            let config_str = |key: &str| {
+                repo.and_then(|r| r.config.string(key).ok().flatten())
+                    .map(|v| v.to_vec())
+            };
+            if let Some(p) = config_str("diff.srcprefix") {
+                src = p;
+            }
+            if let Some(p) = config_str("diff.dstprefix") {
+                dst = p;
+            }
         }
         if opts.no_prefix {
             src.clear();
@@ -326,6 +454,8 @@ impl<'a> Output<'a> {
         if opts.reverse {
             std::mem::swap(&mut src, &mut dst);
         }
+        // diff.statNameWidth and diff.statGraphWidth apply to the
+        // porcelain commands (not format-patch).
         let (stat_name_width, stat_graph_width) = if porcelain {
             (
                 config_int("diff.statnamewidth"),
@@ -383,6 +513,62 @@ impl<'a> Output<'a> {
             },
         };
         let color_moved = (moved_mode, moved_ws);
+        // File names on the command line are relative to the directory the
+        // command started in.
+        let cwd = repo.map_or_else(
+            || std::env::current_dir().unwrap_or_default(),
+            |r| r.setup.original_cwd.clone(),
+        );
+        let orderfile = match &opts.orderfile {
+            Some(o) => Some(cwd.join(o)),
+            None if porcelain => repo
+                .and_then(|r| {
+                    r.config
+                        .path("diff.orderfile", &rgit_config::SystemEnv::default())
+                        .ok()
+                })
+                .flatten()
+                .map(|p| r_top(repo).join(p)),
+            None => None,
+        };
+        let order = match orderfile {
+            Some(p) if p != std::path::Path::new("/dev/null") => {
+                let data = std::fs::read(&p).map_err(|_| {
+                    Die::Fatal(msg::orderfile_failed(
+                        &opts
+                            .orderfile
+                            .clone()
+                            .unwrap_or_else(|| p.to_string_lossy().into_owned()),
+                    ))
+                })?;
+                super::order::parse(&data)
+            }
+            _ => Vec::new(),
+        };
+        // diff.relative applies to the porcelain and format-patch.
+        let relative_on = match &opts.relative {
+            Some(r) => r.is_some(),
+            None => (porcelain || opts.format_patch) && config_bool("diff.relative") == Some(true),
+        };
+        let relative = match (&opts.relative, relative_on) {
+            (_, false) => None,
+            (Some(Some(Some(dir))), true) => Some(dir.as_bytes().to_vec()),
+            _ => Some(repo.map(|r| r.prefix()).unwrap_or_default()),
+        }
+        .filter(|p| !p.is_empty());
+        let mut dirstat = super::dirstat::Params::default();
+        if formats.dirstat {
+            if let Some(e) = repo.and_then(|r| r.config.get("diff.dirstat")) {
+                let v = e.value.as_ref().map(|v| v.to_string()).unwrap_or_default();
+                let errors = dirstat.apply(&v);
+                if !errors.is_empty() {
+                    eprint!("{}", msg::dirstat_config_errors(&errors.concat()));
+                }
+            }
+            for v in opts.dirstat.iter().flatten() {
+                dirstat.apply(v);
+            }
+        }
         let word_diff = match opts.word_diff {
             None => None,
             Some(mode) => {
@@ -463,6 +649,31 @@ impl<'a> Output<'a> {
             word_diff,
             word_regex_cli: opts.word_regex.is_some(),
             color_moved,
+            dirstat,
+            relative,
+            streams: Vec::new(),
+            line_prefix: opts.line_prefix.clone(),
+            indicators: [
+                opts.indicators[0].unwrap_or(b'+'),
+                opts.indicators[1].unwrap_or(b'-'),
+                opts.indicators[2].unwrap_or(b' '),
+            ],
+            order,
+            rotate_to: opts
+                .rotate_to
+                .as_ref()
+                .map(|(s, p)| (*s, p.as_bytes().to_vec())),
+            output: opts.output.as_ref().map(|o| cwd.join(o)),
+            drivers: Drivers::default(),
+            textconv: opts.textconv.unwrap_or(false),
+            external: opts
+                .ext_diff
+                .unwrap_or(false)
+                .then(|| external::global(repo.map(|r| &r.config))),
+            text: opts.text,
+            quiet: opts.quiet,
+            cli_algorithm: opts.algorithm.is_some() || opts.minimal.is_some(),
+            output_started: std::cell::Cell::new(false),
             repo,
             convert: repo.is_some(),
             hash,
@@ -478,16 +689,23 @@ impl<'a> Output<'a> {
                 quote_path: quote_high,
                 src_prefix: src,
                 dst_prefix: dst,
+                text: opts.text,
             },
             stat: StatLayout {
-                width: opts.stat_width.unwrap_or(80),
+                // The terminal width (porcelain) or 80, less the
+                // --line-prefix.
+                width: opts.stat_width.unwrap_or_else(|| {
+                    let w = if porcelain { terminal_width() } else { 80 };
+                    let prefix = opts.line_prefix.as_deref().map_or(0, visible_width);
+                    w.saturating_sub(prefix).max(1)
+                }),
                 name_width: opts.stat_name_width.or(stat_name_width),
                 graph_width: opts.stat_graph_width.or(stat_graph_width),
                 count: opts.stat_count,
             },
             porcelain,
             combined_unmerged: false,
-            compact_summary: false,
+            compact_summary: opts.compact_summary,
             colors: None,
         })
     }
@@ -562,6 +780,9 @@ impl<'a> Output<'a> {
 
     fn read_file(&self, side: &Side) -> Result<Vec<u8>, Die> {
         let path = side.file.as_ref().expect("file side");
+        if let Some((_, data)) = self.streams.iter().find(|(p, _)| p == path) {
+            return Ok(data.clone());
+        }
         let res = if type_bits(side.mode) == 0o120000 {
             std::fs::read_link(path).map(|t| t.into_os_string().into_encoded_bytes())
         } else {
@@ -578,6 +799,8 @@ impl<'a> Output<'a> {
                 mode: side.mode,
                 oid,
                 data: format!("Subproject commit {}\n", oid.to_hex()).into_bytes(),
+                conv: None,
+                conv_failed: false,
             });
         }
         if side.file.is_some() {
@@ -587,17 +810,30 @@ impl<'a> Output<'a> {
                 let opts = rgit_convert::Options::inspect(conv.config());
                 data = conv.to_git(path, data, opts)?;
             }
-            let oid = rgit_hash::hash_object(self.hash, "blob", &data)
-                .map_err(|e| Die::Fatal(e.to_string()))?;
+            // Standard input and pipes have no object id.
+            let stream = side
+                .file
+                .as_ref()
+                .is_some_and(|f| self.streams.iter().any(|(p, _)| p == f));
+            let oid = if stream {
+                ObjectId::null(self.hash)
+            } else {
+                rgit_hash::hash_object(self.hash, "blob", &data)
+                    .map_err(|e| Die::Fatal(e.to_string()))?
+            };
             return Ok(Loaded {
                 mode: side.mode,
                 oid,
                 data,
+                conv: None,
+                conv_failed: false,
             });
         }
         let data = if is_file_mode(side.mode) {
-            match self.repo.and_then(|r| r.read_object(&side.oid)) {
-                Some(Object::Blob(b)) => b.data,
+            match self.repo.map(|r| r.read_object(&side.oid)) {
+                Some(Some(Object::Blob(b))) => b.data,
+                // A missing object (e.g. the null id in a bogus tree).
+                Some(None) => return Err(Die::Fatal(msg::unable_to_read_blob(&side.oid.to_hex()))),
                 _ => Vec::new(),
             }
         } else if type_bits(side.mode) == GITLINK_MODE {
@@ -609,6 +845,8 @@ impl<'a> Output<'a> {
             mode: side.mode,
             oid: side.oid,
             data,
+            conv: None,
+            conv_failed: false,
         })
     }
 
@@ -825,7 +1063,32 @@ impl<'a> Output<'a> {
                 }
             }
         }
-        let pairs = self.diffcore(pairs)?;
+        // --no-index: files that are only on one side get their ids
+        // (hashed for rename detection) when both added and deleted files
+        // make rename detection run.
+        let renames_ran = self.core.detect != Detect::Off
+            && pairs.iter().any(|p| p.old.is_none())
+            && pairs.iter().any(|p| p.new.is_none());
+        // --relative: only paths below the directory, shown without it.
+        if let Some(prefix) = &self.relative {
+            pairs.retain(|p| p.path.starts_with(prefix) || p.old_path.starts_with(prefix));
+        }
+        let mut pairs = self.diffcore(pairs)?;
+        if !self.order.is_empty() {
+            pairs.sort_by_cached_key(|p| super::order::rank(&self.order, p.shown_path()));
+        }
+        if let Some((skip, path)) = &self.rotate_to {
+            let Some(at) = pairs.iter().position(|p| p.shown_path() == &path[..]) else {
+                return Err(Die::Fatal(msg::no_such_path_in_diff(
+                    &String::from_utf8_lossy(path),
+                )));
+            };
+            let mut rest = pairs.split_off(at);
+            if !skip {
+                rest.append(&mut pairs);
+            }
+            pairs = rest;
+        }
         if self.combined_unmerged && self.formats.patch && pairs.iter().any(|p| p.unmerged) {
             return Err(Die::Fatal(msg::not_supported(
                 "combined diff of unmerged paths",
@@ -837,13 +1100,18 @@ impl<'a> Output<'a> {
         // ignored, from every format (not `--ignore-blank-lines` alone).
         let d = &self.patch.diff;
         let check = d.whitespace.any() || !d.ignore_regex.0.is_empty();
-        let need = f.needs_content() || f.summary || check;
+        let textconv = self.textconv && (f.patch || self.quiet);
+        let need = f.needs_content()
+            || f.summary
+            || check
+            || textconv
+            || (self.quiet && self.external.is_some());
         let mut loaded: Vec<(Option<Loaded>, Option<Loaded>)> = Vec::with_capacity(pairs.len());
         let mut keep = Vec::with_capacity(pairs.len());
         for p in &pairs {
             let has_file = p.old.iter().chain(p.new.iter()).any(|s| s.file.is_some());
             let load = !p.unmerged && (need || (self.porcelain && has_file));
-            let (o, n) = if load {
+            let (mut o, mut n) = if load {
                 (
                     p.old
                         .as_ref()
@@ -854,7 +1122,17 @@ impl<'a> Output<'a> {
             } else {
                 (None, None)
             };
-            let same = matches!((&o, &n), (Some(o), Some(n)) if o.oid == n.oid && o.mode == n.mode);
+            if textconv && load {
+                if let Some(l) = o.as_mut() {
+                    self.apply_textconv(&p.old_path, l)?;
+                }
+                if let Some(l) = n.as_mut() {
+                    self.apply_textconv(&p.path, l)?;
+                }
+            }
+            // (Standard input has no id: its contents decide.)
+            let same = matches!((&o, &n), (Some(o), Some(n)) if o.mode == n.mode
+                && same_contents(o, n));
             let ignored = check
                 && !p.is_rename()
                 && matches!((&o, &n), (Some(o), Some(n)) if o.mode == n.mode
@@ -868,12 +1146,34 @@ impl<'a> Output<'a> {
             loaded.push((o, n));
         }
         let mut items: Vec<(Pair, Option<Loaded>, Option<Loaded>)> = Vec::new();
-        for ((p, (o, n)), k) in pairs.into_iter().zip(loaded).zip(keep) {
+        // The full paths (for attributes) before --relative cuts them.
+        let mut full_paths: Vec<Vec<u8>> = Vec::new();
+        let mut full_old_paths: Vec<Vec<u8>> = Vec::new();
+        for ((mut p, (o, n)), k) in pairs.into_iter().zip(loaded).zip(keep) {
             if k {
+                full_paths.push(p.path.clone());
+                full_old_paths.push(p.old_path.clone());
+                if let Some(prefix) = &self.relative {
+                    let strip = |path: &mut Vec<u8>| {
+                        if let Some(rest) = path.strip_prefix(&prefix[..]) {
+                            *path = rest.strip_prefix(b"/").unwrap_or(rest).to_vec();
+                        }
+                    };
+                    strip(&mut p.path);
+                    strip(&mut p.old_path);
+                }
                 items.push((p, o, n));
             }
         }
-        let changed = !items.is_empty();
+        // Whether each pair counts as a change: textconv output that is
+        // the same on both sides shows no patch and no change.
+        let mut item_changed: Vec<bool> = items
+            .iter()
+            .map(|(p, o, n)| !textconv_equal(p, o, n))
+            .collect();
+        if self.quiet {
+            self.external_quiet(&items, &mut item_changed)?;
+        }
         let mut out = Vec::new();
 
         if f.raw {
@@ -881,8 +1181,12 @@ impl<'a> Output<'a> {
             let hashed = check;
             for (p, o, n) in &items {
                 let null = ObjectId::null(self.hash);
+                let one_sided = p.old.is_none() || p.new.is_none() || p.is_rename();
                 let id = |s: &Side, l: &Option<Loaded>| match l {
                     Some(l) if hashed && s.file.is_some() => l.oid,
+                    // --no-index files have no ids in raw output, except
+                    // after rename detection.
+                    _ if !self.convert && s.file.is_some() && !(one_sided && renames_ran) => null,
                     _ => s.oid,
                 };
                 let (om, oo) = p.old.as_ref().map_or((0, null), |s| (s.mode, id(s, o)));
@@ -890,8 +1194,8 @@ impl<'a> Output<'a> {
                 write!(
                     out,
                     ":{om:06o} {nm:06o} {} {} ",
-                    self.abbrev(&oo, self.raw_abbrev),
-                    self.abbrev(&no, self.raw_abbrev)
+                    raw_ellipsis(self.abbrev(&oo, self.raw_abbrev), self.hash),
+                    raw_ellipsis(self.abbrev(&no, self.raw_abbrev), self.hash)
                 )
                 .unwrap();
                 self.write_status(&mut out, p);
@@ -902,7 +1206,9 @@ impl<'a> Output<'a> {
                 if f.name_status {
                     self.write_status(&mut out, p);
                 } else {
-                    self.write_path(&mut out, p.shown_path());
+                    // The new side's name (they differ for --no-index and
+                    // blob pairs).
+                    self.write_path(&mut out, &p.path);
                 }
             }
         }
@@ -912,7 +1218,7 @@ impl<'a> Output<'a> {
             if p.unmerged || p.is_rename() || p.dirty_submodule != 0 {
                 return true;
             }
-            !matches!((o, n), (Some(o), Some(n)) if o.oid == n.oid && o.mode == n.mode)
+            !matches!((o, n), (Some(o), Some(n)) if same_contents(o, n) && o.mode == n.mode)
         };
         let mut stats: Vec<FileStat> = Vec::new();
         let mut names: Vec<Vec<u8>> = Vec::new();
@@ -930,16 +1236,17 @@ impl<'a> Output<'a> {
                 } else {
                     let od = o.as_ref().map_or(&[][..], |l| &l.data[..]);
                     let nd = n.as_ref().map_or(&[][..], |l| &l.data[..]);
-                    let same = matches!((o, n), (Some(o), Some(n)) if o.oid == n.oid);
-                    if (is_binary(od) || is_binary(nd)) && same {
+                    let same = matches!((o, n), (Some(o), Some(n)) if same_contents(o, n));
+                    let binary = self.pair_binary(p, o.as_ref(), n.as_ref(), false)?;
+                    if binary && same {
                         StatKind::BinarySame
-                    } else if is_binary(od) || is_binary(nd) {
+                    } else if binary {
                         StatKind::Binary {
                             old_size: od.len(),
                             new_size: nd.len(),
                         }
                     } else {
-                        let same = matches!((o, n), (Some(o), Some(n)) if o.oid == n.oid);
+                        let same = matches!((o, n), (Some(o), Some(n)) if same_contents(o, n));
                         if p.is_rewrite() {
                             StatKind::Text {
                                 added: rgit_diff::split_lines(nd).len(),
@@ -1005,12 +1312,42 @@ impl<'a> Output<'a> {
         } else if f.shortstat && !stats.is_empty() {
             stat::write_summary_line(&mut out, &stats);
         }
-        if f.summary && !self.compact_summary {
+        if f.dirstat {
+            let mut files: Vec<(Vec<u8>, u64)> = Vec::new();
             for (p, o, n) in &items {
                 if p.unmerged || !differs(p, o, n) {
                     continue;
                 }
-                let name = self.display_name(p);
+                let od = o.as_ref().map_or(&[][..], |l| &l.data[..]);
+                let nd = n.as_ref().map_or(&[][..], |l| &l.data[..]);
+                let same = matches!((o, n), (Some(o), Some(n)) if same_contents(o, n));
+                let dmg = if same {
+                    0
+                } else {
+                    let lines = if is_binary(od) || is_binary(nd) {
+                        None
+                    } else if self.dirstat.measure == super::dirstat::Measure::Lines {
+                        let d = diff_text(od, nd, &self.patch.diff);
+                        Some((d.stats.insertions, d.stats.deletions))
+                    } else {
+                        Some((0, 0))
+                    };
+                    super::dirstat::damage(self.dirstat.measure, od, nd, lines)
+                };
+                files.push((p.shown_path().to_vec(), dmg));
+            }
+            super::dirstat::write(&mut out, &mut files, &self.dirstat);
+        }
+        if f.summary && !self.compact_summary {
+            for (k, (p, o, n)) in items.iter().enumerate() {
+                if p.unmerged || !differs(p, o, n) {
+                    continue;
+                }
+                // (--relative does not cut the names here.)
+                let mut full = p.clone();
+                full.path = full_paths[k].clone();
+                full.old_path = full_old_paths[k].clone();
+                let name = self.display_name(&full);
                 if let Some(c) = p.renamed {
                     let word = if c == b'C' { "copy" } else { "rename" };
                     write!(out, " {word} ").unwrap();
@@ -1042,7 +1379,10 @@ impl<'a> Output<'a> {
             }
         }
         if f.patch || f.check {
-            if f.patch && changed && (f.raw || f.numstat || f.stat || f.shortstat || f.summary) {
+            if f.patch
+                && !items.is_empty()
+                && (f.raw || f.numstat || f.stat || f.shortstat || f.summary)
+            {
                 out.push(b'\n');
             }
             let abbrev = |id: &ObjectId| self.abbrev(id, self.index_abbrev);
@@ -1060,6 +1400,7 @@ impl<'a> Output<'a> {
                 _ => None,
             };
             let ws_id = attrs.as_mut().map(|a| a.id(b"whitespace"));
+            let marker_id = attrs.as_mut().map(|a| a.id(b"conflict-marker-size"));
             let diff_id = attrs.as_mut().map(|a| a.id(b"diff"));
             // `diff.<driver>.wordRegex` of the path's `diff` attribute.
             let mut driver_regex = |path: &[u8]| -> Result<Option<regex::bytes::Regex>, Die> {
@@ -1080,15 +1421,26 @@ impl<'a> Output<'a> {
             };
             let mut driver_regexes = Vec::new();
             if need_driver {
-                for (p, _, _) in &items {
-                    driver_regexes.push(driver_regex(&p.path)?);
+                for path in &full_paths {
+                    driver_regexes.push(driver_regex(path)?);
                 }
             }
-            let mut rule_for = |path: &[u8]| -> Result<WsRule, Die> {
-                let (Some(a), Some(id)) = (attrs.as_mut(), ws_id) else {
-                    return Ok(base_rule);
+            // The whitespace rule and the `conflict-marker-size` (for
+            // `--check`) of a path.
+            let mut rule_for = |path: &[u8]| -> Result<(WsRule, usize), Die> {
+                let (Some(a), Some(id), Some(marker_id)) = (attrs.as_mut(), ws_id, marker_id)
+                else {
+                    return Ok((base_rule, super::check::DEFAULT_MARKER_SIZE));
                 };
-                match a.lookup(path, false).get(id).clone() {
+                let found = a.lookup(path, false);
+                let marker_size = match found.get(marker_id) {
+                    rgit_attr::State::Value(v) => std::str::from_utf8(v)
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(super::check::DEFAULT_MARKER_SIZE),
+                    _ => super::check::DEFAULT_MARKER_SIZE,
+                };
+                let rule = match found.get(id).clone() {
                     rgit_attr::State::Set => Ok(WsRule {
                         bits: ws_rule::ATTRIBUTE_SET_RULES,
                         tab_width: base_rule.tab_width,
@@ -1097,7 +1449,8 @@ impl<'a> Output<'a> {
                     rgit_attr::State::Value(v) => WsRule::parse(&String::from_utf8_lossy(&v))
                         .map_err(|_| Die::Fatal(msg::WS_RULE_CONFLICT.to_string())),
                     rgit_attr::State::Unspecified => Ok(base_rule),
-                }
+                };
+                Ok((rule?, marker_size))
             };
             // With --color-moved the coloured patches wait until all
             // patches are known: (offset in `out`, plain patch, settings).
@@ -1106,6 +1459,33 @@ impl<'a> Output<'a> {
             // only for one pair.)
             let mut pending: Vec<(usize, Vec<u8>, Pending)> = Vec::new();
             for (k, (p, o, n)) in items.iter().enumerate() {
+                let idx = k;
+                let attr = if p.unmerged || self.external.is_some() || o.is_some() || n.is_some() {
+                    self.diff_attr(&p.old_path)?
+                } else {
+                    DiffAttr::Unspecified
+                };
+                if let Some(prog) = self.external_program(&attr) {
+                    // The program writes to our output: what we have so
+                    // far goes first (patches waiting for --color-moved
+                    // keep their place).
+                    if pending.is_empty() {
+                        self.write_out(&out);
+                        out.clear();
+                    }
+                    item_changed[idx] =
+                        self.run_external(&prog, p, o, n, idx, items.len(), false)?;
+                    continue;
+                }
+                if !item_changed[idx] {
+                    continue;
+                }
+                if o.iter().chain(n.iter()).any(|l| l.conv_failed) {
+                    self.write_out(&out);
+                    return Err(Die::Fatal(
+                        crate::messages::userdiff::UNABLE_TO_READ_FILES.into(),
+                    ));
+                }
                 if p.unmerged {
                     out.extend_from_slice(msg::UNMERGED_PATH.as_bytes());
                     let mut q = Vec::new();
@@ -1133,6 +1513,8 @@ impl<'a> Output<'a> {
                             mode: l.mode,
                             oid: l.oid,
                             data: d,
+                            conv: None,
+                            conv_failed: false,
                         };
                         Some(&dirty_data)
                     }
@@ -1142,32 +1524,35 @@ impl<'a> Output<'a> {
                     path: &p.old_path,
                     mode: l.mode,
                     oid: l.oid,
-                    data: &l.data,
+                    data: l.shown(),
                 });
                 let nf = n.as_ref().map(|l| PatchFile {
                     path: &p.path,
                     mode: l.mode,
                     oid: l.oid,
-                    data: &l.data,
+                    data: l.shown(),
                 });
                 let new_data = nf.as_ref().map_or(&[][..], |f| f.data);
                 let old_data = of.as_ref().map_or(&[][..], |f| f.data);
-                let rule = if need_rules {
-                    rule_for(&p.path)?
+                let (rule, marker_size) = if need_rules {
+                    rule_for(&full_paths[k])?
                 } else {
-                    base_rule
+                    (base_rule, super::check::DEFAULT_MARKER_SIZE)
                 };
                 let extra = PatchExtra {
                     rename: p.renamed.map(|c| (c == b'C', p.percent())),
                     rewrite: p.is_rewrite().then(|| p.percent()),
                     irreversible_delete: self.irreversible_delete,
                     same_id_differs: p.dirty_submodule != 0,
+                    binary: Some(self.pair_binary(p, o.as_ref(), n, true)?),
                 };
+                let pair_opts = self.pair_options(&attr);
+                let popts = pair_opts.as_ref().unwrap_or(&self.patch);
                 let mut emit = |out: &mut Vec<u8>,
                                 old: Option<&PatchFile<'_>>,
                                 new: Option<&PatchFile<'_>>| {
                     let mut plain = Vec::new();
-                    write_file_patch_extra(&mut plain, old, new, &self.patch, &abbrev, &extra);
+                    write_file_patch_extra(&mut plain, old, new, popts, &abbrev, &extra);
                     let ws = WsContext {
                         rule,
                         highlight: if f.check { 0 } else { self.ws_highlight },
@@ -1175,10 +1560,11 @@ impl<'a> Output<'a> {
                         new_data: if new.is_some() { new_data } else { &[][..] },
                         new_symlink: new.is_some_and(|f| type_bits(f.mode) == 0o120000),
                         old_symlink: old.is_some_and(|f| type_bits(f.mode) == 0o120000),
+                        indicators: self.indicators,
                     };
                     if f.check {
                         let name = String::from_utf8_lossy(&p.path).into_owned();
-                        if super::check::check_patch(out, &plain, &ws, &name) {
+                        if super::check::check_patch(out, &plain, &ws, &name, marker_size) {
                             self.ws_errors.set(true);
                         }
                     } else if let Some((mode, regex)) = &self.word_diff {
@@ -1208,7 +1594,7 @@ impl<'a> Output<'a> {
                             super::color::patch(out, c, &plain, &ws, &[]);
                         }
                     } else {
-                        out.extend_from_slice(&plain);
+                        out.extend_from_slice(&self.with_indicators(plain));
                     }
                 };
                 let link = |f: &Option<PatchFile<'_>>| {
@@ -1279,13 +1665,309 @@ impl<'a> Output<'a> {
                         new_data: &w.new_data,
                         new_symlink: w.new_symlink,
                         old_symlink: w.old_symlink,
+                        indicators: self.indicators,
                     };
                     super::color::patch(&mut out, c, plain, &ws, moved);
                 }
                 out.extend_from_slice(&rest[at..]);
             }
         }
+        let changed = item_changed.iter().any(|&c| c);
+        let out = match &self.line_prefix {
+            Some(prefix) if !out.is_empty() => {
+                let mut prefixed = Vec::with_capacity(out.len() + prefix.len() * 16);
+                for line in out.split_inclusive(|&c| c == b'\n') {
+                    prefixed.extend_from_slice(prefix);
+                    prefixed.extend_from_slice(line);
+                }
+                prefixed
+            }
+            _ => out,
+        };
         Ok((out, changed))
+    }
+
+    /// `--output-indicator-*`: the signs of the lines of a plain patch.
+    fn with_indicators(&self, mut plain: Vec<u8>) -> Vec<u8> {
+        if self.indicators == *b"+- " {
+            return plain;
+        }
+        let mut in_header = true;
+        let mut at = 0;
+        while at < plain.len() {
+            let end = plain[at..]
+                .iter()
+                .position(|&c| c == b'\n')
+                .map_or(plain.len(), |p| at + p + 1);
+            let first = plain[at];
+            if first == b'@' {
+                in_header = false;
+            } else if !in_header {
+                match first {
+                    b'+' => plain[at] = self.indicators[0],
+                    b'-' => plain[at] = self.indicators[1],
+                    b' ' => plain[at] = self.indicators[2],
+                    _ => {}
+                }
+            }
+            at = end;
+        }
+        plain
+    }
+}
+
+/// Both sides went through textconv (or one did) and show the same text:
+/// no patch and no change.
+fn textconv_equal(p: &Pair, o: &Option<Loaded>, n: &Option<Loaded>) -> bool {
+    match (o, n) {
+        (Some(o), Some(n)) => {
+            (o.conv.is_some() || n.conv.is_some())
+                && o.mode == n.mode
+                && !p.is_rename()
+                && o.shown() == n.shown()
+        }
+        _ => false,
+    }
+}
+
+/// Diff drivers: binary decisions, textconv, hunk-header patterns and
+/// external programs.
+impl Output<'_> {
+    /// What the `diff` attribute says about `path`.
+    fn diff_attr(&self, path: &[u8]) -> Result<DiffAttr, Die> {
+        let Some(repo) = self.repo else {
+            return Ok(DiffAttr::Unspecified);
+        };
+        let state = repo.converter()?.attr(path, b"diff");
+        self.drivers.resolve(&repo.config, &state)
+    }
+
+    /// Run the textconv filter of `path`'s driver on `l`.
+    fn apply_textconv(&self, path: &[u8], l: &mut Loaded) -> Result<(), Die> {
+        if !is_file_mode(l.mode) || type_bits(l.mode) == 0o120000 {
+            return Ok(());
+        }
+        let attr = self.diff_attr(path)?;
+        if let Some(cmd) = attr.textconv() {
+            match super::driver::run_textconv(cmd, &l.data) {
+                Ok(conv) => l.conv = Some(conv),
+                Err(()) => l.conv_failed = true,
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a pair is binary: by the `diff` attribute or the contents
+    /// of either side. In patches (`patch`) `-a` makes nothing binary, nor
+    /// is a side after textconv; the diffstat ignores both.
+    fn pair_binary(
+        &self,
+        p: &Pair,
+        o: Option<&Loaded>,
+        n: Option<&Loaded>,
+        patch: bool,
+    ) -> Result<bool, Die> {
+        if patch && self.text {
+            return Ok(false);
+        }
+        for (path, side) in [(&p.old_path, o), (&p.path, n)] {
+            let Some(l) = side else { continue };
+            if patch && l.conv.is_some() {
+                continue;
+            }
+            let forced = if self.repo.is_some() {
+                self.diff_attr(path)?.binary()
+            } else {
+                None
+            };
+            if forced.unwrap_or_else(|| is_binary(&l.data)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Patch options for a pair whose driver sets hunk-header patterns or
+    /// an algorithm; `None` to use the common ones.
+    fn pair_options(&self, attr: &DiffAttr) -> Option<PatchOptions> {
+        let d = attr.driver()?;
+        let algorithm = d.algorithm.filter(|_| !self.cli_algorithm);
+        if d.funcname.is_none() && algorithm.is_none() {
+            return None;
+        }
+        let mut o = self.patch.clone();
+        o.diff.funcname = d.funcname.clone();
+        if let Some((a, minimal)) = algorithm {
+            o.diff.algorithm = a;
+            o.diff.minimal = minimal;
+        }
+        Some(o)
+    }
+
+    /// The external program for a pair (its driver's `command` first),
+    /// when external programs are allowed.
+    fn external_program(&self, attr: &DiffAttr) -> Option<external::Program> {
+        let global = self.external.as_ref()?;
+        if let Some(cmd) = attr.driver().and_then(|d| d.command.clone()) {
+            let d = attr.driver().expect("driver");
+            return Some(external::Program {
+                cmd,
+                trust_exit_code: d.trust_exit_code,
+            });
+        }
+        global.clone()
+    }
+
+    /// Run `prog` for pair number `idx` of `total`; returns whether it
+    /// counts as a change.
+    #[allow(clippy::too_many_arguments)]
+    fn run_external(
+        &self,
+        prog: &external::Program,
+        p: &Pair,
+        o: &Option<Loaded>,
+        n: &Option<Loaded>,
+        idx: usize,
+        total: usize,
+        quiet: bool,
+    ) -> Result<bool, Die> {
+        let sides = if p.unmerged {
+            None
+        } else {
+            Some((
+                self.external_side(&p.old, o, &p.old_path)?,
+                self.external_side(&p.new, n, &p.path)?,
+            ))
+        };
+        let rename = p.renamed.map(|c| {
+            let word = if c == b'C' { "copy" } else { "rename" };
+            let q = |path: &[u8]| {
+                let mut v = Vec::new();
+                quote_path(&mut v, path, self.quote_high);
+                String::from_utf8_lossy(&v).into_owned()
+            };
+            (
+                &p.path[..],
+                format!(
+                    "similarity index {}%\n{word} from {}\n{word} to {}\n",
+                    p.percent(),
+                    q(&p.old_path),
+                    q(&p.path)
+                ),
+            )
+        });
+        let cwd = if self.convert {
+            self.repo.and_then(|r| r.setup.work_tree.clone())
+        } else {
+            None
+        };
+        let call = external::Call {
+            path: &p.old_path,
+            sides,
+            rename,
+            counter: idx + 1,
+            total,
+        };
+        let stdout = match (&self.output, quiet) {
+            (Some(_), false) => self.output_handle(),
+            _ => None,
+        };
+        external::run(prog, &call, cwd.as_deref(), quiet, stdout)
+    }
+
+    /// The `--output` file, created by the first call and appended to
+    /// by later ones.
+    fn output_handle(&self) -> Option<std::fs::File> {
+        let path = self.output.as_ref()?;
+        let f = if self.output_started.replace(true) {
+            std::fs::OpenOptions::new().append(true).open(path)
+        } else {
+            std::fs::File::create(path)
+        };
+        f.ok()
+    }
+
+    /// Write `out` to the output (`--output` file or stdout).
+    fn write_out(&self, out: &[u8]) {
+        match self.output.is_some() {
+            true => {
+                if let Some(mut f) = self.output_handle() {
+                    let _ = f.write_all(out);
+                }
+            }
+            false => {
+                let mut o = std::io::stdout().lock();
+                let _ = o.write_all(out);
+                let _ = o.flush();
+            }
+        }
+    }
+
+    /// A side as the external program sees it: the work tree file when
+    /// it holds the contents, else the contents as they would be checked
+    /// out.
+    fn external_side<'x>(
+        &self,
+        s: &Option<Side>,
+        l: &Option<Loaded>,
+        path: &'x [u8],
+    ) -> Result<Option<external::ExtSide<'x>>, Die> {
+        let Some(s) = s.as_ref() else {
+            return Ok(None);
+        };
+        let data = l.as_ref().map(|l| l.data.clone()).unwrap_or_default();
+        let regular = is_file_mode(s.mode) && type_bits(s.mode) != GITLINK_MODE;
+        let mut in_worktree = s.file.is_some() && self.convert && regular;
+        let repo = self.repo.filter(|_| self.convert && regular);
+        let mut shown = data;
+        if let (Some(repo), false) = (repo, in_worktree) {
+            // git hands over the work tree file when it has the same
+            // contents.
+            if let Some(root) = &repo.setup.work_tree {
+                let full = root.join(external::os(path));
+                let meta = std::fs::symlink_metadata(&full).ok();
+                if meta.is_some_and(|m| m.is_file()) && type_bits(s.mode) != 0o120000 {
+                    if let Ok(raw) = std::fs::read(&full) {
+                        let conv = repo.converter()?;
+                        let opts = rgit_convert::Options::inspect(conv.config());
+                        let blob = conv.to_git(path, raw, opts)?;
+                        if rgit_hash::hash_object(self.hash, "blob", &blob).ok() == Some(s.oid) {
+                            in_worktree = true;
+                        }
+                    }
+                }
+            }
+            if !in_worktree && type_bits(s.mode) != 0o120000 {
+                shown = repo.converter()?.to_worktree(path, &s.oid, shown);
+            }
+        }
+        Ok(Some(external::ExtSide {
+            data: shown,
+            oid: s.oid,
+            mode: s.mode,
+            in_worktree,
+            path,
+        }))
+    }
+
+    /// `--quiet` with external programs: only programs that tell about
+    /// differences by their exit code are run.
+    fn external_quiet(
+        &self,
+        items: &[(Pair, Option<Loaded>, Option<Loaded>)],
+        changed: &mut [bool],
+    ) -> Result<(), Die> {
+        if self.external.is_none() {
+            return Ok(());
+        }
+        for (idx, (p, o, n)) in items.iter().enumerate() {
+            let attr = self.diff_attr(&p.old_path)?;
+            if let Some(prog) = self.external_program(&attr) {
+                changed[idx] = !prog.trust_exit_code
+                    || self.run_external(&prog, p, o, n, idx, items.len(), true)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1293,7 +1975,26 @@ impl Output<'_> {
     /// Write the output to stdout, then the warnings, and compute the
     /// exit code.
     pub fn finish(&self, out: &[u8], changed: bool, opts: &DiffOpts) -> i32 {
-        let code = finish(out, changed, opts);
+        let code = match &self.output {
+            Some(path) => {
+                let written = if self.output_started.get() {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(path)
+                        .and_then(|mut f| f.write_all(out))
+                } else {
+                    std::fs::write(path, out)
+                };
+                if written.is_err() {
+                    crate::messages::print_error(&msg::could_not_open_output(
+                        &path.to_string_lossy(),
+                    ));
+                    return 128;
+                }
+                i32::from(opts.wants_exit_code() && changed)
+            }
+            None => finish(out, changed, opts),
+        };
         self.warn();
         code | self.check_code()
     }

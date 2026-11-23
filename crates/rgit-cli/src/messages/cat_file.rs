@@ -96,6 +96,11 @@ pub fn path_required(name: &str) -> String {
     format!("<object>:<path> required, only <object> '{name}' given")
 }
 
+/// `--batch --filters` without a path for a blob.
+pub fn missing_path(oid: &str) -> String {
+    format!("missing path for '{oid}'")
+}
+
 /// rgit wording: a cat-file feature that is not implemented yet.
 pub fn cat_file_not_supported(what: &str) -> String {
     format!("rgit cat-file: {what} is not supported yet")
@@ -104,4 +109,12 @@ pub fn cat_file_not_supported(what: &str) -> String {
 /// Writing the output failed (e.g. a full disk).
 pub fn unable_to_write_stdout(err: &str) -> String {
     format!("unable to write to stdout: {err}")
+}
+
+pub fn textconv_failed(name: &str) -> String {
+    format!("git cat-file {name}: bad file")
+}
+
+pub fn invalid_mailmap_bool(value: &str) -> String {
+    format!("mailmap: invalid boolean '{value}'")
 }

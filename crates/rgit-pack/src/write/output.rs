@@ -73,11 +73,17 @@ impl<W: Write> PackStream<W> {
     ///
     /// If the number of entries differs from the count in the header (a
     /// bug in the caller).
-    pub fn finish(mut self) -> Result<(ObjectId, W), WriteError> {
+    pub fn finish(self) -> Result<(ObjectId, W), WriteError> {
         assert_eq!(
             self.written, self.announced,
             "pack header announced a different object count"
         );
+        self.finish_partial()
+    }
+
+    /// Like [`finish`](Self::finish), for a pack whose header count is
+    /// corrected afterwards (split output).
+    pub(crate) fn finish_partial(mut self) -> Result<(ObjectId, W), WriteError> {
         let id = self.hasher.finalize().map_err(|_| WriteError::Collision)?;
         self.out.write_all(id.as_bytes())?;
         self.out.flush()?;

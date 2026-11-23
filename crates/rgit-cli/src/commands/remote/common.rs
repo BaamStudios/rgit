@@ -24,6 +24,8 @@ pub struct Repo {
     pub setup: Setup,
     pub config: ConfigSet,
     pub store: FilesStore,
+    /// Whether the configuration warnings were printed already.
+    warned: std::cell::Cell<bool>,
 }
 
 impl Repo {
@@ -35,6 +37,7 @@ impl Repo {
             setup,
             config,
             store,
+            warned: std::cell::Cell::new(false),
         })
     }
 
@@ -44,7 +47,13 @@ impl Repo {
     }
 
     pub fn remotes(&self) -> Result<Remotes, Die> {
-        Remotes::from_config(&self.config).map_err(|e| Die::Fatal(e.to_string()))
+        let remotes = Remotes::from_config(&self.config).map_err(|e| Die::Fatal(e.to_string()))?;
+        if !self.warned.replace(true) {
+            for w in remotes.warnings() {
+                eprintln!("warning: {w}");
+            }
+        }
+        Ok(remotes)
     }
 
     /// Whether the repository's own configuration (not the global or

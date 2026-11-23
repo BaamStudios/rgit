@@ -70,6 +70,9 @@ pub struct Resolver<'a> {
     /// Path of the current directory below the top of the work tree,
     /// with a trailing `/` (empty at the top or without a work tree).
     prefix: String,
+    /// The type a short id must peel to when it is ambiguous (git's
+    /// "committish"/"treeish" disambiguation).
+    pub want: Option<ObjectKind>,
 }
 
 /// Symbolic links followed before giving up (`--follow-symlinks`).
@@ -86,7 +89,11 @@ impl<'a> Resolver<'a> {
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Resolver { repo, prefix }
+        Resolver {
+            repo,
+            prefix,
+            want: None,
+        }
     }
 
     /// Read an object (after replacement).
@@ -162,6 +169,21 @@ impl<'a> Resolver<'a> {
         } else {
             msg::path_not_in_rev(path, rev)
         }
+    }
+
+    /// The path a name like `<tree-ish>:<path>` or `:<path>` names,
+    /// relative to the top; `None` for other names.
+    pub fn object_path(&self, name: &str) -> Option<String> {
+        if let Some(rest) = name.strip_prefix(':') {
+            let b = rest.as_bytes();
+            let path = if b.len() >= 2 && (b'0'..=b'3').contains(&b[0]) && b[1] == b':' {
+                &rest[2..]
+            } else {
+                rest
+            };
+            return Some(self.relative_path(path));
+        }
+        tree_path_colon(name).map(|i| self.relative_path(&name[i + 1..]))
     }
 
     /// A path after `:` is relative to the top, unless it starts with
@@ -554,12 +576,13 @@ impl<'a> Resolver<'a> {
                     .map(|(_, r)| r)
             })
             .unwrap_or(name);
+        // Any all-caps name in the git directory (`REVERSE` written with
+        // `update-ref`, t4013) counts, like `rev-parse` sees it.
         let pseudo = local.starts_with("refs/")
             || (!local.is_empty()
                 && local
                     .bytes()
-                    .all(|c| c.is_ascii_uppercase() || c == b'_' || c == b'-')
-                && local.ends_with("HEAD"));
+                    .all(|c| c.is_ascii_uppercase() || c == b'_' || c == b'-'));
         let candidates = [
             pseudo.then(|| name.to_string()),
             Some(format!("refs/{name}")),
@@ -597,6 +620,16 @@ impl<'a> Resolver<'a> {
             return match self.repo.odb.resolve_prefix(&prefix) {
                 Ok(PrefixMatch::Unique(oid)) => Ok(oid),
                 Ok(PrefixMatch::Ambiguous(ids)) => {
+                    if let Some(kind) = self.want {
+                        let fit: Vec<ObjectId> = ids
+                            .iter()
+                            .copied()
+                            .filter(|id| self.peel_to(*id, kind, None).is_some())
+                            .collect();
+                        if let [one] = fit[..] {
+                            return Ok(one);
+                        }
+                    }
                     self.report_ambiguous(s, &ids);
                     Err(Failure::Ambiguous)
                 }

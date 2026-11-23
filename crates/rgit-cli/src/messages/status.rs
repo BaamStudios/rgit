@@ -7,6 +7,7 @@ pub const USAGE: &[&str] = &["git status [<options>] [--] [<pathspec>...]"];
 pub const HELP_SHORT: &str = "show status concisely";
 pub const HELP_BRANCH: &str = "show branch information";
 pub const HELP_AHEAD_BEHIND: &str = "compute full ahead/behind values";
+pub const HELP_SHOW_STASH: &str = "show stash information";
 pub const HELP_LONG: &str = "show status in long format (default)";
 pub const HELP_PORCELAIN: &str = "machine-readable output";
 pub const HELP_Z: &str = "terminate entries with NUL";
@@ -143,3 +144,32 @@ pub fn different(up: &str) -> String {
     format!("Your branch and '{up}' refer to different commits.")
 }
 pub const HINT_AHEAD_BEHIND: &str = "use \"git status --ahead-behind\" for details";
+
+pub const HELP_COLUMN: &str = "list untracked files in columns";
+pub const HELP_VERBOSE: &str = "be verbose";
+
+/// `Your stash currently has <n> entry|entries`.
+pub fn stash_count(n: usize) -> String {
+    if n == 1 {
+        "Your stash currently has 1 entry".to_owned()
+    } else {
+        format!("Your stash currently has {n} entries")
+    }
+}
+
+/// The `advice.statusUoption` text: how long looking for untracked files
+/// took (`cached`: with the untracked cache and fsmonitor).
+pub fn untracked_delay(seconds: f64, cached: bool) -> String {
+    if cached {
+        format!(
+            "It took {seconds:.2} seconds to enumerate untracked files,\n\
+             but the results were cached, and subsequent runs may be faster.\n\
+             See 'git help status' for information on how to improve this."
+        )
+    } else {
+        format!(
+            "It took {seconds:.2} seconds to enumerate untracked files.\n\
+             See 'git help status' for information on how to improve this."
+        )
+    }
+}

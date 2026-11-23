@@ -43,6 +43,24 @@ pub struct FetchOptions {
     pub server_options: Vec<String>,
     /// `-k` / `--keep`: always keep the received pack.
     pub keep: bool,
+    /// `--refmap`: replaces `remote.<name>.fetch` for the opportunistic
+    /// updates of command-line refspecs (`Some(vec![])` for `--refmap=`).
+    pub refmap: Option<Vec<String>>,
+    /// `--prune-tags` / `--no-prune-tags`; `None` uses
+    /// `remote.<name>.pruneTags`, then `fetch.pruneTags`.
+    pub prune_tags: Option<bool>,
+    /// Branches checked out (or being rebased or bisected) in a worktree,
+    /// with the worktree's path: fetching into them is refused unless
+    /// `update_head_ok`.
+    pub checked_out: Vec<(String, std::path::PathBuf)>,
+    /// `--refetch`: tell the server about no objects we have.
+    pub refetch: bool,
+    /// `--atomic`: update the refs in one transaction, all or none.
+    pub atomic: bool,
+    /// `--negotiation-restrict` / `--negotiation-tip` (and
+    /// `--negotiation-include`): the commits the negotiation starts from;
+    /// `None` uses every local ref.
+    pub negotiation_tips: Option<Vec<ObjectId>>,
     /// `--depth` (`deepen <n>`), `--deepen` (with
     /// [`deepen_relative`](Self::deepen_relative)) or `--unshallow`
     /// (`deepen 2147483647`).
@@ -88,6 +106,8 @@ pub struct FetchResult {
     pub warnings: Vec<String>,
     /// The final ref map (what `FETCH_HEAD` lists).
     pub entries: Vec<Entry>,
+    /// The `followRemoteHEAD` warning (printed on standard output).
+    pub head_warning: Option<HeadWarning>,
 }
 
 impl FetchResult {
@@ -151,8 +171,32 @@ pub fn fetch(
     } else {
         remote.fetch.clone()
     };
-    if tag_opt == TagOpt::All {
-        specs.items.push(parse_spec("refs/tags/*:refs/tags/*")?);
+    let prune = opts.prune.or(remote.prune).unwrap_or_else(|| {
+        repo.config
+            .bool("fetch.prune")
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    });
+    // `--prune-tags` adds the tag refspec, for fetching and pruning, when
+    // no refspec is given on the command line.
+    let prune_tags = prune
+        && !cmdline
+        && opts.prune_tags.or(remote.prune_tags).unwrap_or_else(|| {
+            repo.config
+                .bool("fetch.prunetags")
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+        });
+    let tag_spec = || parse_spec("refs/tags/*:refs/tags/*");
+    if prune_tags {
+        specs.items.push(tag_spec()?);
+    }
+    // What `--prune` compares with: without the tags of `--tags`.
+    let prune_specs = specs.clone();
+    if tag_opt == TagOpt::All && !prune_tags {
+        specs.items.push(tag_spec()?);
     }
 
     // Merge candidates of the current branch (also when its remote is a
@@ -173,8 +217,8 @@ pub fn fetch(
     if specs.positive().next().is_none() && merge_refs.is_empty() {
         specs.items.push(parse_spec("HEAD")?);
     }
-    let follow_head =
-        !cmdline && remote.is_configured() && follow_remote_head(repo, &remote.name) != "never";
+    let head_mode = follow_remote_head(repo, &remote.name);
+    let follow_head = !cmdline && remote.is_configured() && head_mode != "never";
 
     let mut extra: Vec<String> = merge_refs
         .iter()
@@ -242,14 +286,20 @@ pub fn fetch(
     entries.extend(rest);
     let mut entries = refmap::dedup(entries)?;
 
-    // Never move the checked-out branch under the work tree.
-    if !repo.is_bare() && !opts.update_head_ok {
-        if let (Some(cur), Some(wt)) = (repo.current_branch(), &repo.work_tree) {
-            if entries
-                .iter()
-                .any(|e| e.local.as_ref().map(|l| l.as_slice()) == Some(cur.as_bytes()))
-            {
-                return Err(Error::fatal(messages::refusing_to_fetch_into(&cur, wt)));
+    // Never move a branch checked out in a worktree (or one a rebase or
+    // bisect works on). Without the list from the caller: the current
+    // branch of this work tree.
+    if !opts.update_head_ok {
+        let mut busy = opts.checked_out.clone();
+        if busy.is_empty() && !repo.is_bare() {
+            if let (Some(cur), Some(wt)) = (repo.current_branch(), &repo.work_tree) {
+                busy.push((cur, wt.clone()));
+            }
+        }
+        for e in &entries {
+            let Some(local) = &e.local else { continue };
+            if let Some((name, wt)) = busy.iter().find(|(b, _)| b.as_bytes() == local.as_slice()) {
+                return Err(Error::fatal(messages::refusing_to_fetch_into(name, wt)));
             }
         }
     }
@@ -259,7 +309,7 @@ pub fn fetch(
     let deepens = opts.deepens();
     let mut wants: Vec<ObjectId> = Vec::new();
     for e in &entries {
-        if deepens || !repo.has_object(&e.oid) {
+        if deepens || opts.refetch || !repo.has_object(&e.oid) {
             wants.push(e.oid);
         }
     }
@@ -275,9 +325,22 @@ pub fn fetch(
         add_followed_tags(repo, &refs, &entries, &mut tags, &mut wants, false);
         entries.extend(tags);
     }
-    if cmdline && remote.is_configured() {
-        let extra = refmap::opportunistic(&entries, &remote.fetch);
-        entries.extend(extra);
+    if cmdline {
+        // `--refmap` replaces the configured refspecs here.
+        let map = match &opts.refmap {
+            Some(specs) => {
+                let mut set = RefspecSet::default();
+                for s in specs.iter().filter(|s| !s.is_empty()) {
+                    set.items.push(parse_spec(s)?);
+                }
+                Some(set)
+            }
+            None => remote.is_configured().then(|| remote.fetch.clone()),
+        };
+        if let Some(map) = map {
+            let extra = refmap::opportunistic(&entries, &map);
+            entries.extend(extra);
+        }
     }
 
     let advertised: Vec<ObjectId> = refs.iter().filter_map(|r| r.oid).collect();
@@ -290,9 +353,12 @@ pub fn fetch(
         deepen_relative: opts.deepen_relative,
         deepen_since: opts.deepen_since,
         deepen_not: opts.deepen_not.clone(),
+        tips: opts.negotiation_tips.clone(),
     };
     let mut packs: Vec<ReceivedPack> = Vec::new();
-    if let Some(p) = session.fetch_pack(repo, &wants, Some(&advertised), &pack_opts)? {
+    // `--refetch`: no negotiation, everything is sent again.
+    let haves = (!opts.refetch).then_some(advertised.as_slice());
+    if let Some(p) = session.fetch_pack(repo, &wants, haves, &pack_opts)? {
         packs.push(p);
     }
     if follow_tags {
@@ -381,16 +447,73 @@ pub fn fetch(
         shallow::write(&repo.shallow_file(), set)?;
     }
 
+    // `--atomic`: every ref update (prunes included) in one transaction,
+    // nothing at all when one of them is refused.
+    let mut atomic_failed = false;
+    let mut atomic_write_failed = false;
+    if opts.atomic && !opts.dry_run {
+        let stale = if prune {
+            update::stale_refs(repo, &prune_specs, &refs)
+        } else {
+            Vec::new()
+        };
+        let decided: Vec<Status> = entries
+            .iter()
+            .map(|e| update::decide(repo, e, opts.force))
+            .collect();
+        atomic_failed = decided.iter().any(Status::is_error);
+        let mut updates = Vec::new();
+        if !atomic_failed {
+            for (name, old) in &stale {
+                updates.push(
+                    RefUpdate::delete(name.to_str_lossy().into_owned(), repo.hash, Some(*old))
+                        .no_deref(true),
+                );
+            }
+            for (e, status) in entries.iter().zip(&decided) {
+                if let (Some(local), true) = (&e.local, status.changes_ref()) {
+                    updates.push(update::ref_update(
+                        local.as_bstr(),
+                        e.oid,
+                        status,
+                        &opts.reflog_action,
+                    ));
+                }
+            }
+            if let Err(err) = update::write_all(repo, updates) {
+                eprintln!("error: {err}");
+                atomic_failed = true;
+                atomic_write_failed = true;
+            }
+        }
+        if !atomic_failed {
+            for (name, old) in stale {
+                result.lines.push(RefLine {
+                    remote: None,
+                    local: Some(name),
+                    new: old,
+                    status: Status::Deleted,
+                });
+            }
+        }
+        for (e, status) in entries.iter().zip(decided) {
+            let status = if atomic_write_failed && status.changes_ref() {
+                Status::Failed(Box::new(status))
+            } else {
+                status
+            };
+            result.lines.push(RefLine {
+                remote: Some(e.remote.clone()),
+                local: e.local.clone(),
+                new: e.oid,
+                status,
+            });
+        }
+    }
+
     // Prune first, as git lists deletions first.
-    let prune = opts.prune.or(remote.prune).unwrap_or_else(|| {
-        repo.config
-            .bool("fetch.prune")
-            .ok()
-            .flatten()
-            .unwrap_or(false)
-    });
-    if prune {
-        for (name, old) in update::stale_refs(repo, &specs, &refs) {
+    if prune && !(opts.atomic && !opts.dry_run) {
+        for (name, old) in update::stale_refs(repo, &prune_specs, &refs) {
             let status = if opts.dry_run {
                 Status::Deleted
             } else {
@@ -411,7 +534,12 @@ pub fn fetch(
         }
     }
 
-    for e in &entries {
+    let one_by_one = if opts.atomic && !opts.dry_run {
+        &entries[..0]
+    } else {
+        &entries[..]
+    };
+    for e in one_by_one {
         let decided = update::decide(repo, e, opts.force);
         let status = match (&e.local, opts.dry_run) {
             (Some(local), false) => {
@@ -428,10 +556,10 @@ pub fn fetch(
     }
 
     if follow_head && !opts.dry_run {
-        update_remote_head(repo, remote, &refs);
+        result.head_warning = update_remote_head(repo, remote, &refs, &head_mode);
     }
 
-    if opts.write_fetch_head && !opts.dry_run {
+    if opts.write_fetch_head && !opts.dry_run && !atomic_failed {
         let path = repo.git_dir.join("FETCH_HEAD");
         let text = display::fetch_head(&result.url, &entries);
         let written = if opts.append {
@@ -484,7 +612,17 @@ fn add_followed_tags(
         if !r.name.starts_with(b"refs/tags/") || r.name.ends_with(b"^{}") {
             continue;
         }
-        if seen.iter().any(|e| e.remote == r.name.as_slice()) {
+        let stored_elsewhere = |e: &Entry| {
+            e.local
+                .as_ref()
+                .is_some_and(|l| l.as_slice() != r.name.as_slice())
+        };
+        if seen.iter().any(|e| {
+            e.local
+                .as_ref()
+                .is_some_and(|l| l.as_slice() == r.name.as_slice())
+                || (e.remote == r.name.as_slice() && !stored_elsewhere(e))
+        }) {
             continue;
         }
         let name = String::from_utf8_lossy(&r.name);
@@ -510,23 +648,84 @@ fn add_followed_tags(
     }
 }
 
-/// Create `refs/remotes/<name>/HEAD` for the remote's `HEAD` if it does
-/// not exist yet (`followRemoteHEAD=create`, the default).
-fn update_remote_head(repo: &LocalRepo, remote: &Remote, refs: &[RemoteRef]) {
-    let Some(target) = refmap::advertised(refs, b"HEAD").and_then(|h| h.symref_target.clone())
-    else {
-        return;
-    };
-    let Some(local) = remote.fetch.map_src(&target) else {
-        return;
-    };
+/// `refs/remotes/<name>/HEAD` against the remote's `HEAD`
+/// (config/fetch.adoc, `followRemoteHEAD`): `create` (the default) makes
+/// it when missing, `always` also moves it, `warn` and
+/// `warn-if-not-<branch>` leave it and return the warning to print.
+fn update_remote_head(
+    repo: &LocalRepo,
+    remote: &Remote,
+    refs: &[RemoteRef],
+    mode: &str,
+) -> Option<HeadWarning> {
+    let target = refmap::advertised(refs, b"HEAD").and_then(|h| h.symref_target.clone())?;
+    let local = remote.fetch.map_src(&target)?;
     let local = local.to_str_lossy().into_owned();
-    if repo.resolve(&local).is_none() {
-        return;
+    let name = remote.name.to_str_lossy();
+    // Only into the remote's own namespace (not for a mirror refspec).
+    let prefix = format!("refs/remotes/{name}/");
+    let short = local.strip_prefix(&prefix)?.to_owned();
+    repo.resolve(&local)?;
+    let head = format!("{prefix}HEAD");
+    let current = match repo.refs.read_raw(&head) {
+        Ok(None) => None,
+        Ok(Some(t)) => Some(t),
+        Err(_) => return None,
+    };
+    let Some(current) = current else {
+        let _ = update::write(repo, RefUpdate::symref_create(head, local).message("fetch"));
+        return None;
+    };
+    let ours = match &current {
+        rgit_refs::Target::Symbolic(t) => {
+            let t = t.to_string();
+            if t == local {
+                return None;
+            }
+            Some(t)
+        }
+        rgit_refs::Target::Object(_) => None,
+    };
+    if mode == "always" {
+        let _ = update::write(
+            repo,
+            RefUpdate::symref_update(head, local, None)
+                .no_deref(true)
+                .message("fetch"),
+        );
+        return None;
     }
-    let head = format!("refs/remotes/{}/HEAD", remote.name.to_str_lossy());
-    if !matches!(repo.refs.read_raw(&head), Ok(None)) {
-        return;
+    let warn_unless = mode.strip_prefix("warn-if-not-");
+    if mode != "warn" && warn_unless.is_none() {
+        return None;
     }
-    let _ = update::write(repo, RefUpdate::symref_create(head, local).message("fetch"));
+    if warn_unless == Some(short.as_str()) {
+        return None;
+    }
+    let text = match (ours, &current) {
+        (Some(t), _) => {
+            let t = t.strip_prefix(&prefix).unwrap_or(&t).to_owned();
+            messages::remote_head_differs(&name, &short, &t)
+        }
+        (None, rgit_refs::Target::Object(oid)) => {
+            messages::remote_head_detached(&name, &short, &oid.to_hex())
+        }
+        (None, _) => return None,
+    };
+    Some(HeadWarning {
+        text,
+        remote: name.into_owned(),
+        branch: short,
+    })
+}
+
+/// The `followRemoteHEAD=warn` message and what the advice names.
+#[derive(Debug, Clone, Default)]
+pub struct HeadWarning {
+    /// The warning (standard output).
+    pub text: String,
+    /// The remote's name.
+    pub remote: String,
+    /// The branch the remote's `HEAD` points to.
+    pub branch: String,
 }

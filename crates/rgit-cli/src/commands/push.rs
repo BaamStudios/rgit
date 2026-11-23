@@ -11,9 +11,13 @@
 //! `--porcelain`, `--atomic`, `-o`, `--receive-pack`; the status table,
 //! hints, exit codes and the update of remote-tracking refs.
 //!
-//! Not yet: `--mirror`, `--prune`, `--force-with-lease`,
-//! `--force-if-includes`, `--follow-tags`, `--signed`,
-//! `--recurse-submodules`, thin packs, remote groups and local progress
+//! `--prune` deletes remote refs a pattern refspec covers whose local
+//! source is gone; `--follow-tags` (`push.followTags`) adds the annotated
+//! tags missing on the remote whose commit is in the pushed history.
+//!
+//! Not yet: `--mirror`, `--force-with-lease`,
+//! `--force-if-includes`, `--signed`,
+//! `--recurse-submodules`, remote groups and local progress
 //! output. The `pre-push` hook runs unless `--no-verify` is given (#76).
 
 use std::io::IsTerminal;
@@ -41,6 +45,8 @@ fn fatal(e: impl std::fmt::Display) -> Die {
 /// Options that matter after parsing.
 struct Flags {
     verbose: bool,
+    /// The number of `-v` (smart HTTP reports POST sizes above 1).
+    verbosity: i32,
     quiet: bool,
     porcelain: bool,
     dry_run: bool,
@@ -48,10 +54,13 @@ struct Flags {
     set_upstream: bool,
     atomic: bool,
     progress: bool,
+    thin: bool,
     push_options: Vec<String>,
     receive_pack: Option<String>,
     ip: IpVersion,
     verify: bool,
+    prune: bool,
+    follow_tags: bool,
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
@@ -71,7 +80,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let progress = Cell::new(-1);
     let prune = Cell::new(false);
     let no_verify = Cell::new(false);
-    let follow_tags = Cell::new(false);
+    let follow_tags = Cell::new(-1);
     let atomic = Cell::new(false);
     let push_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let ipv4 = Cell::new(false);
@@ -140,7 +149,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             })
             .noarg()
             .noneg(),
-            Opt::flag(None, "follow-tags", &follow_tags, msg::H_FOLLOW_TAGS),
+            Opt::bool(None, "follow-tags", &follow_tags, msg::H_FOLLOW_TAGS),
             Opt::callback(
                 None,
                 "signed",
@@ -166,21 +175,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some(opt) = unsupported.borrow().clone() {
         return Err(Die::Fatal(msg::not_supported(&opt)));
     }
-    for (on, name) in [
-        (mirror.get(), "--mirror"),
-        (prune.get(), "--prune"),
-        (follow_tags.get(), "--follow-tags"),
-    ] {
-        if on {
-            return Err(Die::Fatal(msg::not_supported(name)));
-        }
-    }
     if tags.get() && all.get() {
         return Err(Die::Fatal(msg::TAGS_WITH_ALL.into()));
     }
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::config(ctx, &setup);
+    rgit_protocol::sideband::set_remote_colors(crate::color::remote_colors(&config));
     let advisor = ctx.advisor(&config)?.without_color_ui();
     advisor.check_env().map_err(Die::Fatal)?;
     let hash = setup.format.object_format;
@@ -194,6 +195,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .transpose()
         .map_err(fatal)?;
     let remotes = Remotes::from_config(&config).map_err(fatal)?;
+    for w in remotes.warnings() {
+        eprintln!("warning: {w}");
+    }
 
     let (repo_arg, cli_specs): (Option<String>, &[String]) = match args.split_first() {
         Some((r, rest)) => (Some(r.clone()), rest),
@@ -229,9 +233,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let Some(t) = cli_specs.get(i + 1) else {
                 return Err(Die::Fatal("tag shorthand without <tag>".into()));
             };
-            specs.push(format!("refs/tags/{t}:refs/tags/{t}"));
+            if delete.get() {
+                specs.push(format!(":refs/tags/{t}"));
+            } else {
+                specs.push(format!("refs/tags/{t}:refs/tags/{t}"));
+            }
             i += 2;
             continue;
+        }
+        if delete.get() && (a.is_empty() || a.contains(':')) {
+            return Err(Die::Fatal(msg::DELETE_EMPTY.into()));
         }
         if delete.get() {
             specs.push(format!(":{a}"));
@@ -251,6 +262,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if tags.get() {
         specs.push("refs/tags/*".into());
+    }
+    // `--mirror` (or `remote.<name>.mirror`): every ref, forced, and the
+    // remote refs without a local one are deleted.
+    let mirror_mode = mirror.get() || (remote.mirror && !all.get() && !tags.get());
+    if mirror_mode {
+        if all.get() {
+            return Err(Die::Fatal(msg::incompatible("--all/--branches", "--mirror")));
+        }
+        if tags.get() {
+            return Err(Die::Fatal(msg::incompatible("--tags", "--mirror")));
+        }
+        if !specs.is_empty() {
+            return Err(Die::Fatal(msg::MIRROR_WITH_REFSPECS.into()));
+        }
+        specs.push("+refs/*:refs/*".into());
+        prune.set(true);
     }
     let from_cli = !specs.is_empty();
     let refspecs = if from_cli {
@@ -283,6 +310,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let flags = Flags {
         verbose: verbose.get() > 0,
+        verbosity: verbose.get(),
         quiet: quiet.get() > 0,
         porcelain: porcelain.get(),
         dry_run: dry_run.get() > 0,
@@ -293,6 +321,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             -1 => quiet.get() == 0 && std::io::stderr().is_terminal(),
             p => p > 0,
         },
+        thin: thin.get(),
         push_options: push_options.borrow().clone(),
         receive_pack: receive_pack
             .borrow()
@@ -306,6 +335,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             IpVersion::Any
         },
         verify: !no_verify.get(),
+        prune: prune.get(),
+        follow_tags: match follow_tags.get() {
+            -1 => config
+                .bool("push.followtags")
+                .ok()
+                .flatten()
+                .unwrap_or(false),
+            v => v > 0,
+        },
     };
     let push = Push {
         ctx,
@@ -378,6 +416,49 @@ fn default_refspec(
     Ok(format!("refs/heads/{name}:{merge}"))
 }
 
+/// `--follow-tags`: annotated tags missing on the remote whose commit is
+/// in the history being pushed go along.
+fn follow_tags(
+    list: &mut Vec<PushRef>,
+    local_refs: &[(String, ObjectId)],
+    remote: &[rgit_protocol::push::AdvertisedRef],
+    odb: &ObjectDatabase,
+    objects: &Objects<'_>,
+) {
+    let pushed: Vec<ObjectId> = list.iter().filter_map(|r| r.new).collect();
+    if pushed.is_empty() {
+        return;
+    }
+    for (name, oid) in local_refs {
+        if !name.starts_with("refs/tags/")
+            || objects.kind(oid) != Some(rgit_object::ObjectKind::Tag)
+            || remote.iter().any(|r| r.name == *name)
+            || list.iter().any(|r| r.dst == *name)
+        {
+            continue;
+        }
+        let Some(target) = rgit_fetch::graph::peel(odb, oid) else {
+            continue;
+        };
+        if !pushed
+            .iter()
+            .any(|tip| rgit_fetch::graph::is_ancestor(odb, &target, tip))
+        {
+            continue;
+        }
+        list.push(PushRef {
+            dst: name.clone(),
+            old: None,
+            new: Some(*oid),
+            src: Some(name.clone()),
+            force: false,
+            status: Status::None,
+            forced_update: false,
+            remote_msg: None,
+        });
+    }
+}
+
 /// `scheme://user:pass@host/...` → `scheme://host/...` for messages.
 fn anonymize(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
@@ -445,6 +526,7 @@ impl Push<'_> {
             _ => rgit_protocol::ProtocolVersion::V0,
         };
         opts.trace_name = Some("push".into());
+        opts.verbosity = f.verbosity;
         let conn = transport.connect(&opts).map_err(fatal)?;
         let mut session =
             send::start(conn, hash).map_err(|e| Die::Fatal(send::advertisement_error(&e)))?;
@@ -480,7 +562,11 @@ impl Push<'_> {
             self.refspecs,
             self.remote_push,
             f.force,
+            f.prune,
         );
+        if f.follow_tags {
+            follow_tags(&mut list, &local_refs, &session.adv.refs, self.odb, &objects);
+        }
         if !errors.is_empty() {
             for e in &errors {
                 eprintln!("error: {}", e.error);
@@ -545,8 +631,11 @@ impl Push<'_> {
                     &rgit_fetch::shallow::file_for(&self.setup.common_dir),
                     hash,
                 ),
+                bases: Vec::new(),
+                thin: f.thin,
+                pack: crate::commands::pack_objects::config_options(self.config)?,
             };
-            out.objects = match send::pack_objects(&out, &session.adv) {
+            (out.objects, out.bases) = match send::pack_objects(&out, &session.adv) {
                 Ok(o) => o,
                 Err(e) => {
                     send::finish_empty(session);

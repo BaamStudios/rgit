@@ -32,6 +32,8 @@ pub const TYPE_DIRECTORY_RENAME_SKIPPED: &str =
     "Directory rename skipped since directory was renamed on both sides";
 pub const TYPE_RENAME_COLLISION: &str = "CONFLICT (rename involved in collision)";
 pub const TYPE_FILE_IN_THE_WAY: &str = "CONFLICT (file in way of directory rename)";
+pub const TYPE_SUBMODULE_FAST_FORWARD: &str = "Fast forwarding submodule";
+pub const TYPE_SUBMODULE: &str = "CONFLICT (submodule)";
 
 /// Concatenates byte strings.
 fn join(parts: &[&[u8]]) -> Vec<u8> {
@@ -50,6 +52,19 @@ pub fn content_conflict(path: &[u8], add_add: bool) -> Vec<u8> {
 
 pub fn submodule_conflict(path: &[u8]) -> Vec<u8> {
     join(&[b"CONFLICT (submodule): Merge conflict in ", path])
+}
+
+pub fn submodule_failed(path: &[u8]) -> Vec<u8> {
+    join(&[b"Failed to merge submodule ", path])
+}
+
+pub fn submodule_fast_forward(path: &[u8], to: &str) -> Vec<u8> {
+    join(&[
+        b"Note: Fast-forwarding submodule ",
+        path,
+        b" to ",
+        to.as_bytes(),
+    ])
 }
 
 pub fn submodule_not_checked_out(path: &[u8]) -> Vec<u8> {
@@ -246,6 +261,23 @@ pub fn rename_limit_warnings(needed: usize) -> [String; 2] {
 }
 
 /// Error texts of [`crate::Error`].
+pub const FAILURE_TO_MERGE: &str = "failure to merge";
+
+pub fn collecting_failed(trees: &[String; 3]) -> String {
+    format!(
+        "collecting merge info failed for trees {}, {}, {}",
+        trees[0], trees[1], trees[2]
+    )
+}
+
+pub fn could_not_read(id: &str) -> String {
+    format!("Could not read {id}")
+}
+
+pub fn missing_blob(id: &str) -> String {
+    format!("unable to read blob object {id}")
+}
+
 pub fn missing_object(id: &str) -> String {
     format!("unable to read object {id}")
 }

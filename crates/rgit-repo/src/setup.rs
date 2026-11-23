@@ -543,6 +543,12 @@ fn search(
             Ok(Ok(setup))
         }
         Found::Bare { dir } => {
+            rgit_trace::trace2::data(
+                "setup",
+                "implicit-bare-repository",
+                &dir.to_string_lossy(),
+                false,
+            );
             let setting = safe::bare_repository_setting(&protected.load()?)?;
             if setting == BareRepository::Explicit && !safe::is_embedded_git_dir(&dir) {
                 return Err(Error::BareNotAllowed(dir));

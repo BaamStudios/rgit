@@ -314,6 +314,20 @@ impl<'a> Resolver<'a> {
         Ok((email, user.domain_bogus))
     }
 
+    /// Whether both the name and the address of `role` were given
+    /// (environment, `<role>.*`, `user.*` or `$EMAIL`) rather than guessed
+    /// from the system; git then shows the identity after committing.
+    pub fn is_explicit(&self, role: Role) -> bool {
+        let name = config::env_bytes(self.env, role.name_var()).is_some()
+            || self.config.role_name(role).is_some()
+            || self.config.user_name.is_some();
+        let email = config::env_bytes(self.env, role.email_var()).is_some()
+            || self.config.role_email(role).is_some()
+            || self.config.user_email.is_some()
+            || config::env_bytes(self.env, "EMAIL").is_some_and(|e| !e.is_empty());
+        name && email
+    }
+
     /// The cleaned name and address of `role`, or why there are none.
     pub fn name_email(
         &self,
@@ -406,7 +420,7 @@ pub fn now() -> (u64, i32) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let zone = jiff::tz::TimeZone::system();
+    let zone = rgit_date::local_zone();
     let offset = jiff::Timestamp::from_second(secs as i64)
         .map(|ts| zone.to_offset(ts).seconds())
         .unwrap_or(0);

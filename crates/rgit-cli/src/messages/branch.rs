@@ -71,8 +71,12 @@ pub fn created_from(start: &str) -> String {
     format!("branch: Created from {start}")
 }
 
-pub fn detached_at(abbrev: &str) -> String {
-    format!("(HEAD detached at {abbrev})")
+pub fn detached_at(name: &str) -> String {
+    format!("(HEAD detached at {name})")
+}
+
+pub fn detached_from(name: &str) -> String {
+    format!("(HEAD detached from {name})")
 }
 
 pub const GONE: &str = "gone";
@@ -161,3 +165,33 @@ pub fn no_upstream_information(name: &str) -> String {
 pub fn being_rebased(refname: &str, path: &str) -> String {
     format!("branch {refname} is being rebased at {path}")
 }
+
+pub use crate::messages::tag::{HELP_FORMAT, HELP_IGNORE_CASE, HELP_OMIT_EMPTY, HELP_SORT};
+pub const HELP_CONTAINS: &str = "print only branches that contain the commit";
+pub const HELP_NO_CONTAINS: &str = "print only branches that don't contain the commit";
+pub const HELP_MERGED: &str = "print only branches that are merged";
+pub const HELP_NO_MERGED: &str = "print only branches that are not merged";
+pub const HELP_POINTS_AT: &str = "print only branches of the object";
+pub const HELP_CREATE_REFLOG: &str = "create the branch's reflog";
+pub const HELP_EDIT_DESCRIPTION: &str = "edit the description for the branch";
+pub const DESCRIPTION_DETACHED: &str = "cannot give description to detached HEAD";
+pub const DESCRIPTION_MANY: &str = "cannot edit description of more than one branch";
+
+/// The comment lines of `EDIT_DESCRIPTION` (without the comment string).
+pub fn description_template(name: &str, comment: &str) -> String {
+    format!(
+        "Please edit the description for the branch\n  {name}\nLines starting with '{comment}' will be stripped.\n"
+    )
+}
+
+pub const ALL_REMOTES_NO_NAME: &str = "the -a, and -r, options to 'git branch' do not take a branch name.\nDid you mean to use: -a|-r --list <pattern>?";
+
+pub fn rebasing(what: &str) -> String {
+    format!("(no branch, rebasing {what})")
+}
+
+pub fn bisect_started(on: &str) -> String {
+    format!("(no branch, bisect started on {on})")
+}
+
+pub use crate::messages::tag::HELP_COLUMN;

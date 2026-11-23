@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! `git diff-index` (Documentation/git-diff-index.adoc): a tree against the
-//! index (`--cached`) or the work tree. No `--merge-base`, no `-m`.
+//! index (`--cached`) or the work tree, `--merge-base`. No `-m`.
 
 use rgit_object::ObjectKind;
 
@@ -21,6 +21,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(code);
     }
     let mut cached = false;
+    let mut merge_base = false;
+    // `-m`: files missing from the work tree count as unchanged.
+    let mut missing_unchanged = false;
     let parsed = diff::parse_args(
         &argv[1..],
         |a| match a {
@@ -28,7 +31,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 cached = true;
                 Ok(true)
             }
-            "-m" | "--merge-base" => Err(Die::Fatal(msg::not_supported(a))),
+            "--merge-base" => {
+                merge_base = true;
+                Ok(true)
+            }
+            "-m" => {
+                missing_unchanged = true;
+                Ok(true)
+            }
             _ => Ok(false),
         },
         |_| usage(),
@@ -41,15 +51,28 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let formats = opts.formats(false)?;
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let spec = args.remove(0);
-    let id = repo
+    // One tree-ish only: a second revision is a usage error.
+    let paths_end = parsed.dashdash_at.map_or(args.len(), |d| d - 1);
+    if spec.contains("..") || args[..paths_end].first().is_some_and(|a| repo.resolve(a).is_some()) {
+        return Err(usage());
+    }
+    diff::verify_paths(&repo, &args[..paths_end])?;
+    let mut id = repo
         .resolve(&spec)
         .ok_or_else(|| Die::Fatal(crate::messages::ambiguous_argument(&spec)))?;
+    if merge_base {
+        let head = repo
+            .resolve("HEAD")
+            .ok_or_else(|| Die::Fatal(msg::NO_MERGE_BASE_FOUND.to_owned()))?;
+        id = diff::single_merge_base(ctx, &mut repo, id, head)?;
+    }
     let tree = repo
         .peel_to(id, ObjectKind::Tree)
         .ok_or_else(|| Die::Fatal(msg::bad_tree_object(&spec)))?;
     opts.resolve_objects(&mut repo)?;
-    let repo = repo;
     let pathspec = diff::pathspec(ctx, &repo, &args)?;
+    let (pathspec, attr_filter) = diff::attr_split(ctx, &mut repo, pathspec)?;
+    let repo = repo;
     let (index, mtime) = repo.read_index()?;
     let pairs = if cached {
         collect::index(&repo, &tree, &index, &pathspec, None, false)?
@@ -61,12 +84,38 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let wt = WorkTree {
             root: &root,
             checker: &checker,
-            porcelain: false,
             hash: repo.hash,
             submodules: submodules.as_ref(),
             dirty: Default::default(),
         };
-        collect::index(&repo, &tree, &index, &pathspec, Some(&wt), false)?
+        let mut pairs = collect::index(&repo, &tree, &index, &pathspec, Some(&wt), false)?;
+        if missing_unchanged {
+            // A deleted work tree file is its index entry.
+            pairs.retain_mut(|p| {
+                if p.new.is_some() || p.unmerged {
+                    return true;
+                }
+                let Some(e) = index
+                    .entries()
+                    .iter()
+                    .find(|e| e.path() == &p.path[..] && e.stage() == rgit_index::Stage::MERGED)
+                else {
+                    return true;
+                };
+                let side = collect::Side {
+                    mode: e.mode.0,
+                    oid: e.id,
+                    file: None,
+                };
+                let same = p
+                    .old
+                    .as_ref()
+                    .is_some_and(|o| o.oid == side.oid && o.mode == side.mode);
+                p.new = Some(side);
+                !same
+            });
+        }
+        pairs
     };
     let mut pairs = if opts.copies_harder {
         collect::with_unmodified(pairs, collect::tree_files(&repo, &tree, &pathspec)?)
@@ -74,6 +123,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         pairs
     };
     crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, false)?;
+    diff::attr_retain(&repo, &mut pairs, attr_filter)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     let (bytes, changed) = out.render(pairs)?;

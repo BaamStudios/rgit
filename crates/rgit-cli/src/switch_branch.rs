@@ -73,6 +73,25 @@ pub struct Request {
     pub refuse_in_progress: bool,
 }
 
+/// Show the `Updating files` meter (`--progress`, or standard error is a
+/// terminal and not `--quiet`).
+static PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Decide about the work tree meter of the running `switch` / `checkout`:
+/// `option` is `--[no-]progress` (-1 when not given).
+pub fn set_progress(option: i32, quiet: bool) {
+    let on = match option {
+        -1 => !quiet && rgit_progress::stderr_is_terminal(),
+        n => n != 0,
+    };
+    PROGRESS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the work tree meter is on (see [`set_progress`]).
+pub fn progress() -> bool {
+    PROGRESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `--ignore-other-worktrees` of the running `switch` / `checkout`.
 static IGNORE_OTHER_WORKTREES: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -253,7 +272,8 @@ pub fn move_index_with(
         Err(e) => return Err(unpack_failed(e)),
     };
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
-    let applied = plan.apply(repo.odb(), &wt, &conv);
+    let progress = PROGRESS.load(std::sync::atomic::Ordering::Relaxed);
+    let applied = plan.apply_with_progress(repo.odb(), &wt, &conv, progress);
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if let Some(reference) = mtime {
@@ -501,6 +521,7 @@ pub fn switch(repo: &Repo, revs: &Revs, req: Request) -> CmdResult {
                     .message(reason.as_str()),
                 &mut hooks,
             )?;
+            prefer_symlink_head(repo, &store, &full);
             previous()?;
             let same = old_branch.as_deref() == Some(full.as_str());
             match &req.create {
@@ -756,6 +777,7 @@ pub fn orphan(repo: &Repo, name: &str, clear: bool, quiet: bool, reflog: bool) -
     tx.push(RefUpdate::symref_update("HEAD", full.as_str(), None).no_deref(true))
         .and_then(|()| tx.commit(&mut hooks))
         .map_err(|e| Die::Fatal(e.to_string()))?;
+    prefer_symlink_head(repo, &store, &full);
     let cancelled = crate::commands::reset::remove_branch_state(&repo.setup.git_dir, repo.hash);
     if reflog {
         let logs = rgit_refs::reflog::FilesReflog::new(
@@ -791,4 +813,15 @@ pub fn peel_commit(objects: &Objects, id: &ObjectId) -> Option<ObjectId> {
     objects
         .peel(id)
         .filter(|p| objects.kind(p) == Some(ObjectKind::Commit))
+}
+
+/// `core.preferSymlinkRefs`: `HEAD` just written as a symbolic reference
+/// becomes a symbolic link (with git's deprecation warning).
+fn prefer_symlink_head(repo: &Repo, store: &rgit_refs::files::FilesStore, target: &str) {
+    if matches!(repo.config.bool("core.prefersymlinkrefs"), Ok(Some(true))) {
+        crate::commands::update_ref::symrefs_as_symlinks(
+            store,
+            vec![("HEAD".to_owned(), target.to_owned())],
+        );
+    }
 }

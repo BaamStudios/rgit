@@ -3,7 +3,7 @@
 //! Unified diff output: hunks, hunk headers and the function-name context.
 
 use crate::messages;
-use crate::{Change, DiffOptions};
+use crate::{Change, DiffOptions, FuncName};
 
 /// Maximum length in bytes of the function-name text in a hunk header.
 const FUNCNAME_MAX: usize = 80;
@@ -117,6 +117,115 @@ pub(crate) fn hunk_groups(
 /// Writes the hunks `groups` of `changes` to `out`. Context lines are
 /// taken from the new side (they differ from the old side only in
 /// ignored whitespace).
+/// Whether `line` is a function line (`f`: the diff driver's patterns).
+fn is_func(f: Option<&FuncName>, line: &[u8]) -> bool {
+    crate::funcname::find_func(f, line).is_some()
+}
+
+fn is_blank(line: &[u8]) -> bool {
+    line.iter().all(|c| c.is_ascii_whitespace())
+}
+
+/// `-W` (Documentation/diff-options.adoc; details observed with the
+/// `git` binary): where the function of a change starts. When the added
+/// lines contain a function line, at the first of them; otherwise at the
+/// last function line of the old side at or before the first changed
+/// line. In both cases non-blank lines directly above that are no
+/// function lines (such as a comment) belong to it; without a function
+/// line it starts at the top. Returned in old line numbers.
+fn function_start(a: &[&[u8]], b: &[&[u8]], c: &Change, f: Option<&FuncName>) -> usize {
+    let extend = |x: &[&[u8]], mut k: usize| {
+        while k > 0 && !is_blank(x[k - 1]) && !is_func(f, x[k - 1]) {
+            k -= 1;
+        }
+        k
+    };
+    let b_end = c.b_start + c.b_len;
+    if let Some(k) = (c.b_start..b_end).find(|&k| is_func(f, b[k])) {
+        // Lines above the change are the same on both sides.
+        return (extend(b, k) + c.a_start).saturating_sub(c.b_start);
+    }
+    let search_to = if c.a_len > 0 {
+        c.a_start + 1
+    } else {
+        c.a_start
+    };
+    let k = (0..search_to.min(a.len()))
+        .rev()
+        .find(|&k| is_func(f, a[k]))
+        .unwrap_or(0);
+    extend(a, k)
+}
+
+/// `-W`: where the function of a change ends (old line numbers): before
+/// the next function line after the change on either side, without
+/// trailing blank lines; at the end of the file without one.
+fn function_end(a: &[&[u8]], b: &[&[u8]], c: &Change, f: Option<&FuncName>) -> usize {
+    let end_of = |x: &[&[u8]], end: usize| {
+        let mut to = (end.min(x.len())..x.len())
+            .find(|&k| is_func(f, x[k]))
+            .unwrap_or(x.len());
+        while to > end && is_blank(x[to - 1]) {
+            to -= 1;
+        }
+        to
+    };
+    let (a_end, b_end) = (c.a_start + c.a_len, c.b_start + c.b_len);
+    let on_a = end_of(a, a_end);
+    let on_b = (end_of(b, b_end) + a_end).saturating_sub(b_end);
+    on_a.max(on_b).min(a.len())
+}
+
+/// The old line range `[from, to)` of each hunk, `groups` joined where the
+/// function context (`-W`) makes them meet.
+fn hunk_ranges(
+    a: &[&[u8]],
+    b: &[&[u8]],
+    changes: &[Change],
+    groups: &[(usize, usize)],
+    opts: &DiffOptions,
+) -> Vec<(usize, usize, usize, usize)> {
+    let ctx = opts.context;
+    let mut out: Vec<(usize, usize, usize, usize)> = Vec::new();
+    for &(i, j) in groups {
+        let (mut i, mut j) = (i, j);
+        let (mut from, mut to);
+        loop {
+            let (first, last) = (&changes[i], &changes[j]);
+            let last_end = last.a_start + last.a_len;
+            from = first.a_start - first.a_start.min(first.b_start).min(ctx);
+            to = (last_end + ctx).min(a.len());
+            if !opts.function_context {
+                break;
+            }
+            for c in &changes[i..=j] {
+                from = from.min(function_start(a, b, c, opts.funcname.as_ref()));
+                to = to.max(function_end(a, b, c, opts.funcname.as_ref()));
+            }
+            // Changes inside the functions belong to the hunk (also those
+            // --ignore-blank-lines would leave out).
+            let (old_i, old_j) = (i, j);
+            while i > 0 && changes[i - 1].a_start + changes[i - 1].a_len > from {
+                i -= 1;
+            }
+            while j + 1 < changes.len() && changes[j + 1].a_start < to {
+                j += 1;
+            }
+            if (i, j) == (old_i, old_j) {
+                break;
+            }
+        }
+        match out.last_mut() {
+            Some(prev) if opts.function_context && from <= prev.3 + opts.interhunk_context => {
+                prev.1 = j;
+                prev.3 = prev.3.max(to);
+            }
+            _ => out.push((i, j, from, to)),
+        }
+    }
+    out
+}
+
 pub(crate) fn write_hunks(
     a: &[&[u8]],
     b: &[&[u8]],
@@ -125,18 +234,17 @@ pub(crate) fn write_hunks(
     opts: &DiffOptions,
     out: &mut Vec<u8>,
 ) {
-    let ctx = opts.context;
     // Function-name search: lines before `scanned` were already searched;
     // `funcname` is the last match found there.
     let mut scanned = 0;
-    let mut funcname: Option<usize> = None;
-    for &(i, j) in groups {
+    let mut funcname: Option<&[u8]> = None;
+    for (i, j, from, to) in hunk_ranges(a, b, changes, groups, opts) {
         let first = &changes[i];
         let last = &changes[j];
-        let pre = first.a_start.min(first.b_start).min(ctx);
+        let pre = first.a_start - from;
         let a_start = first.a_start - pre;
         let b_start = first.b_start - pre;
-        let a_end = (last.a_start + last.a_len + ctx).min(a.len());
+        let a_end = to;
         let post = a_end - (last.a_start + last.a_len);
         let b_end = (last.b_start + last.b_len + post).min(b.len());
         let a_end = last.a_start + last.a_len + (b_end - (last.b_start + last.b_len));
@@ -147,13 +255,17 @@ pub(crate) fn write_hunks(
         push_range(out, b_start, b_end - b_start);
         out.extend_from_slice(b" @@");
         // Hunks only move forward, so each line is scanned at most once.
-        if let Some(k) = (scanned..a_start).rev().find(|&k| default_funcname(a[k])) {
-            funcname = Some(k);
+        let f = opts.funcname.as_ref();
+        if let Some(text) = (scanned..a_start)
+            .rev()
+            .find_map(|k| crate::funcname::find_func(f, a[k]))
+        {
+            funcname = Some(text);
         }
         scanned = scanned.max(a_start);
-        if let Some(k) = funcname {
+        if let Some(text) = funcname.map(funcname_text).filter(|t| !t.is_empty()) {
             out.push(b' ');
-            out.extend_from_slice(funcname_text(a[k]));
+            out.extend_from_slice(text);
         }
         out.push(b'\n');
 

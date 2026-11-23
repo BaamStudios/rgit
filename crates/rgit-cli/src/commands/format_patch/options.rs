@@ -47,6 +47,8 @@ pub struct Options {
     pub cover_from_description: Option<String>,
     pub description_file: Option<String>,
     pub zero_commit: bool,
+    /// `--encoding=<encoding>`: the charset of the patches.
+    pub encoding: Option<String>,
     /// `-p` / `--no-stat`.
     pub no_stat: bool,
     pub headers: Vec<HeaderOp>,
@@ -236,6 +238,7 @@ impl Options {
             ("no-cover-from-description", None) => self.cover_from_description = None,
             ("description-file", Some(_)) => self.description_file = Some(v()),
             ("no-description-file", None) => self.description_file = None,
+            ("encoding", Some(_)) => self.encoding = Some(v()),
             ("zero-commit", None) => self.zero_commit = true,
             ("no-zero-commit", None) => self.zero_commit = false,
             ("no-stat", None) => self.no_stat = true,

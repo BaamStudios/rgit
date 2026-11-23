@@ -28,3 +28,13 @@ pub const ALL_AND_NO_TEMP: &str = "options '--stage=all' and '--no-temp' cannot 
 pub fn not_at_stage(path: &str, stage: u8) -> String {
     format!("git checkout-index: {path} does not exist at stage {stage}")
 }
+
+/// `unable to read sha1 file of <path> (<oid>)`.
+pub fn unable_to_read(path: &str, oid: &str) -> String {
+    format!("unable to read sha1 file of {path} ({oid})")
+}
+
+/// `cannot create temporary submodule <path>` (`--temp` on a gitlink).
+pub fn temporary_submodule(path: &str) -> String {
+    format!("cannot create temporary submodule {path}")
+}

@@ -83,6 +83,20 @@ pub fn setup_gently(ctx: &Context) -> Result<Option<Setup>, Die> {
     setup_inner(ctx, rgit_repo::format::Support::default(), true, false)
 }
 
+/// [`setup_gently`] for commands that also work without a repository:
+/// a `GIT_DIR` that does not exist means no repository (no error).
+pub fn setup_gently_quiet(ctx: &Context) -> Result<Option<Setup>, Die> {
+    let explicit = ctx
+        .git_dir
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("GIT_DIR").map(std::path::PathBuf::from));
+    if explicit.is_some_and(|d| !d.exists()) {
+        return Ok(None);
+    }
+    setup_gently(ctx)
+}
+
 fn setup_inner(
     ctx: &Context,
     support: rgit_repo::format::Support,
@@ -143,6 +157,11 @@ fn setup_inner(
     }
     if trace {
         setup.trace();
+    }
+    if let Some(wt) = &setup.work_tree {
+        if rgit_trace::trace2::enabled() {
+            rgit_trace::trace2::def_repo(&setup.cwd.join(wt).to_string_lossy());
+        }
     }
     Ok(Some(setup))
 }

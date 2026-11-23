@@ -146,6 +146,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         None => config_outside_repository(ctx),
     };
     let remotes = Remotes::from_config(&config).map_err(|e| Die::Fatal(e.to_string()))?;
+    for w in remotes.warnings() {
+        eprintln!("warning: {w}");
+    }
     let git_dir = setup.as_ref().map(|s| s.absolute_git_dir());
     // Without `<repository>`: `branch.<current>.remote`, else the only
     // remote, else `origin`; only the last fallback must be configured.

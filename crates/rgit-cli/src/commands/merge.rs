@@ -5,7 +5,11 @@
 //! - Fast-forward (`--ff`, `--no-ff`, `--ff-only`, `merge.ff`), "Already
 //!   up to date.", merges into an unborn branch;
 //! - true merges with the `ort` engine of `rgit-merge` (also as `-s
-//!   recursive`), `-s ours`, `-X ours|theirs|diff-algorithm=...`,
+//!   recursive`, and as `-s subtree` with the trees shifted), `-s ours`,
+//!   `-s resolve` and the trivial in-index merge (`merge/resolve.rs`),
+//!   custom strategies (`git-merge-<name>` programs), trying several
+//!   strategies and keeping the best result, `-X ours|theirs|
+//!   diff-algorithm=...|ignore-*|subtree[=<path>]`,
 //!   `--allow-unrelated-histories`; the index and work tree move from
 //!   `HEAD` to the result with a two-way merge (`rgit-unpack`), refusing
 //!   with git's messages when local changes or untracked files would be
@@ -39,12 +43,18 @@
 //! The behaviour was checked against the `git` binary with differential
 //! tests (`tests/merge.rs`).
 //!
-//! Not yet: the strategies `resolve` and `subtree` and trying several strategies
-//! (#153), `--verify-signatures` and `-S` (#51), rerere
-//! (#156). The octopus messages are rgit's own approximation.
+//! `-S`/`commit.gpgSign` sign the merge commit and `--verify-signatures`
+//! checks the merged commits ([`crate::signing`]).
+//!
+//! Not yet: `-X renormalize` and merge attributes (#153), rerere (#156).
+//! The octopus messages are rgit's own approximation.
 
+#[path = "merge/attrs.rs"]
+pub(crate) mod attrs;
 #[path = "merge/message.rs"]
-mod message;
+pub(crate) mod message;
+#[path = "merge/resolve.rs"]
+mod resolve;
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -101,8 +111,11 @@ struct Args {
     quit: bool,
     cont: bool,
     allow_unrelated: bool,
-    gpg_sign: bool,
-    verify_signatures: bool,
+    /// `-S[<key>]` (`Some(Some(_))`) or `--no-gpg-sign` (`Some(None)`).
+    gpg_sign: Option<Option<crate::signing::Sign>>,
+    /// The resolved signing request (with `commit.gpgSign`).
+    sign: Option<crate::signing::Sign>,
+    verify_signatures: i32,
     autostash: i32,
     overwrite_ignore: bool,
     signoff: bool,
@@ -133,7 +146,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     let cont = Cell::new(0);
     let allow_unrelated = Cell::new(0);
     let progress = Cell::new(-1);
-    let gpg_sign = Cell::new(false);
+    let gpg_sign: RefCell<Option<Option<crate::signing::Sign>>> = RefCell::new(None);
     let autostash = Cell::new(-1);
     let overwrite_ignore = Cell::new(1);
     let signoff = Cell::new(false);
@@ -193,8 +206,8 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
                 msg::HELP_ALLOW_UNRELATED,
             ),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
-            Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |_, unset| {
-                gpg_sign.set(!unset);
+            Opt::callback('S', "gpg-sign", Some("key-id"), msg::HELP_GPG_SIGN, |v, unset| {
+                *gpg_sign.borrow_mut() = Some((!unset).then(|| crate::signing::Sign::from_arg(v)));
                 Ok(())
             })
             .optional(None),
@@ -242,8 +255,9 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
         quit,
         cont,
         allow_unrelated: allow_unrelated.get() == 1,
-        gpg_sign: gpg_sign.get(),
-        verify_signatures: verify_signatures.get() == 1,
+        gpg_sign: gpg_sign.into_inner(),
+        sign: None,
+        verify_signatures: verify_signatures.get(),
         autostash: autostash.get(),
         overwrite_ignore: overwrite_ignore.get() != 0,
         signoff: signoff.get(),
@@ -290,7 +304,13 @@ struct Session<'a> {
     branch: Option<String>,
     /// `GIT_REFLOG_ACTION` or "merge <names>".
     action: String,
+    /// The strategy at work (the one named in messages).
     strategy: String,
+    /// The strategies to try, in order.
+    strategies: Vec<String>,
+    /// The reflog message and report of the commit when it is not "Merge
+    /// made by the '<strategy>' strategy." (the trivial in-index merge).
+    made_by: Option<String>,
     show_stat: bool,
     /// `--compact-summary`, `merge.stat=compact`.
     compact: bool,
@@ -388,18 +408,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(fatal(msg::incompatible("--squash", "--commit")));
         }
     }
-    if args.gpg_sign {
-        return Err(fatal(msg::option_not_supported("-S/--gpg-sign")));
-    }
-    let verify_signatures = args.verify_signatures
-        || repo
-            .config
-            .bool("merge.verifysignatures")
-            .ok()
-            .flatten()
-            .unwrap_or(false);
-    if verify_signatures {
-        return Err(fatal(msg::option_not_supported("--verify-signatures")));
+    args.sign = crate::signing::resolve(&repo.config, args.gpg_sign.clone());
+    if args.verify_signatures == -1 {
+        args.verify_signatures = i32::from(
+            repo.config
+                .bool("merge.verifysignatures")
+                .ok()
+                .flatten()
+                .unwrap_or(false),
+        );
     }
     let autostash = match args.autostash {
         -1 => repo
@@ -429,7 +446,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     // The strategy.
-    check_strategies(&args.strategies)?;
+    check_strategies(ctx, &args.strategies)?;
     let strategy = "ort".to_owned();
 
     // Any value but a false one shows the diffstat, "compact" the compact
@@ -492,6 +509,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         branch,
         action: String::new(),
         strategy,
+        strategies: Vec::new(),
+        made_by: None,
         show_stat,
         compact,
         cleanup,
@@ -503,6 +522,36 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 }
 
 impl Session<'_> {
+    /// `--verify-signatures`: every merged commit must have a good
+    /// signature of at least `marginal` trust (`gpg.minTrustLevel`).
+    fn verify_signatures(&self, heads: &[Head]) -> Result<(), Die> {
+        let settings = crate::signing::Settings::from_config(&self.repo.config)?;
+        let mut seen = Vec::new();
+        for h in heads {
+            if seen.contains(&h.commit) {
+                continue;
+            }
+            seen.push(h.commit);
+            let raw = self
+                .repo
+                .odb()
+                .read(&h.commit)
+                .ok()
+                .flatten()
+                .map(|o| o.data)
+                .unwrap_or_default();
+            let abbrev = self.repo.abbrev(&h.commit, self.repo.default_abbrev());
+            crate::signing::verify::verify_merge_signature(
+                &settings,
+                self.repo.hash,
+                &raw,
+                &abbrev,
+                self.args.quiet,
+            )?;
+        }
+        Ok(())
+    }
+
     /// The commits named on the command line (or the upstream).
     fn heads(&mut self) -> Result<Vec<Head>, Die> {
         let names = if self.args.heads.is_empty() {
@@ -719,6 +768,9 @@ impl Session<'_> {
             .filter(|_| self.repo.refs.resolve("HEAD").is_some())
             .and_then(|h| self.repo.peel_to(h, ObjectKind::Commit));
         let Some(head) = head else {
+            if self.args.verify_signatures == 1 {
+                self.verify_signatures(&heads)?;
+            }
             return self.merge_into_unborn(&heads);
         };
         self.write_orig_head(head)?;
@@ -747,7 +799,11 @@ impl Session<'_> {
             }
             return Ok(0);
         }
-        self.strategy = self.choose_strategy(kept.len() > 1)?;
+        if self.args.verify_signatures == 1 {
+            self.verify_signatures(&kept)?;
+        }
+        self.strategies = self.choose_strategies(kept.len() > 1)?;
+        self.strategy = self.strategies[0].clone();
         if kept.len() > 1 {
             if self.args.ff == FF_ONLY {
                 let advisor = self.ctx.advisor(&self.repo.config)?;
@@ -755,6 +811,23 @@ impl Session<'_> {
                     .advise(Advice::Diverging, msg::DIVERGING_HINT)
                     .map_err(Die::Fatal)?;
                 return Err(fatal(msg::NOT_POSSIBLE_FF));
+            }
+            if !is_builtin_strategy(&self.strategy) {
+                // A custom strategy gets all heads at once.
+                let commits = self.commits();
+                let mut bases: Vec<ObjectId> = Vec::new();
+                for h in &kept {
+                    for b in rgit_merge::merge_bases(&commits, &head, &h.commit)
+                        .map_err(|e| fatal(e.to_string()))?
+                    {
+                        if !bases.contains(&b) {
+                            bases.push(b);
+                        }
+                    }
+                }
+                drop(commits);
+                let bases = self.independent(&bases)?;
+                return self.true_merge(head, kept, &bases);
             }
             return self.octopus(head, kept);
         }
@@ -768,7 +841,7 @@ impl Session<'_> {
         // in refs/tags/ (from FETCH_HEAD) gets a merge commit, also with
         // --ff (checked against git); only --ff-only fast-forwards.
         let no_ff_tag = self.args.ff == FF_ALLOW && self.untracked_tag(&theirs);
-        if ff_possible && self.args.ff != FF_NO && !no_ff_tag && self.strategy != "ours" {
+        if ff_possible && self.args.ff != FF_NO && !no_ff_tag && !self.strategies.iter().any(|s| s == "ours") {
             return self.fast_forward(head, &theirs);
         }
         if self.args.ff == FF_ONLY {
@@ -781,40 +854,43 @@ impl Session<'_> {
         if bases.is_empty() && !self.args.allow_unrelated {
             return Err(fatal(msg::UNRELATED_HISTORIES));
         }
-        self.true_merge(head, &theirs, &bases)
+        self.true_merge(head, vec![theirs], &bases)
     }
 
-    /// The strategy for one head or several (`-s`, else `pull.twohead` or
-    /// `pull.octopus`, else `ort` or `octopus`). Of several candidates
-    /// the first one rgit can carry out is used (git tries them all and
-    /// keeps the best result).
-    fn choose_strategy(&self, several: bool) -> Result<String, Die> {
+    /// The strategies for one head or several (`-s`, else `pull.twohead`
+    /// or `pull.octopus`, else `ort` or `octopus`). One head tries them all
+    /// in order; several heads use the first one that handles several
+    /// heads.
+    fn choose_strategies(&mut self, several: bool) -> Result<Vec<String>, Die> {
         let mut names = self.args.strategies.clone();
         if names.is_empty() {
             let key = if several { "pull.octopus" } else { "pull.twohead" };
             if let Some(v) = self.repo.config.get(key).and_then(|e| e.value.as_ref()) {
                 names = lossy(v).split_whitespace().map(str::to_owned).collect();
-                check_strategies(&names)?;
+                check_strategies(self.ctx, &names)?;
             }
         }
         if names.is_empty() {
-            return Ok(if several { "octopus" } else { "ort" }.to_owned());
+            return Ok(vec![if several { "octopus" } else { "ort" }.to_owned()]);
         }
-        let usable: &[&str] = if several {
-            &["octopus", "ours"]
-        } else {
-            &["ort", "recursive", "ours"]
-        };
-        if let Some(n) = names.iter().find(|n| usable.contains(&n.as_str())) {
-            return Ok(n.clone());
+        if !several {
+            return Ok(names);
         }
-        if several && names.iter().all(|n| matches!(n.as_str(), "ort" | "recursive")) {
+        if let Some(n) = names
+            .iter()
+            .find(|n| matches!(n.as_str(), "octopus" | "ours") || !is_builtin_strategy(n))
+        {
+            return Ok(vec![n.clone()]);
+        }
+        if names.iter().all(|n| matches!(n.as_str(), "ort" | "recursive")) {
             // These handle two heads only.
+            self.create_autostash()?;
             eprintln!("{}", msg::strategy_failed(&names[0]));
+            self.restore_autostash()?;
             return Err(Die::Exit(2));
         }
         // resolve, subtree: refused when a real merge is needed.
-        Ok(names[0].clone())
+        Ok(vec![names[0].clone()])
     }
 
     /// Commit access for the merge engine.
@@ -965,7 +1041,10 @@ impl Session<'_> {
         crate::convert::set_checkout_meta(None, Some(&theirs.commit));
         let moved = self.checkout(old_tree, new_tree, None);
         crate::convert::set_checkout_meta(None, None);
-        moved?;
+        if let Err(e) = moved {
+            self.restore_autostash()?;
+            return Err(e);
+        }
         if !self.args.quiet {
             println!("{}", msg::FAST_FORWARD);
         }
@@ -1019,12 +1098,13 @@ impl Session<'_> {
         Ok(out)
     }
 
-    fn engine_options(&self, theirs: &Head) -> Result<rgit_merge::Options, Die> {
+    fn engine_options(&mut self, theirs: &Head) -> Result<rgit_merge::Options, Die> {
         let mut opts = rgit_merge::Options {
             branch1: b"HEAD".to_vec(),
             branch2: theirs.arg.as_bytes().to_vec(),
             style: super::merge_file::config_style(&self.repo.config)?,
             allow_unrelated_histories: self.args.allow_unrelated,
+            renormalize: renormalize_config(&self.repo.config),
             ..rgit_merge::Options::default()
         };
         super::merge_tree::apply_rename_config(&self.repo.config, &mut opts);
@@ -1040,89 +1120,507 @@ impl Session<'_> {
                 }
             }
         }
+        let their_tree = self.tree_of(&theirs.commit)?;
+        let attr_tree = crate::attributes::tree_source(self.ctx, &mut self.repo, None)?;
+        opts.path_merge = Some(attrs::RepoPathMerge::open(
+            self.ctx,
+            &self.repo,
+            opts.renormalize,
+            Some(&their_tree),
+            attr_tree,
+        )?);
         Ok(opts)
     }
 
-    fn true_merge(&mut self, head: ObjectId, theirs: &Head, bases: &[ObjectId]) -> CmdResult {
-        if !matches!(self.strategy.as_str(), "ort" | "recursive" | "ours") {
-            return Err(fatal(msg::strategy_not_supported(&self.strategy)));
+    /// Prints the paths `staged` that differ between the index and `HEAD`
+    /// the way `merge` refuses them.
+    fn print_staged(staged: &[Vec<u8>]) {
+        let mut text = format!("error: {}\n", msg::LOCAL_CHANGES);
+        for p in staged {
+            text.push_str("  ");
+            text.push_str(&lossy(p));
+            text.push('\n');
         }
+        eprint!("{text}");
+    }
+
+    /// A merge that is not a fast-forward of `theirs` (one head, or
+    /// several for a custom strategy) into `head`: the trivial in-index
+    /// merge where the strategies allow it, then each strategy in turn
+    /// until one merges cleanly; with several strategies the one with the
+    /// fewest conflicts prepares the result for resolving by hand.
+    fn true_merge(&mut self, head: ObjectId, theirs: Vec<Head>, bases: &[ObjectId]) -> CmdResult {
         self.create_autostash()?;
         let head_tree = self.tree_of(&head)?;
-        let staged = self.staged_changes(head_tree)?;
-        if !staged.is_empty() {
-            let mut text = format!("error: {}\n", msg::LOCAL_CHANGES);
-            for p in &staged {
-                text.push_str("  ");
-                text.push_str(&lossy(p));
-                text.push('\n');
+        let several = self.strategies.len() > 1;
+        let strategies = self.strategies.clone();
+        if !several {
+            let staged = self.staged_changes(head_tree)?;
+            if !staged.is_empty() {
+                Self::print_staged(&staged);
+                if is_ort(&self.strategy) {
+                    eprintln!("{}", msg::strategy_failed(&self.strategy));
+                    self.keep_local_state(head_tree)?;
+                }
+                return Err(Die::Exit(2));
             }
-            eprint!("{text}");
-            eprintln!("{}", msg::strategy_failed(&self.strategy));
-            self.keep_local_state(head_tree)?;
-            return Err(Die::Exit(2));
         }
-        let result = if self.strategy == "ours" {
-            MergeResult {
-                tree: head_tree,
-                clean: true,
-                conflicts: Vec::new(),
-                messages: Vec::new(),
-                rename_limit_needed: None,
+        let mut parents = vec![head];
+        parents.extend(theirs.iter().map(|h| h.commit));
+
+        // The trivial in-index merge (resolve and octopus allow it).
+        if theirs.len() == 1
+            && bases.len() == 1
+            && !self.args.squash
+            && self.args.commit != 0
+            && strategies.iter().all(|s| s == "resolve" || s == "octopus")
+        {
+            println!("{}", msg::TRYING_TRIVIAL);
+            let base_tree = self.tree_of(&bases[0])?;
+            let their_tree = self.tree_of(&theirs[0].commit)?;
+            let mut changed = Vec::new();
+            let tree = resolve::trivial(&self.repo, &base_tree, &head_tree, &their_tree, &mut changed)?;
+            if let Some(p) = self.first_not_uptodate(&changed)? {
+                let _ = std::io::stdout().flush();
+                eprintln!("error: {}", rgit_unpack::messages::not_uptodate_file(&lossy(&p)));
+                println!("{}", msg::NOPE);
+            } else if let Some(tree) = tree {
+                println!("{}", msg::WONDERFUL);
+                self.made_by = Some(msg::IN_INDEX_MERGE.to_owned());
+                let result = MergeResult {
+                    tree,
+                    clean: true,
+                    conflicts: Vec::new(),
+                    messages: Vec::new(),
+                    rename_limit_needed: None,
+                };
+                return self.finish(head, parents, &theirs, result, None, false);
+            } else {
+                let _ = std::io::stdout().flush();
+                eprintln!("error: {}", msg::FILE_LEVEL_MERGING);
+                println!("{}", msg::NOPE);
             }
-        } else {
-            let opts = self.engine_options(theirs)?;
-            let commits = self.commits();
-            let r = rgit_merge::merge_commits_with_bases(
-                self.repo.odb(),
-                &commits,
-                &head,
-                &theirs.commit,
-                bases,
-                &opts,
-            )
-            .map_err(|e| fatal(e.to_string()))?;
-            drop(commits);
-            r
+        }
+
+        // With several strategies git saves local changes first and puts
+        // them back before each further attempt.
+        let saved = several && self.has_local_changes(head_tree)?;
+        // The last attempt that did not fail, and the best one so far
+        // (index, conflict count).
+        let mut last: Option<(usize, Attempt)> = None;
+        let mut best: Option<(usize, usize)> = None;
+        for (i, name) in strategies.iter().enumerate() {
+            if several {
+                if i > 0 {
+                    println!("{}", msg::REWINDING);
+                    let applied = matches!(last, Some((_, Attempt::Applied(_))));
+                    self.restore_state(head, applied, saved)?;
+                }
+                println!("{}", msg::trying_strategy(name));
+            }
+            self.strategy = name.clone();
+            let attempt = self.attempt(name, head, head_tree, &theirs, bases, several)?;
+            let count = match &attempt {
+                Attempt::Failed => {
+                    if !several {
+                        let _ = std::io::stdout().flush();
+                        eprintln!("{}", msg::strategy_failed(name));
+                        self.restore_autostash()?;
+                        return Err(Die::Exit(2));
+                    }
+                    last = None;
+                    continue;
+                }
+                Attempt::Memory(r, lines) => {
+                    if !several {
+                        let (r, lines) = (r.clone(), lines.clone());
+                        return self.finish(head, parents, &theirs, r, Some(&lines), false);
+                    }
+                    resolve::print(lines);
+                    if r.clean {
+                        let r = r.clone();
+                        return self.finish(head, parents, &theirs, r, None, false);
+                    }
+                    r.conflicts
+                        .iter()
+                        .map(|c| c.stages.iter().flatten().count())
+                        .sum()
+                }
+                Attempt::Applied(clean) => {
+                    if !several || *clean {
+                        return self.finish_applied(head, parents, &theirs, *clean);
+                    }
+                    self.unmerged_count()?
+                }
+            };
+            // Of equally good results, the later one wins (as with git).
+            if best.is_none_or(|(_, c)| count <= c) {
+                best = Some((i, count));
+            }
+            last = Some((i, attempt));
+        }
+        let Some((best, _)) = best else {
+            let applied = matches!(last, Some((_, Attempt::Applied(_))));
+            self.restore_state(head, applied, saved)?;
+            let _ = std::io::stdout().flush();
+            eprintln!("{}", msg::NO_STRATEGY_HANDLED);
+            self.restore_autostash()?;
+            return Err(Die::Exit(2));
         };
-        self.finish(head, vec![head, theirs.commit], std::slice::from_ref(theirs), result)
+        let name = strategies[best].clone();
+        self.strategy = name.clone();
+        let attempt = match last {
+            Some((i, a)) if i == best => a,
+            last => {
+                println!("{}", msg::REWINDING);
+                let applied = matches!(last, Some((_, Attempt::Applied(_))));
+                self.restore_state(head, applied, saved)?;
+                println!("{}", msg::using_strategy(&name));
+                let a = self.attempt(&name, head, head_tree, &theirs, bases, true)?;
+                if let Attempt::Memory(_, lines) = &a {
+                    resolve::print(lines);
+                }
+                a
+            }
+        };
+        match attempt {
+            Attempt::Memory(r, _) => self.finish(head, parents, &theirs, r, None, false),
+            Attempt::Applied(clean) => self.finish_applied(head, parents, &theirs, clean),
+            Attempt::Failed => {
+                let _ = std::io::stdout().flush();
+                eprintln!("{}", msg::NO_STRATEGY_HANDLED);
+                Err(Die::Exit(2))
+            }
+        }
+    }
+
+    /// One strategy: an in-memory result with its output, the index and
+    /// work tree already updated by an external strategy, or a failure
+    /// (its output printed).
+    fn attempt(
+        &mut self,
+        name: &str,
+        head: ObjectId,
+        head_tree: ObjectId,
+        theirs: &[Head],
+        bases: &[ObjectId],
+        several: bool,
+    ) -> Result<Attempt, Die> {
+        let staged = if several {
+            self.staged_changes(head_tree)?
+        } else {
+            Vec::new()
+        };
+        match name {
+            "ours" => Ok(Attempt::Memory(
+                MergeResult {
+                    tree: head_tree,
+                    clean: true,
+                    conflicts: Vec::new(),
+                    messages: Vec::new(),
+                    rename_limit_needed: None,
+                },
+                Vec::new(),
+            )),
+            "ort" | "recursive" | "subtree" => {
+                if !staged.is_empty() {
+                    Self::print_staged(&staged);
+                    return Ok(Attempt::Failed);
+                }
+                let mut opts = self.engine_options(&theirs[0])?;
+                if name == "subtree" && opts.subtree == rgit_merge::Subtree::None {
+                    opts.subtree = rgit_merge::Subtree::Guess;
+                }
+                let commits = self.commits();
+                let r = match rgit_merge::merge_commits_with_bases(
+                    self.repo.odb(),
+                    &commits,
+                    &head,
+                    &theirs[0].commit,
+                    bases,
+                    &opts,
+                ) {
+                    Ok(r) => r,
+                    Err(rgit_merge::Error::Driver(m)) => {
+                        let _ = std::io::stdout().flush();
+                        eprintln!("error: {m}");
+                        return Ok(Attempt::Failed);
+                    }
+                    Err(e) => return Err(fatal(e.to_string())),
+                };
+                drop(commits);
+                let lines = engine_lines(&r);
+                Ok(Attempt::Memory(r, lines))
+            }
+            "resolve" => {
+                if let Some(x) = self.args.xopts.first() {
+                    // git's resolve hands strategy options to `read-tree`,
+                    // which rejects them with its usage.
+                    let _ = std::io::stdout().flush();
+                    let mut ctx = self.ctx.clone();
+                    if let Err(e) =
+                        super::read_tree::run(&mut ctx, &["read-tree".to_owned(), format!("--{x}")])
+                    {
+                        e.emit();
+                    }
+                    return Ok(Attempt::Failed);
+                }
+                if !staged.is_empty() {
+                    let paths: Vec<String> = staged.iter().map(|p| lossy(p)).collect();
+                    println!("{}", msg::resolve_local_changes(&paths));
+                    return Ok(Attempt::Failed);
+                }
+                let base_trees = bases
+                    .iter()
+                    .map(|b| self.tree_of(b))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let their_tree = self.tree_of(&theirs[0].commit)?;
+                let style = super::merge_file::config_style(&self.repo.config)?;
+                let (r, lines, changed) =
+                    resolve::resolve(&self.repo, &base_trees, &head_tree, &their_tree, style)?;
+                if let Some(p) = self.first_not_uptodate(&changed)? {
+                    let _ = std::io::stdout().flush();
+                    eprintln!("error: {}", rgit_unpack::messages::not_uptodate_file(&lossy(&p)));
+                    return Ok(Attempt::Failed);
+                }
+                Ok(Attempt::Memory(r, lines))
+            }
+            "octopus" => Ok(Attempt::Failed),
+            _ => {
+                let code = self.run_custom(name, theirs, bases)?;
+                match code {
+                    0 => Ok(Attempt::Applied(true)),
+                    1 => Ok(Attempt::Applied(false)),
+                    _ => {
+                        if !several {
+                            self.rewind()?;
+                        }
+                        Ok(Attempt::Failed)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Runs the custom strategy program for `name` with the options from
+    /// `-X` (as `--<option>`), the merge bases, `--`, `HEAD` and the heads,
+    /// with `GITHEAD_<id>` naming each head; returns its exit code.
+    fn run_custom(&mut self, name: &str, theirs: &[Head], bases: &[ObjectId]) -> Result<i32, Die> {
+        let mut cmd = std::process::Command::new(format!("{}{name}", msg::STRATEGY_PROGRAM_PREFIX));
+        for x in &self.args.xopts {
+            cmd.arg(format!("--{x}"));
+        }
+        for b in bases {
+            cmd.arg(b.to_hex());
+        }
+        cmd.arg("--").arg("HEAD");
+        for h in theirs {
+            cmd.arg(h.commit.to_hex());
+        }
+        for (k, v) in self.ctx.child_env() {
+            cmd.env(k, v);
+        }
+        cmd.env("GIT_REFLOG_ACTION", &self.action);
+        for h in theirs {
+            cmd.env(format!("GITHEAD_{}", h.commit.to_hex()), &h.arg);
+        }
+        let _ = std::io::stdout().flush();
+        let code = match cmd.status() {
+            Ok(status) => status.code().unwrap_or(2),
+            Err(_) => 2,
+        };
+        self.repo = Repo::open(self.ctx, Mode::Required)?;
+        Ok(code)
+    }
+
+    /// Takes the index and work tree back to `HEAD` after an external
+    /// strategy changed them (`read-tree --reset -u HEAD`).
+    fn rewind(&mut self) -> Result<(), Die> {
+        self.repo = Repo::open(self.ctx, Mode::Required)?;
+        let head = self
+            .repo
+            .resolve("HEAD")
+            .and_then(|h| self.repo.peel_to(h, ObjectKind::Commit))
+            .ok_or_else(|| fatal(msg::READ_TREE_FAILED))?;
+        let tree = self.tree_of(&head)?;
+        let repo = &self.repo;
+        let work_tree = repo.work_tree()?;
+        let index_path = repo.setup.cwd.join(repo.index_path());
+        let lock = LockFile::acquire(&index_path, &LockOptions::default()).map_err(lock_failed)?;
+        let (index, mtime) = repo.read_index()?;
+        let checker = repo.checker(mtime)?;
+        let wt = Worktree {
+            root: &work_tree,
+            checker: &checker,
+        };
+        let mut opts = rgit_unpack::Options {
+            update: true,
+            reset: true,
+            paths: path_options(repo),
+            ..rgit_unpack::Options::default()
+        };
+        let plan = rgit_unpack::plan(repo.odb(), &index, &Merge::OneWay(tree), Some(&wt), &mut opts)
+            .map_err(unpack_failed)?;
+        let conv = crate::convert::Converter::checkout(repo, plan.index())?;
+        let applied = plan.apply(repo.odb(), &wt, &conv);
+        let mut index = applied.index;
+        if let Some(reference) = mtime {
+            let _ = smudge_racy_entries(&mut index, reference, &checker);
+        }
+        crate::switch_branch::write_index(repo, &index, lock)?;
+        Ok(())
+    }
+
+    /// Between attempts: the index and work tree go back to `HEAD` when an
+    /// external strategy changed them, and saved local changes come back
+    /// (git resets to `HEAD`, which shows in the reflog, and applies them).
+    fn restore_state(&mut self, head: ObjectId, applied: bool, saved: bool) -> Result<(), Die> {
+        if applied {
+            self.rewind()?;
+        }
+        if saved {
+            self.update_head(head, Some(head), msg::UPDATING_HEAD)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the index or the work tree differ from `HEAD`.
+    fn has_local_changes(&self, head_tree: ObjectId) -> Result<bool, Die> {
+        use rgit_worktree::stat::Status;
+        if !self.staged_changes(head_tree)?.is_empty() {
+            return Ok(true);
+        }
+        let (index, mtime) = self.repo.read_index()?;
+        let checker = self.repo.checker(mtime)?;
+        Ok(index.entries().iter().any(|e| {
+            e.stage() == Stage::MERGED
+                && !e.mode.is_gitlink()
+                && !matches!(checker.check(e), Ok(Status::Unchanged | Status::StatOnly))
+        }))
+    }
+
+    /// The number of unmerged index entries.
+    fn unmerged_count(&self) -> Result<usize, Die> {
+        let (index, _) = self.repo.read_index()?;
+        Ok(index
+            .entries()
+            .iter()
+            .filter(|e| e.stage() != Stage::MERGED)
+            .count())
+    }
+
+    /// The first of `paths` whose work tree file differs from its index
+    /// entry.
+    fn first_not_uptodate(&self, paths: &[Vec<u8>]) -> Result<Option<Vec<u8>>, Die> {
+        use rgit_worktree::stat::Status;
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        let (index, mtime) = self.repo.read_index()?;
+        let checker = self.repo.checker(mtime)?;
+        for p in paths {
+            let Some(e) = index
+                .entries()
+                .iter()
+                .find(|e| e.path() == p.as_slice() && e.stage() == Stage::MERGED)
+            else {
+                continue;
+            };
+            if e.mode.is_gitlink() {
+                continue;
+            }
+            if !matches!(checker.check(e), Ok(Status::Unchanged | Status::StatOnly)) {
+                return Ok(Some(p.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The end of a merge by an external strategy: the result is what it
+    /// left in the index; `clean` is what its exit code said.
+    fn finish_applied(
+        &mut self,
+        head: ObjectId,
+        parents: Vec<ObjectId>,
+        theirs: &[Head],
+        clean: bool,
+    ) -> CmdResult {
+        let (index, _) = self.repo.read_index()?;
+        let mut conflicts: Vec<rgit_merge::ConflictedPath> = Vec::new();
+        for e in index.entries() {
+            let stage = e.stage().get();
+            if stage == 0 {
+                continue;
+            }
+            if conflicts.last().is_none_or(|c| c.path != e.path()) {
+                conflicts.push(rgit_merge::ConflictedPath {
+                    path: e.path().to_vec(),
+                    stages: [None; 3],
+                });
+            }
+            let c = conflicts.last_mut().expect("just pushed");
+            c.stages[usize::from(stage) - 1] = Some(rgit_merge::Version {
+                mode: e.mode.0,
+                oid: e.id,
+            });
+        }
+        let clean = clean && conflicts.is_empty();
+        let tree = if clean {
+            rgit_commit::write_tree(
+                self.repo.odb(),
+                &index,
+                &rgit_commit::WriteTreeOptions::default(),
+            )
+            .map_err(|e| fatal(e.to_string()))?
+        } else {
+            self.tree_of(&head)?
+        };
+        let result = MergeResult {
+            tree,
+            clean,
+            conflicts,
+            messages: Vec::new(),
+            rename_limit_needed: None,
+        };
+        self.finish(head, parents, theirs, result, None, true)
     }
 
     /// The common end of a merge that was not a fast-forward: the index
     /// and work tree move from `HEAD` (`head`) to `result`, then the
     /// state files, the commit with `parents` (or the stop before it)
     /// and the messages.
+    ///
+    /// `lines` is the output of the strategy (`None`: printed already);
+    /// `applied` when the index and work tree hold the result already.
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         &mut self,
         head: ObjectId,
         parents: Vec<ObjectId>,
         theirs: &[Head],
         result: MergeResult,
+        lines: Option<&[resolve::Line]>,
+        applied: bool,
     ) -> CmdResult {
         let head_tree = self.tree_of(&head)?;
         let their_ids: Vec<ObjectId> = theirs.iter().map(|h| h.commit).collect();
         // The index and work tree are updated before the messages appear.
-        if let Err(e) = self.checkout(head_tree, result.tree, Some(&result)) {
-            if matches!(e, Die::Exit(1)) {
-                eprintln!("{}", msg::strategy_failed(&self.strategy));
-                self.keep_local_state(head_tree)?;
-                self.restore_autostash()?;
-                return Err(Die::Exit(2));
+        if !applied {
+            if let Err(e) = self.checkout(head_tree, result.tree, Some(&result)) {
+                if matches!(e, Die::Exit(1)) {
+                    eprintln!("{}", msg::strategy_failed(&self.strategy));
+                    self.keep_local_state(head_tree)?;
+                    self.restore_autostash()?;
+                    return Err(Die::Exit(2));
+                }
+                return Err(e);
             }
-            return Err(e);
         }
-        let mut out = Vec::new();
-        for m in &result.messages {
-            out.extend_from_slice(&m.text);
-            out.push(b'\n');
-        }
-        {
-            let mut o = std::io::stdout().lock();
-            let _ = o.write_all(&out);
-            let _ = o.flush();
+        if let Some(lines) = lines {
+            resolve::print(lines);
         }
         super::merge_tree::advise_submodules(self.ctx, &self.repo, &result)?;
-        if self.strategy != "ours" {
+        if is_ort(&self.strategy) {
             self.write_file("AUTO_MERGE", format!("{}\n", result.tree.to_hex()).as_bytes())?;
         }
 
@@ -1220,7 +1718,7 @@ impl Session<'_> {
                 messages: Vec::new(),
                 rename_limit_needed: None,
             };
-            return self.finish(head, parents, &heads, result);
+            return self.finish(head, parents, &heads, result, Some(&[]), false);
         }
         let staged = self.staged_changes(head_tree)?;
         if !staged.is_empty() {
@@ -1323,7 +1821,8 @@ impl Session<'_> {
             .into_iter()
             .filter(|h| merged.contains(&h.commit))
             .collect();
-        self.finish(head, merged, &theirs, result)
+        let lines = engine_lines(&result);
+        self.finish(head, merged, &theirs, result, Some(&lines), false)
     }
 
     /// After a merge refused because of local changes, git leaves what it
@@ -1407,7 +1906,7 @@ impl Session<'_> {
                 let path = if path.is_absolute() {
                     path.to_path_buf()
                 } else {
-                    self.repo.setup.cwd.join(path)
+                    self.repo.setup.original_cwd.join(path)
                 };
                 m = std::fs::read(&path).map_err(|e| {
                     fatal(crate::messages::commit::could_not_read_log(
@@ -1560,6 +2059,7 @@ impl Session<'_> {
             pathspec: &pathspec,
             recursive: true,
             show_trees: false,
+            max_depth: None,
             pairs: Vec::new(),
         };
         w.walk(Some(&old), Some(&new), b"")?;
@@ -1767,7 +2267,7 @@ impl Session<'_> {
             .and_then(|e| e.value.as_ref())
             .map(|v| v.to_vec())
             .filter(|e| !e.eq_ignore_ascii_case(b"utf-8") && !e.eq_ignore_ascii_case(b"utf8"));
-        let new = rgit_object::Commit::new(
+        let mut new = rgit_object::Commit::new(
             tree,
             parents,
             &author,
@@ -1776,17 +2276,31 @@ impl Session<'_> {
             mergetags,
             cleaned,
         );
+        if let Some(sign) = &self.args.sign {
+            let hash = self.repo.hash;
+            match crate::signing::sign_commit(&self.repo.config, hash, &mut new, sign, &committer) {
+                Ok(()) => {}
+                Err(crate::signing::SignError::Die(d)) => return Err(d),
+                Err(crate::signing::SignError::Failed) => {
+                    return Err(fatal(crate::messages::signing::FAILED_TO_WRITE_COMMIT));
+                }
+            }
+        }
         let oid = self
             .repo
             .odb()
             .write(ObjectKind::Commit, &new.serialize())
             .map_err(|e| fatal(e.to_string()))?;
-        self.update_head(oid, Some(head), &msg::made_by(&self.strategy))?;
+        let made_by = self
+            .made_by
+            .clone()
+            .unwrap_or_else(|| msg::made_by(&self.strategy));
+        self.update_head(oid, Some(head), &made_by)?;
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
             let _ = std::fs::remove_file(self.git_dir.join(f));
         }
         if !self.args.quiet {
-            println!("{}", msg::made_by(&self.strategy));
+            println!("{made_by}");
             if self.show_stat {
                 self.print_stat(head_tree, tree)?;
             }
@@ -1796,16 +2310,86 @@ impl Session<'_> {
     }
 }
 
-/// Rejects strategy names git does not know.
-fn check_strategies(names: &[String]) -> Result<(), Die> {
+/// The outcome of one strategy.
+enum Attempt {
+    /// The strategy could not handle the merge (exit code 2).
+    Failed,
+    /// A result computed in memory and the strategy's output.
+    Memory(MergeResult, Vec<resolve::Line>),
+    /// An external strategy updated the index and work tree; whether it
+    /// merged cleanly.
+    Applied(bool),
+}
+
+/// The strategies of the `ort` engine (they leave `AUTO_MERGE`).
+fn is_ort(name: &str) -> bool {
+    matches!(name, "ort" | "recursive" | "subtree")
+}
+
+/// The engine's messages as output lines.
+fn engine_lines(result: &MergeResult) -> Vec<resolve::Line> {
+    result
+        .messages
+        .iter()
+        .map(|m| resolve::Line {
+            err: false,
+            text: lossy(&m.text),
+        })
+        .collect()
+}
+
+/// `merge.renormalize`.
+pub(crate) fn renormalize_config(config: &rgit_config::ConfigSet) -> bool {
+    config
+        .bool("merge.renormalize")
+        .ok()
+        .flatten()
+        .unwrap_or(false)
+}
+
+/// The built-in strategies.
+fn is_builtin_strategy(name: &str) -> bool {
+    matches!(
+        name,
+        "ort" | "recursive" | "ours" | "octopus" | "resolve" | "subtree"
+    )
+}
+
+/// Rejects strategy names that are neither built in nor a `git-merge-<name>`
+/// program, listing the custom strategies (`git-merge-*` programs on
+/// `$PATH`).
+fn check_strategies(ctx: &Context, names: &[String]) -> Result<(), Die> {
+    let mut programs = None;
     for s in names {
-        if !matches!(
-            s.as_str(),
-            "ort" | "recursive" | "ours" | "octopus" | "resolve" | "subtree"
-        ) {
-            eprintln!("{}", msg::unknown_strategy(s));
-            return Err(Die::Exit(1));
+        if is_builtin_strategy(s) {
+            continue;
         }
+        let (main, others) = programs.get_or_insert_with(|| {
+            let main = crate::cmdlist::main_commands(ctx);
+            let others = crate::cmdlist::other_commands(ctx, &main);
+            (main, others)
+        });
+        let program = format!("merge-{s}");
+        // Programs that are git commands (merge-index, merge-file, ...)
+        // are not strategies.
+        let is_command = crate::commands::find(&program).is_some()
+            || program == "merge-one-file"
+            || program == "merge-index";
+        if !s.is_empty()
+            && !s.contains(char::is_whitespace)
+            && !is_command
+            && (main.contains(&program) || others.contains(&program))
+        {
+            continue;
+        }
+        let custom: Vec<String> = others
+            .iter()
+            .filter_map(|o| o.strip_prefix("merge-"))
+            .filter(|n| !is_builtin_strategy(n))
+            .map(str::to_owned)
+            .collect();
+        eprintln!("{}", msg::unknown_strategy(s, &custom));
+        return Err(Die::Exit(1));
     }
     Ok(())
 }

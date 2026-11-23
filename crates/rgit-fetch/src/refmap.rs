@@ -125,18 +125,22 @@ fn entry_for(m: &FetchMapping, refs: &[RemoteRef], hash: HashKind) -> Result<Ent
     })
 }
 
-/// A destination that is not a full ref name goes to the namespace of the
-/// source: `main:x` stores `refs/heads/x`, a tag `refs/tags/x`.
-fn qualify_dst(dst: &BString, src: &BString) -> BString {
+/// A destination that is not a full ref name is a branch: `main:x` and
+/// `v1:x` both store `refs/heads/x` (git refuses a non-commit there).
+fn qualify_dst(dst: &BString, _src: &BString) -> BString {
     if dst.starts_with(b"refs/") || dst == "HEAD" {
         return dst.clone();
     }
-    let ns: &[u8] = if src.starts_with(b"refs/tags/") {
-        b"refs/tags/"
-    } else {
-        b"refs/heads/"
-    };
-    let mut out = BString::from(ns);
+    // `heads/x`, `tags/x`, `remotes/x` are below `refs/`.
+    if [&b"heads/"[..], b"tags/", b"remotes/"]
+        .iter()
+        .any(|p| dst.starts_with(p))
+    {
+        let mut out = BString::from("refs/");
+        out.extend_from_slice(dst);
+        return out;
+    }
+    let mut out = BString::from("refs/heads/");
     out.extend_from_slice(dst);
     out
 }
