@@ -161,3 +161,27 @@ fn tag_contains_replaced_cycle() {
         ],
     );
 }
+
+/// A bare repository is the main worktree of its `HEAD` branch.
+#[test]
+fn worktreepath_in_bare_repository() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "--bare", "-b", "main"])
+        .git([
+            "--work-tree=.",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ])
+        .git(["branch", "other"]);
+    if fx.is_skipped() {
+        return;
+    }
+    all_same(
+        &mut fx,
+        &[&["for-each-ref", "--format=%(refname) [%(worktreepath)]"]],
+    );
+}

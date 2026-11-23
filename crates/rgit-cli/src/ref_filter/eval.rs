@@ -888,7 +888,12 @@ impl<'a> Env<'a> {
                     .and_then(|t| t.trim_end().strip_prefix("ref: ").map(str::to_owned))
             };
             let bare = r.config.bool("core.bare").ok().flatten().unwrap_or(false);
-            if !bare {
+            if bare {
+                // A bare repository is its own main worktree.
+                if let Some(head) = head_of(common) {
+                    map.insert(head, abs(common));
+                }
+            } else {
                 let main = if r.setup.git_dir == *common {
                     r.setup.work_tree.clone()
                 } else {
