@@ -666,6 +666,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 removals.push(path.to_vec());
                 continue;
             }
+            // A conflicted submodule: its checked-out commit resolves it.
+            let full = os_path(&root, path);
+            if !intent
+                && full.is_dir()
+                && let Some(head) = repository::submodule_head(&full, repo.hash)
+            {
+                if show {
+                    println!("{}", msg::add(&lossy(path)));
+                }
+                let mut n = Entry::new(path.to_vec(), Stage::MERGED, Mode::GITLINK, head);
+                if let Ok(m) = std::fs::symlink_metadata(&full) {
+                    n.stat = stat_from_metadata(&m);
+                }
+                removals.push(path.to_vec());
+                updates.push(n);
+                continue;
+            }
             let resolved = if intent {
                 write_empty_blob()?;
                 Ok(intent_entry(&repo, &checker, path)?)
