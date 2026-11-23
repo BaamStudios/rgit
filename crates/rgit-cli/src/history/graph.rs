@@ -78,26 +78,65 @@ enum Step {
     Nudge,
 }
 
-/// One line being drawn: bytes plus the number of visible columns.
+/// One line being drawn: bytes plus the number of columns drawn so far.
+///
+/// With a lane limit (`--graph-lane-limit=<n>`) only the first `2n`
+/// columns are written; anything else drawn further right turns into a
+/// single `~` at column `2n`.
 #[derive(Clone)]
 struct Line {
     bytes: Vec<u8>,
     cols: usize,
     palette: Option<Rc<Vec<String>>>,
+    /// The first column that is cut off (`usize::MAX`: no limit).
+    cut: usize,
+    /// Something other than a blank was drawn at or after `cut`.
+    beyond: bool,
+    /// Columns written into `bytes`.
+    shown: usize,
+    /// Write the next characters even at or after `cut` (the mark of a
+    /// commit sitting exactly on the last lane).
+    force: bool,
+    /// Ignore everything drawn from now on.
+    stop: bool,
+    /// Extra padding after a cut line.
+    extra: usize,
 }
 
 impl Line {
-    fn plain(&mut self, ch: u8) {
-        self.bytes.push(ch);
+    /// Whether the next column is written (and records what is cut off).
+    fn visible(&mut self, ch: u8) -> bool {
+        let col = self.cols;
         self.cols += 1;
+        if self.stop {
+            return false;
+        }
+        if col < self.cut || self.force {
+            self.shown = self.cols;
+            return true;
+        }
+        if ch != b' ' {
+            self.beyond = true;
+        }
+        false
+    }
+
+    fn plain(&mut self, ch: u8) {
+        if self.visible(ch) {
+            self.bytes.push(ch);
+        }
     }
 
     fn plain_str(&mut self, s: &[u8]) {
-        self.bytes.extend_from_slice(s);
-        self.cols += s.len();
+        for &ch in s {
+            self.plain(ch);
+        }
     }
 
     fn colored(&mut self, ch: u8, color: usize) {
+        if !self.visible(ch) {
+            return;
+        }
         match self.palette.as_deref() {
             Some(p) if !p.is_empty() => {
                 self.bytes.extend_from_slice(p[color % p.len()].as_bytes());
@@ -106,13 +145,37 @@ impl Line {
             }
             _ => self.bytes.push(ch),
         }
-        self.cols += 1;
     }
 
-    fn pad_to(&mut self, width: usize) {
-        while self.cols < width {
-            self.plain(b' ');
+    /// Drop trailing blanks (covered by the padding).
+    fn trim(&mut self) {
+        if self.beyond {
+            return;
         }
+        self.cols = self.shown;
+        while self.cols > 0 && self.bytes.last() == Some(&b' ') {
+            self.bytes.pop();
+            self.cols -= 1;
+        }
+        self.shown = self.cols;
+    }
+
+    /// The finished line, padded to `width` columns (with a lane limit at
+    /// most two columns past the cut).
+    fn finish(mut self, width: usize) -> Vec<u8> {
+        let mut width = width;
+        if self.cut != usize::MAX {
+            if self.beyond {
+                self.bytes.push(b'~');
+                self.shown += 1;
+            }
+            width = width.min(self.cut + 2 + self.extra);
+        }
+        while self.shown < width {
+            self.bytes.push(b' ');
+            self.shown += 1;
+        }
+        self.bytes
     }
 }
 
@@ -141,6 +204,8 @@ pub struct Graph {
     /// How the first parent of a merge leaves: 0 to the lane at the left,
     /// 1 straight down; `None` before it is decided or for non-merges.
     layout: Option<usize>,
+    /// How many lanes to the left the first parent of a merge goes.
+    left: usize,
     /// Lanes the commit adds to the right (-1: its last parent joins the
     /// lane right next to it).
     added: isize,
@@ -168,6 +233,8 @@ pub struct Graph {
     /// Commits that are the second or a later parent of a merge drawn so
     /// far.
     side_parents: HashSet<ObjectId>,
+    /// `--graph-lane-limit` (0: none).
+    lane_limit: usize,
 }
 
 /// What the graph needs to know about the commit after the current one
@@ -197,6 +264,7 @@ impl Graph {
             at: 0,
             prev_at: 0,
             layout: None,
+            left: 0,
             added: 0,
             prev_added: 0,
             slots: Vec::new(),
@@ -210,12 +278,18 @@ impl Graph {
             nudge: false,
             cascade: None,
             side_parents: HashSet::new(),
+            lane_limit: 0,
         }
     }
 
     /// Indent roots (`--graph-indent`, the default).
     pub fn set_indent(&mut self, on: bool) {
         self.indent = on;
+    }
+
+    /// Draw at most `n` lanes (`--graph-lane-limit`, 0: all).
+    pub fn set_lane_limit(&mut self, n: usize) {
+        self.lane_limit = n;
     }
 
     fn palette_len(&self) -> usize {
@@ -229,6 +303,16 @@ impl Graph {
             bytes: Vec::new(),
             cols: 0,
             palette: self.palette.clone(),
+            cut: if self.lane_limit == 0 {
+                usize::MAX
+            } else {
+                2 * self.lane_limit
+            },
+            beyond: false,
+            shown: 0,
+            force: false,
+            stop: false,
+            extra: 0,
         }
     }
 
@@ -352,6 +436,7 @@ impl Graph {
                 found = true;
                 self.at = i;
                 self.layout = None;
+                self.left = 0;
                 let parents = self.parents.clone();
                 let n = parents.len();
                 for p in parents {
@@ -397,6 +482,7 @@ impl Graph {
                 let left = at.saturating_sub(lane);
                 let layout = usize::from(left == 0);
                 self.layout = Some(layout);
+                self.left = left;
                 self.added = self.parents.len() as isize + layout as isize - 2;
                 slot = if layout == 1 {
                     cursor
@@ -476,7 +562,11 @@ impl Graph {
 
     /// The width of the drawing beside the current commit's text.
     pub fn text_width(&self) -> usize {
-        self.width
+        if self.lane_limit == 0 {
+            self.width
+        } else {
+            self.width.min(2 * self.lane_limit + 2)
+        }
     }
 
     /// The line before a commit's separator: the lanes straight down while
@@ -496,9 +586,9 @@ impl Graph {
                 line.plain(b' ');
             }
         }
-        line.pad_to(self.width - 2 * self.shift);
+        let bytes = line.finish(self.width - 2 * self.shift);
         self.prev_step = Step::Idle;
-        line.bytes
+        bytes
     }
 
     fn idle_line(&mut self) -> Vec<u8> {
@@ -507,17 +597,16 @@ impl Graph {
             line.colored(b'|', lane.color);
             line.plain(b' ');
         }
-        line.pad_to(self.width);
-        line.bytes
+        line.finish(self.width)
     }
 
     fn gap_line(&mut self) -> Vec<u8> {
         let mut line = self.line();
         line.plain_str(b"...");
-        line.pad_to(self.width);
+        let bytes = line.finish(self.width);
         let next = self.first_step();
         self.set_step(next);
-        line.bytes
+        bytes
     }
 
     /// The lane of an indented root steps right.
@@ -532,14 +621,14 @@ impl Graph {
             }
             line.plain(b' ');
         }
-        line.pad_to(self.width - 2 * self.shift);
+        let bytes = line.finish(self.width - 2 * self.shift);
         let next = if self.needs_widen() {
             Step::Widen
         } else {
             Step::Commit
         };
         self.set_step(next);
-        line.bytes
+        bytes
     }
 
     fn widen_line(&mut self) -> Vec<u8> {
@@ -566,12 +655,12 @@ impl Graph {
             }
             line.plain(b' ');
         }
-        line.pad_to(self.width);
+        let bytes = line.finish(self.width);
         self.widen_row += 1;
         if !self.needs_widen() {
             self.set_step(Step::Commit);
         }
-        line.bytes
+        bytes
     }
 
     /// The colour of the lane below that parent `k` of the commit leads to.
@@ -600,9 +689,23 @@ impl Graph {
                 for _ in 0..self.shift {
                     line.plain_str(b"  ");
                 }
+                if line.cols == line.cut {
+                    // A commit sitting exactly on the last lane shows its
+                    // mark and nothing right of it.
+                    line.force = true;
+                    line.plain_str(&self.mark);
+                    line.force = false;
+                    line.stop = true;
+                    continue;
+                }
+                let mark_col = line.cols;
                 line.plain_str(&self.mark);
                 if self.parents.len() > 2 {
                     self.octopus(&mut line);
+                    if mark_col < line.cut && line.beyond {
+                        // An octopus cut short keeps one more blank.
+                        line.extra = 1;
+                    }
                 }
             } else {
                 let lane = lane.expect("lane");
@@ -631,8 +734,8 @@ impl Graph {
             }
             line.plain(b' ');
         }
-        line.pad_to(self.width);
-        let next = if self.parents.len() > 1 {
+        let bytes = line.finish(self.width);
+        let next = if self.parents.len() > 1 && !self.fan_cut() {
             Step::Fan
         } else if self.settled() {
             Step::Idle
@@ -640,7 +743,7 @@ impl Graph {
             Step::Shift
         };
         self.set_step(next);
-        line.bytes
+        bytes
     }
 
     /// The `-.`, `---.` ... after the mark of an octopus merge: two
@@ -658,6 +761,12 @@ impl Graph {
             line.colored(b'-', color);
             line.colored(if k + 1 == dashed { b'.' } else { b'-' }, color);
         }
+    }
+
+    /// A merge at or beyond the lane limit draws no fan line, unless its
+    /// first parent crosses lanes to the left.
+    fn fan_cut(&self) -> bool {
+        self.lane_limit != 0 && self.at >= self.lane_limit && self.left <= 1
     }
 
     fn fan_line(&mut self) -> Vec<u8> {
@@ -708,14 +817,14 @@ impl Graph {
                 }
             }
         }
-        line.pad_to(self.width);
+        let bytes = line.finish(self.width);
         let next = if self.settled() {
             Step::Idle
         } else {
             Step::Shift
         };
         self.set_step(next);
-        line.bytes
+        bytes
     }
 
     fn shift_line(&mut self) -> Vec<u8> {
@@ -786,17 +895,12 @@ impl Graph {
                 line.colored(b'/', color);
             }
         }
-        // Trailing blanks are covered by the padding.
-        while line.cols > 0 && line.bytes.last() == Some(&b' ') {
-            line.bytes.pop();
-            line.cols -= 1;
-        }
-        line.pad_to(self.width);
+        line.trim();
         self.slots = next;
         if self.settled() {
             self.set_step(Step::Idle);
         }
-        line.bytes
+        line.finish(self.width)
     }
 }
 
@@ -815,7 +919,12 @@ mod tests {
 
     /// Draw `commits` (id, parents) with one-line subjects `c<id>`.
     fn draw(commits: &[(u8, &[u8])]) -> String {
+        draw_limited(commits, 0)
+    }
+
+    fn draw_limited(commits: &[(u8, &[u8])], limit: usize) -> String {
         let mut g = Graph::new(None);
+        g.set_lane_limit(limit);
         let mut out = String::new();
         for (c, parents) in commits {
             g.update(id(*c), parents.iter().map(|p| id(*p)).collect(), b"*", None);
@@ -838,5 +947,11 @@ mod tests {
     fn linear_and_merge() {
         let got = draw(&[(4, &[3, 2]), (3, &[1]), (2, &[1]), (1, &[])]);
         assert_eq!(got, "*   c4\n|\\\n* | c3\n| * c2\n|/\n* c1\n");
+    }
+
+    #[test]
+    fn lane_limit_cuts_lanes() {
+        let got = draw_limited(&[(4, &[3, 2]), (3, &[1]), (2, &[1]), (1, &[])], 1);
+        assert_eq!(got, "*   c4\n|\\\n* ~ c3\n| * c2\n|/\n* c1\n");
     }
 }

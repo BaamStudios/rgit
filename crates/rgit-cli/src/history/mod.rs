@@ -3064,6 +3064,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
                 .unwrap_or(true)
         });
         g.set_indent(indent);
+        g.set_lane_limit(opts.graph_lane_limit);
         p.graph = Some(g);
     }
     if opts.unpacked || opts.disk_usage.is_some() {
