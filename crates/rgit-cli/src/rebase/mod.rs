@@ -814,8 +814,21 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
                     let new_tree = sequencer::tree_of(&repo, &orig_head).map_err(fail_die)?;
                     let refname = head_name.starts_with("refs/").then(|| head_name.clone());
                     crate::convert::set_checkout_meta(refname, Some(&orig_head));
-                    crate::switch_branch::move_index(&repo, old_tree, new_tree, false)?;
+                    let moved = crate::switch_branch::move_index(&repo, old_tree, new_tree, false);
                     crate::convert::set_checkout_meta(None, None);
+                    if let Err(e) = moved {
+                        // The branch cannot be checked out: the autostash
+                        // comes back.
+                        if !matches!(e, Die::Exit(_)) {
+                            return Err(e);
+                        }
+                        eprintln!("error: {}", msg::could_not_switch(b));
+                        drop(repo);
+                        if let Some(s) = stash {
+                            apply_autostash(ctx, &s)?;
+                        }
+                        return Ok(1);
+                    }
                     let what = format!("{}: {}", reflog_action(), msg::checkout(b));
                     if head_name.starts_with("refs/") {
                         attach_head(ctx, &repo, &head_name, &what)?;
