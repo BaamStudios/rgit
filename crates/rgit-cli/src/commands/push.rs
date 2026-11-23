@@ -475,7 +475,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             p => p > 0,
         },
         thin: thin.get(),
-        push_options: push_options.borrow().clone(),
+        push_options: {
+            let configured = configured_push_options(&config)?;
+            let cli = push_options.borrow().clone();
+            if cli.is_empty() { configured } else { cli }
+        },
         receive_pack: receive_pack
             .borrow()
             .clone()
@@ -629,6 +633,21 @@ fn follow_tags(
             remote_msg: None,
         });
     }
+}
+
+/// `push.pushOption` (config/push.adoc): the default push options, used
+/// when none are given on the command line; an empty value clears the
+/// list so far.
+fn configured_push_options(config: &ConfigSet) -> Result<Vec<String>, Die> {
+    let mut out = Vec::new();
+    for e in config.get_all("push.pushoption") {
+        match &e.value {
+            None => return Err(crate::comment::bad_entry(e, &msg::missing_value("push.pushoption"))),
+            Some(v) if v.is_empty() => out.clear(),
+            Some(v) => out.push(v.to_string()),
+        }
+    }
+    Ok(out)
 }
 
 /// `push.negotiate`: the commits `fetch --negotiate-only` finds in common
@@ -805,11 +824,15 @@ impl Push<'_> {
         let conn = transport.connect(&opts).map_err(fatal)?;
         let mut session =
             send::start(conn, hash).map_err(|e| Die::Fatal(send::advertisement_error(&e)))?;
+        // Printed before the connection is dropped (the server then
+        // reports the hang-up), like git.
         if f.atomic && !session.adv.caps.contains("atomic") {
-            return Err(Die::Fatal(msg::NO_ATOMIC.into()));
+            eprintln!("fatal: {}", msg::NO_ATOMIC);
+            return Err(Die::Exit(rgit_options::EXIT_FATAL));
         }
         if !f.push_options.is_empty() && !session.adv.caps.contains("push-options") {
-            return Err(Die::Fatal(msg::NO_PUSH_OPTIONS.into()));
+            eprintln!("fatal: {}", msg::NO_PUSH_OPTIONS);
+            return Err(Die::Exit(rgit_options::EXIT_FATAL));
         }
 
         // Match.
