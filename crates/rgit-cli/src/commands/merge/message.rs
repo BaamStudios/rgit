@@ -485,11 +485,39 @@ pub(crate) fn default_message(
 ) -> Vec<u8> {
     let mut out = title(repo, heads, into).into_bytes();
     out.push(b'\n');
+    // With several tag messages each gets a comment naming its tag
+    // (observed with the `git` binary).
+    let several = heads.iter().filter(|h| h.tag_message.is_some()).count() > 1;
+    let mut first_tag = true;
     for head in heads {
         if let Some(t) = &head.tag_message {
             let (text, sig) = rgit_object::split_signature(t);
             let body = rgit_commit::message::stripspace(text, None);
-            if !body.is_empty() {
+            if several {
+                let comment = crate::comment::comment(&repo.config)
+                    .map(|c| c.or_hash())
+                    .unwrap_or_else(|_| b"#".to_vec());
+                let name = match head.kind {
+                    // A fetch from `.` names no repository.
+                    Kind::Fetch => head
+                        .name
+                        .strip_suffix(" of .")
+                        .unwrap_or(&head.name)
+                        .to_owned(),
+                    _ => msg::tag_header(&head.name),
+                };
+                if first_tag {
+                    // git leaves an extra empty line before the first one.
+                    out.push(b'\n');
+                    first_tag = false;
+                }
+                out.push(b'\n');
+                out.extend_from_slice(&comment);
+                out.push(b' ');
+                out.extend_from_slice(name.as_bytes());
+                out.push(b'\n');
+                out.extend_from_slice(&body);
+            } else if !body.is_empty() {
                 out.push(b'\n');
                 out.extend_from_slice(&body);
             }

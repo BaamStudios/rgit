@@ -268,3 +268,8 @@ pub fn option_not_supported(name: &str) -> String {
 /// `--autostash`: the merge stopped before its commit.
 pub const APPLY_STASH_WHEN_FINISHED: &str =
     "When finished, apply stashed changes with `git stash pop`";
+
+/// The comment above a tag message when several tags are merged.
+pub fn tag_header(name: &str) -> String {
+    format!("tag '{name}'")
+}

@@ -96,6 +96,35 @@ fn cases_skipping(prep: impl Fn(Fixture) -> Fixture, skip: &[Check], cases: &[&[
     assert!(failed.is_empty(), "{}", failed.join("\n\n"));
 }
 
+/// Several annotated tags: each tag message gets a comment naming it.
+#[test]
+fn several_tag_messages() {
+    cases(
+        |fx| fx.git(["tag", "-a", "-m", "ahead tag\n\nmore", "va", "ahead"]),
+        &[
+            &[
+                "-c",
+                "alias.t=!git fetch -q . tag vs tag va && git fmt-merge-msg <.git/FETCH_HEAD",
+                "t",
+            ],
+            &[
+                "-c",
+                "core.commentChar=;",
+                "-c",
+                "alias.t=!git fetch -q . tag vs ahead && git fmt-merge-msg <.git/FETCH_HEAD",
+                "t",
+            ],
+            &[
+                "-c",
+                "core.commentChar=;",
+                "-c",
+                "alias.t=!git fetch -q . tag vs tag va && git fmt-merge-msg <.git/FETCH_HEAD",
+                "t",
+            ],
+        ],
+    );
+}
+
 #[test]
 fn merge_clean() {
     cases(
