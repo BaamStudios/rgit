@@ -126,6 +126,10 @@ pub struct DiffOpts {
     /// `--dirstat`, `-X`, `--cumulative`, `--dirstat-by-file`: the
     /// parameters given, in order (applied over `diff.dirstat`).
     pub dirstat: Option<Vec<String>>,
+    /// `--[no-]textconv` (`git diff` defaults to on).
+    pub textconv: Option<bool>,
+    /// `--[no-]ext-diff` (`git diff` defaults to on).
+    pub ext_diff: Option<bool>,
 }
 
 /// How submodule changes are shown (`--submodule`, `diff.submodule`).
@@ -378,7 +382,11 @@ impl DiffOpts {
             "--no-indent-heuristic" => self.indent_heuristic = Some(false),
             "--no-prefix" => self.no_prefix = true,
             "--default-prefix" => self.default_prefix = true,
-            "--no-ext-diff" | "--no-textconv" | "--myers" | "--default" => {}
+            "--myers" | "--default" => {}
+            "--textconv" => self.textconv = Some(true),
+            "--no-textconv" => self.textconv = Some(false),
+            "--ext-diff" => self.ext_diff = Some(true),
+            "--no-ext-diff" => self.ext_diff = Some(false),
             "--no-renames" => self.detect = Some(Detect::Off),
             "-M" | "--find-renames" => self.detect = Some(Detect::Renames),
             "-C" | "--find-copies" => {
@@ -687,6 +695,13 @@ impl DiffOpts {
             .as_deref()
             .map(crate::submodules::parse_ignore_arg)
             .transpose()
+    }
+
+    /// `git diff` runs textconv filters and external diff programs unless
+    /// told otherwise.
+    pub fn porcelain_drivers(&mut self) {
+        self.textconv.get_or_insert(true);
+        self.ext_diff.get_or_insert(true);
     }
 
     pub fn wants_exit_code(&self) -> bool {

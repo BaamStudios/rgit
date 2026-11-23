@@ -7,8 +7,8 @@
 //! With `--batch`, `--filters` takes the path from the rest of the input
 //! line; the size in the header stays that of the blob.
 //!
-//! Not implemented yet: `--textconv` (#147) and `--filter=` (#24); they are
-//! parsed and checked like git, then refused.
+//! `--textconv` works for single objects; in batch mode it is parsed and
+//! checked like git, then refused, as is `--filter=` (#24).
 //!
 //! `--use-mailmap` (and `mailmap <bool>` of `--batch-command`) maps the
 //! identities in the headers of commits and tags; sizes are those of the
@@ -199,7 +199,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     drop(parser);
 
-    if opt == MODE_TEXTCONV {
+    if opt == MODE_TEXTCONV && batch.is_some() {
         return Err(Die::Fatal(msg::cat_file_not_supported(mode_name(opt))));
     }
     let use_mailmap = mailmap.get();
@@ -245,29 +245,61 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if opt == MODE_FILTERS {
         return filters(&mut repo, &args[0], path.as_deref());
     }
+    if opt == MODE_TEXTCONV {
+        return textconv(&mut repo, &args[0], path.as_deref());
+    }
     single(&mut repo, opt, &args[0], mailmap.as_ref())
+}
+
+/// The path of `--filters` / `--textconv`: `--path`, else the path of
+/// `<rev>:<path>`, `:<path>` or `:<stage>:<path>`.
+fn filter_path(name: &str, path: Option<&str>) -> Result<String, Die> {
+    if let Some(p) = path {
+        return Ok(p.to_owned());
+    }
+    let after = match name.strip_prefix(':') {
+        Some(rest) => match rest.as_bytes() {
+            [b'0'..=b'3', b':', ..] => Some(&rest[2..]),
+            _ => Some(rest),
+        },
+        None => name.split_once(':').map(|(_, p)| p),
+    };
+    match after {
+        Some(p) => Ok(p.to_owned()),
+        None => Err(Die::Fatal(msg::path_required(name))),
+    }
+}
+
+/// `--textconv`: the blob named `name` through the textconv filter of
+/// its path's diff driver (symbolic links and paths without one as they
+/// are). The name is resolved before the path is looked at.
+fn textconv(repo: &mut Repo, name: &str, path: Option<&str>) -> CmdResult {
+    let r = resolve_arg(repo, name)?;
+    let path = filter_path(name, path)?;
+    let oid = repo.replaced(&r.oid);
+    let mut data = read_data(repo, &oid, name)?;
+    let conv = crate::convert::Converter::worktree(repo)?;
+    let cmd = match conv.attr(path.as_bytes(), b"diff") {
+        rgit_attr::State::Value(v) if r.mode != Some(0o120000) => {
+            crate::diff::driver::load(&repo.config, &String::from_utf8_lossy(&v))?.textconv
+        }
+        _ => None,
+    };
+    if let Some(cmd) = cmd {
+        data = crate::diff::driver::run_textconv(&cmd, &data)
+            .map_err(|()| Die::Fatal(msg::textconv_failed(name)))?;
+    }
+    let mut out = std::io::stdout().lock();
+    out.write_all(&data)
+        .and_then(|()| out.flush())
+        .map_err(|e| Die::Fatal(msg::unable_to_write_stdout(&crate::global::strerror(&e))))?;
+    Ok(0)
 }
 
 /// `--filters`: the object named `name` (`<rev>:<path>`, or any object
 /// with `--path`), blobs converted to their work tree form for the path.
 fn filters(repo: &mut Repo, name: &str, path: Option<&str>) -> CmdResult {
-    let path = match path {
-        Some(p) => p.to_owned(),
-        None => {
-            // `<rev>:<path>`, `:<path>` or `:<stage>:<path>`.
-            let after = match name.strip_prefix(':') {
-                Some(rest) => match rest.as_bytes() {
-                    [b'0'..=b'3', b':', ..] => Some(&rest[2..]),
-                    _ => Some(rest),
-                },
-                None => name.split_once(':').map(|(_, p)| p),
-            };
-            match after {
-                Some(p) => p.to_owned(),
-                None => return Err(Die::Fatal(msg::path_required(name))),
-            }
-        }
-    };
+    let path = filter_path(name, path)?;
     let r = resolve_arg(repo, name)?;
     let oid = repo.replaced(&r.oid);
     let data = read_data(repo, &oid, name)?;

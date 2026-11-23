@@ -31,8 +31,6 @@
 
 pub mod pattern;
 
-use regex::bytes::Regex;
-
 use crate::color::RESET;
 use crate::messages::grep as msg;
 use pattern::Matcher;
@@ -49,41 +47,16 @@ pub fn looks_binary(data: &[u8]) -> bool {
 pub enum FuncName {
     /// The built-in rule: a line starting with a letter, `_` or `$`.
     Default,
-    /// `diff.<driver>.funcname` / `xfuncname`: patterns tried in order;
-    /// the first that matches decides (`!` patterns reject the line).
-    Custom(Vec<(bool, Regex)>),
+    /// The patterns of a diff driver (`diff.<driver>.funcname` /
+    /// `xfuncname`, or a built-in driver).
+    Custom(rgit_diff::FuncName),
 }
 
 impl FuncName {
-    /// Compile the value of `diff.<driver>.funcname` (`extended`: of
-    /// `xfuncname`). Lines that do not compile are skipped.
-    pub fn custom(value: &str, extended: bool) -> FuncName {
-        let mut pats = Vec::new();
-        for line in value.split('\n') {
-            let (neg, p) = match line.strip_prefix('!') {
-                Some(rest) => (true, rest),
-                None => (false, line),
-            };
-            let Ok(text) = rgit_revwalk::walk::grep::translate(p, extended) else {
-                continue;
-            };
-            if let Ok(re) = regex::bytes::RegexBuilder::new(&text)
-                .unicode(false)
-                .build()
-            {
-                pats.push((neg, re));
-            }
-        }
-        FuncName::Custom(pats)
-    }
-
     fn is_func(&self, line: &[u8]) -> bool {
         match self {
             FuncName::Default => rgit_diff::default_funcname(line),
-            FuncName::Custom(pats) => pats
-                .iter()
-                .find(|(_, re)| re.is_match(line))
-                .is_some_and(|(neg, _)| !neg),
+            FuncName::Custom(f) => f.is_func(line),
         }
     }
 }

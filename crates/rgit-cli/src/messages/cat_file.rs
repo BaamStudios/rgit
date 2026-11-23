@@ -111,6 +111,10 @@ pub fn unable_to_write_stdout(err: &str) -> String {
     format!("unable to write to stdout: {err}")
 }
 
+pub fn textconv_failed(name: &str) -> String {
+    format!("git cat-file {name}: bad file")
+}
+
 pub fn invalid_mailmap_bool(value: &str) -> String {
     format!("mailmap: invalid boolean '{value}'")
 }

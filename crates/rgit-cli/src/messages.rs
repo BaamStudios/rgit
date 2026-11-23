@@ -79,6 +79,7 @@ pub mod tracking;
 pub mod unpack_objects;
 pub mod update_index;
 pub mod update_ref;
+pub mod userdiff;
 pub mod var;
 pub mod verify_pack;
 pub mod worktree;

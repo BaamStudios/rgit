@@ -10,6 +10,8 @@ pub mod collect;
 pub mod color;
 pub mod combined;
 mod dirstat;
+pub mod driver;
+pub mod external;
 pub mod moved;
 pub mod options;
 mod order;
