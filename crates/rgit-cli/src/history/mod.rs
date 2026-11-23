@@ -231,6 +231,11 @@ impl CommitSource for Commits<'_, '_> {
             match limit.keeps(self.repo, id) {
                 Ok(true) => {}
                 Ok(false) => return Ok(false),
+                Err(Die::Fatal(m)) => {
+                    // A failing textconv filter is fatal like in git.
+                    let _ = writeln!(std::io::stderr(), "fatal: {m}");
+                    std::process::exit(128);
+                }
                 Err(_) => return Err(*id),
             }
         }
