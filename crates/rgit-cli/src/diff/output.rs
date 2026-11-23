@@ -28,6 +28,26 @@ use crate::messages::diff as msg;
 use crate::repository::Repo;
 use rgit_diff::ws_rule::{self, WsRule};
 
+/// A patch with its empty context lines (`" \n"` in a hunk) written as
+/// empty lines (`diff.suppressBlankEmpty`).
+fn suppress_blank_empty(patch: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(patch.len());
+    let mut in_hunk = false;
+    for line in patch.split_inclusive(|&b| b == b'\n') {
+        if line.starts_with(b"@@") {
+            in_hunk = true;
+        } else if line.starts_with(b"diff ") {
+            in_hunk = false;
+        }
+        if in_hunk && line == b" \n" {
+            out.push(b'\n');
+        } else {
+            out.extend_from_slice(line);
+        }
+    }
+    out
+}
+
 /// An abbreviated object id of a raw line, followed by "..." when
 /// `GIT_PRINT_SHA1_ELLIPSIS` is `yes` (git(1), ENVIRONMENT).
 pub fn raw_ellipsis(mut id: String, hash: HashKind) -> String {
@@ -73,6 +93,8 @@ pub struct Output<'a> {
     pub pickaxe_all: bool,
     pub filter: DiffFilter,
     pub irreversible_delete: bool,
+    /// `diff.suppressBlankEmpty`: empty context lines without the space.
+    pub suppress_blank_empty: bool,
     /// `--submodule=<format>` (or `diff.submodule` for the porcelain).
     pub submodule_format: SubmoduleFormat,
     /// The rename limit that would have been needed (warned about after
@@ -655,6 +677,7 @@ impl<'a> Output<'a> {
             pickaxe_all: opts.pickaxe_all,
             filter: opts.diff_filter.clone(),
             irreversible_delete: opts.irreversible_delete,
+            suppress_blank_empty: config_bool("diff.suppressblankempty") == Some(true),
             submodule_format: match opts.submodule_format {
                 Some(f) => f,
                 None if porcelain => submodule_format_config(repo),
@@ -1574,6 +1597,9 @@ impl<'a> Output<'a> {
                                 new: Option<&PatchFile<'_>>| {
                     let mut plain = Vec::new();
                     write_file_patch_extra(&mut plain, old, new, popts, &abbrev, &extra);
+                    if self.suppress_blank_empty {
+                        plain = suppress_blank_empty(&plain);
+                    }
                     let ws = WsContext {
                         rule,
                         highlight: if f.check { 0 } else { self.ws_highlight },

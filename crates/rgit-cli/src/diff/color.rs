@@ -216,6 +216,13 @@ pub fn patch(
             continue;
         }
         in_header = false;
+        if line.is_empty() {
+            // An empty context line (diff.suppressBlankEmpty).
+            out.extend_from_slice(eol);
+            new_line += 1;
+            previous = b' ';
+            continue;
+        }
         let sign = line.first().copied().unwrap_or(b' ');
         let (mut color, kind) = match sign {
             b'+' => (&c.new, HIGHLIGHT_NEW),
