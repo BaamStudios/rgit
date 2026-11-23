@@ -19,8 +19,13 @@
 #   --work DIR         scratch space for worktrees and copies (default: DIR/../work)
 #   --label TEXT       version label in the result (default: rgit --version)
 #   --rgit-commit SHA  commit rgit was built from, recorded in the result
-#   --only REGEX       run only scenarios whose "<scenario>/<repo>" matches
+#   --only LIST        comma-separated scenarios to run; each item is a scenario
+#                      name or "<scenario>/<repo>" (extended regexes, matched
+#                      whole), e.g. --only fetch-noop,status-.*,log-L/linux
 #   --repo-list LIST   comma-separated repositories (default: git,gitea,linux)
+#   --tool both|rgit   time both tools (default) or only rgit; with rgit the
+#                      git side of every scenario comes from --baseline
+#   --baseline FILE    earlier result JSON of this suite (required with --tool rgit)
 #   --runs N           timed runs per tool (default 10)
 #   --warmup N         warmup runs per tool (default 2)
 #   --slow SECONDS     scenarios whose validation run takes longer use
@@ -42,7 +47,7 @@ die() {
     exit 1
 }
 
-repos='' rgit='' git='' out='' work='' label='' rgit_commit='' only='' check=''
+repos='' rgit='' git='' out='' work='' label='' rgit_commit='' only='' check='' tool_sel=both baseline=''
 repo_list=git,gitea,linux runs=10 warmup=2 slow=60 slow_runs=3 timeout_s=1800 dirty_files=1000
 while (($#)); do
     case $1 in
@@ -62,6 +67,8 @@ while (($#)); do
     --timeout) timeout_s=$2 ;;
     --dirty-files) dirty_files=$2 ;;
     --check) check=$2 ;;
+    --tool) tool_sel=$2 ;;
+    --baseline) baseline=$2 ;;
     -h | --help)
         sed -n '3,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'
         exit 0
@@ -71,6 +78,15 @@ while (($#)); do
     shift 2 || die "option '$1' needs a value"
 done
 [[ -n $repos && -n $rgit && -n $git && -n $out ]] || die "--repos, --rgit, --git and --out are required"
+case $tool_sel in
+both) ;;
+rgit)
+    [[ -n $baseline ]] || die "--tool rgit needs --baseline FILE (the git side comes from there)"
+    [[ -r $baseline ]] || die "cannot read baseline $baseline"
+    baseline=$(cd "$(dirname "$baseline")" && echo "$(pwd)/$(basename "$baseline")")
+    ;;
+*) die "--tool must be 'both' or 'rgit'" ;;
+esac
 for tool in hyperfine jq /usr/bin/time timeout sha256sum; do
     command -v "$tool" >/dev/null || die "missing dependency: $tool"
 done
@@ -86,7 +102,7 @@ mkdir -p "$work" "$(dirname "$out")"
 work=$(cd "$work" && pwd)
 out=$(abspath "$out")
 md_out=${out%.json}.md
-raw=$work/raw
+raw=$work/raw/$(basename "${out%.json}")
 mkdir -p "$raw" "$work/home/.config"
 
 # Isolated, deterministic environment for both tools. The reference git's bin
@@ -191,13 +207,30 @@ time_tool() {
 
 tool_json() {
     local base=$raw/$id.$1
-    if [[ -s $base.hf.json ]]; then
+    if [[ -e $base.base.json ]]; then
+        jq '. + {from_baseline: true}' "$base.base.json"
+    elif [[ -s $base.hf.json ]]; then
         jq --slurpfile v "$base.val.json" '.results[0] | {
             median_s: .median, mean_s: .mean, stddev_s: .stddev, min_s: .min, max_s: .max,
             user_s: .user, system_s: .system, runs: (.times | length)} + $v[0]' "$base.hf.json"
     else
         jq '{median_s: null} + .' "$base.val.json"
     fi
+}
+
+# selected NAME REPO: does --only select this scenario? Each comma-separated
+# item is an extended regex matched against the whole scenario name or the
+# whole "<scenario>/<repo>".
+selected() {
+    [[ -z $only ]] && return 0
+    local item items
+    IFS=, read -r -a items <<<"$only"
+    for item in "${items[@]}"; do
+        if [[ $1 =~ ^($item)$ || "$1/$2" =~ ^($item)$ ]]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 checked() {
@@ -224,7 +257,18 @@ run_scenario() {
 run_scenario_once() {
     rm -f "$raw/$id".*
     local ec_git ec_rgit
-    ec_git=$(validate git "$git")
+    if [[ $tool_sel == rgit ]]; then
+        # git side from the baseline result; its validation data stands in
+        # for the git validation run.
+        jq --arg s "$sc_name" --arg r "$REPO" \
+            'first(.scenarios[] | select(.scenario == $s and .repo == $r) | .git) // {}' \
+            "$baseline" >"$raw/$id.git.base.json"
+        jq '{wall_s: (.wall_s // 0), stdout_sha256: .stdout_sha256}' "$raw/$id.git.base.json" \
+            >"$raw/$id.git.val.json"
+        ec_git=$(jq -r '.exit // "none"' "$raw/$id.git.base.json")
+    else
+        ec_git=$(validate git "$git")
+    fi
     ec_rgit=$(validate rgit "$rgit")
     local wall n w
     wall=$(jq -s 'map(.wall_s) | max' "$raw/$id.git.val.json" "$raw/$id.rgit.val.json")
@@ -232,16 +276,18 @@ run_scenario_once() {
     if awk -v t="$wall" -v s="$slow" 'BEGIN { exit !(t > s) }'; then n=$slow_runs w=0; fi
     if awk -v t="$wall" -v s="$slow" 'BEGIN { exit !(t > 10 * s) }'; then n=1 w=0; fi
     local status=ok
-    if [[ $ec_git != 0 ]]; then
+    if [[ $ec_git == none ]]; then
+        status="no git result in the baseline"
+    elif [[ $ec_git != 0 ]]; then
         status="git failed (exit $ec_git)"
-    else
+    elif [[ $tool_sel != rgit ]]; then
         time_tool git "$git" "$n" "$w" || status="hyperfine failed for git"
     fi
     if [[ $ec_rgit == 124 ]]; then
         status="rgit timed out (> ${timeout_s} s)"
     elif [[ $ec_rgit != 0 ]]; then
         status="rgit failed (exit $ec_rgit)"
-    elif [[ $status == ok ]]; then
+    elif [[ $status == ok || $tool_sel == rgit ]]; then
         time_tool rgit "$rgit" "$n" "$w" || status="hyperfine failed for rgit"
     fi
     local same
@@ -274,9 +320,7 @@ sc() {
     shift
     sc_args=("$@")
     id=$sc_name.$REPO
-    if [[ -n $only && ! "$sc_name/$REPO" =~ $only ]]; then
-        return 0
-    fi
+    selected "$sc_name" "$REPO" || return 0
     log "== $sc_name / $REPO"
     run_scenario
     results+=("$raw/$id.result.json")
@@ -292,9 +336,11 @@ for REPO in "${repo_names[@]}"; do
         log "skip $REPO: $repos/$REPO.git does not exist"
         continue
     fi
-    if [[ -n $only ]] && ! grep -Eq -- "$only" <(sed -n 's/^sc \([^ ]*\).*/\1\/'"$REPO"'/p' "$bench_dir/scenarios.sh"); then
-        continue
-    fi
+    any=false
+    for name in $(sed -n 's/^sc \([^ ]*\).*/\1/p' "$bench_dir/scenarios.sh"); do
+        if selected "$name" "$REPO"; then any=true; fi
+    done
+    $any || continue
     setup_repo "$REPO"
     # shellcheck source=bench/scenarios.sh
     source "$bench_dir/scenarios.sh"
@@ -309,13 +355,16 @@ jq -n --arg label "${label:-$("$rgit" --version | head -n 1)}" --arg rgit_commit
     --arg governor "$governor" --arg git_version "$("$git" --version)" \
     --arg rgit_version "$("$rgit" --version | head -n 1)" --arg hyperfine "$(hyperfine --version)" \
     --argjson runs "$runs" --argjson warmup "$warmup" --argjson slow "$slow" --argjson slow_runs "$slow_runs" \
-    --argjson dirty_files "$dirty_files" \
+    --argjson dirty_files "$dirty_files" --arg tool "$tool_sel" --arg baseline "$baseline" \
     --slurpfile scenarios <(cat /dev/null "${results[@]}") \
     '{label: $label, rgit_commit: $rgit_commit, started: $started, finished: $finished,
       machine: {host: $host, kernel: $kernel, cpu: $cpu, cpus: $cpus, mem_kb: $mem_kb, governor: $governor},
       tools: {git: $git_version, rgit: $rgit_version, hyperfine: $hyperfine},
-      settings: {runs: $runs, warmup: $warmup, slow_threshold_s: $slow, slow_runs: $slow_runs,
-                 dirty_files: $dirty_files, cache: "warm"},
+      settings: ({runs: $runs, warmup: $warmup, slow_threshold_s: $slow, slow_runs: $slow_runs,
+                 dirty_files: $dirty_files, cache: "warm", tool: $tool}
+                 + if $tool == "rgit" then {baseline: $baseline,
+                     notes: "only rgit was timed; the git columns come from \($baseline | split("/") | last)"}
+                   else {} end),
       scenarios: $scenarios}' >"$out"
 bash "$bench_dir/render.sh" "$out" >"$md_out"
 log "wrote $out and $md_out"

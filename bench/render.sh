@@ -24,6 +24,7 @@ def ratio: if . == null then "–" else "\(. * 100 | round / 100)×" end;
 "- git: \(.tools.git) (reference build)",
 "- Machine: \(.machine.host), \(.machine.cpu), \(.machine.cpus) CPUs, \(.machine.mem_kb / 1048576 | round) GB RAM, kernel \(.machine.kernel), CPU governor \(.machine.governor)",
 "- \(.tools.hyperfine), warm cache, \(.settings.runs) runs after \(.settings.warmup) warmups (\(.settings.slow_runs) runs without warmup when one validation run takes over \(.settings.slow_threshold_s) s); \(.settings.dirty_files) files dirty for status-dirty, add-A, commit",
+(.settings.notes // empty | "- Note: \(.)"),
 "- Run \(.started) – \(.finished)",
 "",
 "Times are hyperfine medians (wall clock); CPU is mean user + system time per run; RSS is the peak resident set size of one validation run (`/usr/bin/time -v`). Ratio = rgit / git (below 1 means rgit is faster).",

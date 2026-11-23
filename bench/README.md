@@ -29,8 +29,28 @@ bench/run.sh --repos ~/bench/repos --rgit target/release/rgit \
     --label v0.1.0 --out bench/results/v0.1.0.json
 ```
 
-`--only REGEX` selects scenarios by `<scenario>/<repo>`, `--repo-list` selects
-repositories; `bench/run.sh --help` lists all options.
+`--only` takes a comma-separated list of scenario names or `<scenario>/<repo>`
+items (regexes, matched whole), `--repo-list` selects repositories;
+`bench/run.sh --help` lists all options.
+
+## Re-measuring a performance fix (rgit only)
+
+A fix is measured on rgit alone; the git side of each scenario comes from a
+stored full run (`--baseline`), so the table still shows git, rgit and the
+ratio. Run it on the same machine as the baseline, with the same repositories
+and work directory (setup then only resets the existing worktrees):
+
+```sh
+cargo build --release -p rgit-cli
+bench/run.sh --tool rgit --baseline bench/results/main-4b31a34.json \
+    --only fetch-noop,status-clean,status-dirty \
+    --repos ~/bench/repos --work ~/bench/work --git ~/bench/git-2.56.1/bin/git \
+    --rgit target/release/rgit --rgit-commit "$(git rev-parse HEAD)" \
+    --check ~/bench/check.sh --out bench/results/fix-<topic>.json
+```
+
+Each result file keeps its raw hyperfine and validation data in
+`<work>/raw/<result name>/`, so a re-run never overwrites the baseline's.
 
 ## Method
 
