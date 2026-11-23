@@ -15,8 +15,13 @@
 //! `author-script`. Options given with `--continue`, `--skip` or
 //! `--retry` apply to the current mail only.
 //!
-//! Not done yet (#136): `--interactive`, rerere, `--rebasing` (the
-//! `rebase --apply` back end), GPG signing.
+//! `--rebasing` (the `rebase --apply` back end, #154): the session is
+//! marked by `rebasing`, each mail's `From <commit>` line names the
+//! original commit whose message and author are used as they are
+//! (`original-commit`), the rewritten commits are listed in `rewritten`
+//! for the `post-rewrite` hook, and `ORIG_HEAD` stays rebase's.
+//!
+//! Not done yet (#136): `--interactive`, rerere.
 
 use std::ffi::OsString;
 use std::io::{IsTerminal as _, Read, Write};
@@ -323,6 +328,8 @@ struct Am<'c> {
     empty: Empty,
     /// `-S[<key>]` / `--no-gpg-sign`, else `commit.gpgSign`.
     sign: Option<crate::signing::Sign>,
+    /// `--rebasing`, or a session it started.
+    rebasing: bool,
 }
 
 /// How a patch ended when it did not end in a commit.
@@ -615,11 +622,31 @@ impl<'c> Am<'c> {
         if self.cur.sign {
             message = self.signoff(&message)?;
         }
-        let author = Author {
+        let mut author = Author {
             name: ident.author.clone(),
             email: ident.email.clone(),
             date: mi.date.clone(),
         };
+        // `rebase --apply`: the original commit's message and author.
+        if self.rebasing
+            && let Some(orig) = self.original_commit(&data)
+        {
+            let repo = self.repo()?;
+            if let Some(rgit_object::Object::Commit(c)) = repo.read_object(&orig)
+                && let Some(a) = c.author().and_then(|a| a.to_owned())
+            {
+                message = c.message().to_vec();
+                if self.cur.sign {
+                    message = self.signoff(&message)?;
+                }
+                author = Author {
+                    name: a.name.to_vec(),
+                    email: a.email.to_vec(),
+                    date: format!("@{}", a.time).into_bytes(),
+                };
+            }
+            self.write("original-commit", format!("{}\n", orig.to_hex()))?;
+        }
         self.write("author-script", author_script(&author))?;
         self.write("final-commit", &message)?;
         if info.patch.is_empty() {
@@ -640,6 +667,16 @@ impl<'c> Am<'c> {
             }
         }
         Ok(true)
+    }
+
+    /// The commit named by the `From <commit> <date>` line a mail of
+    /// `format-patch` starts with.
+    fn original_commit(&self, mail: &[u8]) -> Option<ObjectId> {
+        let line = mail.split(|&b| b == b'\n').next()?;
+        let rest = line.strip_prefix(b"From ")?;
+        let hex = rest.split(|&b| b == b' ').next()?;
+        let repo = self.repo().ok()?;
+        ObjectId::from_hex(repo.hash, hex).ok()
     }
 
     fn signoff(&self, message: &[u8]) -> Result<Vec<u8>, Die> {
@@ -886,6 +923,16 @@ impl<'c> Am<'c> {
         let what = format!("{action}: {}", lossy(first_line(message)));
         seq::update_head(self.ctx, &repo, oid, head, &what)?;
         self.write("abort-safety", format!("{}\n", oid.to_hex()))?;
+        if self.rebasing
+            && let Some(orig) = self.read("original-commit")
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.path("rewritten"))
+                .map_err(io_die)?;
+            writeln!(f, "{} {}", orig.trim(), oid.to_hex()).map_err(io_die)?;
+        }
         Ok(())
     }
 
@@ -906,7 +953,7 @@ impl<'c> Am<'c> {
     fn next_patch(&mut self) -> Result<(), Die> {
         let n = self.number("next") + 1;
         self.write("next", format!("{n}\n"))?;
-        for f in ["author-script", "final-commit"] {
+        for f in ["author-script", "final-commit", "original-commit"] {
             let _ = std::fs::remove_file(self.path(f));
         }
         // The command line options were for the patch just finished.
@@ -976,8 +1023,21 @@ impl<'c> Am<'c> {
             let _ = self.run_hook("post-applypatch", &[])?;
             self.next_patch()?;
         }
+        if self.rebasing
+            && let Ok(list) = std::fs::read(self.path("rewritten"))
+        {
+            let repo = self.repo()?;
+            let hooks = crate::hooks::for_repo(self.ctx, &repo.setup, &repo.config)?;
+            if !list.is_empty() && hooks.exists("post-rewrite") {
+                let mut o = RunOptions::with_args(["rebase"]);
+                o.stdin = rgit_hook::Input::Data(&list);
+                crate::hooks::run(&hooks, "post-rewrite", &o)?;
+            }
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
-        crate::maintenance::run_auto(self.ctx);
+        if !self.rebasing {
+            crate::maintenance::run_auto(self.ctx);
+        }
         Ok(0)
     }
 
@@ -1672,6 +1732,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         no_verify: no_verify.get() == 1,
         sign: None,
         empty: empty.get(),
+        rebasing: rebasing.get() == 1 || dir.join("rebasing").exists(),
     };
     am.sign = crate::signing::resolve(&am.config, gpg_sign.into_inner());
 
@@ -1732,10 +1793,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     am.write("last", format!("{}\n", mails.len()))?;
     am.write("next", "1\n")?;
     am.save_settings()?;
-    am.write("applying", "")?;
+    if am.rebasing {
+        am.write("rebasing", "")?;
+    } else {
+        am.write("applying", "")?;
+    }
     let head = am.head()?;
     let orig = git_dir.join("ORIG_HEAD");
     match head {
+        Some(h) if am.rebasing => {
+            am.write("abort-safety", format!("{}\n", h.to_hex()))?;
+        }
         Some(h) => {
             std::fs::write(&orig, format!("{}\n", h.to_hex())).map_err(io_die)?;
             am.write("abort-safety", format!("{}\n", h.to_hex()))?;
