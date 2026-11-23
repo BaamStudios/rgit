@@ -28,6 +28,26 @@ use crate::messages::diff as msg;
 use crate::repository::Repo;
 use rgit_diff::ws_rule::{self, WsRule};
 
+/// A patch with its empty context lines (`" \n"` in a hunk) written as
+/// empty lines (`diff.suppressBlankEmpty`).
+fn suppress_blank_empty(patch: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(patch.len());
+    let mut in_hunk = false;
+    for line in patch.split_inclusive(|&b| b == b'\n') {
+        if line.starts_with(b"@@") {
+            in_hunk = true;
+        } else if line.starts_with(b"diff ") {
+            in_hunk = false;
+        }
+        if in_hunk && line == b" \n" {
+            out.push(b'\n');
+        } else {
+            out.extend_from_slice(line);
+        }
+    }
+    out
+}
+
 /// An abbreviated object id of a raw line, followed by "..." when
 /// `GIT_PRINT_SHA1_ELLIPSIS` is `yes` (git(1), ENVIRONMENT).
 pub fn raw_ellipsis(mut id: String, hash: HashKind) -> String {
@@ -73,6 +93,8 @@ pub struct Output<'a> {
     pub pickaxe_all: bool,
     pub filter: DiffFilter,
     pub irreversible_delete: bool,
+    /// `diff.suppressBlankEmpty`: empty context lines without the space.
+    pub suppress_blank_empty: bool,
     /// `--submodule=<format>` (or `diff.submodule` for the porcelain).
     pub submodule_format: SubmoduleFormat,
     /// The rename limit that would have been needed (warned about after
@@ -113,6 +135,9 @@ pub struct Output<'a> {
     color_moved: (super::moved::Mode, super::moved::MovedWs),
     /// Diff drivers (the `diff` attribute).
     drivers: Drivers,
+    /// `--attr-source` / `GIT_ATTR_SOURCE` / `attr.tree`: the tree the
+    /// `diff` attribute is read from (see [`crate::attributes::tree_source`]).
+    pub attr_tree: Option<Option<ObjectId>>,
     /// Run textconv filters (`--textconv`).
     pub textconv: bool,
     /// External diff programs are allowed (`--ext-diff`): with the
@@ -153,11 +178,12 @@ pub enum Pickaxe {
 }
 
 /// Compile a pickaxe pattern (an extended POSIX regular expression).
-fn pickaxe_regex(pattern: &str) -> Result<regex::bytes::Regex, Die> {
+fn pickaxe_regex(pattern: &str, icase: bool) -> Result<regex::bytes::Regex, Die> {
     let translated = rgit_revwalk::walk::grep::translate(pattern, true)
         .map_err(|reason| Die::Fatal(msg::invalid_regex(pattern, reason)))?;
     regex::bytes::RegexBuilder::new(&translated)
         .unicode(false)
+        .case_insensitive(icase)
         .build()
         .map_err(|e| {
             let reason = rgit_revwalk::walk::grep::reason(&e.to_string());
@@ -615,6 +641,13 @@ impl<'a> Output<'a> {
                 None => super::color::HIGHLIGHT_NEW,
             },
         };
+        if opts.pickaxe_both || (opts.pickaxe.is_some() && !opts.find_object.is_empty()) {
+            return Err(Die::Fatal(msg::PICKAXE_EXCLUSIVE.to_string()));
+        }
+        if opts.pickaxe_all && !opts.find_object.is_empty() {
+            return Err(Die::Fatal(msg::PICKAXE_ALL_WITH_FIND_OBJECT.to_string()));
+        }
+        let icase = opts.pickaxe_icase;
         let pickaxe = if !opts.find_object.is_empty() {
             if opts.found_objects.len() != opts.find_object.len() {
                 return Err(usage_exit(msg::unable_to_resolve(&opts.find_object[0])));
@@ -626,8 +659,18 @@ impl<'a> Output<'a> {
                 Some((true, _)) if opts.pickaxe_regex => {
                     return Err(Die::Fatal(msg::G_WITH_PICKAXE_REGEX.to_string()));
                 }
-                Some((true, p)) => Some(Pickaxe::Grep(pickaxe_regex(p)?)),
-                Some((false, p)) if opts.pickaxe_regex => Some(Pickaxe::Count(pickaxe_regex(p)?)),
+                Some((true, p)) => Some(Pickaxe::Grep(pickaxe_regex(p, icase)?)),
+                Some((false, p)) if opts.pickaxe_regex => {
+                    Some(Pickaxe::Count(pickaxe_regex(p, icase)?))
+                }
+                // A literal string ignoring case: the escaped pattern.
+                Some((false, p)) if icase => Some(Pickaxe::Count(
+                    regex::bytes::RegexBuilder::new(&regex::escape(p))
+                        .unicode(false)
+                        .case_insensitive(true)
+                        .build()
+                        .map_err(|e| Die::Fatal(msg::invalid_regex(p, &e.to_string())))?,
+                )),
                 Some((false, p)) => Some(Pickaxe::Literal(p.as_bytes().to_vec())),
             }
         };
@@ -637,6 +680,7 @@ impl<'a> Output<'a> {
             pickaxe_all: opts.pickaxe_all,
             filter: opts.diff_filter.clone(),
             irreversible_delete: opts.irreversible_delete,
+            suppress_blank_empty: config_bool("diff.suppressblankempty") == Some(true),
             submodule_format: match opts.submodule_format {
                 Some(f) => f,
                 None if porcelain => submodule_format_config(repo),
@@ -665,6 +709,7 @@ impl<'a> Output<'a> {
                 .map(|(s, p)| (*s, p.as_bytes().to_vec())),
             output: opts.output.as_ref().map(|o| cwd.join(o)),
             drivers: Drivers::default(),
+            attr_tree: None,
             textconv: opts.textconv.unwrap_or(false),
             external: opts
                 .ext_diff
@@ -975,6 +1020,26 @@ impl<'a> Output<'a> {
         }
         let mut pickaxe_hit = true;
         if let Some(how) = &self.pickaxe {
+            // With textconv the pickaxe looks at the converted text (and a
+            // failing filter is fatal).
+            let conv_failed = std::cell::Cell::new(false);
+            let converted = |s: &diffcore::Side<Extra>| {
+                let data = self.core_contents(s);
+                if !self.textconv || !is_file_mode(s.mode) || type_bits(s.mode) == 0o120000 {
+                    return data;
+                }
+                match self
+                    .diff_attr(&s.path)
+                    .ok()
+                    .and_then(|a| a.textconv().map(str::to_owned))
+                {
+                    Some(cmd) => super::driver::run_textconv(&cmd, &data).unwrap_or_else(|()| {
+                        conv_failed.set(true);
+                        Vec::new()
+                    }),
+                    None => data,
+                }
+            };
             let literal;
             let count_re;
             let grep_re;
@@ -991,12 +1056,18 @@ impl<'a> Output<'a> {
                     grep_re = move |l: &[u8]| re.is_match(l);
                     Criterion::Grep {
                         matches: &grep_re,
-                        text: false,
+                        // Textconv output counts as text.
+                        text: self.textconv && self.any_textconv(),
                     }
                 }
                 Pickaxe::Objects(ids) => Criterion::Objects(ids),
             };
-            result = diffcore::pickaxe::pickaxe(result, &criterion, self.pickaxe_all, &contents);
+            result = diffcore::pickaxe::pickaxe(result, &criterion, self.pickaxe_all, &converted);
+            if conv_failed.get() {
+                return Err(Die::Fatal(
+                    crate::messages::userdiff::UNABLE_TO_READ_FILES.into(),
+                ));
+            }
             pickaxe_hit = !result.is_empty();
         }
         // Back to the command's pairs, in order (unmerged paths where they
@@ -1556,6 +1627,9 @@ impl<'a> Output<'a> {
                                 new: Option<&PatchFile<'_>>| {
                     let mut plain = Vec::new();
                     write_file_patch_extra(&mut plain, old, new, popts, &abbrev, &extra);
+                    if self.suppress_blank_empty {
+                        plain = suppress_blank_empty(&plain);
+                    }
                     let ws = WsContext {
                         rule,
                         highlight: if f.check { 0 } else { self.ws_highlight },
@@ -1741,7 +1815,15 @@ impl Output<'_> {
         let Some(repo) = self.repo else {
             return Ok(DiffAttr::Unspecified);
         };
-        let state = repo.converter()?.attr(path, b"diff");
+        let state = match self.attr_tree {
+            Some(tree) => {
+                let (index, _) = repo.read_index()?;
+                let mut attrs = crate::attributes::open(repo, &index, Some(tree), false);
+                let id = attrs.id(b"diff");
+                attrs.lookup(path, false).get(id).clone()
+            }
+            None => repo.converter()?.attr(path, b"diff"),
+        };
         self.drivers.resolve(&repo.config, &state)
     }
 
@@ -1762,6 +1844,16 @@ impl Output<'_> {
             }
         }
         Ok((data, attr.binary()))
+    }
+
+    /// Whether any diff driver has a textconv filter configured.
+    fn any_textconv(&self) -> bool {
+        self.repo.is_some_and(|r| {
+            r.config.entries().iter().any(|e| {
+                let n = e.name.as_slice();
+                n.starts_with(b"diff.") && n.ends_with(b".textconv")
+            })
+        })
     }
 
     /// Run the textconv filter of `path`'s driver on `l`.
@@ -1797,7 +1889,8 @@ impl Output<'_> {
             if patch && l.conv.is_some() {
                 continue;
             }
-            let forced = if self.repo.is_some() {
+            // Symbolic links ignore diff drivers (t4011).
+            let forced = if self.repo.is_some() && type_bits(l.mode) != 0o120000 {
                 self.diff_attr(path)?.binary()
             } else {
                 None

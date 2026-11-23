@@ -102,6 +102,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return run_no_index(ctx, repo.as_ref(), &opts, &parsed.args);
     }
     let mut repo = repo.expect("repository");
+    let attr_tree = crate::attributes::tree_source(ctx, &mut repo, None)?;
 
     // Revisions first, then paths.
     let split = parsed.dashdash_at.unwrap_or(parsed.args.len());
@@ -360,6 +361,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     page(ctx, Some(&repo), &opts)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, true)?;
+    out.attr_tree = attr_tree;
     out.set_color(&opts)?;
     if let Some((s, d)) = mnemonic {
         out.mnemonic(&opts, s, d);
@@ -492,9 +494,11 @@ fn diff_blobs(
     let mut pair = Pair::new(new_path.into_bytes(), Some(old), Some(new));
     pair.old_path = old_path.into_bytes();
     opts.resolve_objects(repo)?;
+    let attr_tree = crate::attributes::tree_source(ctx, repo, None)?;
     let repo: &Repo = repo;
     page(ctx, Some(repo), opts)?;
     let mut out = Output::new(Some(repo), repo.hash, opts, formats, true)?;
+    out.attr_tree = attr_tree;
     out.set_color(opts)?;
     let (bytes, changed) = out.render(vec![pair])?;
     Ok(out.finish(&bytes, changed, opts))

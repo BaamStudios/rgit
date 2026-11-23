@@ -153,6 +153,58 @@ struct Commits<'r, 'a> {
     paths: Option<paths::PathFilter>,
     /// `--author`/`--committer` match the identities mapped through this.
     mailmap: Option<mailmap::Mailmap>,
+    /// `-S`, `-G`, `--find-object`, `--diff-filter`.
+    diff_limit: Option<DiffLimit>,
+}
+
+/// `log -S/-G/--find-object/--diff-filter`: only commits whose diff keeps
+/// a change after the filter (Documentation/rev-list-options.adoc,
+/// diff-options.adoc). The diff is against the first parent (roots against
+/// the empty tree); merges have none unless the first parent counts.
+struct DiffLimit {
+    repo: crate::repository::Repo,
+    opts: crate::diff::options::DiffOpts,
+    pathspec: rgit_pathspec::Pathspec,
+    first_parent: bool,
+    /// `--root` / `log.showRoot`: root commits have a diff.
+    show_root: bool,
+}
+
+impl DiffLimit {
+    fn keeps(&self, history: &Repo<'_>, id: &ObjectId) -> Result<bool, Die> {
+        let bad = || Die::Fatal(msg::bad_object(&id.to_hex()));
+        let (commit, _) = history.read_commit(id).ok_or_else(bad)?;
+        let parents = history.parents(id, &commit);
+        let tree = commit.tree().map_err(|_| bad())?;
+        let old = match parents.len() {
+            0 if !self.show_root => return Ok(false),
+            0 => None,
+            1 => Some(history.tree_of(&parents[0]).ok_or_else(bad)?),
+            _ if self.first_parent => Some(history.tree_of(&parents[0]).ok_or_else(bad)?),
+            _ => return Ok(false),
+        };
+        let mut w = crate::diff::collect::TreeDiff {
+            repo: &self.repo,
+            pathspec: &self.pathspec,
+            recursive: true,
+            show_trees: false,
+            max_depth: None,
+            pairs: Vec::new(),
+        };
+        w.walk(old.as_ref(), Some(&tree), b"")?;
+        let formats = crate::diff::options::Formats {
+            raw: true,
+            ..Default::default()
+        };
+        let out = crate::diff::output::Output::new(
+            Some(&self.repo),
+            self.repo.hash,
+            &self.opts,
+            formats,
+            true,
+        )?;
+        Ok(!out.diffcore(std::mem::take(&mut w.pairs))?.is_empty())
+    }
 }
 
 impl CommitSource for Commits<'_, '_> {
@@ -175,6 +227,18 @@ impl CommitSource for Commits<'_, '_> {
     }
 
     fn include(&mut self, id: &ObjectId) -> Result<bool, ObjectId> {
+        if let Some(limit) = &self.diff_limit {
+            match limit.keeps(self.repo, id) {
+                Ok(true) => {}
+                Ok(false) => return Ok(false),
+                Err(Die::Fatal(m)) => {
+                    // A failing textconv filter is fatal like in git.
+                    let _ = writeln!(std::io::stderr(), "fatal: {m}");
+                    std::process::exit(128);
+                }
+                Err(_) => return Err(*id),
+            }
+        }
         let Some(grep) = &self.grep else {
             return Ok(true);
         };
@@ -389,6 +453,9 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
         let _ = std::io::stdin().lock().read_to_end(&mut input);
         opts.read_stdin(&input)?;
     }
+    if opts.merge {
+        merge_tips(ctx, &repo, &mut opts)?;
+    }
     if opts.bisect {
         let terms = crate::commands::bisect::Terms::of(&setup);
         let (new, old) = (
@@ -418,6 +485,63 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
         }
     }
     run(ctx, &repo, cmd, &opts)
+}
+
+/// `--merge` (rev-list-options.adoc): `HEAD...<other>` for the first of
+/// `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, limited
+/// to the conflicted paths (those of them the given paths select).
+fn merge_tips(ctx: &Context, repo: &Repo<'_>, opts: &mut Options) -> Result<(), Die> {
+    if repo
+        .refs
+        .resolve("HEAD")
+        .ok()
+        .flatten()
+        .and_then(|r| r.oid)
+        .is_none()
+    {
+        return Err(Die::Fatal(msg::MERGE_WITHOUT_HEAD.into()));
+    }
+    let other = [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "REBASE_HEAD",
+    ]
+    .into_iter()
+    .find(|name| {
+        repo.refs
+            .resolve(name)
+            .ok()
+            .flatten()
+            .is_some_and(|r| r.oid.is_some())
+    })
+    .ok_or_else(|| Die::Fatal(msg::MERGE_NEEDS_PSEUDOREF.into()))?;
+    opts.tips.push(options::Tip::Rev {
+        arg: format!("HEAD...{other}"),
+        negate: false,
+    });
+    let index_repo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    let (index, _) = index_repo.read_index()?;
+    let mut conflicted: Vec<String> = Vec::new();
+    for e in index.entries() {
+        if e.stage() == rgit_index::Stage::MERGED {
+            continue;
+        }
+        let path = String::from_utf8_lossy(e.path()).into_owned();
+        if conflicted.last() != Some(&path) {
+            conflicted.push(path);
+        }
+    }
+    if !opts.paths.is_empty() {
+        let given = paths::parse_pathspec(ctx, repo, &opts.paths)?;
+        conflicted.retain(|p| given.matches(p.as_bytes()));
+    }
+    // The paths are relative to the top of the work tree.
+    opts.paths = conflicted
+        .into_iter()
+        .map(|p| format!(":(top,literal){p}"))
+        .collect();
+    Ok(())
 }
 
 /// The commits `cherry-pick` and `revert` work on, in the order they are
@@ -590,6 +714,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
             },
             paths,
             mailmap: None,
+            diff_limit: None,
         },
         walk_opts,
     );
@@ -682,6 +807,7 @@ pub fn walk_formatted(
             patch_ids: None,
             paths: None,
             mailmap: None,
+            diff_limit: None,
         },
         opts.walk.clone(),
     );
@@ -1943,6 +2069,28 @@ fn want_decorate(config: &ConfigSet, opt: Option<Decorate>) -> bool {
 /// `log` (each at most once), annotated tags with their header and
 /// message followed by the tagged object, trees as `tree <name>` and the
 /// names of their entries, blobs as they are.
+/// `show --textconv <rev>:<path>`: the blob through the textconv filter of
+/// its path's diff driver (git-show(1)).
+fn textconv_blob(p: &Printer<'_, '_>, name: &str, data: Vec<u8>) -> Result<Vec<u8>, Die> {
+    let (Some(true), Some(d), Some((_, path))) =
+        (p.opts.diff.textconv, p.diff.as_ref(), name.split_once(':'))
+    else {
+        return Ok(data);
+    };
+    let conv = d.repo.converter()?;
+    let cmd = match conv.attr(path.as_bytes(), b"diff") {
+        rgit_attr::State::Value(v) => {
+            crate::diff::driver::load(&d.repo.config, &String::from_utf8_lossy(&v))?.textconv
+        }
+        _ => None,
+    };
+    match cmd {
+        Some(cmd) => crate::diff::driver::run_textconv(&cmd, &data)
+            .map_err(|()| Die::Fatal(crate::messages::cat_file::textconv_failed(name))),
+        None => Ok(data),
+    }
+}
+
 fn show_objects(p: &mut Printer<'_, '_>) -> Result<i32, Die> {
     let repo = p.repo;
     let opts = p.opts;
@@ -1999,7 +2147,10 @@ fn show_objects(p: &mut Printer<'_, '_>) -> Result<i32, Die> {
                         p.out.push(b'\n');
                     }
                 }
-                ObjectKind::Blob => p.out.extend_from_slice(&data),
+                ObjectKind::Blob => {
+                    let data = textconv_blob(p, &name, data)?;
+                    p.out.extend_from_slice(&data);
+                }
             }
             break;
         }
@@ -2022,6 +2173,7 @@ fn show_commit(p: &mut Printer<'_, '_>, id: &ObjectId) -> Result<(), Die> {
         patch_ids: None,
         paths: None,
         mailmap: None,
+        diff_limit: None,
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
@@ -2089,14 +2241,6 @@ struct LogDiff {
 fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDiff>, Die> {
     if cmd != Command::Log {
         return Ok(None);
-    }
-    if let Some((regex, _)) = &opts.diff.pickaxe {
-        // Limiting the commits by their diff is not there yet.
-        return Err(Die::Fatal(msg::not_supported(if *regex {
-            "-G"
-        } else {
-            "-S"
-        })));
     }
     let mut d = opts.diff.clone();
     // `-c`, `--cc`, `--dd` and `--remerge-diff` imply `-p`; `--diff-merges`
@@ -2359,6 +2503,42 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
                 .unwrap_or(true)
     });
     let ident_grep = !opts.grep.author.is_empty() || !opts.grep.committer.is_empty();
+    let d = &opts.diff;
+    let diff_limit = if cmd == Command::Log
+        && !opts.show
+        && (d.pickaxe.is_some() || !d.find_object.is_empty() || d.diff_filter.is_active())
+    {
+        let mut drepo = crate::repository::Repo::open(ctx, Mode::Required)?;
+        let mut dopts = d.clone();
+        // log is porcelain: the pickaxe sees textconv output.
+        dopts.textconv = Some(dopts.textconv.unwrap_or(true));
+        dopts.resolve_objects(&mut drepo)?;
+        // Option conflicts (`-G` with `-S`, ...) are fatal before the walk.
+        crate::diff::output::Output::new(
+            Some(&drepo),
+            drepo.hash,
+            &dopts,
+            crate::diff::options::Formats::default(),
+            true,
+        )?;
+        let show_root = opts.root
+            || drepo
+                .config
+                .bool("log.showRoot")
+                .ok()
+                .flatten()
+                .unwrap_or(true);
+        Some(DiffLimit {
+            show_root,
+            repo: drepo,
+            opts: dopts,
+            pathspec: paths::parse_pathspec(ctx, repo, &resolved.paths)?,
+            first_parent: opts.walk.first_parent
+                || matches!(opts.merges, Some(MergeDiff::FirstParent)),
+        })
+    } else {
+        None
+    };
     let mut walk = Walk::new(
         Commits {
             repo,
@@ -2366,6 +2546,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             patch_ids,
             paths,
             mailmap: (use_mailmap && ident_grep).then(|| mailmap::Mailmap::load(repo)),
+            diff_limit,
         },
         walk_opts,
     );

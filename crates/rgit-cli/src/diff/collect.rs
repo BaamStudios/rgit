@@ -626,6 +626,14 @@ pub fn index(
     ita_invisible: bool,
 ) -> Result<Vec<Pair>, Die> {
     let files = tree_files(repo, tree, ps)?;
+    // A tree with duplicate entries cannot match the index (observed:
+    // t4058 "git diff HEAD does not segfault").
+    if wt.is_some() && files.windows(2).any(|w| w[0].0 == w[1].0) {
+        return Err(Die::Error(
+            crate::messages::diff::CORRUPTED_CACHE_TREE.into(),
+            128,
+        ));
+    }
     let paths = index_paths(index, ps);
     let mut pairs = Vec::new();
     let (mut i, mut j) = (0, 0);

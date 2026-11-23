@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use std::io::{self, Read, Write};
 
 use crate::error::{Error, Result};
+use crate::messages;
 use crate::trace::{Direction, Traced, Tracer};
 
 /// Largest payload a writer may send (65520 bytes per pkt-line).
@@ -137,6 +138,7 @@ pub struct Reader<R> {
     peeked: bool,
     chomp: bool,
     err_packets: bool,
+    partial_errors: bool,
     tracer: Tracer,
 }
 
@@ -153,8 +155,17 @@ impl<R: Read> Reader<R> {
             peeked: false,
             chomp: true,
             err_packets: true,
+            partial_errors: false,
             tracer: Tracer::new(name),
         }
+    }
+
+    /// Whether a packet cut off by the end of input is reported (`error:
+    /// N bytes of length header were received`, as for HTTP responses)
+    /// before [`Error::HungUp`] (default off).
+    pub fn partial_errors(&mut self, on: bool) -> &mut Self {
+        self.partial_errors = on;
+        self
     }
 
     /// Whether one trailing LF is removed from data packets (default on).
@@ -239,6 +250,9 @@ impl<R: Read> Reader<R> {
             return Ok(());
         }
         if got < 4 {
+            if self.partial_errors {
+                eprintln!("error: {}", messages::partial_header(got));
+            }
             return Err(Error::HungUp);
         }
         let len = parse_length(hdr)?;
@@ -259,7 +273,11 @@ impl<R: Read> Reader<R> {
                     return Err(Error::BadLength(n));
                 }
                 self.buf.resize(n, 0);
-                if read_full(&mut self.inner, &mut self.buf)? < n {
+                let got = read_full(&mut self.inner, &mut self.buf)?;
+                if got < n {
+                    if self.partial_errors {
+                        eprintln!("error: {}", messages::partial_body(n - got));
+                    }
                     return Err(Error::HungUp);
                 }
                 self.tracer

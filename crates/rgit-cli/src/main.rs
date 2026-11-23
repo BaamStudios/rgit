@@ -149,6 +149,13 @@ fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
     if argv.get(1).map(String::as_str) == Some("--help") {
         argv = vec!["help".into(), "--exclude-guides".into(), argv[0].clone()];
     }
+    // An alias may shadow a deprecated built-in.
+    if cmdlist::DEPRECATED.contains(&argv[0].as_str()) {
+        let early = alias::EarlyConfig::load(ctx)?;
+        if alias::lookup(&early.config, &argv[0])?.is_some() {
+            return expand_alias(ctx, early, argv);
+        }
+    }
     if let Some(result) = run_command(ctx, &argv) {
         return result;
     }

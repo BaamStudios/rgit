@@ -794,6 +794,23 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         }
     }
     let mut refs: Vec<RemoteRef> = session.list_refs(&ls).map_err(|e| fatal(&e))?;
+    // Invalid names from the server are dropped with a warning (t5702).
+    let valid = |name: &[u8]| {
+        rgit_refs::name::is_valid_refname(name, rgit_refs::name::RefNameFlags::ONELEVEL)
+    };
+    refs.retain(|r| {
+        let ok = r.name == b"HEAD" || valid(&r.name);
+        if !ok {
+            eprintln!("warning: {}", msg::invalid_advertised_ref(&r.name.to_str_lossy()));
+        }
+        ok
+    });
+    for r in &mut refs {
+        if let Some(t) = r.symref_target.as_ref().filter(|t| !valid(t)) {
+            eprintln!("warning: {}", msg::invalid_symref_target(&t.to_str_lossy()));
+            r.symref_target = None;
+        }
+    }
     // A v0/v1 server advertises every ref: keep what v2 would list.
     if !ls.ref_prefixes.is_empty() {
         refs.retain(|r| {

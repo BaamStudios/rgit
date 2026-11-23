@@ -144,6 +144,11 @@ pub fn multiple_merge_bases(a: &str, b: &str, base: &str) -> String {
 pub const BAD_DIFF_ALGORITHM: &str =
     "error: option diff-algorithm accepts \"myers\", \"minimal\", \"patience\" and \"histogram\"\n";
 
+/// A one-letter option that needs a value was the last argument.
+pub fn switch_requires_value(switch: &str) -> String {
+    format!("error: switch `{switch}' requires a value\n")
+}
+
 /// An option that needs a value was the last argument.
 pub fn requires_value(option: &str) -> String {
     format!("error: option `{option}' requires a value\n")
@@ -176,6 +181,17 @@ pub fn unable_to_resolve(name: &str) -> String {
 pub fn invalid_regex(_pattern: &str, reason: &str) -> String {
     format!("invalid regex: {reason}")
 }
+
+pub const CORRUPTED_CACHE_TREE: &str = "corrupted cache-tree has entries not present in index";
+
+pub fn pickaxe_needs_argument(option: &str) -> String {
+    format!("error: {option} requires a non-empty argument\n")
+}
+
+pub const PICKAXE_EXCLUSIVE: &str =
+    "options '-G', '-S', and '--find-object' cannot be used together";
+
+pub const PICKAXE_ALL_WITH_FIND_OBJECT: &str = "options '--pickaxe-all' and '--find-object' cannot be used together, use '--pickaxe-all' with '-G' and '-S'";
 
 pub const G_WITH_PICKAXE_REGEX: &str =
     "options '-G' and '--pickaxe-regex' cannot be used together, use '--pickaxe-regex' with '-S'";
