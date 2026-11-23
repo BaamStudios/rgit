@@ -8,6 +8,12 @@ use std::path::Path;
 /// `fatal:` for `tag` at the end of the command-line refspecs.
 pub const NEED_TAG_NAME: &str = "you need to specify a tag name";
 
+/// `hint:` before [`SERVER_OPTIONS_NEED_V2`].
+pub const SERVER_OPTIONS_HINT: &str = "see protocol.version in 'git help config' for more details";
+
+/// `fatal:` for `--server-option` with a protocol v0/v1 server.
+pub const SERVER_OPTIONS_NEED_V2: &str = "server options require protocol version 2 or later";
+
 /// `fatal:` when a connection could not be read from the start.
 pub const COULD_NOT_READ_REMOTE: &str = "Could not read from remote repository.\n\n\
 Please make sure you have the correct access rights\nand the repository exists.";

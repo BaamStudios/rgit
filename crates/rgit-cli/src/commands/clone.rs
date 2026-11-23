@@ -745,7 +745,25 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         ip: opts.ip,
         verbose: opts.verbose,
     };
+    // `--server-option` replaces `remote.<name>.serverOption` (given with
+    // `-c`); a bad `remote.*` entry is fatal here like in git.
+    let configured = rgit_remote::Remotes::from_config(&repo.config)
+        .map_err(super::ls_remote::remote_config_die)?
+        .get(origin.as_bytes(), None)
+        .map_err(super::ls_remote::remote_config_die)?
+        .server_options;
+    let server_options: Vec<String> = if opts.server_options.is_empty() {
+        configured
+            .iter()
+            .map(|o| o.to_str_lossy().into_owned())
+            .collect()
+    } else {
+        opts.server_options.clone()
+    };
     let mut session = Session::connect(&source.connect_url, &connect, "clone").map_err(|e| fatal(&e))?;
+    session
+        .check_server_options(&opts.server_options)
+        .map_err(|e| fatal(&e))?;
 
     // Fetch refspecs given with `-c remote.<name>.fetch=...` are used in
     // addition to the default one.
@@ -758,7 +776,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         .filter_map(|e| e.value.as_ref().map(|v| v.to_str_lossy().into_owned()))
         .collect();
     let mut ls = LsRefsArgs::standard();
-    ls.server_options = opts.server_options.clone();
+    ls.server_options = server_options.clone();
     if !opts.mirror && opts.revision.is_none() {
         ls.ref_prefixes.push("HEAD".into());
         ls.ref_prefixes.push("refs/heads/".into());
@@ -788,22 +806,25 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let mut head_target: Option<String> = remote_head
         .and_then(|h| h.symref_target.as_ref())
         .map(|t| String::from_utf8_lossy(t).into_owned());
+    // The local default branch name.
+    let default_branch = || {
+        std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                repo.config
+                    .string("init.defaultbranch")
+                    .ok()
+                    .flatten()
+                    .map(|v| v.to_string())
+            })
+            .unwrap_or_else(|| "master".to_owned())
+    };
     // A detached remote HEAD: the branch at the same commit, preferring
     // the default branch name, else the first one.
     if head_target.is_none() {
         if let Some(oid) = remote_head.and_then(|h| h.oid) {
-            let default = std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .or_else(|| {
-                    repo.config
-                        .string("init.defaultbranch")
-                        .ok()
-                        .flatten()
-                        .map(|v| v.to_string())
-                })
-                .unwrap_or_else(|| "master".to_owned());
-            let preferred = format!("refs/heads/{default}");
+            let preferred = format!("refs/heads/{}", default_branch());
             let branches = || {
                 refs.iter()
                     .filter(|r| r.oid == Some(oid) && r.name.starts_with(b"refs/heads/"))
@@ -815,6 +836,12 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         }
     }
     let empty = refs.iter().all(|r| r.oid.is_none());
+    // An empty repository still passes on its object format.
+    let remote_format = session.object_format();
+    if empty && remote_format != hash {
+        config_set(&config_path, "core.repositoryformatversion", "1")?;
+        config_set(&config_path, "extensions.objectformat", remote_format.name())?;
+    }
 
     // The branch to check out: --branch, else the remote's HEAD.
     let mut our: Option<Our> = None;
@@ -841,6 +868,17 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             Some(t) if t.starts_with("refs/heads/") => Our::Branch(t.clone(), oid),
             _ => Our::Detached(oid),
         });
+    } else if remote_head.is_none() {
+        // No HEAD advertised (an unborn one the server does not show):
+        // the remote branch named like the local default branch.
+        let name = format!("refs/heads/{}", default_branch());
+        if let Some(oid) = refs
+            .iter()
+            .find(|r| r.name == name.as_bytes())
+            .and_then(|r| r.oid)
+        {
+            our = Some(Our::Branch(name, oid));
+        }
     }
 
     // The refspec, now that the branch for --single-branch is known.
@@ -955,7 +993,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             // git asks for tags with --single-branch also under --no-tags
             // (the tag objects arrive, no tag refs are written).
             include_tag: single_ref.is_some() && !opts.mirror,
-            server_options: opts.server_options.clone(),
+            server_options: server_options.clone(),
             // A clone always keeps the pack.
             unpack_limit: None,
             ..deepen.clone()

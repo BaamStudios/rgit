@@ -188,7 +188,7 @@ impl Repo {
         };
         let fatal = |e: rgit_fetch::Error| Die::Fatal(e.to_string());
         let mut session = Session::connect(&url, &settings, "remote").map_err(fatal)?;
-        let refs = session.ls_refs(&[]).map_err(fatal)?;
+        let refs = session.ls_refs(&[], &[]).map_err(fatal)?;
         let _ = session.close();
         Ok(refs)
     }

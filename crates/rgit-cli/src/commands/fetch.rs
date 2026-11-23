@@ -454,7 +454,7 @@ pub fn run_with_reflog_action(
             && !args.multiple
             && config.bool("fetch.all").ok().flatten().unwrap_or(false)
     });
-    let remotes = Remotes::from_config(&config).map_err(|e| Die::Fatal(e.to_string()))?;
+    let remotes = Remotes::from_config(&config).map_err(super::ls_remote::remote_config_die)?;
     for w in remotes.warnings() {
         eprintln!("warning: {w}");
     }
