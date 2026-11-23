@@ -90,6 +90,9 @@ fn apply_back_end() {
             "git rebase --apply topic",
             "git rebase --apply --autostash --onto main topic~1",
             "echo dirty >>y; git rebase --apply --autostash --onto main topic~1",
+            // Switching to the branch fails: the autostash comes back.
+            "git checkout -q main && echo u >y && echo d >>f && git rebase --autostash topic~2 topic",
+            "git checkout -q main && echo u >y && echo d >>f && git rebase --apply --autostash topic~2 topic",
         ],
     );
 }

@@ -580,6 +580,10 @@ pub fn trailer_missing_key(trailer: &str) -> String {
     format!("invalid trailer '{trailer}': missing key before separator")
 }
 
+pub fn could_not_switch(branch: &str) -> String {
+    format!("could not switch to {branch}")
+}
+
 pub fn requires_merge_backend(what: &str) -> String {
     format!("{what} requires the merge backend")
 }
