@@ -30,6 +30,7 @@ written from git's public documentation and from the observable behaviour of the
 | `conformance.lock` | Pinned commit of the conformance suite ([rgit-conformance](https://github.com/BaamStudios/rgit-conformance), GPL-2.0, separate repository) |
 | `docs/` | Design notes and architecture decision records |
 | `scripts/fetch-upstream.sh` | Fetches the reference git version into `upstream/git` (not committed) |
+| `bench/` | Benchmark suite rgit vs. git (hyperfine) and results per version |
 | `scripts/check-*.sh` | License guards run in CI: SPDX headers, banned dependencies, DCO sign-off |
 | `deny.toml` | cargo-deny policy: license allowlist, banned crates (ADR 0002), crates.io only |
 | `upstream/git/` | Local copy of upstream git: documentation, reference binary, test suite |
