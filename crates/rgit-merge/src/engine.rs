@@ -20,7 +20,8 @@ use rgit_object::{EntryMode, ObjectKind, Tree, TreeEntry, TreeIter};
 mod renames;
 
 use crate::{
-    ConflictedPath, Error, MergeResult, Message, MessageKind, Objects, Options, Version, messages,
+    ConflictedPath, Driver, DriverInput, Error, MergeResult, Message, MessageKind, Objects,
+    Options, Version, messages,
 };
 
 const MODE_TREE: u32 = 0o040000;
@@ -92,6 +93,12 @@ pub(crate) fn merge(
         quiet_conflict: false,
         rename_limit_needed: None,
     };
+    // git reads the three trees before anything else.
+    for t in [base, ours, theirs] {
+        if let Err(Error::MissingTree(missing)) = read_tree(objects, t) {
+            return Err(Error::Collect(Box::new((missing, [*base, *ours, *theirs]))));
+        }
+    }
     let tree = if ours == theirs || base == theirs {
         *ours
     } else if base == ours {
@@ -194,7 +201,7 @@ impl Engine<'_> {
             Some(raw) if raw.kind == ObjectKind::Blob => Ok(raw.data),
             Some(_) => Err(Error::Corrupt(*id, "not a blob".into())),
             None if *id == self.objects.hash_kind().empty_blob() => Ok(Vec::new()),
-            None => Err(Error::MissingObject(*id)),
+            None => Err(Error::MissingBlob(*id)),
         }
     }
 
@@ -450,6 +457,10 @@ impl Engine<'_> {
                     None => (self.labels.ours, self.labels.theirs, t),
                     Some(_) => (self.labels.theirs, self.labels.ours, o),
                 };
+                if self.unchanged_after_renormalizing(&path, b, kept)? {
+                    // Only the normalization changed: the deletion wins.
+                    return Ok(());
+                }
                 dir.out.extend(kept.map(|v| (target.to_vec(), v)));
                 let text = messages::modify_delete(&path, deleted_in, modified_in);
                 self.message(vec![path.clone()], MessageKind::ModifyDelete, text);
@@ -505,13 +516,36 @@ impl Engine<'_> {
                     dir.out.extend(b.map(|v| (target.to_vec(), v)));
                     return Ok(());
                 }
+                if k == Kind::Link {
+                    // -Xours / -Xtheirs pick a side.
+                    let pick = match self.opts.favor {
+                        Favor::Ours => Some(o),
+                        Favor::Theirs => t,
+                        _ => None,
+                    };
+                    if let Some(v) = pick {
+                        dir.out.push((target.to_vec(), v));
+                        return Ok(());
+                    }
+                }
                 if k == Kind::Gitlink {
+                    if let Some(v) = self.merge_submodule(&path, b, o, t)? {
+                        dir.out.push((target.to_vec(), v));
+                        return Ok(());
+                    }
+                }
+                if k == Kind::Gitlink && self.submodule_unavailable(&path, o) {
                     let text = messages::submodule_not_checked_out(&path);
                     self.message(
                         vec![path.clone()],
                         MessageKind::SubmoduleNotInitialized,
                         text,
                     );
+                    let text = messages::submodule_conflict(&path);
+                    self.message(vec![path.clone()], MessageKind::Contents, text);
+                } else if k == Kind::Gitlink {
+                    let text = messages::submodule_failed(&path);
+                    self.message(vec![path.clone()], MessageKind::SubmoduleConflict, text);
                     let text = messages::submodule_conflict(&path);
                     self.message(vec![path.clone()], MessageKind::Contents, text);
                 } else {
@@ -523,6 +557,67 @@ impl Engine<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Whether the submodule at `path` cannot be looked into (it is not
+    /// checked out, or there are no merge attributes to ask).
+    fn submodule_unavailable(&self, path: &[u8], o: Version) -> bool {
+        match &self.opts.path_merge {
+            Some(pm) => pm.submodule_is_ancestor(path, &o.oid, &o.oid).is_none(),
+            None => true,
+        }
+    }
+
+    /// Submodule commits changed on both sides: when one descends from
+    /// the other (and both from the base), the descendant
+    /// ("Fast-forwarding submodule"); `None` leaves the conflict.
+    fn merge_submodule(
+        &mut self,
+        path: &[u8],
+        b: Entry,
+        o: Version,
+        t: Entry,
+    ) -> Result<Option<Version>, Error> {
+        let (Some(pm), Some(b), Some(t)) = (&self.opts.path_merge, b, t) else {
+            return Ok(None);
+        };
+        if kind(b.mode) != Kind::Gitlink || kind(t.mode) != Kind::Gitlink {
+            return Ok(None);
+        }
+        let anc = |a: &ObjectId, d: &ObjectId| pm.submodule_is_ancestor(path, a, d) == Some(true);
+        if !anc(&b.oid, &o.oid) || !anc(&b.oid, &t.oid) {
+            return Ok(None);
+        }
+        let pick = if anc(&o.oid, &t.oid) {
+            t
+        } else if anc(&t.oid, &o.oid) {
+            o
+        } else {
+            return Ok(None);
+        };
+        let text = messages::submodule_fast_forward(path, &pick.oid.to_hex());
+        self.message(vec![path.to_vec()], MessageKind::SubmoduleFastForward, text);
+        Ok(Some(pick))
+    }
+
+    /// With renormalization: whether the regular files `b` and `v` of
+    /// `path` are equal once both are normalized.
+    fn unchanged_after_renormalizing(
+        &self,
+        path: &[u8],
+        b: Entry,
+        v: Entry,
+    ) -> Result<bool, Error> {
+        let (Some(pm), Some(b), Some(v)) = (&self.opts.path_merge, b, v) else {
+            return Ok(false);
+        };
+        if !self.opts.renormalize || kind(b.mode) != Kind::Regular || kind(v.mode) != Kind::Regular
+        {
+            return Ok(false);
+        }
+        let base = pm.renormalize(path, self.read_blob(&b.oid)?);
+        let data = pm.renormalize(path, self.read_blob(&v.oid)?);
+        Ok(base == data)
     }
 
     /// Merges two regular files: the executable bit and the content.
@@ -565,7 +660,8 @@ impl Engine<'_> {
         Ok((Version { mode, oid }, clean))
     }
 
-    /// The three-way merge of the contents of two regular files.
+    /// The three-way merge of the contents of two regular files, with the
+    /// driver and marker size of the path's merge attributes.
     fn merge_content(
         &mut self,
         path: &[u8],
@@ -574,17 +670,38 @@ impl Engine<'_> {
         t: Version,
     ) -> Result<(ObjectId, bool), Error> {
         // A base of another type (a symbolic link) counts as empty.
-        let base = match b {
+        let mut base = match b {
             Some(b) if kind(b.mode) == Kind::Regular => self.read_blob(&b.oid)?,
             _ => Vec::new(),
         };
-        let ours = self.read_blob(&o.oid)?;
-        let theirs = self.read_blob(&t.oid)?;
-        let marker_size = match self.opts.marker_size {
+        let mut ours = self.read_blob(&o.oid)?;
+        let mut theirs = self.read_blob(&t.oid)?;
+        let (driver, attr_size) = match &self.opts.path_merge {
+            Some(pm) => pm.driver(path, self.depth > 0),
+            None => (Driver::Text, None),
+        };
+        if self.opts.renormalize {
+            if let Some(pm) = &self.opts.path_merge {
+                base = pm.renormalize(path, base);
+                ours = pm.renormalize(path, ours);
+                theirs = pm.renormalize(path, theirs);
+                if ours == theirs || base == theirs {
+                    return Ok((self.write(ObjectKind::Blob, &ours)?, true));
+                }
+                if base == ours {
+                    return Ok((self.write(ObjectKind::Blob, &theirs)?, true));
+                }
+            }
+        }
+        let marker_size = match attr_size.unwrap_or(self.opts.marker_size) {
             0 => text::DEFAULT_MARKER_SIZE,
             n => n,
         } + 2 * self.depth
             + self.extra_marker;
+        let favor = match driver {
+            Driver::Union => Favor::Union,
+            _ => self.opts.favor,
+        };
         // A file merged at a path it was renamed to: the labels name the
         // path on each side.
         let with_path = |label: &[u8], p: &[u8]| [label, b":", p].concat();
@@ -600,9 +717,23 @@ impl Engine<'_> {
                 self.labels.theirs.to_vec(),
             ],
         };
+        if let (Driver::Custom(name), Some(pm)) = (&driver, &self.opts.path_merge) {
+            let input = DriverInput {
+                path,
+                base: &base,
+                ours: &ours,
+                theirs: &theirs,
+                marker_size,
+                base_label: &base_label,
+                ours_label: &ours_label,
+                theirs_label: &theirs_label,
+            };
+            let (data, clean) = pm.run(name, &input).map_err(Error::Driver)?;
+            return Ok((self.write(ObjectKind::Blob, &data)?, clean));
+        }
         let mopts = MergeOptions {
             style: self.opts.style,
-            favor: self.opts.favor,
+            favor,
             marker_size,
             ours_label: &ours_label,
             base_label: &base_label,
@@ -610,10 +741,16 @@ impl Engine<'_> {
             diff: DiffOptions {
                 algorithm: self.opts.algorithm,
                 minimal: self.opts.minimal,
+                whitespace: self.opts.whitespace,
                 ..text::merge_diff_options()
             },
         };
-        match text::merge(&base, &ours, &theirs, &mopts) {
+        let merged = if driver == Driver::Binary {
+            Err(text::BinaryContent)
+        } else {
+            text::merge(&base, &ours, &theirs, &mopts)
+        };
+        match merged {
             Ok(m) => Ok((self.write(ObjectKind::Blob, &m.content)?, m.is_clean())),
             Err(text::BinaryContent) => {
                 if self.depth > 0 {
@@ -723,7 +860,7 @@ pub(crate) fn read_tree(
         Some(raw) if raw.kind == ObjectKind::Tree => raw,
         Some(_) => return Err(Error::NotATree(*id)),
         None if *id == objects.hash_kind().empty_tree() => return Ok(Vec::new()),
-        None => return Err(Error::MissingObject(*id)),
+        None => return Err(Error::MissingTree(*id)),
     };
     let mut out = Vec::new();
     for item in TreeIter::new(objects.hash_kind(), &raw.data) {

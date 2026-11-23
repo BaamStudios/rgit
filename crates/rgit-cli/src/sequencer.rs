@@ -1312,15 +1312,18 @@ pub(crate) fn merge_with(
     labels: (&str, &str),
 ) -> Result<MergeResult, Fail> {
     let (base_label, their_label) = labels;
-    match strategy {
-        None | Some("ort" | "recursive") => {}
+    let subtree = match strategy {
+        None | Some("ort" | "recursive") => rgit_merge::Subtree::None,
+        Some("subtree") => rgit_merge::Subtree::Guess,
         Some(s) => return Err(Fail::Die(Die::Fatal(msg::strategy_not_supported(s)))),
-    }
+    };
     let mut opts = rgit_merge::Options {
         branch1: b"HEAD".to_vec(),
         branch2: their_label.as_bytes().to_vec(),
         ancestor: base_label.as_bytes().to_vec(),
         style: crate::commands::merge_file::config_style(&repo.config)?,
+        subtree,
+        renormalize: crate::commands::merge::renormalize_config(&repo.config),
         ..rgit_merge::Options::default()
     };
     crate::commands::merge_tree::apply_rename_config(&repo.config, &mut opts);
@@ -1339,6 +1342,15 @@ pub(crate) fn merge_with(
                 )))));
             }
         }
+    }
+    if let Ok(pm) = crate::commands::merge::attrs::RepoPathMerge::open(
+        &crate::Context::default(),
+        repo,
+        opts.renormalize,
+        Some(theirs),
+        None,
+    ) {
+        opts.path_merge = Some(pm);
     }
     rgit_merge::merge_trees(repo.odb(), base, ours, theirs, &opts)
         .map_err(|e| Fail::Die(Die::Fatal(e.to_string())))

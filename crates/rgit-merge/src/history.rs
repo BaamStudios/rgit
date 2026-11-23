@@ -346,7 +346,17 @@ fn merge_nodes(
         }
     };
     let ours_tree = g.info(h1)?.tree;
-    let theirs_tree = g.info(h2)?.tree;
+    let mut theirs_tree = g.info(h2)?.tree;
+    let mut base_tree = base_tree;
+    if depth == 0 {
+        (base_tree, theirs_tree) = crate::subtree::shift_both(
+            objects,
+            &opts.subtree,
+            &ours_tree,
+            &base_tree,
+            &theirs_tree,
+        )?;
+    }
     let labels = if depth == 0 {
         Labels {
             ours: &opts.branch1,

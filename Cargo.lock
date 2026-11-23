@@ -606,6 +606,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
+ "sha2",
  "tempfile",
  "thiserror",
 ]
@@ -803,6 +804,7 @@ dependencies = [
  "rgit-messages",
  "rgit-options",
  "rgit-pathspec",
+ "rgit-protocol",
  "rgit-refs",
  "rgit-repo",
  "rgit-submodule",

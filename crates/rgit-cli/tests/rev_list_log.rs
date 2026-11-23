@@ -489,3 +489,21 @@ fn rev_list_objects() {
         same(&mut fx, args);
     }
 }
+
+#[test]
+fn index_entry_names_are_not_files() {
+    // `:<path>` names the index entry even when `<path>` exists.
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q"])
+        .write("f", "a\n")
+        .git(["add", "f"])
+        .git(["commit", "-q", "-m", "one"]);
+    for args in [
+        &["show", ":f"][..],
+        &["log", "--oneline", ":f"],
+        &["rev-list", ":f"],
+    ] {
+        fx.compare(args).checks(Check::OUTPUT).run();
+    }
+}

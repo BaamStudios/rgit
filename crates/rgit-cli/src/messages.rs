@@ -11,6 +11,7 @@ pub mod branch;
 pub mod cat_file;
 pub mod check_attr;
 pub mod check_ignore;
+pub mod check_mailmap;
 pub mod checkout_index;
 pub mod cherry;
 pub mod clean;
@@ -22,6 +23,7 @@ pub mod describe;
 pub mod diff;
 pub mod diff_tree;
 pub mod fetch;
+pub mod fmt_merge_msg;
 pub mod for_each_ref;
 pub mod format_patch;
 pub mod grep;
@@ -63,6 +65,7 @@ pub mod restore;
 pub mod rev_list;
 pub mod rm;
 pub mod sequencer;
+pub mod shortlog;
 pub mod show_ref;
 pub mod signing;
 pub mod stash;
@@ -277,4 +280,13 @@ pub fn abbrev_not_numeric(opt: &str) -> String {
 /// A gentle setup ignores a repository it cannot use.
 pub fn ignoring_git_dir(dir: &str, reason: &str) -> String {
     format!("ignoring git dir '{dir}': {reason}")
+}
+
+/// `--column=<bad>` and bad `column.*` values.
+pub fn column_unsupported(token: &str) -> String {
+    format!("unsupported option '{token}'")
+}
+
+pub fn column_bad_token(token: &str, key: &str) -> String {
+    format!("invalid {key} mode {token}")
 }

@@ -53,16 +53,16 @@ enum Piece {
 
 /// The reference filters of the listing mode.
 #[derive(Default)]
-struct Filters {
-    contains: Vec<ObjectId>,
-    no_contains: Vec<ObjectId>,
-    merged: Vec<ObjectId>,
-    no_merged: Vec<ObjectId>,
-    points_at: Vec<ObjectId>,
+pub(crate) struct Filters {
+    pub(crate) contains: Vec<ObjectId>,
+    pub(crate) no_contains: Vec<ObjectId>,
+    pub(crate) merged: Vec<ObjectId>,
+    pub(crate) no_merged: Vec<ObjectId>,
+    pub(crate) points_at: Vec<ObjectId>,
 }
 
 impl Filters {
-    fn by_commit(&self) -> bool {
+    pub(crate) fn by_commit(&self) -> bool {
         !(self.contains.is_empty()
             && self.no_contains.is_empty()
             && self.merged.is_empty()
@@ -255,12 +255,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     match mode {
         b'l' => {
             let col = column.borrow().clone();
-            if lines.get() != -1 && col.as_deref().is_some_and(|c| c != "never") {
-                return Err(fatal(msg::incompatible("--column", "-n")));
+            let mut mode = crate::column::Mode::from_config(&config, "tag")?;
+            if let Some(spec) = &col {
+                mode.apply(spec).map_err(|t| {
+                    Die::Error(crate::messages::column_unsupported(&t), 129)
+                })?;
+                if lines.get() != -1 && mode.active() {
+                    return Err(fatal(msg::incompatible("--column", "-n")));
+                }
             }
-            if col.as_deref().is_some_and(|c| c != "never") {
-                return Err(fatal(msg::COLUMN_NOT_SUPPORTED));
-            }
+            // `-n` lists one tag per line whatever the configuration says.
+            let columns = (lines.get() == -1 && mode.active()).then_some(mode);
             let list = List {
                 objects: &objects,
                 store: &store,
@@ -275,6 +280,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 lines: lines.get(),
                 format: format.borrow().clone(),
                 omit_empty: omit_empty.get(),
+                columns,
             };
             list.run()
         }
@@ -321,7 +327,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
 /// Resolves the filter options; `--contains` and friends name a commit
 /// (tags are peeled).
-fn resolve_filters(
+pub(crate) fn resolve_filters(
     specs: &[(u8, Option<String>)],
     objects: &Objects,
     revs: &Revs,
@@ -386,6 +392,8 @@ struct List<'a> {
     lines: i32,
     format: Option<String>,
     omit_empty: bool,
+    /// `--column`, `column.tag`, `column.ui`.
+    columns: Option<crate::column::Mode>,
 }
 
 impl List<'_> {
@@ -431,6 +439,7 @@ impl List<'_> {
         let items = self.sort(&values, items)?;
 
         let mut out = std::io::stdout().lock();
+        let mut cells = Vec::new();
         for it in &items {
             let short = &it.name[TAG_PREFIX.len()..];
             let mut line = match &format {
@@ -441,8 +450,17 @@ impl List<'_> {
             if self.omit_empty && line.is_empty() {
                 continue;
             }
+            if self.columns.is_some() {
+                cells.push(lossy(&line));
+                continue;
+            }
             line.push(b'\n');
             let _ = out.write_all(&line);
+        }
+        if let Some(mode) = self.columns {
+            for l in crate::column::layout(&cells, mode, crate::column::list_width(), 2, "") {
+                let _ = writeln!(out, "{l}");
+            }
         }
         let _ = out.flush();
         Ok(0)

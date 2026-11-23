@@ -320,6 +320,11 @@ fn file_exists(repo: &Repo<'_>, top: bool, path: &str) -> bool {
 
 /// A revision argument that also names a file (git then wants `--`).
 fn also_a_file(repo: &Repo<'_>, arg: &str) -> bool {
+    // `:<path>` (an index entry) is no file name: git shows it without
+    // asking for `--` even when `<path>` exists (t0021 "clean empty file").
+    if arg.starts_with(':') && !arg.starts_with(":/") && !arg.starts_with(":(") {
+        return false;
+    }
     let (top, rest) = strip_magic(arg);
     !rest.is_empty() && file_exists(repo, top, rest)
 }

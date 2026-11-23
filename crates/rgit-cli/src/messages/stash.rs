@@ -147,10 +147,6 @@ pub fn duplicate_untracked(path: &str) -> String {
     format!("worktree and untracked commit have duplicate entries: {path}")
 }
 
-pub fn not_supported(what: &str) -> String {
-    format!("rgit: 'git stash {what}' is not implemented yet")
-}
-
 pub fn entry_not_uptodate(path: &str) -> String {
     format!("Entry '{path}' not uptodate. Cannot merge.")
 }

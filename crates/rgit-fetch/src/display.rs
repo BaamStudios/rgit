@@ -70,6 +70,8 @@ pub struct DisplayOptions<'a> {
     pub abbrev: &'a dyn Fn(&ObjectId) -> String,
     /// The default abbreviation length (for the summary column).
     pub abbrev_len: usize,
+    /// `fetch.output=compact`.
+    pub compact: bool,
 }
 
 fn kind_word(remote: &BStr) -> &'static str {
@@ -130,7 +132,7 @@ fn summary(
             messages::REJECTED.into(),
             paren(messages::WOULD_CLOBBER_TAG),
         ),
-        Status::Failed(inner) => {
+        Status::Failed(inner) | Status::NotCommit(inner) => {
             let (_, s, _) = summary(inner, line, range);
             ('!', s, paren(messages::UNABLE_TO_UPDATE))
         }
@@ -155,7 +157,10 @@ pub fn render(url: &str, lines: &[RefLine], o: &DisplayOptions<'_>) -> String {
     let any_rejected = lines.iter().any(|l| {
         matches!(
             l.status,
-            Status::RejectedNonFastForward | Status::RejectedTag
+            Status::RejectedNonFastForward
+                | Status::RejectedTag
+                | Status::Failed(_)
+                | Status::NotCommit(_)
         )
     });
     let summary_width = if any_rejected {
@@ -163,7 +168,23 @@ pub fn render(url: &str, lines: &[RefLine], o: &DisplayOptions<'_>) -> String {
     } else {
         2 * o.abbrev_len + 3
     };
-    let cols: Vec<_> = visible.iter().map(|l| (l, columns(l, o))).collect();
+    let mut cols: Vec<_> = visible.iter().map(|l| (l, columns(l, o))).collect();
+    // `fetch.output=compact`: the part of the local name equal to the
+    // remote one becomes `*`.
+    if o.compact {
+        for (l, (_, _, remote, local, _)) in &mut cols {
+            if l.local.is_none() {
+                continue;
+            }
+            if local == remote {
+                *local = "*".into();
+            } else if let Some(head) = local.strip_suffix(remote.as_str()) {
+                if head.ends_with('/') {
+                    *local = format!("{head}*");
+                }
+            }
+        }
+    }
     let mut refcol = 10;
     for (l, (_, _, remote, local, _)) in &cols {
         if l.local.is_none() {
@@ -181,6 +202,36 @@ pub fn render(url: &str, lines: &[RefLine], o: &DisplayOptions<'_>) -> String {
         out.push_str(&format!(
             " {flag} {summary:<summary_width$} {remote:<refcol$} -> {local}{suffix}\n"
         ));
+    }
+    out
+}
+
+/// `--porcelain`: `<flag> <old> <new> <local ref>` per changed ref (and
+/// per rejected or failed one), on standard output.
+pub fn porcelain(lines: &[RefLine], hash: rgit_hash::HashKind) -> String {
+    let null = hash.null();
+    let mut out = String::new();
+    for l in lines {
+        let (flag, old, new) = match &l.status {
+            Status::NewBranch | Status::NewTag | Status::NewRef => ('*', null, l.new),
+            Status::FastForward(o) => (' ', *o, l.new),
+            Status::Forced(o) | Status::TagUpdate(o) => ('+', *o, l.new),
+            Status::Deleted => ('-', l.new, null),
+            Status::RejectedNonFastForward
+            | Status::RejectedTag
+            | Status::Failed(_)
+            | Status::NotCommit(_) => ('!', null, l.new),
+            Status::UpToDate => ('=', l.new, l.new),
+            Status::FetchHead => continue,
+        };
+        if l.status == Status::UpToDate {
+            continue;
+        }
+        let local = l.local.as_ref().map_or_else(
+            || "FETCH_HEAD".to_owned(),
+            |r| r.to_str_lossy().into_owned(),
+        );
+        out.push_str(&format!("{flag} {old} {new} {local}\n"));
     }
     out
 }
@@ -244,6 +295,7 @@ mod tests {
             columns: 80,
             abbrev: &|id: &ObjectId| id.to_hex()[..7].to_string(),
             abbrev_len: 7,
+            compact: false,
         }
     }
 

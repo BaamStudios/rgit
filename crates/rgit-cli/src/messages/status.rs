@@ -7,6 +7,7 @@ pub const USAGE: &[&str] = &["git status [<options>] [--] [<pathspec>...]"];
 pub const HELP_SHORT: &str = "show status concisely";
 pub const HELP_BRANCH: &str = "show branch information";
 pub const HELP_AHEAD_BEHIND: &str = "compute full ahead/behind values";
+pub const HELP_SHOW_STASH: &str = "show stash information";
 pub const HELP_LONG: &str = "show status in long format (default)";
 pub const HELP_PORCELAIN: &str = "machine-readable output";
 pub const HELP_Z: &str = "terminate entries with NUL";
@@ -143,3 +144,12 @@ pub fn different(up: &str) -> String {
     format!("Your branch and '{up}' refer to different commits.")
 }
 pub const HINT_AHEAD_BEHIND: &str = "use \"git status --ahead-behind\" for details";
+
+/// `--show-stash` after the long format.
+pub fn stash_entries(n: usize) -> String {
+    if n == 1 {
+        "Your stash currently has 1 entry\n".to_owned()
+    } else {
+        format!("Your stash currently has {n} entries\n")
+    }
+}

@@ -41,7 +41,12 @@ pub fn transport_not_supported(url: &str) -> String {
 }
 
 pub const DELETE_WITHOUT_REFS: &str = "--delete doesn't make sense without any refs";
+pub const DELETE_EMPTY: &str = "--delete only accepts plain target ref names";
 pub const ALL_WITH_REFSPECS: &str = "--all can't be combined with refspecs";
+pub const MIRROR_WITH_REFSPECS: &str = "--mirror can't be combined with refspecs";
+pub fn incompatible(a: &str, b: &str) -> String {
+    format!("options '{a}' and '{b}' cannot be used together")
+}
 pub const TAGS_WITH_ALL: &str = "options '--tags' and '--all/--branches' cannot be used together";
 pub const EVERYTHING_UP_TO_DATE: &str = "Everything up-to-date";
 pub const NO_PUSH_OPTIONS: &str = "the receiving end does not support push options";

@@ -584,6 +584,23 @@ pub fn missing_branch_name(create_option: &str) -> Die {
 
 /// The start point shown in messages and the reflog when none was given:
 /// the current branch (also when unborn), else `HEAD`.
+/// The full name of the default start point (`refs/heads/<current>`,
+/// else `HEAD`), for lookups that must not be ambiguous with a tag of the
+/// same short name.
+pub fn default_start_ref(store: &FilesStore) -> String {
+    match store.read_raw("HEAD") {
+        // An unborn branch keeps its short name (for the messages).
+        Ok(Some(Target::Symbolic(t))) if t.starts_with("refs/heads/") => {
+            if matches!(store.resolve_oid(&t), Ok(Some(_))) {
+                t
+            } else {
+                default_start(store)
+            }
+        }
+        _ => "HEAD".to_owned(),
+    }
+}
+
 pub fn default_start(store: &FilesStore) -> String {
     match store.read_raw("HEAD") {
         Ok(Some(Target::Symbolic(t))) => t

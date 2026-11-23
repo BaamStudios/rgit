@@ -34,8 +34,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let formats = opts.formats(false)?;
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     opts.resolve_objects(&mut repo)?;
-    let repo = repo;
     let pathspec = diff::pathspec(ctx, &repo, &parsed.args)?;
+    let (pathspec, attr_filter) = diff::attr_split(ctx, &mut repo, pathspec)?;
+    let repo = repo;
     let root = repo.work_tree()?;
     let (index, mtime) = repo.read_index()?;
     let checker = repo.checker(mtime)?;
@@ -52,6 +53,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         pairs = collect::with_unmodified(pairs, collect::index_files(&index, &pathspec));
     }
     crate::submodules::IgnoreRules::drop_ignored(&repo, &mut pairs, opts.ignore_submodules()?, false)?;
+    diff::attr_retain(&repo, &mut pairs, attr_filter)?;
     let mut out = Output::new(Some(&repo), repo.hash, &opts, formats, false)?;
     out.set_color(&opts)?;
     out.combined_unmerged = true;

@@ -34,6 +34,8 @@ pub enum Status {
     RejectedNonFastForward,
     /// Not updated: an existing tag would change.
     RejectedTag,
+    /// Not updated: a branch would point to a non-commit object.
+    NotCommit(Box<Status>),
     /// The update was attempted but writing the ref failed.
     Failed(Box<Status>),
     /// Stored in `FETCH_HEAD` only.
@@ -60,7 +62,10 @@ impl Status {
     pub fn is_error(&self) -> bool {
         matches!(
             self,
-            Status::RejectedNonFastForward | Status::RejectedTag | Status::Failed(_)
+            Status::RejectedNonFastForward
+                | Status::RejectedTag
+                | Status::Failed(_)
+                | Status::NotCommit(_)
         )
     }
 
@@ -152,6 +157,14 @@ pub fn apply_with_message(
     if !status.changes_ref() {
         return status;
     }
+    // A branch must point to a commit.
+    if local.starts_with(b"refs/heads/") && repo.kind(&new) != Some(ObjectKind::Commit) {
+        eprintln!(
+            "error: {}",
+            messages::non_commit_to_branch(&new.to_hex(), &local.to_str_lossy())
+        );
+        return Status::NotCommit(Box::new(status));
+    }
     let old = match &status {
         Status::FastForward(o) | Status::Forced(o) | Status::TagUpdate(o) => *o,
         _ => repo.hash.null(),
@@ -164,6 +177,35 @@ pub fn apply_with_message(
             Status::Failed(Box::new(status))
         }
     }
+}
+
+/// The [`RefUpdate`] that [`apply`] would write for `status`.
+pub fn ref_update(local: &BStr, new: ObjectId, status: &Status, action: &str) -> RefUpdate {
+    let old = match status {
+        Status::FastForward(o) | Status::Forced(o) | Status::TagUpdate(o) => Some(*o),
+        _ => None,
+    };
+    let msg = format!("{action}: {}", status.reflog_message());
+    let old = old.unwrap_or_else(|| new.kind().null());
+    RefUpdate::update(local.to_str_lossy().into_owned(), new, Some(old)).message(msg)
+}
+
+/// Run several reference updates in one transaction (`--atomic`).
+pub fn write_all(repo: &LocalRepo, updates: Vec<RefUpdate>) -> Result<(), String> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let mut writer = repo.reflog_hooks();
+    let hooks: &mut dyn RefHooks = match &mut writer {
+        Some(w) => w,
+        None => &mut NoHooks,
+    };
+    let store: &dyn RefStore = &repo.refs;
+    let mut tx = Transaction::new(store);
+    for u in updates {
+        tx.push(u).map_err(|e| e.to_string())?;
+    }
+    tx.commit(hooks).map_err(|e| e.to_string())
 }
 
 /// Run one reference update (any [`RefUpdate`], e.g. a symref creation)

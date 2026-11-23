@@ -8,6 +8,7 @@
 mod check;
 pub mod collect;
 pub mod color;
+pub mod combined;
 mod dirstat;
 pub mod driver;
 pub mod external;
@@ -48,6 +49,55 @@ pub fn check_max_depth(opts: &options::DiffOpts, ps: &Pathspec) -> Result<(), Di
             crate::messages::diff::MAX_DEPTH_WILDCARD.to_string(),
         ));
     }
+    Ok(())
+}
+
+/// `attr:` pathspec magic in the diff family: the changes are collected
+/// without a pathspec, and [`attr_retain`] keeps those the pathspec with
+/// its attribute requirements selects.
+pub struct AttrFilter {
+    pathspec: Pathspec,
+    tree: Option<Option<rgit_hash::ObjectId>>,
+}
+
+/// Splits `pathspec` into the one to collect changes with and, when it
+/// has `attr:` magic, the filter to apply afterwards.
+pub fn attr_split(
+    ctx: &Context,
+    repo: &mut Repo,
+    pathspec: Pathspec,
+) -> Result<(Pathspec, Option<AttrFilter>), Die> {
+    match crate::attributes::PathspecAttrs::prepare(ctx, repo, &pathspec)? {
+        None => Ok((pathspec, None)),
+        Some(tree) => {
+            let all = Pathspec::parse(Vec::<String>::new(), &ParseOptions::default())
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+            Ok((all, Some(AttrFilter { pathspec, tree })))
+        }
+    }
+}
+
+/// Keeps the pairs that `filter` (from [`attr_split`]) selects.
+pub fn attr_retain(
+    repo: &Repo,
+    pairs: &mut Vec<collect::Pair>,
+    filter: Option<AttrFilter>,
+) -> Result<(), Die> {
+    let Some(filter) = filter else {
+        return Ok(());
+    };
+    let (index, _) = repo.read_index()?;
+    let attrs = std::cell::RefCell::new(crate::attributes::PathspecAttrs::new(
+        repo,
+        &index,
+        filter.tree,
+    ));
+    pairs.retain(|p| {
+        filter
+            .pathspec
+            .match_path_with(&p.path, None, &mut |q, s| attrs.borrow_mut().check(q, s))
+            .is_some()
+    });
     Ok(())
 }
 

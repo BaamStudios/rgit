@@ -187,3 +187,7 @@ pub fn invalid_graph_color(color: &str) -> String {
 pub fn unknown_diff_merges(value: &str) -> String {
     format!("invalid value for '--diff-merges': '{value}'")
 }
+
+pub fn not_a_blob(spec: &str) -> String {
+    format!("mailmap is not a blob: {spec}")
+}
