@@ -166,6 +166,21 @@ pub fn being_rebased(refname: &str, path: &str) -> String {
     format!("branch {refname} is being rebased at {path}")
 }
 
+pub fn being_bisected(refname: &str, path: &str) -> String {
+    format!("branch {refname} is being bisected at {path}")
+}
+
+pub fn reflog_is_symlink(refname: &str) -> String {
+    format!("reflog for {refname} is a symlink")
+}
+
+pub const RENAME_FAILED: &str = "branch rename failed";
+pub const COPY_FAILED: &str = "branch copy failed";
+
+pub fn ignoring_dangling_symref(name: &str) -> String {
+    format!("ignoring dangling symref {name}")
+}
+
 pub use crate::messages::tag::{HELP_FORMAT, HELP_IGNORE_CASE, HELP_OMIT_EMPTY, HELP_SORT};
 pub const HELP_CONTAINS: &str = "print only branches that contain the commit";
 pub const HELP_NO_CONTAINS: &str = "print only branches that don't contain the commit";

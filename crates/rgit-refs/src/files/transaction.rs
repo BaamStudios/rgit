@@ -344,8 +344,7 @@ impl State<'_, '_> {
     /// so it is returned in [`Locked::blocked`] instead of failing here.
     fn lock(&mut self, name: &str) -> Result<Locked, LockReason> {
         let path = self.store.ref_path(name);
-        let prefix_file = dir_prefixes(name)
-            .any(|p| std::fs::symlink_metadata(self.store.ref_path(p)).is_ok_and(|m| !m.is_dir()));
+        let prefix_file = dir_prefixes(name).any(|p| file_in_the_way(&self.store.ref_path(p)));
         let mut empty_dir = false;
         let mut in_the_way = prefix_file;
         if !prefix_file && std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
@@ -402,9 +401,7 @@ impl State<'_, '_> {
                 .filter(|n| n.as_str() != name)
         };
         for prefix in dir_prefixes(name) {
-            let loose = include_loose
-                && std::fs::symlink_metadata(self.store.ref_path(prefix))
-                    .is_ok_and(|m| !m.is_dir());
+            let loose = include_loose && file_in_the_way(&self.store.ref_path(prefix));
             if loose || self.packed.find(prefix).is_some() {
                 return Some(LockReason::NameConflict {
                     existing: prefix.to_owned(),
@@ -938,4 +935,15 @@ pub(super) fn prepare<'s>(
         .map_err(TransactionError::Rejected)?;
     let State { prepared, .. } = state;
     Ok(prepared)
+}
+
+/// Something other than a directory (or a symbolic link to one) at a
+/// path where a reference needs a directory.
+fn file_in_the_way(path: &std::path::Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => false,
+        Ok(m) if m.file_type().is_symlink() => !std::fs::metadata(path).is_ok_and(|m| m.is_dir()),
+        Ok(_) => true,
+        Err(_) => false,
+    }
 }

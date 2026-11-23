@@ -237,6 +237,7 @@ fn collect_tips(objects: &dyn ObjectLookup, store: &FilesStore, opts: &Options) 
                         from_tag,
                         date: date.unwrap_or(0),
                         deref,
+                        via_merge: false,
                     };
                     offer(&mut names.objects, cur, offered);
                     if date.is_none() {
@@ -269,6 +270,7 @@ fn collect_tips(objects: &dyn ObjectLookup, store: &FilesStore, opts: &Options) 
                         from_tag,
                         date: date.unwrap_or(0),
                         deref,
+                        via_merge: false,
                     };
                     offer(&mut names.objects, cur, offered);
                     break;
@@ -399,7 +401,10 @@ fn run_with(
             namer.load(id).map_err(bad_object)?;
         }
     }
-    for tip in &names.tips {
+    // Older tips first (tagger date, commit date for other references).
+    let mut tips = names.tips.clone();
+    tips.sort_by_key(|t| t.date);
+    for tip in &tips {
         namer.name_tip(tip).map_err(bad_object)?;
     }
     let lookup = |id: &ObjectId| -> Option<RevName> {

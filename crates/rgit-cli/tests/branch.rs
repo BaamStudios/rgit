@@ -696,3 +696,35 @@ fn upstream_slip_and_ambiguous_local() {
     };
     each(ambiguous, &[&["branch", "all1", "main"]]);
 }
+
+/// A branch bisected in a worktree, or with a symlinked reflog, is
+/// neither renamed nor copied (t2400 69, t0600 28).
+#[test]
+fn rename_refused_for_bisect_and_symlinked_reflog() {
+    let bisect = || {
+        fixture()
+            .git(["commit", "-q", "--allow-empty", "-m", "two"])
+            .git(["commit", "-q", "--allow-empty", "-m", "three"])
+            .git(["worktree", "add", "-q", "wt"])
+            .git(["-C", "wt", "bisect", "start"])
+            .git(["-C", "wt", "bisect", "bad"])
+            .git(["-C", "wt", "bisect", "good", "HEAD~2"])
+    };
+    each(
+        bisect,
+        &[
+            &["branch", "-M", "wt", "renamed"],
+            &["branch", "-c", "wt", "copy"],
+        ],
+    );
+    let symlinked = || {
+        fixture()
+            .git(["branch", "--create-reflog", "u"])
+            .remove(".git/logs/refs/heads/u")
+            .symlink("../../../HEAD", ".git/logs/refs/heads/u")
+    };
+    each(
+        symlinked,
+        &[&["branch", "-m", "u", "v"], &["branch", "-c", "u", "w"]],
+    );
+}
