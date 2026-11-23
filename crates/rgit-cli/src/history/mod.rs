@@ -720,6 +720,15 @@ pub fn walk_formatted(
         diff: None,
         store: None,
         usage: None,
+        // `%G` placeholders check signatures.
+        signing: if formats.iter().any(|f| f.windows(2).any(|w| w == b"%G")) {
+            Some(crate::signing::Settings::from_config(repo.config)?)
+        } else {
+            None
+        },
+        show_signature: false,
+        signature_colors: None,
+        signature_cache: std::cell::RefCell::new(None),
     };
     let mut items = Vec::new();
     while let Some(s) = walk.next_shown().map_err(walk_error)? {
