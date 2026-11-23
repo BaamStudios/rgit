@@ -309,3 +309,32 @@ fn checkout_unmerged() {
         ],
     );
 }
+
+#[test]
+fn merge_recreates_conflicts() {
+    compare(
+        conflicted,
+        &[
+            &["restore", "-m", "f"],
+            &["restore", "--merge", "f", "k"],
+            &["restore", "-m", "."],
+            &["restore", "-m", "g"],
+            &["restore", "--conflict=diff3", "f"],
+            &["restore", "--conflict=zdiff3", "--", "f"],
+            &["restore", "--conflict=bogus", "f"],
+            &["-c", "merge.conflictStyle=diff3", "restore", "-m", "f"],
+            &["restore", "--conflict=diff3", "--no-merge", "f"],
+            &["restore", "--no-merge", "--conflict=diff3", "f"],
+            &["restore", "-m", "--conflict=diff3", "--no-conflict", "f"],
+            &["restore", "-m", "--ours", "f"],
+            &["restore", "-m", "-S", "f"],
+            &["restore", "-m", "-s", "HEAD", "f"],
+            &["checkout", "-m", "f"],
+            &["checkout", "-m", "--", "f"],
+            &["checkout", "--conflict=diff3", "f", "k"],
+            &["checkout", "-m", "."],
+            &["checkout", "-m", "HEAD", "--", "f"],
+            &["checkout", "-m", "--ours", "f"],
+        ],
+    );
+}
