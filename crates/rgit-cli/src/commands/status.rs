@@ -1029,13 +1029,67 @@ fn head_changes(
         index.cache_tree().map(|t| &t.root)
     };
     let mut out = Vec::new();
-    head_walk(repo, tree, b"", index.entries(), node, &mut out)?;
+    if head_walk(repo, tree, b"", index.entries(), node, &mut out)? {
+        return Ok(out);
+    }
+    // A tree with duplicate names: like a map from path to entry, the
+    // last entry for a path counts.
+    let mut head = BTreeMap::new();
+    collect_tree(repo, tree, b"", &mut head)?;
+    let entries = index.entries();
+    let mut out = Vec::new();
+    for (path, &(mode, id)) in &head {
+        let same = match &entries[index.path_range(path)] {
+            [x] => {
+                !x.stage().is_conflict() && !x.flags.intent_to_add && x.mode.0 == mode && x.id == id
+            }
+            _ => false,
+        };
+        if !same {
+            out.push((path.clone(), Some((mode, id))));
+        }
+    }
+    let mut last: Option<&[u8]> = None;
+    for e in entries {
+        if last != Some(e.path()) && !head.contains_key(e.path()) {
+            out.push((e.path().to_vec(), None));
+        }
+        last = Some(e.path());
+    }
     Ok(out)
+}
+
+/// Every blob and gitlink of `tree` below `base` (empty or ending in `/`),
+/// by path; for duplicate names the last entry counts.
+fn collect_tree(
+    repo: &Repo,
+    tree: &ObjectId,
+    base: &[u8],
+    out: &mut BTreeMap<Vec<u8>, (u32, ObjectId)>,
+) -> Result<(), Die> {
+    let Some(Object::Tree(t)) = repo.read_object(tree) else {
+        return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(
+            &tree.to_hex(),
+        )));
+    };
+    for e in t.entries {
+        let mut path = base.to_vec();
+        path.extend_from_slice(&e.name);
+        let mode = e.mode.canonical();
+        if mode.is_tree() {
+            path.push(b'/');
+            collect_tree(repo, &e.oid, &path, out)?;
+        } else {
+            out.insert(path, (mode.bits(), e.oid));
+        }
+    }
+    Ok(())
 }
 
 /// [`head_changes`] for `tree` at `prefix` (empty or ending in `/`);
 /// `entries` are the index entries below `prefix`, `node` the cache tree
-/// node of the directory.
+/// node of the directory. `false` when a tree has a name twice (then the
+/// result is incomplete).
 fn head_walk(
     repo: &Repo,
     tree: &ObjectId,
@@ -1043,11 +1097,11 @@ fn head_walk(
     entries: &[Entry],
     node: Option<&rgit_index::TreeNode>,
     out: &mut Vec<(Vec<u8>, HeadEntry)>,
-) -> Result<(), Die> {
+) -> Result<bool, Die> {
     if let Some(n) = node {
         let count = n.entry_count().and_then(|c| usize::try_from(c).ok());
         if n.id() == Some(tree) && count == Some(entries.len()) {
-            return Ok(());
+            return Ok(true);
         }
     }
     let Some(Object::Tree(t)) = repo.read_object(tree) else {
@@ -1055,6 +1109,11 @@ fn head_walk(
             &tree.to_hex(),
         )));
     };
+    let mut names: Vec<&[u8]> = t.entries.iter().map(|e| e.name.as_slice()).collect();
+    names.sort_unstable();
+    if names.windows(2).any(|w| w[0] == w[1]) {
+        return Ok(false);
+    }
     // Index entries that HEAD has at their path or below a directory.
     let mut covered = vec![false; entries.len()];
     let mut path = prefix.to_vec();
@@ -1068,7 +1127,9 @@ fn head_walk(
             let len = entries[start..].partition_point(|x| x.path().starts_with(&path));
             covered[start..start + len].fill(true);
             let child = node.and_then(|n| n.child(&e.name));
-            head_walk(repo, &e.oid, &path, &entries[start..start + len], child, out)?;
+            if !head_walk(repo, &e.oid, &path, &entries[start..start + len], child, out)? {
+                return Ok(false);
+            }
             continue;
         }
         let start = entries.partition_point(|x| x.path() < path.as_slice());
@@ -1096,7 +1157,7 @@ fn head_walk(
             last = Some(e.path());
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Rename detection for the staged changes: `--no-renames`,
