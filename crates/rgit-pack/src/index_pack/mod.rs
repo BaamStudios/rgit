@@ -33,6 +33,7 @@
 
 mod error;
 pub mod messages;
+pub mod meter;
 mod output;
 mod parse;
 mod resolve;

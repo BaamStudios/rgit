@@ -917,6 +917,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             && opts
                 .progress
                 .unwrap_or_else(|| std::io::stderr().is_terminal());
+        crate::switch_branch::set_progress(i32::from(show_progress), false);
         let pack_opts = PackOptions {
             no_progress: !show_progress,
             // git asks for tags with --single-branch also under --no-tags
@@ -1206,7 +1207,8 @@ fn initial_checkout(
     let plan = rgit_unpack::plan(repo.odb(), &old, &Merge::OneWay(tree), Some(&wt), &mut opts)
         .map_err(unpack_failed)?;
     let conv = crate::convert::Converter::checkout(&repo, plan.index())?;
-    let applied = plan.apply(repo.odb(), &wt, &conv);
+    let applied =
+        plan.apply_with_progress(repo.odb(), &wt, &conv, crate::switch_branch::progress());
     for e in &applied.errors {
         eprintln!("error: {e}");
     }

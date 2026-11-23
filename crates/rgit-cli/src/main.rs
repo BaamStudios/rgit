@@ -47,6 +47,7 @@ mod sequencer;
 mod signing;
 mod submodules;
 mod switch_branch;
+mod telemetry;
 mod tracking;
 mod tree_changes;
 mod untracked;
@@ -98,10 +99,12 @@ impl Die {
     pub fn emit(self) -> i32 {
         match self {
             Die::Fatal(m) => {
+                rgit_trace::trace2::error(&m);
                 let _ = writeln!(std::io::stderr(), "{}", prefixed(Level::Fatal, &m));
                 rgit_messages::EXIT_FATAL
             }
             Die::Error(m, code) => {
+                rgit_trace::trace2::error(&m);
                 let _ = writeln!(std::io::stderr(), "{}", prefixed(Level::Error, &m));
                 code
             }
@@ -178,6 +181,10 @@ fn run_command(ctx: &mut Context, argv: &[String]) -> Option<CmdResult> {
         return external::run(ctx, argv);
     }
     ctx.command.clone_from(name);
+    match builtin {
+        Some(_) => telemetry::cmd_name(ctx, name, true),
+        None => telemetry::cmd_name(ctx, "_run_dashed_", false),
+    }
     // Commands that decide about the pager themselves (some of their modes
     // page by default); `--paginate` pages them at once.
     let own_pager = matches!(
@@ -219,6 +226,23 @@ fn expand_alias(
         seen.push(name.clone());
         if argv.len() == 2 && argv[1] == "-h" {
             eprintln!("{}", messages::help::is_aliased_to(&name, &value));
+        }
+        if rgit_trace::trace2::enabled() {
+            telemetry::cmd_name(ctx, "_run_dashed_", false);
+            match value.strip_prefix('!') {
+                Some(cmd) => {
+                    let mut words = vec![cmd.to_string()];
+                    words.extend(argv[1..].iter().cloned());
+                    rgit_trace::trace2::alias(&name, &words);
+                    telemetry::cmd_name(ctx, "_run_shell_alias_", false);
+                }
+                None => {
+                    if let Ok(words) = alias::split(&value) {
+                        rgit_trace::trace2::alias(&name, &words);
+                    }
+                    telemetry::cmd_name(ctx, "_run_git_alias_", false);
+                }
+            }
         }
         if let Some(cmd) = value.strip_prefix('!') {
             return alias::run_shell(ctx, &early, &name, cmd, &argv[1..]);
@@ -278,7 +302,16 @@ fn run(args: Vec<String>) -> CmdResult {
         argv.extend(args.into_iter().skip(1));
         return dispatch(&mut ctx, argv);
     }
-    match global::parse(&mut ctx, &args[1.min(args.len())..])? {
+    let parsed = global::parse(&mut ctx, &args[1.min(args.len())..]);
+    if rgit_trace::trace2::enabled() && matches!(parsed, Ok(global::Action::Exit(_)) | Err(_)) {
+        let name = if matches!(parsed, Ok(global::Action::Exit(0))) {
+            "_query_"
+        } else {
+            "_usage_"
+        };
+        telemetry::cmd_name(&ctx, name, false);
+    }
+    match parsed? {
         global::Action::Exit(code) => Ok(code),
         global::Action::NoCommand => {
             if ctx.paginate == Some(true) {
@@ -295,6 +328,7 @@ fn main() {
     let start = std::time::Instant::now();
     reset_sigpipe();
     let args: Vec<String> = std::env::args_os().map(argv::to_string).collect();
+    telemetry::init(&args);
     // The command runs on a thread with a stack of its own: scripts start
     // git under a small stack limit (t5551/t5559 clone under
     // `ulimit -s 128`), which the main thread inherits.
@@ -310,11 +344,13 @@ fn main() {
             Ok(code) => code,
             Err(die) => die.emit(),
         });
+    rgit_trace::trace2::exit(code);
     // Filter processes see the end of their input and finish.
     rgit_convert::filter::finish_all();
     let _ = std::io::stdout().flush();
     // GIT_TRACE_PERFORMANCE: the whole command line as invoked.
     rgit_trace::trace_command_performance(start, &args);
     pager::finish();
+    rgit_trace::trace2::atexit();
     std::process::exit(code);
 }

@@ -64,16 +64,21 @@ fn run_gc_task(ctx: &Context, config: &ConfigSet, quiet: bool) -> Result<(), Die
     };
     let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.args([
+    let args = [
         "gc",
         "--auto",
         if quiet { "--quiet" } else { "--no-quiet" },
         if detach { "--detach" } else { "--no-detach" },
-    ]);
+    ];
+    cmd.args(args);
     for (k, v) in ctx.child_env() {
         cmd.env(k, v);
     }
-    let _ = cmd.stdin(std::process::Stdio::null()).status();
+    let _ = rgit_trace::trace2::status(
+        cmd.stdin(std::process::Stdio::null()),
+        Default::default(),
+        &rgit_trace::trace2::git_argv(&args),
+    );
     Ok(())
 }
 

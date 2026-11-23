@@ -81,7 +81,11 @@ pub fn run(ctx: &Context, argv: &[String]) -> Option<CmdResult> {
     for (k, v) in ctx.child_env() {
         cmd.env(k, v);
     }
-    let status = match cmd.status() {
+    let info = rgit_trace::trace2::ChildInfo {
+        class: "dashed",
+        ..Default::default()
+    };
+    let status = match rgit_trace::trace2::status(&mut cmd, info, &dashed) {
         Ok(s) => s,
         Err(e) => {
             return Some(Err(Die::Fatal(format!("cannot run git-{}: {e}", argv[0]))));

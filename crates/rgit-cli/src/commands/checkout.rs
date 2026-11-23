@@ -197,6 +197,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     crate::switch_branch::set_ignore_other_worktrees(ignore_other.get());
     rs::check_conflict_style(conflict.borrow().as_deref())?;
     let quiet = quiet.get() > 0;
+    sb::set_progress(progress.get(), quiet);
     let force = force.get();
     let track = track.get();
     let mut new_b = new_b.borrow().clone();

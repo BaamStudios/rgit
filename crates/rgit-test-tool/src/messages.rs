@@ -329,3 +329,11 @@ const READER_PREFIX: &str = concat!("gi", "t: ");
 pub fn sideband_prefixed(msg: &str) -> String {
     format!("sideband: {msg}")
 }
+
+/// `progress` with arguments.
+pub const PROGRESS_USAGE: &str = "usage: test-tool progress <stdin";
+
+/// `progress`: a line that is not a command.
+pub fn progress_invalid_input(line: &str) -> String {
+    format!("fatal: invalid input: '{line}'")
+}

@@ -210,13 +210,40 @@ impl Plan {
     /// directories that become empty), then every update, in index order.
     /// Written entries get the `lstat` data of their new files.
     pub fn apply(self, odb: &dyn Objects, wt: &Worktree<'_>, filter: &dyn Filter) -> Applied {
+        self.apply_with_progress(odb, wt, filter, false)
+    }
+
+    /// [`Plan::apply`] with git's delayed `Updating files` meter when
+    /// `progress`.
+    pub fn apply_with_progress(
+        self,
+        odb: &dyn Objects,
+        wt: &Worktree<'_>,
+        filter: &dyn Filter,
+        progress: bool,
+    ) -> Applied {
         let Plan {
             mut index,
             remove,
             update,
         } = self;
+        let mut meter = progress.then(|| {
+            rgit_progress::Progress::start_delayed(
+                msg::PROGRESS_UPDATING_FILES,
+                (remove.len() + update.len()) as u64,
+                true,
+            )
+        });
+        let mut done = 0u64;
+        let mut tick = |meter: &mut Option<rgit_progress::Progress>| {
+            done += 1;
+            if let Some(m) = meter {
+                m.set(done);
+            }
+        };
         let mut errors = Vec::new();
         for (path, gitlink) in &remove {
+            tick(&mut meter);
             if let Err(e) = checkout::remove_entry(wt.root, path, *gitlink) {
                 errors.push(msg::unable_to_unlink(&lossy(path), &checkout::strerror(&e)));
             }
@@ -224,6 +251,7 @@ impl Plan {
         let symlinks = wt.checker.options().symlinks;
         let mut delayed = false;
         for path in &update {
+            tick(&mut meter);
             let Ok(pos) = index.position(path, Stage::MERGED) else {
                 continue;
             };
@@ -276,6 +304,9 @@ impl Plan {
             };
             let missing = filter.finish_delayed(&mut ready);
             errors.extend(missing);
+        }
+        if let Some(m) = meter {
+            m.stop();
         }
         Applied { index, errors }
     }

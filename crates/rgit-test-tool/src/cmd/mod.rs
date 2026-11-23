@@ -7,6 +7,7 @@ pub mod config;
 pub mod date;
 pub mod parse_options;
 pub mod pkt_line;
+pub mod progress;
 pub mod ref_store;
 pub mod sha;
 pub mod submodule;

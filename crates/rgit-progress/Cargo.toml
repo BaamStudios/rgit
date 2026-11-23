@@ -1,0 +1,17 @@
+[package]
+name = "rgit-progress"
+description = "Progress meters on standard error for rgit (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rgit-trace = { path = "../rgit-trace" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
