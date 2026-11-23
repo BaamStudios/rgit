@@ -499,3 +499,26 @@ fn interdiff_and_commit_list() {
         same(&mut fx, args);
     }
 }
+
+/// `--graph`: the mails carry the graph as the reference git leaves it
+/// after the walk (t4052).
+#[test]
+fn graph() {
+    let mut fx = history();
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["--stdout", "--graph", "-1"][..],
+        &["--stdout", "--graph", "-2"],
+        &["--stdout", "--graph", "--no-signature", "-3"],
+        &["--stdout", "--graph", "-4"],
+        &["--stdout", "--graph", "main~2"],
+        &["--stdout", "--graph", "--root", "main"],
+        &["--stdout", "--graph", "--cover-letter", "-2"],
+        &["--stdout", "--graph", "--cover-letter", "main~2"],
+        &["--stdout", "--graph", "--stat-width=40", "-1"],
+    ] {
+        same(&mut fx, args);
+    }
+}
