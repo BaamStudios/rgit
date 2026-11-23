@@ -220,6 +220,8 @@ struct Settings {
 #[derive(Default)]
 struct WsCount {
     lines: usize,
+    /// Added lines fixed by `--whitespace=fix` in applied patches.
+    fixed: usize,
     shown: usize,
     squelched: usize,
 }
@@ -615,7 +617,13 @@ impl State<'_> {
             } else {
                 &p.hunks
             };
-            let applied = rgit_apply::apply_hunks(&image, hunks, &self.s.match_opts);
+            let path = p.new_name.as_deref().or(p.old_name.as_deref()).unwrap_or_default();
+            let rule = self.ws_rule_for(path);
+            let fixer = |t: &[u8]| rgit_diff::ws_rule::fix_line(t, &rule);
+            let fix: Option<rgit_apply::Fixer> =
+                (self.s.ws_action == WsAction::Fix).then_some(&fixer);
+            let applied =
+                rgit_apply::apply_hunks_fixing(&image, hunks, &self.s.match_opts, fix);
             let mut rejected = Vec::new();
             for (k, r) in applied.hunks.iter().enumerate() {
                 match r {
@@ -914,36 +922,53 @@ impl State<'_> {
     }
 
     /// Looks for whitespace errors in the added lines (fixing them with
-    /// `--whitespace=fix`); returns how many lines have errors.
-    fn whitespace_check(&mut self, patches: &mut [FilePatch], source: &str) -> usize {
+    /// `--whitespace=fix`); returns how many lines have errors and how
+    /// many added lines were fixed.
+    fn whitespace_check(&mut self, patches: &mut [FilePatch], source: &str) -> (usize, usize) {
         use rgit_diff::ws_rule;
         let action = self.s.ws_action;
         if action == WsAction::NoWarn {
-            return 0;
+            return (0, 0);
         }
         let kinds = [
             (ws_rule::BLANK_AT_EOL, crate::messages::diff::WS_TRAILING),
             (ws_rule::SPACE_BEFORE_TAB, crate::messages::diff::WS_SPACE_BEFORE_TAB),
             (ws_rule::INDENT_WITH_NON_TAB, crate::messages::diff::WS_INDENT_WITH_SPACES),
             (ws_rule::TAB_IN_INDENT, crate::messages::diff::WS_TAB_IN_INDENT),
+            (ws_rule::INCOMPLETE_LINE, crate::messages::diff::WS_INCOMPLETE),
         ];
         let mut found = 0;
+        let mut fixed = 0;
+        // `--whitespace=fix` also fixes (and reports) context lines.
+        let context = action == WsAction::Fix && !self.s.reverse;
         for p in patches.iter_mut() {
             if p.binary {
                 continue;
             }
             let path = p.new_name.clone().or_else(|| p.old_name.clone()).unwrap_or_default();
             let rule = self.ws_rule_for(&path);
+            // A symbolic link has no final line feed.
+            let link = [p.old_mode, p.new_mode].contains(&Some(S_IFLNK));
+            let incomplete_rule = rule.has(ws_rule::INCOMPLETE_LINE) && !link;
             let mut reports = Vec::new();
             for h in &mut p.hunks {
                 for l in &mut h.lines {
-                    if l.kind != LineKind::Add {
+                    if l.kind == LineKind::Remove || (l.kind == LineKind::Context && !context) {
                         continue;
                     }
                     let body = l.text.strip_suffix(b"\n").unwrap_or(&l.text).to_vec();
-                    let errors = ws_rule::check_line(&body, &rule).errors;
-                    if action == WsAction::Fix {
+                    let mut errors = ws_rule::check_line(&body, &rule).errors;
+                    let incomplete = l.kind == LineKind::Add
+                        && incomplete_rule
+                        && !l.text.ends_with(b"\n");
+                    if incomplete {
+                        errors |= ws_rule::INCOMPLETE_LINE;
+                    }
+                    if action == WsAction::Fix && l.kind == LineKind::Add {
                         l.text = ws_rule::fix_line(&l.text, &rule);
+                        if incomplete {
+                            l.text.push(b'\n');
+                        }
                     }
                     let names: Vec<&str> = kinds
                         .iter()
@@ -954,6 +979,9 @@ impl State<'_> {
                         continue;
                     }
                     found += 1;
+                    if l.kind == LineKind::Add {
+                        fixed += 1;
+                    }
                     reports.push((l.line, names.join(", "), body));
                 }
             }
@@ -964,7 +992,7 @@ impl State<'_> {
         // New blank lines at the end of a file, found when the patches
         // are applied: not when other errors already stop them.
         let fatal = matches!(action, WsAction::Error | WsAction::ErrorAll);
-        if !(fatal && found > 0) {
+        if !(fatal && found > 0) && (self.s.apply || self.s.check) {
             for p in patches.iter_mut() {
                 let path = p.new_name.clone().or_else(|| p.old_name.clone()).unwrap_or_default();
                 if p.binary || !self.ws_rule_for(&path).has(ws_rule::BLANK_AT_EOF) {
@@ -1004,14 +1032,13 @@ impl State<'_> {
                     h.new_count -= blank;
                     p.added = p.added.saturating_sub(blank);
                     h.finish();
-                } else {
-                    found += 1;
                 }
+                found += 1;
                 self.ws_report(source, line, crate::messages::diff::WS_BLANK_AT_EOF, b"+");
             }
         }
         self.ws.lines += found;
-        found
+        (found, fixed)
     }
 
     /// The summary of the whitespace errors; 128 when they are fatal.
@@ -1029,8 +1056,14 @@ impl State<'_> {
                 eprintln!("warning: {}", msg::ws_lines_add(n));
                 0
             }
+            // Nothing applied (`--check`, or errors only in context
+            // lines): the errors are only reported.
+            WsAction::Fix if self.ws.fixed == 0 => {
+                eprintln!("warning: {}", msg::ws_lines_add(n));
+                0
+            }
             WsAction::Fix => {
-                eprintln!("warning: {}", msg::ws_lines_fixed(n));
+                eprintln!("warning: {}", msg::ws_lines_fixed(self.ws.fixed));
                 0
             }
             WsAction::Error | WsAction::ErrorAll => {
@@ -1226,7 +1259,7 @@ impl State<'_> {
         }
         let mut patches = Vec::new();
         for mut p in all {
-            if !self.prefix.is_empty() && !p.is_git {
+            if !self.prefix.is_empty() && !p.is_git && !self.parse_opts.names_from_top {
                 for name in [&mut p.old_name, &mut p.new_name].into_iter().flatten() {
                     let mut full = self.prefix.clone();
                     full.extend_from_slice(name);
@@ -1260,13 +1293,16 @@ impl State<'_> {
             patches.reverse();
         }
         let mut code = 0;
-        let ws_errors = self.whitespace_check(&mut patches, source);
+        let (ws_errors, ws_fixed) = self.whitespace_check(&mut patches, source);
         let ws_fatal =
             ws_errors > 0 && matches!(self.s.ws_action, WsAction::Error | WsAction::ErrorAll);
         if (self.s.check || self.s.apply) && !ws_fatal {
             let plans = self.check(&mut patches)?;
-            if self.s.apply && !self.write(&patches, &plans)? {
-                code = 1;
+            if self.s.apply {
+                if !self.write(&patches, &plans)? {
+                    code = 1;
+                }
+                self.ws.fixed += ws_fixed;
             }
         }
         if let Some(file) = &self.s.fake_ancestor {
@@ -1803,6 +1839,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
+    let parse_prefix = prefix.clone();
     let mut state = State {
         s: &settings,
         repo: repo.as_ref(),
@@ -1819,6 +1856,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             p_explicit: p_value.get().is_some(),
             root: root_dir,
             recount: recount.get(),
+            prefix: parse_prefix,
+            names_from_top: false,
         },
     };
 

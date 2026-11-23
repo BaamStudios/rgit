@@ -24,8 +24,8 @@ pub enum Eol {
 }
 
 impl Eol {
-    /// `lf` or `crlf` (case-sensitive, as git reads the `eol` attribute
-    /// and `core.eol`); `None` for anything else.
+    /// `lf` or `crlf` (case-sensitive, as git reads the `eol` attribute;
+    /// `core.eol` is lowercased first); `None` for anything else.
     #[must_use]
     pub fn parse(v: &[u8]) -> Option<Eol> {
         match v {
