@@ -257,6 +257,11 @@ pub fn in_progress_onto(onto: &str) -> String {
     format!("interactive rebase in progress; onto {onto}")
 }
 
+/// The first status line during `rebase --apply`.
+pub fn apply_in_progress_onto(onto: &str) -> String {
+    format!("rebase in progress; onto {onto}")
+}
+
 pub fn last_done(n: usize) -> String {
     if n == 1 {
         format!("Last command done ({n} command done):")

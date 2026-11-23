@@ -5,7 +5,7 @@
 
 use std::io::{Read, Write};
 
-use crate::columns::{Enable, Layout, Mode, Options, format};
+use crate::column::{Enable, Layout, Mode, Options, format};
 use crate::messages::column as msg;
 use crate::prelude::*;
 

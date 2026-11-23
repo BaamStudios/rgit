@@ -12,6 +12,13 @@ pub fn detached_from(name: &str) -> String {
     format!("HEAD detached from {name}")
 }
 pub const NOT_ON_BRANCH: &str = "Not currently on any branch.";
+pub const AM_IN_PROGRESS: &str = "You are in the middle of an am session.";
+pub const AM_EMPTY_PATCH: &str = "The current patch is empty.";
+pub const HINT_AM_CONTINUE: &str = "  (fix conflicts and then run \"git am --continue\")";
+pub const HINT_AM_SKIP: &str = "  (use \"git am --skip\" to skip this patch)";
+pub const HINT_AM_ALLOW_EMPTY: &str =
+    "  (use \"git am --allow-empty\" to record this patch as an empty commit)";
+pub const HINT_AM_ABORT: &str = "  (use \"git am --abort\" to restore the original branch)";
 pub const UNTRACKED_NOT_LISTED: &str = "Untracked files not listed";
 pub const UNTRACKED_NOT_LISTED_HINT: &str =
     "Untracked files not listed (use -u option to show untracked files)";

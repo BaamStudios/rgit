@@ -608,6 +608,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if let Some(reference) = index_mtime {
             let _ = smudge_racy_entries(&mut index, reference, &checker);
         }
+        crate::hooks::index_changes(crate::hooks::IndexChange::SkipWorktree);
         write_index(&repo, &index)?;
     }
 
@@ -715,6 +716,7 @@ fn reset_worktree(
     if let Some(reference) = mtime {
         let _ = smudge_racy_entries(&mut index, reference, &checker);
     }
+    crate::hooks::index_changes(crate::hooks::IndexChange::Workdir);
     crate::switch_branch::write_index(repo, &index, lock)?;
     if !applied.errors.is_empty() {
         for e in &applied.errors {

@@ -388,7 +388,13 @@ impl<'a> UpdateHooks<'a> {
             writer: committer.map(|c| ReflogWriter::new(logs, c)),
             store: ref_store(setup, config),
             symbolic: Default::default(),
-            transaction_hook: None,
+            // Every reference transaction runs `reference-transaction`.
+            transaction_hook: crate::hooks::with_context(
+                &crate::hooks::current_context(),
+                setup,
+                config,
+            )
+            .ok(),
         }
     }
 

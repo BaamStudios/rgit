@@ -170,6 +170,152 @@ pub(crate) struct Printer {
     /// Show paths relative to this directory (empty or ending in `/`).
     pub(crate) prefix: Vec<u8>,
     pub(crate) out: Vec<u8>,
+    /// `color.status`: the colours of the short format.
+    pub(crate) colors: Option<StatusColors>,
+}
+
+/// The colours of `color.status.<slot>` (also `status.color.<slot>`;
+/// Documentation/config/color.adoc). An empty colour prints plain text.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StatusColors {
+    header: String,
+    added: String,
+    changed: String,
+    untracked: String,
+    ignored: String,
+    branch: String,
+    nobranch: String,
+    unmerged: String,
+    local: String,
+    remote: String,
+}
+
+impl StatusColors {
+    /// The colours when `color.status` (else `color.ui`) asks for them.
+    pub(crate) fn load(config: &rgit_config::ConfigSet) -> Result<Option<StatusColors>, Die> {
+        if !crate::color::want(config, Some("color.status"), None)? {
+            return Ok(None);
+        }
+        let slot = |names: &[&str], default: &str| -> Result<String, Die> {
+            let mut value = default.to_owned();
+            for name in names {
+                for key in [format!("status.color.{name}"), format!("color.status.{name}")] {
+                    if config.get(&key).is_some() {
+                        value = crate::color::slot(config, &key, default)?;
+                    }
+                }
+            }
+            Ok(value)
+        };
+        let header = slot(&["header"], "")?;
+        Ok(Some(StatusColors {
+            added: slot(&["added", "updated"], "\x1b[32m")?,
+            changed: slot(&["changed"], "\x1b[31m")?,
+            untracked: slot(&["untracked"], "\x1b[31m")?,
+            ignored: "\x1b[31m".to_owned(),
+            branch: slot(&["branch"], &header)?,
+            nobranch: slot(&["nobranch"], "\x1b[31m")?,
+            unmerged: slot(&["unmerged"], "\x1b[31m")?,
+            local: slot(&["localBranch"], "\x1b[32m")?,
+            remote: slot(&["remoteBranch"], "\x1b[31m")?,
+            header,
+        }))
+    }
+}
+
+/// `text` in `color` (plain when the colour is empty).
+fn paint(out: &mut Vec<u8>, color: &str, text: &[u8]) {
+    if color.is_empty() {
+        out.extend_from_slice(text);
+    } else {
+        out.extend_from_slice(color.as_bytes());
+        out.extend_from_slice(text);
+        out.extend_from_slice(b"\x1b[m");
+    }
+}
+
+/// Colour the long format in `out` up to `end` (the closing summary line
+/// stays plain): headings and advice in the header colour, the entries of
+/// each section in the colour of the section, the branch name in the
+/// branch colour. Blank lines get the header colour too, except those
+/// after the upstream lines and after the untracked and ignored files.
+fn colorize_long(out: &[u8], end: usize, c: &StatusColors) -> Vec<u8> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Section {
+        None,
+        Tracking,
+        Added,
+        Unmerged,
+        Changed,
+        Untracked,
+        Ignored,
+    }
+    let mut res = Vec::with_capacity(out.len() * 2);
+    let mut section = Section::None;
+    for (n, line) in out[..end].split_inclusive(|&b| b == b'\n').enumerate() {
+        let (text, nl) = match line.strip_suffix(b"\n") {
+            Some(t) => (t, true),
+            None => (line, false),
+        };
+        if n == 0 {
+            paint(&mut res, &c.header, b"");
+            let on = msg::on_branch("");
+            if let Some(b) = text.strip_prefix(on.as_bytes()) {
+                paint(&mut res, &c.header, on.as_bytes());
+                paint(&mut res, &c.branch, b);
+            } else if let Some(split) = [msg::detached_at(""), msg::detached_from("")]
+                .iter()
+                .find(|p| text.starts_with(p.as_bytes()))
+            {
+                paint(&mut res, &c.nobranch, split.as_bytes());
+                paint(&mut res, &c.branch, &text[split.len()..]);
+            } else {
+                paint(&mut res, &c.nobranch, text);
+            }
+        } else if text.is_empty() {
+            match section {
+                Section::Tracking | Section::Untracked | Section::Ignored => {}
+                _ => paint(&mut res, &c.header, b""),
+            }
+        } else if let Some(entry) = text.strip_prefix(b"\t") {
+            let color = match section {
+                Section::Added => &c.added,
+                Section::Unmerged => &c.unmerged,
+                Section::Changed => &c.changed,
+                Section::Untracked => &c.untracked,
+                Section::Ignored => &c.ignored,
+                _ => &c.header,
+            };
+            paint(&mut res, &c.header, b"\t");
+            paint(&mut res, color, entry);
+        } else {
+            let heading = [
+                (msg::STAGED_HEADER, Section::Added),
+                (msg::UNMERGED_HEADER, Section::Unmerged),
+                (msg::UNSTAGED_HEADER, Section::Changed),
+                (msg::UNTRACKED_HEADER, Section::Untracked),
+                (msg::IGNORED_HEADER, Section::Ignored),
+            ]
+            .iter()
+            .find(|(h, _)| text == h.as_bytes())
+            .map(|(_, s)| *s);
+            if let Some(sec) = heading {
+                section = sec;
+            } else if text.starts_with(b"Your branch ")
+                && matches!(section, Section::None | Section::Tracking)
+            {
+                section = Section::Tracking;
+            } else if section == Section::Tracking && !text.starts_with(b"  (") && !text.starts_with(b"and have ") {
+                section = Section::None;
+            }
+            paint(&mut res, &c.header, text);
+        }
+        if nl {
+            res.push(b'\n');
+        }
+    }
+    res.extend_from_slice(&out[end..]);
+    res
 }
 
 impl Printer {
@@ -217,6 +363,8 @@ pub(crate) struct BranchInfo {
     pub(crate) branch: Option<String>,
     /// Upstream short name and how the branch relates to it.
     pub(crate) upstream: Option<(String, Tracking)>,
+    /// The comparisons of the long format (`status.compareBranches`).
+    pub(crate) compare: Vec<crate::compare_branches::Item>,
 }
 
 pub(crate) fn branch_info(repo: &mut Repo, revs: &Revs, count: bool) -> Result<BranchInfo, Die> {
@@ -226,6 +374,7 @@ pub(crate) fn branch_info(repo: &mut Repo, revs: &Revs, count: bool) -> Result<B
         .as_deref()
         .map(|t| t.strip_prefix("refs/heads/").unwrap_or(t).to_string());
     let mut upstream = None;
+    let mut upstream_full = None;
     if let Some(b) = &branch {
         let names = revs.with_resolver(|r| {
             let full = r.upstream_ref(b)?;
@@ -234,6 +383,7 @@ pub(crate) fn branch_info(repo: &mut Repo, revs: &Revs, count: bool) -> Result<B
             Some((full, short))
         });
         if let Some((full, short)) = names {
+            upstream_full = Some(full.clone());
             let state = match (repo.refs.resolve(&full), head) {
                 (None, _) => Tracking::Gone,
                 (Some(u), Some(h)) if u == h => Tracking::Counts(0, 0),
@@ -253,10 +403,15 @@ pub(crate) fn branch_info(repo: &mut Repo, revs: &Revs, count: bool) -> Result<B
             upstream = Some((short, state));
         }
     }
+    let compare = match &branch {
+        Some(b) => crate::compare_branches::plan(repo, b, head, upstream_full.as_deref(), count),
+        None => Vec::new(),
+    };
     Ok(BranchInfo {
         head,
         branch,
         upstream,
+        compare,
     })
 }
 
@@ -398,7 +553,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let advisor = ctx.advisor(&repo.config)?;
     // column.ui and column.status, then --column (long format only).
-    let mut columns = crate::columns::Mode::from_config(&repo.config, Some("status"))?;
+    let mut columns = crate::column::Mode::from_config(&repo.config, Some("status"))?;
     if let Some(c) = column.borrow().as_deref() {
         if let Err(tok) = columns.apply(c) {
             return Err(Die::Error(crate::messages::column::unsupported_option(&tok), 129));
@@ -517,14 +672,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Some(&index),
             ignore_cli,
             true,
-            rgit_submodule::Ignore::None,
+            // `-uno` leaves out untracked files in submodules too, unless
+            // an `ignore` setting asks for them.
+            if mode == Untracked::No {
+                rgit_submodule::Ignore::Untracked
+            } else {
+                rgit_submodule::Ignore::None
+            },
         )?)
     } else {
         None
     };
     let sub_ctx = rules.as_ref().map(|rules| SubContext {
         rules,
-        untracked: mode != Untracked::No,
+        untracked: true,
     });
     for e in index.entries() {
         let c = changes.get_mut(e.path()).expect("entry");
@@ -537,6 +698,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         check_worktree(&repo, &checker, &work_tree, e, c, sub_ctx.as_ref())?;
     }
 
+    // `--ignore-submodules=all` also hides staged submodule changes.
+    if ignore_cli == Some(rgit_submodule::Ignore::All) {
+        for c in changes.values_mut() {
+            if let (Some((0o160000, _)), Some((0o160000, id, _))) = (c.head, c.index) {
+                c.head = Some((0o160000, id));
+            }
+        }
+    }
     let core = rename_options(&repo, no_renames.get(), find_renames.as_ref())?;
     staged_renames(&repo, &mut changes, &core);
 
@@ -600,6 +769,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         space_quote: format != Format::Long && format != Format::Porcelain(2),
         prefix: if relative { repo.prefix() } else { Vec::new() },
         out: Vec::new(),
+        colors: match format {
+            Format::Long | Format::Short => StatusColors::load(&repo.config)?,
+            Format::Porcelain(_) => None,
+        },
     };
     let zero = ObjectId::null(repo.hash);
     let entries: Vec<(&Vec<u8>, &Change)> = changes.iter().filter(|(p, _)| wanted(p)).collect();
@@ -618,12 +791,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 merging: repo.setup.git_dir.join("MERGE_HEAD").exists(),
                 sequencing: crate::wt_status::sequencing(&repo),
                 rebasing: crate::wt_status::rebasing(&repo),
+                am: crate::wt_status::am_session(&repo),
                 bisecting: crate::wt_status::bisecting(&repo),
                 mode,
                 columns,
                 uf_delay,
+                summary: submodule_summary(&repo, &entries, rules.as_ref()),
             };
-            let summary = long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
+            let mut summary = long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
+            if let Some(c) = &p.colors {
+                let end = summary.unwrap_or(p.out.len());
+                let colored = colorize_long(&p.out, end, c);
+                let grown = colored.len() - p.out.len();
+                p.out = colored;
+                summary = summary.map(|s| s + grown);
+            }
             let old_len = p.out.len();
             if config_bool(&repo, "status.displaycommentprefix")? == Some(true) {
                 // Every line but the summary as a comment, like the commit
@@ -842,9 +1024,14 @@ fn short(
     ignored: &[Vec<u8>],
     is_short: bool,
 ) {
+    let colors = p.colors.clone();
+    let paint_to = |p: &mut Printer, color: fn(&StatusColors) -> &String, text: &[u8]| match &colors {
+        Some(c) => paint(&mut p.out, color(c), text),
+        None => p.out.extend_from_slice(text),
+    };
     for (path, c) in entries {
         if let Some(code) = conflict_code(c) {
-            p.text(code);
+            paint_to(p, |c| &c.unmerged, code.as_bytes());
             p.text(" ");
             p.path(path);
             p.end();
@@ -861,8 +1048,16 @@ fn short(
                 y = if st.modified { b'm' } else { b'?' };
             }
         }
-        p.out.push(x);
-        p.out.push(y);
+        if x == b' ' {
+            p.out.push(x);
+        } else {
+            paint_to(p, |c| &c.added, &[x]);
+        }
+        if y == b' ' {
+            p.out.push(y);
+        } else {
+            paint_to(p, |c| &c.changed, &[y]);
+        }
         p.out.push(b' ');
         match &c.rename {
             Some((old, ..)) if p.nul => {
@@ -880,12 +1075,14 @@ fn short(
         p.end();
     }
     for u in untracked {
-        p.text("?? ");
+        paint_to(p, |c| &c.untracked, b"??");
+        p.text(" ");
         p.path(u);
         p.end();
     }
     for u in ignored {
-        p.text("!! ");
+        paint_to(p, |c| &c.ignored, b"!!");
+        p.text(" ");
         p.path(u);
         p.end();
     }
@@ -1002,12 +1199,17 @@ struct LongContext<'a> {
     merging: bool,
     sequencing: Option<crate::wt_status::Sequencing>,
     rebasing: Option<crate::wt_status::Rebasing>,
+    /// An `am` session: whether its current patch is empty.
+    am: Option<bool>,
     bisecting: Option<Option<String>>,
     mode: Untracked,
     /// `--column` / `column.status`: untracked files in columns.
-    columns: Option<crate::columns::Mode>,
+    columns: Option<crate::column::Mode>,
     /// The advice that looking for untracked files took long.
     uf_delay: Option<String>,
+    /// `status.submoduleSummary`: the blocks for the staged and the
+    /// unstaged submodule changes.
+    summary: (Vec<u8>, Vec<u8>),
 }
 
 fn label_of(letter: u8) -> &'static str {
@@ -1061,9 +1263,30 @@ fn long(
     }
     p.text("\n");
     let unborn = info.head.is_none();
-    if let (Some((up, state)), false) = (&info.upstream, unborn) {
-        tracking(p, up, *state, ctx.hints);
-        p.text("\n");
+    if !unborn {
+        let push_shown = crate::compare_branches::has_push(&info.compare);
+        for item in &info.compare {
+            match item {
+                crate::compare_branches::Item::Upstream => {
+                    if let Some((up, state)) = &info.upstream {
+                        tracking(p, up, *state, ctx.hints, push_shown);
+                        p.text("\n");
+                    }
+                }
+                crate::compare_branches::Item::PushMissing => {}
+                crate::compare_branches::Item::Push(push) => {
+                    for (text, advice) in crate::compare_branches::push_lines(push) {
+                        if advice {
+                            hint(p, &text);
+                        } else {
+                            p.text(&text);
+                            p.text("\n");
+                        }
+                    }
+                    p.text("\n");
+                }
+            }
+        }
     }
     type Staged<'a> = (&'a Vec<u8>, u8, Option<&'a Vec<u8>>);
     let staged: Vec<Staged<'_>> = entries
@@ -1095,7 +1318,17 @@ fn long(
         p.text("\n");
     }
     // A cherry-pick or revert that stopped has no unstage hints either.
-    let picking = ctx.sequencing.as_ref().is_some_and(|s| s.commit.is_some());
+    let picking = ctx
+        .sequencing
+        .as_ref()
+        .is_some_and(|s| s.commit.is_some() && !s.revert);
+    if let Some(empty) = ctx.am {
+        for l in crate::wt_status::am_lines(empty, ctx.hints) {
+            p.text(&l);
+            p.text("\n");
+        }
+        p.text("\n");
+    }
     if let Some(seq) = &ctx.sequencing {
         for l in crate::wt_status::sequencing_lines(seq, !unmerged.is_empty(), ctx.hints) {
             p.text(&l);
@@ -1152,6 +1385,8 @@ fn long(
         }
         if unmerged.iter().all(|(_, c)| *c == "UU" || *c == "AA") {
             hint(p, msg::HINT_MARK_RESOLUTION);
+        } else if unmerged.iter().all(|(_, c)| *c == "DD") {
+            hint(p, msg::HINT_MARK_RESOLUTION_RM_ONLY);
         } else {
             hint(p, msg::HINT_MARK_RESOLUTION_RM);
         }
@@ -1196,6 +1431,16 @@ fn long(
         }
         p.text("\n");
     }
+    for (header, text) in [
+        (msg::SUBMODULE_SUMMARY_STAGED, &ctx.summary.0),
+        (msg::SUBMODULE_SUMMARY_UNSTAGED, &ctx.summary.1),
+    ] {
+        if !text.is_empty() {
+            p.text(header);
+            p.text("\n\n");
+            p.out.extend_from_slice(text);
+        }
+    }
     if !untracked.is_empty() {
         p.text(msg::UNTRACKED_HEADER);
         p.text("\n");
@@ -1210,9 +1455,9 @@ fn long(
                     cells.push(String::from_utf8_lossy(&p.out[at..]).into_owned());
                     p.out.truncate(at);
                 }
-                let mut opts = crate::columns::Options::new(mode);
+                let mut opts = crate::column::Options::new(mode);
                 opts.indent = "\t".into();
-                p.text(&crate::columns::format(&cells, &opts));
+                p.text(&crate::column::format(&cells, &opts));
             }
             None => {
                 for u in untracked {
@@ -1265,8 +1510,41 @@ fn long(
     Some(at)
 }
 
+/// The submodule summary of the long format (`status.submoduleSummary`):
+/// staged gitlink changes, then submodules whose `HEAD` moved; nothing for
+/// submodules with `ignore=all`.
+fn submodule_summary(
+    repo: &Repo,
+    entries: &[(&Vec<u8>, &Change)],
+    rules: Option<&crate::submodules::IgnoreRules>,
+) -> (Vec<u8>, Vec<u8>) {
+    let (mut staged, mut unstaged) = (Vec::new(), Vec::new());
+    let (Some(limit), Some(rules)) = (crate::submodules::summary_limit(&repo.config), rules) else {
+        return (staged, unstaged);
+    };
+    let gitlink = |mode: u32| mode == 0o160000;
+    for (path, c) in entries {
+        if rules.for_path(path) == rgit_submodule::Ignore::All || conflict_code(c).is_some() {
+            continue;
+        }
+        let head = c.head.filter(|(m, _)| gitlink(*m)).map(|(_, id)| id);
+        let index = c.index.filter(|(m, ..)| gitlink(*m)).map(|(_, id, _)| id);
+        if (head.is_some() || index.is_some()) && head != index {
+            crate::submodules::status_summary(&mut staged, repo, path, head, index, limit);
+        }
+        if let (Some(i), Some(h)) = (index, c.sub.and_then(|s| s.head)) {
+            if i != h {
+                crate::submodules::status_summary(&mut unstaged, repo, path, Some(i), Some(h), limit);
+            }
+        }
+    }
+    (staged, unstaged)
+}
+
 /// The upstream lines of the long format.
-fn tracking(p: &mut Printer, up: &str, state: Tracking, hints: bool) {
+/// With `push_shown`, the advice about pushing and `--ahead-behind` goes
+/// with the push comparison instead.
+fn tracking(p: &mut Printer, up: &str, state: Tracking, hints: bool, push_shown: bool) {
     let hint = |p: &mut Printer, text: &str| {
         if hints {
             p.text("  (");
@@ -1288,7 +1566,9 @@ fn tracking(p: &mut Printer, up: &str, state: Tracking, hints: bool) {
         }
         Tracking::Counts(a, 0) => {
             line(p, &msg::ahead(up, a));
-            hint(p, msg::HINT_PUSH);
+            if !push_shown {
+                hint(p, msg::HINT_PUSH);
+            }
         }
         Tracking::Counts(0, b) => {
             line(p, &msg::behind(up, b));
@@ -1300,7 +1580,9 @@ fn tracking(p: &mut Printer, up: &str, state: Tracking, hints: bool) {
         }
         Tracking::Different => {
             line(p, &msg::different(up));
-            hint(p, msg::HINT_AHEAD_BEHIND);
+            if !push_shown {
+                hint(p, msg::HINT_AHEAD_BEHIND);
+            }
         }
     }
 }
@@ -1384,23 +1666,48 @@ fn wt_mode(meta: &std::fs::Metadata, index_mode: u32) -> u32 {
 /// The `-b` header of the short format and the porcelain formats.
 pub(crate) fn header(p: &mut Printer, version: u8, info: &BranchInfo) {
     if version == 1 {
-        p.text("## ");
+        let c = p.colors.clone().unwrap_or_default();
+        let out = &mut p.out;
+        paint(out, &c.header, b"## ");
         match (&info.branch, info.head) {
-            (Some(b), None) => p.text(&format!("No commits yet on {b}")),
-            (Some(b), Some(_)) => p.text(b),
-            (None, _) => p.text("HEAD (no branch)"),
+            (Some(b), None) => {
+                paint(out, &c.header, b"No commits yet on ");
+                paint(out, &c.local, b.as_bytes());
+            }
+            (Some(b), Some(_)) => paint(out, &c.local, b.as_bytes()),
+            (None, _) => paint(out, &c.nobranch, b"HEAD (no branch)"),
         }
         if let Some((up, state)) = &info.upstream {
-            {
-                p.text(&format!("...{up}"));
-                match *state {
-                    Tracking::Gone => p.text(" [gone]"),
-                    Tracking::Different => p.text(" [different]"),
-                    Tracking::Counts(0, 0) => {}
-                    Tracking::Counts(a, 0) => p.text(&format!(" [ahead {a}]")),
-                    Tracking::Counts(0, b) => p.text(&format!(" [behind {b}]")),
-                    Tracking::Counts(a, b) => p.text(&format!(" [ahead {a}, behind {b}]")),
+            paint(out, &c.header, b"...");
+            paint(out, &c.remote, up.as_bytes());
+            let (ahead, behind) = match *state {
+                Tracking::Gone => {
+                    paint(out, &c.header, b" [gone]");
+                    (None, None)
                 }
+                Tracking::Different => {
+                    paint(out, &c.header, b" [different]");
+                    (None, None)
+                }
+                Tracking::Counts(0, 0) => (None, None),
+                Tracking::Counts(a, 0) => (Some(a), None),
+                Tracking::Counts(0, b) => (None, Some(b)),
+                Tracking::Counts(a, b) => (Some(a), Some(b)),
+            };
+            if ahead.is_some() || behind.is_some() {
+                paint(out, &c.header, b" [");
+                if let Some(a) = ahead {
+                    paint(out, &c.header, b"ahead ");
+                    paint(out, &c.local, a.to_string().as_bytes());
+                }
+                if ahead.is_some() && behind.is_some() {
+                    paint(out, &c.header, b", ");
+                }
+                if let Some(b) = behind {
+                    paint(out, &c.header, b"behind ");
+                    paint(out, &c.remote, b.to_string().as_bytes());
+                }
+                paint(out, &c.header, b"]");
             }
         }
         p.end();

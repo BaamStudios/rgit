@@ -42,7 +42,7 @@ pub use lookup::{
 };
 pub use range::RevItem;
 pub use refname::{DwimRef, REF_RULES};
-pub use upstream::PushDefault;
+pub use upstream::{PushDefault, PushTarget};
 
 /// Why a revision did not resolve.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

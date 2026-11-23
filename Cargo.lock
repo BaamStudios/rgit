@@ -673,6 +673,7 @@ name = "rgit-messages"
 version = "0.1.0"
 dependencies = [
  "rgit-config",
+ "unicode-width",
 ]
 
 [[package]]

@@ -129,3 +129,94 @@ pub fn post_checkout(
     ];
     Ok(run(&hooks, "post-checkout", &RunOptions::with_args(args))?.code)
 }
+
+/// What a command changed besides the index, for the arguments of
+/// `post-index-change` (githooks(5)): the work tree, or the skip-worktree
+/// bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexChange {
+    Workdir,
+    SkipWorktree,
+}
+
+/// The repository whose index writes run `post-index-change`.
+struct IndexHook {
+    /// The absolute path of its index file.
+    index: PathBuf,
+    hc: HookContext,
+    setup: Setup,
+    config: ConfigSet,
+}
+
+thread_local! {
+    static INDEX_HOOK: std::cell::RefCell<Option<IndexHook>> = const { std::cell::RefCell::new(None) };
+    static INDEX_FLAGS: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+}
+
+/// Remember `repo` as the repository whose index writes run the
+/// `post-index-change` hook (the first one a command opens).
+pub fn watch_index(repo: &crate::repo_objects::Repo) {
+    INDEX_HOOK.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.is_some() {
+            return;
+        }
+        let path = rgit_index::index_path(&repo.setup.git_dir);
+        *h = Some(IndexHook {
+            index: absolute(&repo.setup.cwd.join(path)),
+            hc: repo.hook_context.clone(),
+            setup: repo.setup.clone(),
+            config: repo.config.clone(),
+        });
+    });
+    rgit_index::set_write_observer(index_written);
+}
+
+/// What hooks of the command inherit (from the first repository it
+/// opened), for code that has no [`Context`] at hand.
+pub fn current_context() -> HookContext {
+    INDEX_HOOK.with(|h| {
+        h.borrow()
+            .as_ref()
+            .map(|h| h.hc.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// The next index write also changed `what`.
+pub fn index_changes(what: IndexChange) {
+    INDEX_FLAGS.with(|f| {
+        let (mut w, mut s) = f.get();
+        match what {
+            IndexChange::Workdir => w = true,
+            IndexChange::SkipWorktree => s = true,
+        }
+        f.set((w, s));
+    });
+}
+
+fn absolute(p: &Path) -> PathBuf {
+    let p = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    rgit_repo::path::normalize(&p)
+}
+
+/// Runs `post-index-change <updated-workdir> <updated-skipworktree>`
+/// after the watched index file was written.
+fn index_written(path: &Path) {
+    let path = absolute(path);
+    INDEX_HOOK.with(|h| {
+        let h = h.borrow();
+        let Some(h) = h.as_ref().filter(|h| h.index == path) else {
+            return;
+        };
+        let (w, s) = INDEX_FLAGS.with(|f| f.replace((false, false)));
+        let Ok(hooks) = with_context(&h.hc, &h.setup, &h.config) else {
+            return;
+        };
+        let flag = |b: bool| if b { "1" } else { "0" }.to_owned();
+        let _ = hooks.run(
+            "post-index-change",
+            &RunOptions::with_args([flag(w), flag(s)]),
+        );
+    });
+}

@@ -500,7 +500,7 @@ pub fn queued_hook_lines(updates: &[RefUpdate], hash: HashKind) -> Vec<(String, 
     let zero = || ObjectId::null(hash).to_hex();
     updates
         .iter()
-        .filter(|u| u.new.is_some())
+        .filter(|u| u.new.is_some() || u.old.is_some())
         .map(|u| {
             let old = match &u.old {
                 Some(OldValue::Object(id)) => id.to_hex(),

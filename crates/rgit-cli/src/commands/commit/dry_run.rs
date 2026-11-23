@@ -30,6 +30,7 @@ pub(super) fn short(
         space_quote: true,
         prefix,
         out: Vec::new(),
+        colors: None,
     };
     if let Some(info) = branch {
         header(&mut p, 1, info);

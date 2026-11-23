@@ -63,6 +63,9 @@ pub(super) struct Prepared<'s> {
     items: Vec<Item>,
     packed: Option<(LockFile, PackedRefs)>,
     hook_updates: Vec<(String, String, String)>,
+    /// The deletions as the nested `packed-refs` transaction shows them
+    /// to the `reference-transaction` hook (when it rewrites the file).
+    packed_hook: Vec<(String, String, String)>,
 }
 
 impl Prepared<'_> {
@@ -168,6 +171,9 @@ impl PreparedTransaction for Prepared<'_> {
                 }
             }
         }
+        if !self.packed_hook.is_empty() {
+            let _ = hooks.reference_transaction(HookState::Committed, &self.packed_hook);
+        }
         let _ = hooks.reference_transaction(HookState::Committed, &self.hook_updates);
         match first_error {
             Some(e) => Err(e),
@@ -177,6 +183,9 @@ impl PreparedTransaction for Prepared<'_> {
 
     fn abort(mut self: Box<Self>, hooks: &mut dyn RefHooks) {
         self.rollback();
+        if !self.packed_hook.is_empty() {
+            let _ = hooks.reference_transaction(HookState::Aborted, &self.packed_hook);
+        }
         let _ = hooks.reference_transaction(HookState::Aborted, &self.hook_updates);
     }
 }
@@ -647,6 +656,17 @@ impl State<'_, '_> {
         // The hook sees the references actually written (`HEAD`'s branch).
         // The old value is the one given with the update (zero for none).
         for (k, o) in self.results.iter().take(updates.len()).enumerate() {
+            // A verification shows with the zero id as new value.
+            if updates[k].new.is_none() {
+                let old = match &updates[k].old {
+                    Some(OldValue::Object(id)) => id.to_hex(),
+                    Some(OldValue::Symbolic(t)) => format!("ref:{t}"),
+                    _ => continue,
+                };
+                let zero = ObjectId::null(crate::store::RefStore::hash_kind(self.store)).to_hex();
+                hook_updates.push((old, zero, updates[k].name.clone()));
+                continue;
+            }
             let Some(o) = o else { continue };
             let old = match &updates[k].old {
                 Some(OldValue::Object(id)) => id.to_hex(),
@@ -815,6 +835,7 @@ pub(super) fn prepare<'s>(
             items: Vec::new(),
             packed: None,
             hook_updates: Vec::new(),
+            packed_hook: Vec::new(),
         },
     };
     for u in &updates {
@@ -879,6 +900,34 @@ pub(super) fn prepare<'s>(
             packed.remove(name);
         }
         state.prepared.packed = Some((lock, packed));
+    }
+    // Deletions also go through a `packed-refs` transaction, which the
+    // hook sees too: prepared when it rewrites the file, else aborted.
+    let zero = ObjectId::null(crate::store::RefStore::hash_kind(store)).to_hex();
+    let mut deleted: Vec<String> = Vec::new();
+    for i in &state.prepared.items {
+        if matches!(i.action, Action::Delete { .. }) && !deleted.contains(&i.name) {
+            deleted.push(i.name.clone());
+        }
+    }
+    let delete_lines: Vec<(String, String, String)> = deleted
+        .into_iter()
+        .map(|n| (zero.clone(), zero.clone(), n))
+        .collect();
+    if !delete_lines.is_empty() {
+        if packed_deletes.is_empty() {
+            let _ = state
+                .hooks
+                .reference_transaction(HookState::Aborted, &delete_lines);
+        } else {
+            for s in [HookState::Preparing, HookState::Prepared] {
+                state
+                    .hooks
+                    .reference_transaction(s, &delete_lines)
+                    .map_err(TransactionError::Rejected)?;
+            }
+            state.prepared.packed_hook = delete_lines;
+        }
     }
 
     state.collect_reflogs(&updates);

@@ -1438,6 +1438,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .and_then(|(_, c)| c);
         index.set_cache_tree(cached);
     }
+    if commit_index.is_none()
+        && index.has_conflicts()
+        && args.dry_run
+        && !matches!(args.format, FORMAT_SHORT | FORMAT_PORCELAIN)
+    {
+        // A dry run shows the long status with the unmerged paths, as
+        // `git status` does, and fails.
+        let mut argv = vec!["status".to_owned()];
+        if let Some(mode) = &args.untracked {
+            argv.push(format!("--untracked-files={mode}"));
+        }
+        let _ = super::status::run(ctx, &argv)?;
+        return Ok(1);
+    }
     if commit_index.as_ref().unwrap_or(&index).has_conflicts() {
         let mut listed = Vec::new();
         let mut last: Option<&[u8]> = None;

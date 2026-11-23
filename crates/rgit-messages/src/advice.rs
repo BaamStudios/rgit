@@ -55,53 +55,55 @@ macro_rules! advice_table {
     };
 }
 
+// Each name is tagged with the code that emits it (command module or
+// crate), or "not emitted yet".
 advice_table! {
-    AddEmbeddedRepo => "addEmbeddedRepo",
-    AddEmptyPathspec => "addEmptyPathspec",
-    AddIgnoredFile => "addIgnoredFile",
-    AmWorkDir => "amWorkDir",
-    AmbiguousFetchRefspec => "ambiguousFetchRefspec",
-    CheckoutAmbiguousRemoteBranchName => "checkoutAmbiguousRemoteBranchName",
-    CommitBeforeMerge => "commitBeforeMerge",
-    DefaultBranchName => "defaultBranchName",
-    DetachedHead => "detachedHead",
-    Diverging => "diverging",
-    FetchRemoteHeadWarn => "fetchRemoteHEADWarn",
-    FetchShowForcedUpdates => "fetchShowForcedUpdates",
-    ForceDeleteBranch => "forceDeleteBranch",
-    IgnoredHook => "ignoredHook",
-    ImplicitIdentity => "implicitIdentity",
-    MergeConflict => "mergeConflict",
-    NestedTag => "nestedTag",
-    ObjectNameWarning => "objectNameWarning",
-    PushAlreadyExists => "pushAlreadyExists",
-    PushFetchFirst => "pushFetchFirst",
-    PushNeedsForce => "pushNeedsForce",
-    PushNonFfCurrent => "pushNonFFCurrent",
-    PushNonFfMatching => "pushNonFFMatching",
-    PushRefNeedsUpdate => "pushRefNeedsUpdate",
-    PushRepoLooksLikeRef => "pushRepoLooksLikeRef",
-    PushUnqualifiedRefname => "pushUnqualifiedRefname",
-    PushUpdateRejected => "pushUpdateRejected",
-    RebaseTodoError => "rebaseTodoError",
-    RefSyntax => "refSyntax",
-    ResetNoRefresh => "resetNoRefresh",
-    ResolveConflict => "resolveConflict",
-    RmHints => "rmHints",
-    SequencerInUse => "sequencerInUse",
-    SetUpstreamFailure => "setUpstreamFailure",
-    SkippedCherryPicks => "skippedCherryPicks",
-    SparseIndexExpanded => "sparseIndexExpanded",
-    StatusAheadBehind => "statusAheadBehind",
-    StatusHints => "statusHints",
-    StatusUoption => "statusUoption",
-    SubmoduleAlternateErrorStrategyDie => "submoduleAlternateErrorStrategyDie",
-    SubmoduleMergeConflict => "submoduleMergeConflict",
-    SubmodulesNotUpdated => "submodulesNotUpdated",
-    SuggestDetachingHead => "suggestDetachingHead",
-    UpdateSparsePath => "updateSparsePath",
-    WaitingForEditor => "waitingForEditor",
-    WorktreeAddOrphan => "worktreeAddOrphan",
+    AddEmbeddedRepo => "addEmbeddedRepo", // add
+    AddEmptyPathspec => "addEmptyPathspec", // add
+    AddIgnoredFile => "addIgnoredFile", // add
+    AmWorkDir => "amWorkDir", // not emitted yet
+    AmbiguousFetchRefspec => "ambiguousFetchRefspec", // not emitted yet
+    CheckoutAmbiguousRemoteBranchName => "checkoutAmbiguousRemoteBranchName", // tracking, worktree
+    CommitBeforeMerge => "commitBeforeMerge", // not emitted yet
+    DefaultBranchName => "defaultBranchName", // init
+    DetachedHead => "detachedHead", // clone, switch_branch
+    Diverging => "diverging", // merge, pull
+    FetchRemoteHeadWarn => "fetchRemoteHEADWarn", // fetch
+    FetchShowForcedUpdates => "fetchShowForcedUpdates", // not emitted yet
+    ForceDeleteBranch => "forceDeleteBranch", // branch
+    IgnoredHook => "ignoredHook", // rgit-hook
+    ImplicitIdentity => "implicitIdentity", // commit
+    MergeConflict => "mergeConflict", // am, rebase, sequencer
+    NestedTag => "nestedTag", // rgit-test-tool, tag
+    ObjectNameWarning => "objectNameWarning", // revisions
+    PushAlreadyExists => "pushAlreadyExists", // push
+    PushFetchFirst => "pushFetchFirst", // push
+    PushNeedsForce => "pushNeedsForce", // push
+    PushNonFfCurrent => "pushNonFFCurrent", // push
+    PushNonFfMatching => "pushNonFFMatching", // push
+    PushRefNeedsUpdate => "pushRefNeedsUpdate", // not emitted yet
+    PushRepoLooksLikeRef => "pushRepoLooksLikeRef", // not emitted yet
+    PushUnqualifiedRefname => "pushUnqualifiedRefname", // push
+    PushUpdateRejected => "pushUpdateRejected", // not emitted yet
+    RebaseTodoError => "rebaseTodoError", // rebase
+    RefSyntax => "refSyntax", // branch, switch_branch
+    ResetNoRefresh => "resetNoRefresh", // not emitted yet
+    ResolveConflict => "resolveConflict", // commit, merge, pull, sequencer
+    RmHints => "rmHints", // rm
+    SequencerInUse => "sequencerInUse", // sequencer
+    SetUpstreamFailure => "setUpstreamFailure", // tracking
+    SkippedCherryPicks => "skippedCherryPicks", // rebase
+    SparseIndexExpanded => "sparseIndexExpanded", // not emitted yet
+    StatusAheadBehind => "statusAheadBehind", // not emitted yet
+    StatusHints => "statusHints", // commit, status, switch_branch
+    StatusUoption => "statusUoption", // status
+    SubmoduleAlternateErrorStrategyDie => "submoduleAlternateErrorStrategyDie", // not emitted yet
+    SubmoduleMergeConflict => "submoduleMergeConflict", // merge-tree
+    SubmodulesNotUpdated => "submodulesNotUpdated", // not emitted yet
+    SuggestDetachingHead => "suggestDetachingHead", // switch
+    UpdateSparsePath => "updateSparsePath", // not emitted yet
+    WaitingForEditor => "waitingForEditor", // branch, commit, merge, rebase, rgit-ident, tag
+    WorktreeAddOrphan => "worktreeAddOrphan", // worktree
 }
 
 impl Advice {

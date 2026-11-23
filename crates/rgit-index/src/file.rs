@@ -22,6 +22,26 @@ pub fn index_path(git_dir: &Path) -> PathBuf {
     }
 }
 
+/// Called with the path of every index file written by
+/// [`Index::write_file`] (or reported with [`notify_written`]); a program
+/// sets it once, e.g. to run the `post-index-change` hook.
+static WRITE_OBSERVER: std::sync::OnceLock<fn(&Path)> = std::sync::OnceLock::new();
+
+/// Sets the function told about every index file written; only the first
+/// call has an effect.
+pub fn set_write_observer(observer: fn(&Path)) {
+    let _ = WRITE_OBSERVER.set(observer);
+}
+
+/// Tells the observer (see [`set_write_observer`]) that the index file at
+/// `path` was written, for callers that commit a lock file themselves
+/// after [`Index::write_locked`].
+pub fn notify_written(path: &Path) {
+    if let Some(f) = WRITE_OBSERVER.get() {
+        f(path);
+    }
+}
+
 /// Failure to write the index file.
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
@@ -61,9 +81,11 @@ impl Index {
         lock: &LockOptions,
         opts: &WriteOptions,
     ) -> Result<(), WriteError> {
+        let path = path.as_ref();
         let mut file = LockFile::acquire(path, lock)?;
         file.write_all(&self.to_bytes(opts))?;
         file.commit()?;
+        notify_written(path);
         Ok(())
     }
 

@@ -2,7 +2,19 @@
 //! Messages and option help of `git diff-tree` (CLEANROOM.md:
 //! user-visible strings are reproduced verbatim and collected here).
 
-pub const USAGE: &[&str] = &["git diff-tree [<options>] <tree-ish> <tree-ish>"];
+pub const USAGE: &[&str] = &[
+    "git diff-tree [--stdin] [-m] [-s] [-v] [--no-commit-id] [--pretty]\n              [-t] [-r] [-c | --cc] [--combined-all-paths] [--root] [--merge-base]\n              [<common-diff-options>] <tree-ish> [<tree-ish>] [<path>...]",
+];
+
+/// The options listed by `-h` before the common diff options.
+pub const OPTIONS: &str = "\
+  -r            diff recursively
+  -c            show combined diff for merge commits
+  --cc          show combined diff for merge commits removing uninteresting hunks
+  --combined-all-paths
+                show name of file in all parents for combined diffs
+  --root        include the initial commit as diff against /dev/null
+";
 
 /// `error:` for a `--stdin` tree line without a second tree.
 pub const NEED_TWO_TREES: &str = "Need exactly two trees, separated by a space";

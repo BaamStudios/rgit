@@ -37,6 +37,9 @@ pub struct Collected {
     pub unstaged: Vec<(WtChange, Vec<u8>)>,
     /// Untracked paths (directories end in `/`).
     pub untracked: Vec<Vec<u8>>,
+    /// `status.submoduleSummary`: the blocks of the staged submodule
+    /// changes and of the submodules whose `HEAD` moved.
+    pub summary: (Vec<u8>, Vec<u8>),
 }
 
 /// The stage-0 entries of `index` (without intent-to-add entries).
@@ -99,10 +102,48 @@ pub fn collect(
         untracked,
         crate::untracked::IgnoredMode::No,
     )?;
+    let mut summary = (Vec::new(), Vec::new());
+    if let Some(limit) = crate::submodules::summary_limit(&repo.config) {
+        let rules = crate::submodules::IgnoreRules::load(
+            repo,
+            Some(index),
+            None,
+            true,
+            rgit_submodule::Ignore::None,
+        )?;
+        let ignored = |path: &[u8]| rules.for_path(path) == rgit_submodule::Ignore::All;
+        let gitlink = |s: &Option<Side>| s.as_ref().filter(|s| s.mode == 0o160000).map(|s| s.oid);
+        for p in &staged {
+            let (old, new) = (gitlink(&p.old), gitlink(&p.new));
+            if (old.is_some() || new.is_some()) && old != new && !ignored(&p.path) {
+                crate::submodules::status_summary(&mut summary.0, repo, &p.path, old, new, limit);
+            }
+        }
+        for e in index.entries() {
+            if e.stage().get() != 0 || !e.mode.is_gitlink() || ignored(e.path()) {
+                continue;
+            }
+            let dir = crate::diff::collect::os_path(&work_tree, e.path());
+            if let Some(h) = crate::repository::submodule_head(&dir, repo.hash) {
+                if h != e.id {
+                    let path = e.path();
+                    crate::submodules::status_summary(
+                        &mut summary.1,
+                        repo,
+                        path,
+                        Some(e.id),
+                        Some(h),
+                        limit,
+                    );
+                }
+            }
+        }
+    }
     Ok(Collected {
         staged,
         unstaged,
         untracked: found,
+        summary,
     })
 }
 
@@ -123,6 +164,8 @@ pub struct Tracking {
     pub name: String,
     /// Commits ahead and behind; `None` when the upstream ref is gone.
     pub counts: Option<(usize, usize)>,
+    /// Full ref name.
+    pub full: String,
 }
 
 /// The header of the status.
@@ -130,6 +173,8 @@ pub struct Tracking {
 pub struct Header {
     pub head: HeadState,
     pub tracking: Option<Tracking>,
+    /// The comparisons to show (`status.compareBranches`).
+    pub compare: Vec<crate::compare_branches::Item>,
     /// The branch has no commit yet.
     pub initial: bool,
     /// A merge is being concluded (`MERGE_HEAD`).
@@ -228,9 +273,12 @@ pub fn bisecting_lines(start: &Option<String>, hints: bool) -> Vec<String> {
     out
 }
 
-/// A rebase in progress (`.git/rebase-merge`), for the status banner.
+/// A rebase in progress (`.git/rebase-merge`, or `.git/rebase-apply` of
+/// `rebase --apply`), for the status banner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rebasing {
+    /// `rebase --apply`: no todo list.
+    pub apply: bool,
     /// The abbreviated new base.
     pub onto: String,
     /// The branch being rebased; `None` for a detached `HEAD`.
@@ -245,15 +293,51 @@ pub struct Rebasing {
     pub editing: bool,
 }
 
-/// The rebase in progress in `repo`, if any.
-pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
+/// The `am` session in progress in `repo` (`.git/rebase-apply` with
+/// `applying`), if any: whether the current patch is empty.
+pub fn am_session(repo: &Repo) -> Option<bool> {
     let dir = repo
         .setup
         .cwd
         .join(&repo.setup.git_dir)
-        .join("rebase-merge");
-    if !dir.is_dir() {
+        .join("rebase-apply");
+    if !dir.join("applying").exists() {
         return None;
+    }
+    Some(std::fs::metadata(dir.join("patch")).is_ok_and(|m| m.len() == 0))
+}
+
+/// The banner lines of an `am` session (`empty`: the current patch is
+/// empty); the caller adds the empty line.
+pub fn am_lines(empty: bool, hints: bool) -> Vec<String> {
+    let mut out = vec![msg::AM_IN_PROGRESS.to_owned()];
+    if empty {
+        out.push(msg::AM_EMPTY_PATCH.to_owned());
+    }
+    if hints {
+        if !empty {
+            out.push(msg::HINT_AM_CONTINUE.to_owned());
+        }
+        out.push(msg::HINT_AM_SKIP.to_owned());
+        if empty {
+            out.push(msg::HINT_AM_ALLOW_EMPTY.to_owned());
+        }
+        out.push(msg::HINT_AM_ABORT.to_owned());
+    }
+    out
+}
+
+/// The rebase in progress in `repo`, if any.
+pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
+    let git_dir = repo.setup.cwd.join(&repo.setup.git_dir);
+    let mut dir = git_dir.join("rebase-merge");
+    let mut apply = false;
+    if !dir.is_dir() {
+        dir = git_dir.join("rebase-apply");
+        if !dir.is_dir() || dir.join("applying").exists() {
+            return None;
+        }
+        apply = true;
     }
     let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
     let abbrev = |id: ObjectId| repo.abbrev(&id, repo.default_abbrev());
@@ -288,6 +372,23 @@ pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
                 let name = ObjectId::from_hex(repo.hash, name.as_bytes())
                     .map(abbrev)
                     .unwrap_or_else(|_| name.to_owned());
+                // The parents of a `merge` are abbreviated too.
+                let merged;
+                if matches!(word.as_str(), "merge" | "m")
+                    && let Some(r) = rest
+                {
+                    let mut words: Vec<String> = Vec::new();
+                    let mut comment = false;
+                    for w in r.split(' ') {
+                        comment |= w.starts_with('#');
+                        words.push(match ObjectId::from_hex(repo.hash, w.as_bytes()) {
+                            Ok(id) if !comment => abbrev(id),
+                            _ => w.to_owned(),
+                        });
+                    }
+                    merged = words.join(" ");
+                    rest = Some(merged.as_str());
+                }
                 match rest {
                     Some(r) => format!("{word} {name} {r}"),
                     None => format!("{word} {name}"),
@@ -296,6 +397,7 @@ pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
             .collect()
     };
     Some(Rebasing {
+        apply,
         onto,
         branch,
         done: lines(read("done")),
@@ -322,6 +424,19 @@ pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
 pub fn rebasing_lines(r: &Rebasing, unmerged: bool, split: bool, hints: bool) -> Vec<String> {
     use crate::messages::rebase as rmsg;
     let mut out = Vec::new();
+    if r.apply {
+        out.push(rmsg::currently_rebasing(r.branch.as_deref(), &r.onto));
+        if hints {
+            if unmerged {
+                out.push(rmsg::HINT_FIX_CONFLICTS.to_owned());
+                out.push(rmsg::HINT_SKIP.to_owned());
+                out.push(rmsg::HINT_ABORT.to_owned());
+            } else {
+                out.push(rmsg::HINT_ALL_FIXED.to_owned());
+            }
+        }
+        return out;
+    }
     if r.done.is_empty() {
         out.push(rmsg::NO_COMMANDS_DONE.to_owned());
     } else {
@@ -375,6 +490,9 @@ pub fn rebasing_lines(r: &Rebasing, unmerged: bool, split: bool, hints: bool) ->
 
 /// The first status line during a rebase (instead of "HEAD detached").
 pub fn rebasing_head_line(r: &Rebasing) -> String {
+    if r.apply {
+        return crate::messages::rebase::apply_in_progress_onto(&r.onto);
+    }
     crate::messages::rebase::in_progress_onto(&r.onto)
 }
 
@@ -440,7 +558,7 @@ fn ancestors(repo: &Repo, start: ObjectId) -> HashSet<ObjectId> {
 }
 
 /// Commits reachable from `a` but not `b`, and the reverse.
-fn ahead_behind(repo: &Repo, a: ObjectId, b: ObjectId) -> (usize, usize) {
+pub(crate) fn ahead_behind(repo: &Repo, a: ObjectId, b: ObjectId) -> (usize, usize) {
     if a == b {
         return (0, 0);
     }
@@ -457,6 +575,7 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
         return Header {
             head: HeadState::Detached(detached_name(repo, head)),
             tracking: None,
+            compare: Vec::new(),
             initial,
             merging: false,
             amend: false,
@@ -470,9 +589,17 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
         .unwrap_or(&target)
         .to_string();
     let tracking = tracking(repo, &branch, head);
+    let compare = crate::compare_branches::plan(
+        repo,
+        &branch,
+        head,
+        tracking.as_ref().map(|t| t.full.as_str()),
+        true,
+    );
     Header {
         head: HeadState::Branch(branch),
         tracking,
+        compare,
         initial,
         merging: false,
         amend: false,
@@ -522,7 +649,7 @@ pub(crate) fn tracking(repo: &Repo, branch: &str, head: Option<ObjectId>) -> Opt
         (Some(u), Some(h)) => Some(ahead_behind(repo, h, u)),
         (Some(u), None) => Some((0, ancestors(repo, u).len())),
     };
-    Some(Tracking { name, counts })
+    Some(Tracking { name, counts, full })
 }
 
 /// The destination of the fetch refspec `spec` (`[+]src:dst`, at most one
@@ -647,30 +774,48 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
         HeadState::Detached(Some((name, false))) => line(&msg::detached_from(name)),
         HeadState::Detached(None) => line(msg::NOT_ON_BRANCH),
     }
-    if let Some(t) = &header.tracking {
-        match t.counts {
-            None => {
-                line(&msg::gone(&t.name));
-                if r.branch_hints {
-                    line(msg::HINT_UNSET_UPSTREAM);
+    let push_shown = crate::compare_branches::has_push(&header.compare);
+    for item in &header.compare {
+        match item {
+            crate::compare_branches::Item::Upstream => {
+                let Some(t) = &header.tracking else {
+                    continue;
+                };
+                match t.counts {
+                    None => {
+                        line(&msg::gone(&t.name));
+                        if r.branch_hints {
+                            line(msg::HINT_UNSET_UPSTREAM);
+                        }
+                    }
+                    Some((0, 0)) => line(&msg::up_to_date(&t.name)),
+                    Some((a, 0)) => {
+                        line(&msg::ahead(&t.name, a));
+                        if r.branch_hints && !push_shown {
+                            line(msg::HINT_PUSH);
+                        }
+                    }
+                    Some((0, b)) => {
+                        line(&msg::behind(&t.name, b));
+                        if r.branch_hints {
+                            line(msg::HINT_PULL_FF);
+                        }
+                    }
+                    Some((a, b)) => {
+                        for l in msg::diverged(&t.name, a, b) {
+                            line(&l);
+                        }
+                    }
                 }
             }
-            Some((0, 0)) => line(&msg::up_to_date(&t.name)),
-            Some((a, 0)) => {
-                line(&msg::ahead(&t.name, a));
-                if r.branch_hints {
-                    line(msg::HINT_PUSH);
-                }
-            }
-            Some((0, b)) => {
-                line(&msg::behind(&t.name, b));
-                if r.branch_hints {
-                    line(msg::HINT_PULL_FF);
-                }
-            }
-            Some((a, b)) => {
-                for l in msg::diverged(&t.name, a, b) {
-                    line(&l);
+            crate::compare_branches::Item::PushMissing => continue,
+            crate::compare_branches::Item::Push(p) => {
+                for (text, advice) in crate::compare_branches::push_lines(p) {
+                    if !advice {
+                        line(&text);
+                    } else if r.branch_hints {
+                        line(&format!("  ({text})"));
+                    }
                 }
             }
         }
@@ -769,6 +914,24 @@ pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
             entry(&mut lines, label, r.path(path));
         }
         lines.push(Vec::new());
+    }
+    for (header, text) in [
+        (
+            crate::messages::status::SUBMODULE_SUMMARY_STAGED,
+            &c.summary.0,
+        ),
+        (
+            crate::messages::status::SUBMODULE_SUMMARY_UNSTAGED,
+            &c.summary.1,
+        ),
+    ] {
+        if !text.is_empty() {
+            lines.push(header.into());
+            lines.push(Vec::new());
+            // The blocks end with an empty line each.
+            let body = text.strip_suffix(b"\n").unwrap_or(text);
+            lines.extend(body.split(|&b| b == b'\n').map(<[u8]>::to_vec));
+        }
     }
     if !c.untracked.is_empty() {
         lines.push(msg::UNTRACKED_HEADER.into());

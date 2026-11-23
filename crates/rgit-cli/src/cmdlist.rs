@@ -723,9 +723,10 @@ pub static CATALOG: &[Entry] = &[
     e("workflows", Guide, "Recommended ways of working with Git"),
 ];
 
-/// Built-ins that may be shadowed by aliases (`--list-cmds=deprecated`).
-/// rgit implements none of git's deprecated commands.
-pub const DEPRECATED: &[&str] = &[];
+/// Built-ins that may be shadowed by aliases (`--list-cmds=deprecated`),
+/// git's deprecated commands. rgit does not implement them, so an alias of
+/// that name always applies.
+pub const DEPRECATED: &[&str] = &["pack-redundant", "whatchanged"];
 
 /// The catalogue entry of `name`.
 pub fn lookup(name: &str) -> Option<&'static Entry> {

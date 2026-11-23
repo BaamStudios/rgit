@@ -4,7 +4,8 @@
 //! and two-way merges `-m`/`--reset` with `-u`, `-i`, `-n` and
 //! `--index-output` through the unpack engine (`rgit-unpack`, #107),
 //! `--prefix=<dir>/` and several trees without `-m` (an overlay, later
-//! trees win). Not implemented yet: three-way merges (#158).
+//! trees win), and three-way merges (`-m <base>... <head> <remote>`,
+//! `--aggressive`).
 
 use std::path::{Path, PathBuf};
 
@@ -143,7 +144,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     );
     let args = parser.parse(argv)?.args;
     drop(parser);
-    let _ = (trivial.get(), aggressive.get(), verbose.get());
+    let _ = (trivial.get(), verbose.get());
 
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
     let mut trees = Vec::new();
@@ -181,7 +182,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if mode == MODE_PREFIX && prefix.borrow().as_deref().is_some_and(|p| p.starts_with('/')) {
         return Err(Die::Fatal(msg::PREFIX_SLASH.into()));
     }
-    if mode != MODE_NONE && mode != MODE_PREFIX && trees.len() > 2 {
+    if mode == MODE_RESET && trees.len() > 2 {
         return Err(Die::Fatal(msg::THREE_WAY_UNSUPPORTED.into()));
     }
 
@@ -204,13 +205,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else if mode == MODE_NONE {
         read_plain(&repo, &old, trees.first(), paths)?
     } else if mode == MODE_PREFIX {
-        let tree = match trees[..] {
-            [t] => t,
+        // Two trees: a two-way merge below the prefix, which adds what
+        // the second tree has new or changed.
+        let (base, tree) = match trees[..] {
+            [t] => (None, t),
+            [b, t] => (Some(b), t),
             [] => return Err(Die::Fatal(msg::NEED_TREE.into())),
             _ => return Err(Die::Fatal(msg::PREFIX_TREES_UNSUPPORTED.into())),
         };
         let dir = prefix.borrow().clone().unwrap_or_default();
-        let (mut index, added) = read_prefix(&repo, &old, &tree, &dir, paths)?;
+        let (mut index, added) = read_prefix(&repo, &old, base.as_ref(), &tree, &dir, paths)?;
         if dry_run.get() != 0 {
             return Ok(0);
         }
@@ -222,7 +226,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let merge = match trees[..] {
             [t] => Merge::OneWay(t),
             [old, new] => Merge::TwoWay { old, new },
-            _ => unreachable!("checked above"),
+            [ref bases @ .., head, remote] => Merge::ThreeWay {
+                bases: bases.to_vec(),
+                head,
+                remote,
+            },
+            [] => unreachable!("checked above"),
         };
         let root = repo.setup.work_tree.as_ref().map(|w| repo.setup.cwd.join(w));
         let checker = match &root {
@@ -240,6 +249,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             index_only,
             show_all_errors: false,
             initial_checkout: old.is_empty() && old_mtime.is_none(),
+            aggressive: aggressive.get(),
             paths,
             excludes: excludes.as_mut(),
         };
@@ -417,6 +427,7 @@ fn read_overlay(
 fn read_prefix(
     repo: &Repo,
     old: &Index,
+    base: Option<&ObjectId>,
     tree: &ObjectId,
     dir: &str,
     paths: PathOptions,
@@ -425,7 +436,15 @@ fn read_prefix(
     if !dir.is_empty() && !dir.ends_with(b"/") {
         dir.push(b'/');
     }
-    let entries = entries_of(repo, tree, &dir, paths)?;
+    let mut entries = entries_of(repo, tree, &dir, paths)?;
+    if let Some(base) = base {
+        let unchanged: std::collections::HashSet<(Vec<u8>, u32, ObjectId)> =
+            entries_of(repo, base, &dir, paths)?
+                .into_iter()
+                .map(|e| (e.path().to_vec(), e.mode.0, e.id))
+                .collect();
+        entries.retain(|e| !unchanged.contains(&(e.path().to_vec(), e.mode.0, e.id)));
+    }
     for e in &entries {
         if !old.path_range(e.path()).is_empty() {
             let shown = String::from_utf8_lossy(e.path()).into_owned();

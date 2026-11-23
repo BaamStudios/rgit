@@ -12,9 +12,9 @@ mod autocorrect;
 mod cmdlist;
 mod color;
 mod column;
-mod columns;
 mod commands;
 mod comment;
+mod compare_branches;
 mod context;
 mod convert;
 mod diff;
@@ -259,6 +259,16 @@ fn expand_alias(
             return Err(Die::Fatal(messages::help::recursive_alias(&name)));
         }
         argv.splice(0..1, words);
+        if commands::find(&argv[0]).is_some() {
+            // git runs the expanded built-in as a child `git`; rgit runs it
+            // in this process but traces the same steps.
+            let mut child = vec!["git".to_owned()];
+            child.extend(argv.iter().cloned());
+            rgit_trace::trace_exec(&child);
+            rgit_trace::trace_run_command::<String>(&[], &child);
+            child[0] = ctx.exec_path.join("git").to_string_lossy().into_owned();
+            rgit_trace::trace_start_command(&child);
+        }
         if let Some(result) = run_command(ctx, &argv) {
             return result;
         }

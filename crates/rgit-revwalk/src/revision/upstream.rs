@@ -159,31 +159,71 @@ impl Resolver<'_> {
     }
 
     fn push_of(&self, branch: &str) -> Result<String, Error> {
+        self.push_target_of(branch).map(|t| t.tracking)
+    }
+
+    /// Where `git push` would send the local branch `branch` (`@{push}`);
+    /// `None` when that is not known.
+    pub fn push_target(&self, branch: &str) -> Option<PushTarget> {
+        self.push_target_of(branch).ok()
+    }
+
+    fn push_target_of(&self, branch: &str) -> Result<PushTarget, Error> {
         let remote = self.push_remote(branch);
+        let src = format!("refs/heads/{branch}");
+        let target = |dst: String, tracking: String| PushTarget {
+            remote: remote.clone(),
+            dst,
+            tracking,
+        };
         let push_specs = self.repo.config.get_all(&format!("remote.{remote}.push"));
         if !push_specs.is_empty() {
-            let src = format!("refs/heads/{branch}");
             let dst = push_specs
                 .iter()
                 .filter_map(|s| parse_refspec(s))
                 .find_map(|s| map_refspec(&s, &src))
                 .ok_or_else(|| Error::Fatal(messages::push_refspecs_exclude(&remote, branch)))?;
-            return self
+            let tracking = self
                 .fetch_map(&remote, &dst)
-                .ok_or_else(|| Error::Fatal(messages::push_no_tracking(&dst, &remote)));
+                .ok_or_else(|| Error::Fatal(messages::push_no_tracking(&dst, &remote)))?;
+            return Ok(target(dst, tracking));
         }
         match self.opts.push_default {
             PushDefault::Nothing => Err(Error::Fatal(messages::PUSH_NOTHING.to_string())),
-            PushDefault::Matching | PushDefault::Current => self.tracking_for_push(&remote, branch),
-            PushDefault::Upstream => self.upstream_of(branch),
+            PushDefault::Matching | PushDefault::Current => {
+                let tracking = self.tracking_for_push(&remote, branch)?;
+                Ok(target(src, tracking))
+            }
+            PushDefault::Upstream => {
+                let tracking = self.upstream_of(branch)?;
+                let dst = self
+                    .repo
+                    .config
+                    .get_all(&format!("branch.{branch}.merge"))
+                    .into_iter()
+                    .next()
+                    .unwrap_or(src);
+                Ok(target(dst, tracking))
+            }
             PushDefault::Simple => {
                 let up = self.upstream_of(branch)?;
                 let cur = self.tracking_for_push(&remote, branch)?;
                 if up != cur {
                     return Err(Error::Fatal(messages::PUSH_SIMPLE_AMBIGUOUS.to_string()));
                 }
-                Ok(cur)
+                Ok(target(src, cur))
             }
         }
     }
+}
+
+/// The destination of `git push` for a branch, see [`Resolver::push_target`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushTarget {
+    /// The remote pushed to.
+    pub remote: String,
+    /// The full ref name on the remote.
+    pub dst: String,
+    /// The local remote-tracking ref of `dst` (what `@{push}` names).
+    pub tracking: String,
 }

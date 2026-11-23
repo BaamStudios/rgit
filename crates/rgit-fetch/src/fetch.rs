@@ -662,7 +662,20 @@ fn update_remote_head(
     let local = remote.fetch.map_src(&target)?;
     let local = local.to_str_lossy().into_owned();
     let name = remote.name.to_str_lossy();
-    // Only into the remote's own namespace (not for a mirror refspec).
+    // A mirror refspec maps the remote's branches onto ours: the remote
+    // HEAD becomes our HEAD, when that names no commit yet (or always).
+    if local.as_bytes() == target.as_slice() {
+        if repo.resolve(&local).is_some() && (mode == "always" || repo.resolve("HEAD").is_none()) {
+            let _ = update::write(
+                repo,
+                RefUpdate::symref_update("HEAD", local, None)
+                    .no_deref(true)
+                    .message("fetch"),
+            );
+        }
+        return None;
+    }
+    // Only into the remote's own namespace.
     let prefix = format!("refs/remotes/{name}/");
     let short = local.strip_prefix(&prefix)?.to_owned();
     repo.resolve(&local)?;

@@ -398,11 +398,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .filter_map(|e| e.value.as_ref().map(|v| v.to_string()))
             .collect()
     };
-    let mut col_mode = crate::column::Mode::from_config(&config, "branch")?;
+    let mut col_mode = crate::column::Mode::from_config(&config, Some("branch"))?;
     if let Some(spec) = column.borrow().as_deref() {
         col_mode
             .apply(spec)
-            .map_err(|t| Die::Error(crate::messages::column_unsupported(&t), 129))?;
+            .map_err(|t| Die::Error(crate::messages::column::unsupported_option(&t), 129))?;
         if col_mode.active() && verbose.get() > 0 {
             return Err(Die::Fatal(crate::messages::tag::incompatible(
                 "--column",

@@ -35,6 +35,11 @@ pub fn submodule_deleted(a: &str, b: &str) -> String {
     format!("{a}...{b} (submodule deleted)")
 }
 
+/// A commit of the submodule summary that the submodule lacks.
+pub fn summary_missing_commit(path: &str, id: &str) -> String {
+    format!("Warn: {path} doesn't contain commit {id}")
+}
+
 pub fn commits_not_present(a: &str, b: &str) -> String {
     format!("{a}...{b} (commits not present)")
 }
