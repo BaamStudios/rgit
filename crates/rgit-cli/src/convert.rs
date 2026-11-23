@@ -256,6 +256,18 @@ impl Converter {
         Converter::with_index(repo, index, Order::WorkTreeFirst)
     }
 
+    /// For commands that never read the index (`log`, `show`, `diff
+    /// <commit> <commit>`): `.gitattributes` from the work tree only.
+    ///
+    /// # Errors
+    /// Invalid configuration.
+    pub fn without_index(repo: &Repo) -> Result<Converter, Die> {
+        let c = Converter::base(repo, Order::WorkTreeFirst, IndexSource::Given)?;
+        *c.snapshot.borrow_mut() = Some(HashMap::new());
+        *c.index.borrow_mut() = Some(None);
+        Ok(c)
+    }
+
     fn with_index(repo: &Repo, index: &Index, order: Order) -> Result<Converter, Die> {
         let c = Converter::base(repo, order, IndexSource::Given)?;
         *c.snapshot.borrow_mut() = Some(rgit_attr::snapshot(index, &repo.odb));

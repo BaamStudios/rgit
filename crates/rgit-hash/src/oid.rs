@@ -11,7 +11,7 @@ use crate::{Error, HashKind};
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// Value of one ASCII hex digit (either case).
-fn hex_val(c: u8) -> Option<u8> {
+const fn hex_val(c: u8) -> Option<u8> {
     match c {
         b'0'..=b'9' => Some(c - b'0'),
         b'a'..=b'f' => Some(c - b'a' + 10),
@@ -23,13 +23,34 @@ fn hex_val(c: u8) -> Option<u8> {
 /// Decode `hex` (even length, either case) into `out[..hex.len() / 2]`;
 /// an odd trailing digit fills the high nibble of the next byte.
 fn decode_hex_into(hex: &[u8], out: &mut [u8]) -> Result<(), Error> {
-    for (i, &c) in hex.iter().enumerate() {
-        let v = hex_val(c).ok_or(Error::InvalidHexDigit { position: i })?;
-        if i % 2 == 0 {
-            out[i / 2] = v << 4;
-        } else {
-            out[i / 2] |= v;
+    // Digit values by byte, 0xff for non-digits: ids are decoded in bulk
+    // (every line of `packed-refs`, every parent of a commit).
+    const VALUES: [u8; 256] = {
+        let mut t = [0xff; 256];
+        let mut c = 0;
+        while c < 256 {
+            if let Some(v) = hex_val(c as u8) {
+                t[c] = v;
+            }
+            c += 1;
         }
+        t
+    };
+    let invalid = |i: usize| Error::InvalidHexDigit { position: i };
+    let (pairs, odd) = hex.as_chunks::<2>();
+    for (i, (p, o)) in pairs.iter().zip(out.iter_mut()).enumerate() {
+        let (hi, lo) = (VALUES[usize::from(p[0])], VALUES[usize::from(p[1])]);
+        if (hi | lo) & 0xf0 != 0 {
+            return Err(invalid(2 * i + usize::from(hi & 0xf0 == 0)));
+        }
+        *o = (hi << 4) | lo;
+    }
+    if let [c] = odd {
+        let v = VALUES[usize::from(*c)];
+        if v & 0xf0 != 0 {
+            return Err(invalid(hex.len() - 1));
+        }
+        out[pairs.len()] = v << 4;
     }
     Ok(())
 }

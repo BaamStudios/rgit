@@ -559,6 +559,7 @@ name = "rgit-diff"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "memchr",
  "regex",
  "rgit-hash",
 ]
@@ -708,6 +709,7 @@ dependencies = [
 name = "rgit-object"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "rgit-difftest",
  "rgit-hash",
  "thiserror",

@@ -10,7 +10,10 @@
 //! syntax of the `regex` crate; the first capture group is the text shown
 //! in the hunk header (see [`crate::funcname`]).
 
-use regex::bytes::RegexBuilder;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use regex::bytes::{Regex, RegexBuilder};
 
 use crate::funcname::{FuncName, FuncPattern};
 
@@ -279,7 +282,12 @@ pub fn builtin(name: &str) -> Option<&'static Builtin> {
 impl Builtin {
     /// The compiled word pattern: the driver's words, else any multibyte
     /// UTF-8 character or other non-space byte.
-    pub fn word_regex(&self) -> regex::bytes::Regex {
+    pub fn word_regex(&self) -> Regex {
+        static CACHE: Compiled<Regex> = OnceLock::new();
+        compiled(&CACHE, self.name, || self.compile_word_regex())
+    }
+
+    fn compile_word_regex(&self) -> Regex {
         RegexBuilder::new(&format!(
             "{}|[\\xc0-\\xff][\\x80-\\xbf]+|[^ \\t\\n\\r\\x0b\\x0c]",
             self.word_regex
@@ -292,6 +300,11 @@ impl Builtin {
 
     /// The compiled function-name patterns.
     pub fn funcname(&self) -> FuncName {
+        static CACHE: Compiled<FuncName> = OnceLock::new();
+        compiled(&CACHE, self.name, || self.compile_funcname())
+    }
+
+    fn compile_funcname(&self) -> FuncName {
         let patterns = self
             .funcname
             .iter()
@@ -310,6 +323,23 @@ impl Builtin {
             .collect();
         FuncName::new(patterns)
     }
+}
+
+/// The compiled patterns of the built-in drivers by name: compiling
+/// them is much more expensive than using them, and `log -p` asks for
+/// them once per commit.
+type Compiled<T> = OnceLock<Mutex<HashMap<&'static str, T>>>;
+
+fn compiled<T: Clone>(cache: &Compiled<T>, name: &'static str, make: impl FnOnce() -> T) -> T {
+    let map = cache.get_or_init(Default::default);
+    if let Some(v) = map.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
+        return v.clone();
+    }
+    let v = make();
+    map.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(name, v.clone());
+    v
 }
 
 #[cfg(test)]

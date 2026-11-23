@@ -21,17 +21,37 @@ impl LineHasher {
 }
 
 impl Hasher for LineHasher {
+    /// 16 bytes per step, each mixed with one wide multiplication (the
+    /// "folded multiply" of wyhash-style hashes); the last up to 15 bytes
+    /// are read as two possibly overlapping words, or one padded word.
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        let (chunks, rest) = bytes.as_chunks::<8>();
+        const K1: u64 = 0xa076_1d64_78bd_642f;
+        const K2: u64 = 0xe703_7ed1_a0b4_28db;
+        #[inline]
+        fn fold(a: u64, b: u64) -> u64 {
+            let r = u128::from(a) * u128::from(b);
+            (r as u64) ^ ((r >> 64) as u64)
+        }
+        #[inline]
+        fn word(b: &[u8]) -> u64 {
+            u64::from_le_bytes(b[..8].try_into().expect("8 bytes"))
+        }
+        let mut h = self.0;
+        let (chunks, rest) = bytes.as_chunks::<16>();
         for c in chunks {
-            self.add(u64::from_le_bytes(*c));
+            h = fold(word(&c[..8]) ^ h ^ K1, word(&c[8..]) ^ K2);
         }
-        if !rest.is_empty() {
-            let mut w = [0u8; 8];
-            w[..rest.len()].copy_from_slice(rest);
-            self.add(u64::from_le_bytes(w) ^ ((rest.len() as u64) << 59));
-        }
+        let n = rest.len();
+        let (a, b) = if n >= 8 {
+            (word(rest), word(&rest[n - 8..]))
+        } else {
+            // Fewer than 8 bytes: one zero-padded word.
+            let mut padded = [0u8; 8];
+            padded[..n].copy_from_slice(rest);
+            (u64::from_le_bytes(padded), 0)
+        };
+        self.0 = fold(a ^ h ^ K1, b ^ K2 ^ (n as u64));
     }
 
     #[inline]
@@ -73,17 +93,12 @@ pub fn is_binary(data: &[u8]) -> bool {
 pub fn split_lines(data: &[u8]) -> Vec<&[u8]> {
     let mut lines = Vec::new();
     let mut start = 0;
-    while start < data.len() {
-        match data[start..].iter().position(|&c| c == b'\n') {
-            Some(p) => {
-                lines.push(&data[start..start + p + 1]);
-                start += p + 1;
-            }
-            None => {
-                lines.push(&data[start..]);
-                start = data.len();
-            }
-        }
+    for p in memchr::memchr_iter(b'\n', data) {
+        lines.push(&data[start..=p]);
+        start = p + 1;
+    }
+    if start < data.len() {
+        lines.push(&data[start..]);
     }
     lines
 }
@@ -137,16 +152,82 @@ pub(crate) fn intern<'x>(
         let classes = map.len();
         return (ia, ib, classes);
     }
-    let mut map: FastMap<&'x [u8], u32> =
-        FastMap::with_capacity_and_hasher(a.len() + b.len(), Default::default());
-    let mut id = |line: &'x [u8]| -> u32 {
-        let next = map.len() as u32;
-        *map.entry(line).or_insert(next)
-    };
-    let ia: Vec<u32> = a.iter().map(|l| id(l)).collect();
-    let ib: Vec<u32> = b.iter().map(|l| id(l)).collect();
-    let classes = map.len();
-    (ia, ib, classes)
+    // The common leading and trailing lines of `b` take the ids of their
+    // copies in `a` without being hashed again (ids are handed out in
+    // the same order as when every line is looked up).
+    let pre = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let suf = a[pre..]
+        .iter()
+        .rev()
+        .zip(b[pre..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    SLOTS.with_borrow_mut(|slots| {
+        let mut table = LineTable::new(slots, a.len() + b.len() - pre - suf);
+        let ia: Vec<u32> = a.iter().map(|l| table.id(l)).collect();
+        let mut ib: Vec<u32> = Vec::with_capacity(b.len());
+        ib.extend_from_slice(&ia[..pre]);
+        ib.extend(b[pre..b.len() - suf].iter().map(|l| table.id(l)));
+        ib.extend_from_slice(&ia[a.len() - suf..]);
+        let classes = table.lines.len();
+        if slots.len() > MAX_KEPT_SLOTS {
+            *slots = Vec::new();
+        }
+        (ia, ib, classes)
+    })
+}
+
+/// Tables of up to this many slots are kept for the next diff.
+const MAX_KEPT_SLOTS: usize = 1 << 20;
+
+thread_local! {
+    /// The slots of [`LineTable`], kept between diffs: `log -p` diffs
+    /// many files, and a fresh table for each costs more than the lookups.
+    static SLOTS: std::cell::RefCell<Vec<(u32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Ids of distinct lines in first-seen order: an open-addressing table
+/// (linear probing, at most half full) of (hash bits, id + 1) slots.
+struct LineTable<'s, 'x> {
+    slots: &'s mut Vec<(u32, u32)>,
+    mask: usize,
+    /// The first line of each id.
+    lines: Vec<&'x [u8]>,
+}
+
+impl<'s, 'x> LineTable<'s, 'x> {
+    fn new(slots: &'s mut Vec<(u32, u32)>, max_lines: usize) -> LineTable<'s, 'x> {
+        let size = (max_lines * 2).next_power_of_two().max(16);
+        slots.clear();
+        slots.resize(size, (0, 0));
+        LineTable {
+            slots,
+            mask: size - 1,
+            lines: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn id(&mut self, line: &'x [u8]) -> u32 {
+        let mut h = LineHasher::default();
+        h.write(line);
+        let h = h.finish();
+        let tag = (h >> 32) as u32;
+        let mut i = h as usize & self.mask;
+        loop {
+            let (t, v) = self.slots[i];
+            if v == 0 {
+                self.lines.push(line);
+                let id = self.lines.len() as u32;
+                self.slots[i] = (tag, id);
+                return id - 1;
+            }
+            if t == tag && self.lines[v as usize - 1] == line {
+                return v - 1;
+            }
+            i = (i + 1) & self.mask;
+        }
+    }
 }
 
 #[cfg(test)]

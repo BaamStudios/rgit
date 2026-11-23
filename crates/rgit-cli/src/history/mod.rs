@@ -419,6 +419,7 @@ fn setup_line_log(
         return Err(Die::Fatal(msg::LINE_LOG_NO_COMMIT.to_string()));
     };
     let rrepo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    rrepo.attributes_without_index()?;
     let mut args = Vec::new();
     for a in &opts.line_ranges {
         let (range, path) = line_log::split_arg(a)?;
@@ -2602,6 +2603,7 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
         diff_opts.abbrev = Some(Some(n));
     }
     let mut repo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    repo.attributes_without_index()?;
     diff_opts.resolve_objects(&mut repo)?;
     let merges = match opts.merges {
         // Only the first parent is walked.
@@ -2655,6 +2657,7 @@ fn commit_diff_limit(
         return Ok(None);
     }
     let mut drepo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    drepo.attributes_without_index()?;
     let mut dopts = d.clone();
     // log is porcelain: the pickaxe sees textconv output.
     dopts.textconv = Some(dopts.textconv.unwrap_or(true));
