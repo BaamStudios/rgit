@@ -209,6 +209,12 @@ fn missing_blob_report() {
             ".",
         ])
         .checks([Check::Stderr, Check::Worktree])
+        // git's worker processes report their failures concurrently.
+        .normalize_stderr(Normalizer::new("sorted lines", |text| {
+            let mut lines: Vec<&str> = text.lines().collect();
+            lines.sort_unstable();
+            lines.iter().map(|l| format!("{l}\n")).collect()
+        }))
         .run();
     }
 }
