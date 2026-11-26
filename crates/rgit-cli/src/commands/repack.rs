@@ -40,7 +40,11 @@
 //! into one new promisor pack, and the walk for the other pack stops at
 //! promisor objects (which may refer to objects that are not here).
 //!
-//! Not yet: `--write-midx` (#21), `--filter`, `--max-pack-size` for
+//! `--write-midx` writes a multi-pack index of the packs afterwards
+//! (`--write-midx=incremental` a new layer of the incremental chain), also
+//! after `--geometric`.
+//!
+//! Not yet: `--filter`, `--max-pack-size` for
 //! the reachable pack. `-b` is accepted, but bitmaps (#23) are not
 //! written.
 
@@ -84,6 +88,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let keep_packs: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let path_walk = Cell::new(false);
     let name_hash_version: RefCell<Option<String>> = RefCell::new(None);
+    let write_midx: RefCell<Option<String>> = RefCell::new(None);
     // Options that change the result and are not implemented yet: the
     // first one given is refused.
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
@@ -160,7 +165,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "write-midx",
                 Some("mode"),
                 msg::REPACK_H_WRITE_MIDX,
-                reject("write-midx"),
+                |v: Option<&str>, unset: bool| -> Result<(), CallbackError> {
+                    *write_midx.borrow_mut() = (!unset).then(|| v.unwrap_or("default").to_owned());
+                    Ok(())
+                },
             )
             .optional(None),
             Opt::string(None, "expire-to", &expire_to, "dir", msg::REPACK_H_EXPIRE_TO),
@@ -243,6 +251,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let packs_now = store::local_packs(&odb, &keep_names);
             store::prune_packed(&objects_dir, &objects_dir, kind, &packs_now, false)?;
         }
+        write_midx_after(write_midx.take(), &config, &pack_dir, kind, bitmap.get(), quiet.get())?;
         update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
         return Ok(0);
     }
@@ -425,7 +434,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     true,
                 );
             }
-            if !replaced.is_empty() {
+            // The MIDX goes when it lists a pack that is deleted.
+            let mut midx_errors = Vec::new();
+            let midx_lists_old = rgit_pack::midx::MidxChain::open(&pack_dir, kind, &mut midx_errors)
+                .ok()
+                .flatten()
+                .is_none_or(|m| replaced.iter().any(|p| m.contains_pack(&p.file_name)));
+            if !replaced.is_empty() && midx_lists_old {
                 store::remove_multi_pack_index(&pack_dir);
             }
             for p in &replaced {
@@ -443,8 +458,39 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
+    write_midx_after(write_midx.take(), &config, &pack_dir, kind, bitmap.get(), quiet.get())?;
     update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
     Ok(0)
+}
+
+/// `--write-midx[=<mode>]`: write the multi-pack index of the packs left.
+fn write_midx_after(
+    mode: Option<String>,
+    config: &rgit_config::ConfigSet,
+    pack_dir: &std::path::Path,
+    kind: rgit_hash::HashKind,
+    bitmap: bool,
+    quiet: bool,
+) -> Result<(), Die> {
+    let Some(mode) = mode else {
+        return Ok(());
+    };
+    let opts = rgit_pack::midx::write::WriteOptions {
+        version: match config.int("midx.version").ok().flatten() {
+            Some(2) => 2,
+            _ => 1,
+        },
+        bitmap,
+        incremental: mode == "incremental",
+        progress: !quiet && rgit_progress::stderr_is_terminal(),
+        ..Default::default()
+    };
+    let display = pack_dir.display().to_string();
+    rgit_pack::midx::write::write(pack_dir, &display, kind, &opts).map_err(|e| match e {
+        rgit_pack::midx::write::WriteError::Error(m) => Die::Error(m, 255),
+        rgit_pack::midx::write::WriteError::Fatal(m) => Die::Fatal(m),
+    })?;
+    Ok(())
 }
 
 /// `update-server-info` unless `-n` or `repack.updateServerInfo=false`.
