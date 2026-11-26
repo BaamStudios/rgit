@@ -1414,7 +1414,7 @@ impl<'c> Importer<'c> {
             } else {
                 let comps: Vec<&[u8]> = src.split(|&c| c == b'/').collect();
                 if !rename && comps.iter().any(|c| c.is_empty()) {
-                    return Err(Die::Fatal(EMPTY_COMPONENT.into()));
+                    return Err(Die::Fatal(msg::EMPTY_COMPONENT.into()));
                 }
                 tree::get(hash, &mut root, &comps, &mut self.objects())?
             };
@@ -1787,7 +1787,7 @@ impl<'c> Importer<'c> {
         } else {
             let comps: Vec<&[u8]> = path.split(|&c| c == b'/').collect();
             if comps.iter().any(|c| c.is_empty()) {
-                return Err(Die::Fatal(EMPTY_COMPONENT.into()));
+                return Err(Die::Fatal(msg::EMPTY_COMPONENT.into()));
             }
             let mut objs = Objects {
                 store: &mut self.store,
@@ -1923,31 +1923,11 @@ impl<'c> Importer<'c> {
 
     fn print_stats(&self) {
         let c = &self.store.counts;
-        let total: u64 = c.iter().map(|x| x.stored).sum();
-        let dups: u64 = c.iter().map(|x| x.duplicates).sum();
-        let mut s = String::new();
-        s.push_str("fast-import statistics:\n");
-        s.push_str("---------------------------------------------------------------------\n");
-        s.push_str(&format!("Alloc'd objects: {:>10}\n", 5000.max(total)));
-        s.push_str(&format!("Total objects:   {total:>10} ({dups:>10} duplicates                  )\n"));
-        for (name, i) in [("blobs  ", 0), ("trees  ", 1), ("commits", 2), ("tags   ", 3)] {
-            s.push_str(&format!(
-                "      {name}:   {:>10} ({:>10} duplicates {:>10} deltas of {:>10} attempts)\n",
-                c[i].stored, c[i].duplicates, 0, 0
-            ));
-        }
-        s.push_str(&format!(
-            "Total branches:  {:>10} ({:>10} loads     )\n",
-            self.branches.len(),
-            self.branches.len()
-        ));
-        s.push_str(&format!(
-            "      marks:     {:>10} ({:>10} unique    )\n",
-            1024,
-            self.marks.len()
-        ));
-        s.push_str("---------------------------------------------------------------------\n");
-        eprint!("{s}");
+        let kinds: [(u64, u64); 4] = std::array::from_fn(|i| (c[i].stored, c[i].duplicates));
+        eprint!(
+            "{}",
+            msg::statistics(&kinds, self.branches.len(), self.marks.len())
+        );
     }
 
     /// After a fatal error: write the crash report, keep the objects and
@@ -1955,45 +1935,29 @@ impl<'c> Importer<'c> {
     fn crash(&mut self, message: &str) {
         let pid = std::process::id();
         let path = self.repo.setup.git_dir.join(format!("fast_import_crash_{pid}"));
-        let mut r = String::new();
-        r.push_str("fast-import crash report:\n");
-        r.push_str(&format!("    fast-import process: {pid}\n"));
-        r.push_str(&format!(
-            "    parent process     : {}\n",
-            std::os::unix::process::parent_id()
-        ));
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        r.push_str(&format!("    at {}\n\n", rgit_date::format_raw(now, 0)));
-        r.push_str(&format!("fatal: {message}\n\n"));
-        r.push_str("Most Recent Commands Before Crash\n");
-        r.push_str("---------------------------------\n");
-        let n = self.input.history.len();
-        for (i, l) in self.input.history.iter().enumerate() {
-            let star = if i + 1 == n { "* " } else { "  " };
-            r.push_str(&format!("{star}{}\n", lossy(l)));
-        }
-        r.push_str("\nActive Branch LRU\n-----------------\n");
-        r.push_str(&format!(
-            "    active_branches = {} cur, 5 max\n\n",
-            self.branches.len()
-        ));
-        r.push_str("  pos  clock name\n");
-        r.push_str("  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
-        r.push_str("\nInactive Branches\n-----------------\n");
-        for name in &self.branch_order {
-            if let Some(b) = self.branches.get(name) {
+        let history: Vec<String> = self.input.history.iter().map(|l| lossy(l)).collect();
+        let branches: Vec<(String, String)> = self
+            .branch_order
+            .iter()
+            .filter_map(|name| {
+                let b = self.branches.get(name)?;
                 let tip = b.tip.unwrap_or_else(|| ObjectId::null(self.hash));
-                r.push_str(&format!("{name}:\n  tip commit  : {tip}\n"));
-            }
-        }
-        r.push_str("\nMarks\n-----\n");
-        if let Some(p) = &self.export_marks {
-            r.push_str(&format!("  exported to {}\n", p.display()));
-        }
-        r.push_str("\n-------------------\nEND OF CRASH REPORT\n");
+                Some((name.clone(), tip.to_hex()))
+            })
+            .collect();
+        let r = msg::crash_report_text(&msg::Crash {
+            pid,
+            parent: std::os::unix::process::parent_id(),
+            at: rgit_date::format_raw(now, 0),
+            message,
+            history: &history,
+            branches: &branches,
+            exported: self.export_marks.as_ref().map(|p| p.display().to_string()),
+        });
         if std::fs::write(&path, r).is_ok() {
             eprintln!("{}", msg::crash_report(&path.display().to_string()));
         }
@@ -2005,8 +1969,6 @@ impl<'c> Importer<'c> {
         }
     }
 }
-
-const EMPTY_COMPONENT: &str = "empty path component found in input";
 
 /// `Name <email>` of an identity line.
 fn ident_who(ident: &[u8]) -> String {

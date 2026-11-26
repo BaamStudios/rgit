@@ -249,3 +249,73 @@ pub fn stripping_invalid_commit(signer: &str) -> String {
 pub fn replacing_invalid_commit(signer: &str) -> String {
     format!("replacing invalid signature for commit\n  allegedly by {signer}")
 }
+pub const EMPTY_COMPONENT: &str = "empty path component found in input";
+
+const RULE: &str = "---------------------------------------------------------------------";
+
+/// `--stats`: per kind `(stored, duplicates)` for blobs, trees, commits and
+/// tags.
+pub fn statistics(kinds: &[(u64, u64); 4], branches: usize, marks: usize) -> String {
+    let total: u64 = kinds.iter().map(|k| k.0).sum();
+    let dups: u64 = kinds.iter().map(|k| k.1).sum();
+    let mut s = format!("fast-import statistics:\n{RULE}\n");
+    s += &format!("Alloc'd objects: {:>10}\n", 5000.max(total));
+    s += &format!("Total objects:   {total:>10} ({dups:>10} duplicates                  )\n");
+    for (name, k) in ["blobs  ", "trees  ", "commits", "tags   "]
+        .iter()
+        .zip(kinds)
+    {
+        s += &format!(
+            "      {name}:   {:>10} ({:>10} duplicates {:>10} deltas of {:>10} attempts)\n",
+            k.0, k.1, 0, 0
+        );
+    }
+    s += &format!("Total branches:  {branches:>10} ({branches:>10} loads     )\n");
+    s += &format!("      marks:     {:>10} ({marks:>10} unique    )\n", 1024);
+    s += RULE;
+    s.push('\n');
+    s
+}
+
+/// What the crash report shows.
+pub struct Crash<'a> {
+    pub pid: u32,
+    pub parent: u32,
+    pub at: String,
+    pub message: &'a str,
+    /// Recent command lines, the failing one last.
+    pub history: &'a [String],
+    /// `(name, tip)` of the branches.
+    pub branches: &'a [(String, String)],
+    pub exported: Option<String>,
+}
+
+pub fn crash_report_text(c: &Crash<'_>) -> String {
+    let mut r = format!(
+        "fast-import crash report:\n    fast-import process: {}\n    parent process     : {}\n    at {}\n\nfatal: {}\n\n",
+        c.pid, c.parent, c.at, c.message
+    );
+    r += "Most Recent Commands Before Crash\n";
+    r += &"-".repeat(33);
+    r.push('\n');
+    let n = c.history.len();
+    for (i, l) in c.history.iter().enumerate() {
+        r += if i + 1 == n { "* " } else { "  " };
+        r += l;
+        r.push('\n');
+    }
+    r += "\nActive Branch LRU\n-----------------\n";
+    r += &format!("    active_branches = {} cur, 5 max\n\n", c.branches.len());
+    r += "  pos  clock name\n  ";
+    r += &"~".repeat(45);
+    r += "\n\nInactive Branches\n-----------------\n";
+    for (name, tip) in c.branches {
+        r += &format!("{name}:\n  tip commit  : {tip}\n");
+    }
+    r += "\nMarks\n-----\n";
+    if let Some(p) = &c.exported {
+        r += &format!("  exported to {p}\n");
+    }
+    r += "\n-------------------\nEND OF CRASH REPORT\n";
+    r
+}
