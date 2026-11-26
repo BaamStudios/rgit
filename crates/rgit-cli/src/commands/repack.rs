@@ -584,7 +584,7 @@ fn update_server_info(
             .unwrap_or(true);
     if update_info {
         let packs_now = store::local_packs(odb, keep_names);
-        let _ = server_info::update(setup, odb, &packs_now, opts.shared);
+        let _ = server_info::update(setup, odb, &packs_now, opts.shared, false);
     }
 }
 
