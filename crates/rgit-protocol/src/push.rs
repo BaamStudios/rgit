@@ -278,6 +278,32 @@ pub struct RefReport {
     pub name: String,
     /// `None` for `ok`, the reason for `ng`.
     pub error: Option<String>,
+    /// `report-status-v2` option lines after an `ok`: what the server
+    /// really did when its `proc-receive` hook rewrote the command.
+    pub options: RefOptions,
+}
+
+/// The `option` lines of one `ok` in a `report-status-v2` report.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RefOptions {
+    /// `option refname`: the reference actually updated.
+    pub refname: Option<String>,
+    /// `option old-oid`.
+    pub old_oid: Option<ObjectId>,
+    /// `option new-oid`.
+    pub new_oid: Option<ObjectId>,
+    /// `option forced-update`.
+    pub forced_update: bool,
+}
+
+impl RefOptions {
+    /// True when the server sent any option line.
+    pub fn any(&self) -> bool {
+        self.refname.is_some()
+            || self.old_oid.is_some()
+            || self.new_oid.is_some()
+            || self.forced_update
+    }
 }
 
 /// The server's status report.
@@ -312,6 +338,7 @@ pub fn read_report<R: Read>(reader: &mut Reader<R>) -> Result<Report> {
             report.refs.push(RefReport {
                 name: String::from_utf8_lossy(name).into_owned(),
                 error: None,
+                options: RefOptions::default(),
             });
         } else if let Some(rest) = line.strip_prefix(b"ng ") {
             let rest = String::from_utf8_lossy(rest);
@@ -322,10 +349,29 @@ pub fn read_report<R: Read>(reader: &mut Reader<R>) -> Result<Report> {
             report.refs.push(RefReport {
                 name,
                 error: Some(reason),
+                options: RefOptions::default(),
             });
-        } else if line.starts_with(b"option ") {
-            // report-status-v2 details (rewritten refs, forced updates):
-            // not used yet.
+        } else if let Some(option) = line.strip_prefix(b"option ") {
+            // report-status-v2 details of the last `ok` (rewritten refs,
+            // forced updates); unknown options and options without an
+            // `ok` before them are ignored.
+            let Some(last) = report.refs.last_mut().filter(|r| r.error.is_none()) else {
+                continue;
+            };
+            let (key, value) = match option.iter().position(|&b| b == b' ') {
+                Some(i) => (&option[..i], &option[i + 1..]),
+                None => (option, &b""[..]),
+            };
+            let oid = || ObjectId::from_hex_any(value).ok();
+            match key {
+                b"refname" => {
+                    last.options.refname = Some(String::from_utf8_lossy(value).into_owned())
+                }
+                b"old-oid" => last.options.old_oid = oid(),
+                b"new-oid" => last.options.new_oid = oid(),
+                b"forced-update" => last.options.forced_update = true,
+                _ => {}
+            }
         } else {
             return Err(unexpected(&line));
         }
@@ -510,10 +556,30 @@ mod tests {
         assert_eq!(rep.unpack_error, None);
         assert_eq!(rep.refs.len(), 2);
         assert_eq!(rep.refs[0].error, None);
+        assert!(rep.refs[0].options.forced_update);
+        assert_eq!(rep.refs[0].options.refname, None);
         assert_eq!(
             rep.refs[1].error.as_deref(),
             Some("branch is currently checked out")
         );
+
+        let old = format!("option old-oid {A}\n");
+        let data = pkts(&[
+            b"unpack ok\n",
+            b"ok refs/for/main/topic\n",
+            b"option refname refs/pull/1/head\n",
+            old.as_bytes(),
+            b"option fall-through\n",
+            b"ok refs/for/main/topic\n",
+            b"",
+        ]);
+        let rep = read_report(&mut Reader::new(&data[..], "push")).unwrap();
+        assert_eq!(rep.refs.len(), 2);
+        let o = &rep.refs[0].options;
+        assert_eq!(o.refname.as_deref(), Some("refs/pull/1/head"));
+        assert_eq!(o.old_oid.map(|id| id.to_hex()).as_deref(), Some(A));
+        assert_eq!((o.new_oid, o.forced_update), (None, false));
+        assert!(!rep.refs[1].options.any());
 
         let data = pkts(&[
             b"unpack index-pack abnormal exit\n",
