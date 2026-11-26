@@ -86,6 +86,9 @@ pub fn failed_to_run(cmd: &str) -> String {
     format!("failed to run {cmd}")
 }
 
+/// `pack-objects --cruft`: a `gc.recentObjectsHook` command failed.
+pub const HOOK_FAILED: &str = "unable to enumerate additional recent objects";
+
 pub fn hook_failed(cmd: &str) -> String {
     format!("unable to enumerate additional recent objects: '{cmd}' failed")
 }
@@ -164,3 +167,10 @@ pub const REPACK_NOTHING_NEW: &str = "Nothing new to pack.";
 pub const REPACK_PRECIOUS: &str = "cannot delete packs in a precious-objects repo";
 pub const REPACK_KEEP_AND_CRUFT: &str =
     "options '-k/--keep-unreachable' and '--cruft' cannot be used together";
+pub const REPACK_GEOMETRIC_AND_ALL: &str =
+    "options '--geometric' and '-A/-a' cannot be used together";
+
+/// `pack-objects --cruft`: a pack name in the input that does not exist.
+pub fn could_not_find_pack(name: &str) -> String {
+    format!("could not find pack '{name}'")
+}

@@ -15,9 +15,11 @@
 //! `--detach`) the work continues in a background process whose error
 //! output goes to `gc.log`; a recent `gc.log` stops later automatic runs.
 //!
-//! Cruft packs (`--cruft`, `gc.cruftPacks`, #96) are not written yet:
-//! unreachable objects are kept loose (`repack -A`) and pruned by age.
-//! The commit-graph (#22) is not written.
+//! Unreachable objects go into a cruft pack (`repack --cruft
+//! --cruft-expiration=<date>`, with `--max-cruft-size` /
+//! `gc.maxCruftSize` and `--expire-to`) unless `--no-cruft` or
+//! `gc.cruftPacks=false`, then they are kept loose (`repack -A`). The
+//! commit-graph (#22) is not written.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -57,7 +59,9 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let quiet = Cell::new(false);
     let prune: RefCell<Option<String>> = RefCell::new(None);
     let no_prune = Cell::new(false);
-    let cruft = Cell::new(true);
+    let cruft: Cell<Option<bool>> = Cell::new(None);
+    let max_cruft_size = Cell::new(u64::MAX);
+    let expire_to: RefCell<Option<String>> = RefCell::new(None);
     let aggressive = Cell::new(false);
     let auto = Cell::new(false);
     let detach: Cell<Option<bool>> = Cell::new(None);
@@ -80,15 +84,12 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 },
             )
             .optional(None),
-            Opt::flag(None, "cruft", &cruft, msg::GC_H_CRUFT),
-            Opt::callback(
-                None,
-                "max-cruft-size",
-                Some("n"),
-                msg::GC_H_MAX_CRUFT,
-                |_: Option<&str>, _| Ok(()),
-            )
-            .noneg(),
+            Opt::callback(None, "cruft", None, msg::GC_H_CRUFT, |_: Option<&str>, unset| {
+                cruft.set(Some(!unset));
+                Ok(())
+            })
+            .noarg(),
+            Opt::unsigned(None, "max-cruft-size", &max_cruft_size, msg::GC_H_MAX_CRUFT),
             Opt::flag(None, "aggressive", &aggressive, msg::GC_H_AGGRESSIVE),
             Opt::flag(None, "auto", &auto, msg::GC_H_AUTO),
             Opt::callback(
@@ -104,13 +105,7 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .noarg(),
             Opt::flag(None, "force", &force, msg::GC_H_FORCE),
             Opt::flag(None, "keep-largest-pack", &keep_largest, msg::GC_H_KEEP_LARGEST),
-            Opt::callback(
-                None,
-                "expire-to",
-                Some("dir"),
-                msg::GC_H_EXPIRE_TO,
-                |_: Option<&str>, _| Ok(()),
-            ),
+            Opt::string(None, "expire-to", &expire_to, "dir", msg::GC_H_EXPIRE_TO),
             Opt::flag(
                 None,
                 "skip-foreground-tasks",
@@ -258,8 +253,36 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
         repack.push("-q".into());
     }
     if full_repack {
+        let cruft = cruft.get().unwrap_or_else(|| {
+            config
+                .bool("gc.cruftpacks")
+                .ok()
+                .flatten()
+                .unwrap_or(true)
+        });
         match prune_expire.as_deref() {
             Some("now") => repack.push("-a".into()),
+            e if cruft => {
+                repack.push("--cruft".into());
+                if let Some(e) = e {
+                    repack.push(format!("--cruft-expiration={e}"));
+                }
+                let max = match max_cruft_size.get() {
+                    u64::MAX => config
+                        .int64("gc.maxcruftsize")
+                        .ok()
+                        .flatten()
+                        .filter(|&v| v > 0)
+                        .map(|v| v as u64),
+                    v => Some(v),
+                };
+                if let Some(n) = max {
+                    repack.push(format!("--max-cruft-size={n}"));
+                }
+                if let Some(dir) = expire_to.borrow().as_deref() {
+                    repack.push(format!("--expire-to={dir}"));
+                }
+            }
             Some(e) => {
                 repack.push("-A".into());
                 repack.push(format!("--unpack-unreachable={e}"));
@@ -276,12 +299,18 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let size = |p: &store::LocalPack| {
             std::fs::metadata(p.pack.path()).map_or(0, |m| m.len())
         };
+        // Cruft packs are never "the largest pack" (git-gc(1)).
+        let candidate = |p: &&store::LocalPack| !p.keep && !p.pack.is_cruft();
         if keep_largest.get() {
-            if let Some(p) = packs.iter().filter(|p| !p.keep).max_by_key(|p| size(p)) {
+            if let Some(p) = packs.iter().filter(candidate).max_by_key(|p| size(p)) {
                 repack.push(format!("--keep-pack={}", p.file_name));
             }
         } else if threshold > 0 {
-            for p in packs.iter().filter(|p| !p.keep && size(p) >= threshold as u64) {
+            for p in packs
+                .iter()
+                .filter(candidate)
+                .filter(|p| size(p) >= threshold as u64)
+            {
                 repack.push(format!("--keep-pack={}", p.file_name));
             }
         }

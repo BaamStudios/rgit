@@ -144,6 +144,29 @@ pub fn local_packs(odb: &ObjectDatabase, keep_names: &[String]) -> Vec<LocalPack
         .collect()
 }
 
+/// The packed objects newer than `expire`: all objects of an ordinary
+/// pack whose `.pack` file is newer, and the objects of a cruft pack whose
+/// recorded time is newer.
+pub fn recent_packed(packs: &[LocalPack], expire: u64) -> impl Iterator<Item = ObjectId> + '_ {
+    packs.iter().flat_map(move |p| {
+        let index = p.pack.index();
+        let cruft = p.pack.is_cruft();
+        let whole = !cruft && p.mtime > expire;
+        (0..index.len()).filter_map(move |pos| {
+            let recent = if cruft {
+                p.pack
+                    .mtimes()
+                    .and_then(|m| m.get(pos))
+                    .map_or(p.mtime, u64::from)
+                    > expire
+            } else {
+                whole
+            };
+            recent.then(|| index.id_at(pos))
+        })
+    })
+}
+
 /// Remove a pack and the files that belong to it (index first, so that
 /// readers never see an index without its pack). `.keep` files stay.
 pub fn delete_pack(base: &Path) {

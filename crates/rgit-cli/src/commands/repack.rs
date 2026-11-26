@@ -6,18 +6,37 @@
 //! (`-d` then removes their loose copies). With `-a` everything reachable
 //! goes into one new pack; with `-d` the old packs are deleted afterwards,
 //! and with `-A` the unreachable objects of those packs are first written
-//! as loose objects carrying the pack's modification time (unless older
-//! than `--unpack-unreachable`). `-k` keeps unreachable objects in the new
-//! pack instead. Packs with a `.keep` file or named by `--keep-pack` are
+//! as loose objects carrying the pack's modification time (the recorded
+//! one for objects of a cruft pack), unless older than
+//! `--unpack-unreachable`. `-k` keeps unreachable objects in the new pack
+//! instead. Packs with a `.keep` file or named by `--keep-pack` are
 //! neither repacked nor deleted. The new pack is written by
 //! `rgit_pack::write` (packed data is reused; delta search comes with
 //! #19); `--window`, `--window-memory` and `--threads` are accepted for
 //! it. `update-server-info` runs unless `-n` or `repack.updateServerInfo`
 //! is false.
 //!
-//! Not yet: `--cruft` (#96), `--geometric`, `--write-midx` (#21),
-//! `--filter` (#24), `--max-pack-size`. `-b` is accepted, but bitmaps
-//! (#23) are not written.
+//! `--cruft` is `-a`, followed by `pack-objects --cruft` (run as a child
+//! process, like git) for the unreachable objects of the packs being
+//! replaced and the loose ones: see `housekeeping::cruft`. Existing cruft
+//! packs are rewritten into the new one, except those at least
+//! `--combine-cruft-below-size` large. `--max-cruft-size` (else
+//! `--max-pack-size`) limits the size of the new cruft packs,
+//! `--cruft-expiration` drops old unreachable objects, `--expire-to`
+//! keeps the dropped ones in a cruft pack elsewhere, and
+//! `repack.cruftWindow`, `repack.cruftWindowMemory`, `repack.cruftDepth`
+//! and `repack.cruftThreads` override the delta options for the cruft
+//! pack.
+//!
+//! `--geometric=<factor>` keeps the packs (ordered by object count) in a
+//! geometric progression: the smallest packs that break it are rolled up,
+//! with the loose objects, into one new pack. Cruft packs and kept packs
+//! do not take part; without `-l` the packs of alternates do (their
+//! objects are copied, the packs stay).
+//!
+//! Not yet: `--write-midx` (#21), `--filter` (#24), `--max-pack-size` for
+//! the reachable pack. `-b` is accepted, but bitmaps (#23) are not
+//! written.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -35,6 +54,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let all = Cell::new(false);
     let all_loosen = Cell::new(false);
     let cruft = Cell::new(false);
+    let cruft_expiration: RefCell<Option<String>> = RefCell::new(None);
+    let combine_cruft_below = Cell::new(u64::MAX);
+    let max_cruft_size = Cell::new(u64::MAX);
+    let max_pack_size = Cell::new(u64::MAX);
+    let expire_to: RefCell<Option<String>> = RefCell::new(None);
+    let geometric = Cell::new(0i32);
     let delete = Cell::new(false);
     let no_reuse_delta = Cell::new(false);
     let no_reuse_object = Cell::new(false);
@@ -71,29 +96,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('a', None, &all, msg::REPACK_H_A),
             Opt::flag('A', None, &all_loosen, msg::REPACK_H_BIG_A),
             Opt::flag(None, "cruft", &cruft, msg::REPACK_H_CRUFT),
-            Opt::callback(
+            Opt::string(
                 None,
                 "cruft-expiration",
-                Some("approxidate"),
+                &cruft_expiration,
+                "approxidate",
                 msg::REPACK_H_CRUFT_EXPIRATION,
-                reject("cruft-expiration"),
             ),
-            Opt::callback(
+            Opt::unsigned(
                 None,
                 "combine-cruft-below-size",
-                Some("n"),
+                &combine_cruft_below,
                 msg::REPACK_H_COMBINE_CRUFT,
-                reject("combine-cruft-below-size"),
-            )
-            .noneg(),
-            Opt::callback(
-                None,
-                "max-cruft-size",
-                Some("n"),
-                msg::REPACK_H_MAX_CRUFT,
-                reject("max-cruft-size"),
-            )
-            .noneg(),
+            ),
+            Opt::unsigned(None, "max-cruft-size", &max_cruft_size, msg::REPACK_H_MAX_CRUFT),
             Opt::flag('d', None, &delete, msg::REPACK_H_D),
             Opt::flag('f', None, &no_reuse_delta, msg::REPACK_H_F),
             Opt::flag('F', None, &no_reuse_object, msg::REPACK_H_BIG_F),
@@ -128,24 +144,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             ),
             Opt::string(None, "depth", &depth, "n", msg::REPACK_H_DEPTH),
             Opt::string(None, "threads", &threads, "n", msg::REPACK_H_THREADS),
-            Opt::callback(
-                None,
-                "max-pack-size",
-                Some("n"),
-                msg::REPACK_H_MAX_PACK_SIZE,
-                reject("max-pack-size"),
-            )
-            .noneg(),
+            Opt::unsigned(None, "max-pack-size", &max_pack_size, msg::REPACK_H_MAX_PACK_SIZE),
             Opt::callback(None, "filter", Some("args"), msg::REPACK_H_FILTER, reject("filter")),
             Opt::flag(None, "pack-kept-objects", &pack_kept, msg::REPACK_H_PACK_KEPT),
             Opt::string_list(None, "keep-pack", &keep_packs, "name", msg::REPACK_H_KEEP_PACK),
-            Opt::callback(
-                'g',
-                "geometric",
-                Some("n"),
-                msg::REPACK_H_GEOMETRIC,
-                reject("geometric"),
-            ),
+            Opt::integer('g', "geometric", &geometric, msg::REPACK_H_GEOMETRIC),
             Opt::callback(
                 'm',
                 "write-midx",
@@ -154,7 +157,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 reject("write-midx"),
             )
             .optional(None),
-            Opt::callback(None, "expire-to", Some("dir"), msg::REPACK_H_EXPIRE_TO, reject("expire-to")),
+            Opt::string(None, "expire-to", &expire_to, "dir", msg::REPACK_H_EXPIRE_TO),
             Opt::callback(None, "filter-to", Some("dir"), msg::REPACK_H_FILTER_TO, reject("filter-to")),
             Opt::callback(
                 None,
@@ -172,8 +175,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if keep_unreachable.get() && cruft.get() {
         return Err(Die::Fatal(msg::REPACK_KEEP_AND_CRUFT.into()));
     }
-    if cruft.get() {
-        unsupported.borrow_mut().get_or_insert_with(|| "--cruft".into());
+    if geometric.get() != 0 && (all.get() || all_loosen.get() || cruft.get()) {
+        return Err(Die::Fatal(msg::REPACK_GEOMETRIC_AND_ALL.into()));
     }
     // Bitmaps (#23) only speed up later reads: -b is accepted, but no
     // bitmap is written.
@@ -184,8 +187,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::load_config(ctx, &setup)?;
-    let all_loosen = all_loosen.get();
-    let pack_everything = all.get() || all_loosen;
+    let cruft = cruft.get();
+    let all_loosen = all_loosen.get() && !cruft;
+    let pack_everything = all.get() || all_loosen || cruft;
     let delete = delete.get();
     if delete && setup.format.precious_objects {
         return Err(Die::Fatal(msg::REPACK_PRECIOUS.into()));
@@ -201,7 +205,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut opts = store::PackOptions::from_config(&config)?;
     opts.write.reuse_delta = !no_reuse_delta.get() && !no_reuse_object.get();
     opts.write.reuse_object = !no_reuse_object.get();
-    if let Some(d) = depth.take() {
+    if let Some(d) = depth.borrow().as_deref() {
         let d: i64 = d.trim().parse().unwrap_or(50);
         opts.write.max_depth = d.clamp(0, i64::from(rgit_pack::write::MAX_DEPTH)) as u32;
     }
@@ -218,6 +222,25 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let objects_dir = rgit_odb::objects_dir(&setup.common_dir);
     let pack_dir = objects_dir.join("pack");
     let common = setup.absolute_common_dir();
+
+    if geometric.get() != 0 {
+        let g = Geometric {
+            factor: geometric.get().max(1) as u64,
+            local: local.get(),
+            pack_kept,
+            delete,
+            quiet: quiet.get(),
+        };
+        g.run(&odb, &pack_dir, &objects_dir, &keep_names, &opts)?;
+        if delete {
+            store::remove_pack_garbage(&pack_dir);
+            let packs_now = store::local_packs(&odb, &keep_names);
+            store::prune_packed(&objects_dir, &objects_dir, kind, &packs_now, false)?;
+        }
+        update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
+        return Ok(0);
+    }
+
     let packs = store::local_packs(&odb, &keep_names);
     let kept: Vec<&store::LocalPack> = packs.iter().filter(|p| p.keep).collect();
     let in_kept = |id: &ObjectId| kept.iter().any(|p| p.pack.contains(id));
@@ -266,23 +289,80 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{}", msg::REPACK_NOTHING_NEW);
     }
-    let new_name = new_pack.map(|c| format!("pack-{}.pack", c.to_hex()));
+    let mut new_names: Vec<String> = new_pack
+        .map(|c| format!("pack-{}.pack", c.to_hex()))
+        .into_iter()
+        .collect();
     let new_ids: HashSet<ObjectId> = ordered.iter().map(|o| o.id).collect();
+
+    // The packs to replace: all but the kept ones (and, with
+    // --combine-cruft-below-size, the large cruft packs).
+    let mut replaced: Vec<&store::LocalPack> = packs
+        .iter()
+        .filter(|p| !p.keep && !new_names.contains(&p.file_name))
+        .collect();
+    if cruft {
+        let size = |p: &store::LocalPack| std::fs::metadata(p.pack.path()).map_or(0, |m| m.len());
+        let combine = combine_cruft_below.get();
+        replaced.retain(|p| !(combine != u64::MAX && p.pack.is_cruft() && size(p) >= combine));
+        let job = CruftJob {
+            ctx,
+            setup: &setup,
+            config: &config,
+            local: local.get(),
+            quiet: quiet.get(),
+            window: window.borrow().clone(),
+            window_memory: window_memory.borrow().clone(),
+            depth: depth.borrow().clone(),
+            threads: threads.borrow().clone(),
+            max_size: [max_cruft_size.get(), max_pack_size.get()]
+                .into_iter()
+                .find(|&v| v != u64::MAX),
+        };
+        let fresh = store::local_packs(&odb, &keep_names);
+        let replaced_names: Vec<&str> = replaced.iter().map(|p| p.file_name.as_str()).collect();
+        let written = job.write(
+            &fresh,
+            &replaced_names,
+            &pack_dir.join("pack"),
+            cruft_expiration.borrow().as_deref(),
+        )?;
+        new_names.extend(written.iter().map(|c| format!("pack-{c}.pack")));
+        if let (Some(dir), true) = (expire_to.borrow().as_deref(), delete) {
+            // The objects that the expiration dropped: everything of the
+            // replaced packs that no staying pack has.
+            let fresh = store::local_packs(&odb, &keep_names);
+            let replaced_names: Vec<&str> = replaced
+                .iter()
+                .map(|p| p.file_name.as_str())
+                .filter(|n| !new_names.iter().any(|m| m == n))
+                .collect();
+            job.write(&fresh, &replaced_names, std::path::Path::new(dir), None)?;
+        }
+        replaced.retain(|p| !new_names.contains(&p.file_name));
+    }
 
     if delete {
         if pack_everything {
-            let old: Vec<&store::LocalPack> = packs
-                .iter()
-                .filter(|p| !p.keep && Some(&p.file_name) != new_name.as_ref())
-                .collect();
             if all_loosen && !keep_unreachable.get() {
                 let hooked = crate::housekeeping::recent_objects_hook(&config, &odb)?;
                 let rescued =
                     rescue_recent(&odb, &walk, &packs, &loose, unpack_expire, &hooked, &common)?;
-                for p in &old {
+                for p in &replaced {
                     let old_pack = unpack_expire.is_some_and(|t| p.mtime < t);
+                    let cruft_pack = p.pack.is_cruft();
                     for id in p.pack.index().ids() {
-                        if old_pack && !rescued.contains(&id) {
+                        let mtime = if cruft_pack {
+                            p.pack.object_mtime(&id).map_or(p.mtime, u64::from)
+                        } else {
+                            p.mtime
+                        };
+                        let old = if cruft_pack {
+                            unpack_expire.is_some_and(|t| mtime < t)
+                        } else {
+                            old_pack
+                        };
+                        if old && !rescued.contains(&id) {
                             continue;
                         }
                         if walk.seen.contains(&id)
@@ -293,14 +373,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                         {
                             continue;
                         }
-                        store::loosen(&odb, &id, p.mtime)?;
+                        store::loosen(&odb, &id, mtime)?;
                     }
                 }
             }
-            if !old.is_empty() {
+            if !replaced.is_empty() {
                 store::remove_multi_pack_index(&pack_dir);
             }
-            for p in old {
+            for p in &replaced {
                 store::delete_pack(&p.base());
             }
             remove_stale_tmp_packs(&pack_dir);
@@ -315,17 +395,287 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
-    let update_info = !no_server_info.get()
+    update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
+    Ok(0)
+}
+
+/// `update-server-info` unless `-n` or `repack.updateServerInfo=false`.
+fn update_server_info(
+    setup: &rgit_repo::Setup,
+    config: &rgit_config::ConfigSet,
+    odb: &rgit_odb::ObjectDatabase,
+    keep_names: &[String],
+    no_server_info: bool,
+    opts: &store::PackOptions,
+) {
+    let update_info = !no_server_info
         && config
             .bool("repack.updateserverinfo")
             .ok()
             .flatten()
             .unwrap_or(true);
     if update_info {
-        let packs_now = store::local_packs(&odb, &keep_names);
-        let _ = server_info::update(&setup, &odb, &packs_now, opts.shared);
+        let packs_now = store::local_packs(odb, keep_names);
+        let _ = server_info::update(setup, odb, &packs_now, opts.shared);
     }
-    Ok(0)
+}
+
+/// Writing cruft packs through `pack-objects --cruft`.
+struct CruftJob<'a> {
+    ctx: &'a Context,
+    setup: &'a rgit_repo::Setup,
+    config: &'a rgit_config::ConfigSet,
+    local: bool,
+    quiet: bool,
+    window: Option<String>,
+    window_memory: Option<String>,
+    depth: Option<String>,
+    threads: Option<String>,
+    max_size: Option<u64>,
+}
+
+impl CruftJob<'_> {
+    /// Write the cruft pack(s) for `packs` of which `replaced` are about
+    /// to go, to `<base>-<hash>.pack`. Returns the new packs' hashes.
+    fn write(
+        &self,
+        packs: &[store::LocalPack],
+        replaced: &[&str],
+        base: &std::path::Path,
+        expiration: Option<&str>,
+    ) -> Result<Vec<String>, Die> {
+        let mut args: Vec<String> = Vec::new();
+        if let Some(n) = self.max_size {
+            args.push(format!("--max-pack-size={n}"));
+        }
+        if self.local {
+            args.push("--local".into());
+        }
+        if self
+            .config
+            .bool("repack.usedeltabaseoffset")
+            .ok()
+            .flatten()
+            .unwrap_or(true)
+        {
+            args.push("--delta-base-offset".into());
+        }
+        args.push("--honor-pack-keep".into());
+        // repack.cruft* override the command line, which overrides pack.*.
+        let pick = |key: &str, given: &Option<String>| -> Option<String> {
+            self.config
+                .string(key)
+                .ok()
+                .flatten()
+                .map(|v| v.to_string())
+                .or_else(|| given.clone())
+        };
+        for (opt, key, given) in [
+            ("window", "repack.cruftwindow", &self.window),
+            ("window-memory", "repack.cruftwindowmemory", &self.window_memory),
+            ("depth", "repack.cruftdepth", &self.depth),
+            ("threads", "repack.cruftthreads", &self.threads),
+        ] {
+            if let Some(v) = pick(key, given) {
+                args.push(format!("--{opt}={v}"));
+            }
+        }
+        if self.quiet {
+            args.push("-q".into());
+        }
+        args.push(base.display().to_string());
+        args.push("--cruft".into());
+        if let Some(e) = expiration {
+            args.push(format!("--cruft-expiration={e}"));
+        }
+        args.push("--non-empty".into());
+        let mut input = String::new();
+        for p in packs {
+            if replaced.contains(&p.file_name.as_str()) {
+                input.push('-');
+            }
+            input.push_str(&p.file_name);
+            input.push('\n');
+        }
+        crate::housekeeping::run_pack_objects(self.ctx, self.setup, &args, &input)
+    }
+}
+
+/// `--geometric=<factor>`.
+struct Geometric {
+    factor: u64,
+    local: bool,
+    pack_kept: bool,
+    delete: bool,
+    quiet: bool,
+}
+
+impl Geometric {
+    fn run(
+        &self,
+        odb: &rgit_odb::ObjectDatabase,
+        pack_dir: &std::path::Path,
+        objects_dir: &std::path::Path,
+        keep_names: &[String],
+        opts: &store::PackOptions,
+    ) -> Result<(), Die> {
+        let kind = odb.hash_kind();
+        let local_packs = store::local_packs(odb, keep_names);
+        // The packs taking part, with whether they are local.
+        let mut candidates: Vec<(std::sync::Arc<rgit_pack::Pack>, bool)> = local_packs
+            .iter()
+            .filter(|p| (self.pack_kept || !p.keep) && !p.pack.is_cruft())
+            .map(|p| (p.pack.clone(), true))
+            .collect();
+        if !self.local {
+            let local_names: HashSet<String> =
+                local_packs.iter().map(|p| p.file_name.clone()).collect();
+            for alt in rgit_odb::resolve_alternates(objects_dir) {
+                let set = rgit_pack::PackSet::open(alt.join("pack"), kind);
+                for p in set.packs() {
+                    let name = p
+                        .path()
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    // The same pack in both places counts once.
+                    if p.is_keep() || p.is_cruft() || local_names.contains(&name) {
+                        continue;
+                    }
+                    candidates.push((p, false));
+                }
+            }
+        }
+        candidates.sort_by_key(|(p, _)| p.index().len());
+        let file_name = |p: &rgit_pack::Pack| {
+            p.path()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let kept_names: HashSet<String> = local_packs
+            .iter()
+            .filter(|p| p.keep)
+            .map(|p| p.file_name.clone())
+            .collect();
+
+        // Promisor packs form their own progression (and their roll-up is
+        // a promisor pack again); loose objects join the other one.
+        let mut groups = Vec::new();
+        for promisor in [false, true] {
+            let packs: Vec<(std::sync::Arc<rgit_pack::Pack>, bool)> = candidates
+                .iter()
+                .filter(|(p, _)| p.is_promisor() == promisor)
+                .cloned()
+                .collect();
+            let counts: Vec<u64> = packs.iter().map(|(p, _)| u64::from(p.index().len())).collect();
+            let split = geometric_split(&counts, self.factor);
+            groups.push((promisor, packs, split));
+        }
+        let staying: Vec<&std::sync::Arc<rgit_pack::Pack>> = groups
+            .iter()
+            .flat_map(|(_, packs, split)| packs[*split..].iter().map(|(p, _)| p))
+            .collect();
+        // Objects of the packs that stay, and of kept packs, are left out.
+        let excluded = |id: &ObjectId| {
+            staying.iter().any(|p| p.contains(id))
+                || (!self.pack_kept && local_packs.iter().any(|p| p.keep && p.pack.contains(id)))
+        };
+
+        let mut wrote = false;
+        let mut removed = false;
+        for (promisor, packs, split) in &groups {
+            let rolled = &packs[..*split];
+            let mut ids: Vec<ObjectId> = Vec::new();
+            let mut seen: HashSet<ObjectId> = HashSet::new();
+            for (p, _) in rolled.iter().rev() {
+                let index = p.index();
+                let mut by_offset: Vec<(u64, u32)> = (0..index.len())
+                    .filter_map(|pos| index.offset_at(pos).ok().map(|off| (off, pos)))
+                    .collect();
+                by_offset.sort_unstable();
+                for (_, pos) in by_offset {
+                    let id = index.id_at(pos);
+                    if !excluded(&id) && seen.insert(id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            if !promisor {
+                // Loose objects go in as well; a copy in a cruft pack does
+                // not count as packed.
+                let mut loose = store::loose_objects(objects_dir, kind);
+                loose.sort_by_key(|a| a.0);
+                for (id, _, _) in loose {
+                    let packed = local_packs.iter().any(|p| {
+                        !p.pack.is_cruft()
+                            && p.pack.contains(&id)
+                            && !rolled.iter().any(|(r, _)| r.contains(&id))
+                    });
+                    if !packed && !excluded(&id) && seen.insert(id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            let described = rgit_pack::write::describe(odb, kind, &ids)
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+            let ordered = rgit_pack::write::pack_order(&described);
+            let Some(new_pack) = store::write_pack(odb, pack_dir, &ordered, opts)? else {
+                continue;
+            };
+            wrote = true;
+            let new_name = format!("pack-{}.pack", new_pack.to_hex());
+            if *promisor {
+                let marker = pack_dir.join(&new_name).with_extension("promisor");
+                if !marker.exists() {
+                    let _ = std::fs::write(&marker, b"");
+                }
+            }
+            if self.delete {
+                for (p, is_local) in rolled {
+                    let name = file_name(p);
+                    if !is_local || kept_names.contains(&name) || name == new_name {
+                        continue;
+                    }
+                    store::delete_pack(&p.path().with_extension(""));
+                    removed = true;
+                }
+            }
+        }
+        if removed {
+            store::remove_multi_pack_index(pack_dir);
+        }
+        if !wrote && !self.quiet {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{}", msg::REPACK_NOTHING_NEW);
+        }
+        Ok(())
+    }
+}
+
+/// How many of the packs (object counts in ascending order) to roll up so
+/// that each remaining pack holds at least `factor` times the objects of
+/// the next smaller one, and of all rolled-up ones together: the largest
+/// packs that already form such a progression stay, and smaller ones are
+/// added to the roll-up while it outgrows the next pack.
+fn geometric_split(counts: &[u64], factor: u64) -> usize {
+    let n = counts.len();
+    let mut split = 0;
+    for i in (1..n).rev() {
+        if counts[i] < factor.saturating_mul(counts[i - 1]) {
+            split = i;
+            break;
+        }
+    }
+    if split == 0 {
+        return 0;
+    }
+    let mut sum: u64 = counts[..split].iter().sum();
+    while split < n && counts[split] < factor.saturating_mul(sum) {
+        sum += counts[split];
+        split += 1;
+    }
+    split
 }
 
 /// With `--unpack-unreachable=<date>`: the unreachable objects that are
@@ -351,9 +701,7 @@ fn rescue_recent(
         .iter()
         .filter(|(id, _, mtime)| *mtime > expire && !walk.seen.contains(id))
         .map(|(id, _, _)| *id));
-    for p in packs.iter().filter(|p| p.mtime > expire) {
-        recent.extend(p.pack.index().ids().filter(|id| !walk.seen.contains(id)));
-    }
+    recent.extend(store::recent_packed(packs, expire).filter(|id| !walk.seen.contains(id)));
     if recent.is_empty() {
         return Ok(HashSet::new());
     }
@@ -388,5 +736,24 @@ fn remove_stale_tmp_packs(pack_dir: &std::path::Path) {
         if name.starts_with(".tmp-") && !name.starts_with(&own) {
             let _ = std::fs::remove_file(e.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::geometric_split;
+
+    #[test]
+    fn split() {
+        // Already a progression.
+        assert_eq!(geometric_split(&[3, 6, 12], 2), 0);
+        assert_eq!(geometric_split(&[], 2), 0);
+        assert_eq!(geometric_split(&[5], 2), 0);
+        // The two small packs are rolled up.
+        assert_eq!(geometric_split(&[3, 3, 12, 24], 2), 2);
+        // The roll-up (3 + 3) grows past the 7-object pack.
+        assert_eq!(geometric_split(&[3, 3, 7, 27], 2), 3);
+        assert_eq!(geometric_split(&[3, 3, 6], 2), 3);
+        assert_eq!(geometric_split(&[1, 3, 3, 20, 40], 2), 3);
     }
 }

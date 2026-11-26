@@ -1265,6 +1265,9 @@ impl Printer<'_, '_> {
         {
             return true;
         }
+        if self.opts.no_kept && store.in_kept_pack(id) {
+            return true;
+        }
         if let Some(total) = &mut self.usage {
             *total += store.disk_size(id);
             return true;
@@ -3070,7 +3073,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         g.set_lane_limit(opts.graph_lane_limit);
         p.graph = Some(g);
     }
-    if opts.unpacked || opts.disk_usage.is_some() {
+    if opts.unpacked || opts.no_kept || opts.disk_usage.is_some() {
         let setup = repo.setup.clone();
         p.store = Some(crate::repo_objects::Repo::open(ctx, setup)?);
     }

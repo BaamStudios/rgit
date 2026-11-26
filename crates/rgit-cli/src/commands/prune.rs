@@ -6,7 +6,8 @@
 //! Reachable means reachable from the starting points of
 //! [`crate::housekeeping::reach`] or from a `<head>` argument. With
 //! `--expire`, unreachable objects newer than the date are kept, and so
-//! is everything reachable from them (an old blob of a recent tree).
+//! is everything reachable from them (an old blob of a recent tree); for
+//! objects of a cruft pack the time recorded in its `.mtimes` file counts.
 
 use std::io::Write;
 
@@ -95,9 +96,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .filter(|(id, _, mtime)| *mtime > expire && !walk.seen.contains(id))
             .map(|(id, _, _)| *id)
             .collect();
-        for p in packs.iter().filter(|p| p.mtime > expire) {
-            recent.extend(p.pack.index().ids().filter(|id| !walk.seen.contains(id)));
-        }
+        // Packed objects count by their pack's time, or for a cruft pack
+        // by their own recorded time.
+        recent.extend(store::recent_packed(&packs, expire).filter(|id| !walk.seen.contains(id)));
         walk.walk(&recent, true)?;
     }
     drop(loose);

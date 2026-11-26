@@ -194,3 +194,9 @@ pub fn hash_mismatch(f: &mut fmt::Formatter<'_>, id: &ObjectId, pack: &Path) -> 
         pack.display()
     )
 }
+
+/// rgit: a malformed `.mtimes` file (`what`: `has unknown signature`,
+/// `has unsupported version`, `has unsupported hash id`, `is too small`).
+pub fn mtimes(f: &mut fmt::Formatter<'_>, path: &Path, what: &str) -> fmt::Result {
+    write!(f, "mtimes file {} {what}", path.display())
+}

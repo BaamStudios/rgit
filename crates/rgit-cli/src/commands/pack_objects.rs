@@ -70,15 +70,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Options that change what is packed or written, not implemented yet:
     // remember the first one given and refuse to run.
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
+    // Every option given of those (for the checks against `--cruft`).
+    let given: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
     let reject = |name: &'static str| {
         let unsupported = &unsupported;
+        let given = &given;
         move |_: Option<&str>, unset: bool| -> Result<(), CallbackError> {
             if !unset {
                 unsupported.borrow_mut().get_or_insert_with(|| format!("--{name}"));
+                given.borrow_mut().push(name);
             }
             Ok(())
         }
     };
+    let cruft = Cell::new(false);
+    let cruft_expiration: RefCell<Option<String>> = RefCell::new(None);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -150,13 +156,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 reject("unpack-unreachable"),
             )
             .optional(None),
-            Opt::callback(None, "cruft", None, msg::H_CRUFT, reject("cruft")).noarg(),
+            Opt::flag(None, "cruft", &cruft, msg::H_CRUFT),
             Opt::callback(
                 None,
                 "cruft-expiration",
                 Some("time"),
                 msg::H_CRUFT_EXPIRATION,
-                reject("cruft-expiration"),
+                |v: Option<&str>, unset: bool| {
+                    *cruft_expiration.borrow_mut() = if unset {
+                        None
+                    } else {
+                        Some(v.unwrap_or("now").to_string())
+                    };
+                    Ok(())
+                },
             )
             .optional(None),
             Opt::bool(None, "sparse", &sparse, msg::H_SPARSE),
@@ -228,6 +241,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if stdout.get() != args.is_empty() || args.len() > 1 {
         return Err(parser.usage_error().into());
     }
+    if cruft.get() {
+        let given = given.borrow();
+        if given.contains(&"stdin-packs") {
+            return Err(Die::Fatal(msg::CRUFT_STDIN_PACKS.into()));
+        }
+        let walks = ["keep-unreachable", "pack-loose-unreachable", "unpack-unreachable"];
+        if revs.get() || given.iter().any(|g| walks.contains(g)) {
+            return Err(Die::Fatal(msg::CRUFT_REVS.into()));
+        }
+    }
     if let Some(opt) = unsupported.borrow().as_deref() {
         return Err(Die::Fatal(msg::not_supported(opt)));
     }
@@ -291,7 +314,38 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
-    let (listed, bases): (Vec<ListedObject>, Vec<ListedObject>) = if revs.get() {
+    let mut cruft_mtimes: Option<std::collections::HashMap<ObjectId, u32>> = None;
+    let (listed, bases): (Vec<ListedObject>, Vec<ListedObject>) = if cruft.get() {
+        let packs = crate::housekeeping::store::local_packs(&odb, &[]);
+        let discarded = crate::housekeeping::cruft::read_pack_list(&mut input, &packs)?;
+        let date_ctx = rgit_date::DateContext::from_env();
+        // Like git, an expiration that does not parse expires nothing.
+        let expire = cruft_expiration
+            .borrow()
+            .as_deref()
+            .and_then(|v| rgit_date::parse_expiry_date(v, &date_ctx).ok())
+            .filter(|&t| t != 0)
+            // "now" is the present: objects dated in the future stay.
+            .map(|t| t.min(date_ctx.now.max(0) as u64));
+        let recent = if expire.is_some() {
+            crate::housekeeping::recent_objects_hook(&config, &odb).map_err(|e| match e {
+                Die::Fatal(_) => Die::Fatal(crate::messages::housekeeping::HOOK_FAILED.into()),
+                other => other,
+            })?
+        } else {
+            Vec::new()
+        };
+        let selection = crate::housekeeping::cruft::select(
+            &odb,
+            &packs,
+            &discarded,
+            expire,
+            &recent,
+            local.get(),
+        )?;
+        cruft_mtimes = Some(selection.mtimes);
+        (selection.objects, Vec::new())
+    } else if revs.get() {
         let mut tips = Vec::new();
         if all.get() {
             for id in repo.refs.all() {
@@ -342,7 +396,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         kept: honor_pack_keep.get(),
         keep_packs: keep_pack.borrow().clone(),
     };
-    if skip.any() {
+    // A cruft pack's contents are decided by its pack list alone.
+    if skip.any() && !cruft.get() {
         skip.apply(&odb, &setup, &mut listed);
     }
     if include_tag.get() {
@@ -389,6 +444,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .flatten()
                 .unwrap_or(true),
             max_pack_size: limit,
+            mtimes: cruft_mtimes.as_ref(),
         };
         let summaries = files.write(&ordered, repo.source, &packs, &opts)?;
         for s in &summaries {
@@ -507,7 +563,7 @@ fn config_index_version(config: &ConfigSet) -> Result<IndexVersion, Die> {
 }
 
 /// Where and how `<base-name>` output is written.
-struct PackFiles {
+struct PackFiles<'a> {
     base: PathBuf,
     hash: HashKind,
     index_version: IndexVersion,
@@ -516,9 +572,11 @@ struct PackFiles {
     /// Split into packs of at most this size (`--max-pack-size`,
     /// `pack.packSizeLimit`).
     max_pack_size: Option<u64>,
+    /// For a cruft pack: the time of each object, written as `.mtimes`.
+    mtimes: Option<&'a std::collections::HashMap<ObjectId, u32>>,
 }
 
-impl PackFiles {
+impl PackFiles<'_> {
     fn dir(&self) -> PathBuf {
         match self.base.parent() {
             Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -596,6 +654,19 @@ impl PackFiles {
                 temps.0.push((tmp.clone(), "rev"));
                 std::fs::write(&tmp, bytes).map_err(|e| write_error(&tmp, &e))?;
                 files.push((tmp, "rev"));
+            }
+            if let Some(times) = self.mtimes {
+                let mut ids: Vec<ObjectId> = summary.entries.iter().map(|e| e.id).collect();
+                ids.sort_unstable();
+                let entries: Vec<u32> = ids
+                    .iter()
+                    .map(|id| times.get(id).copied().unwrap_or(0))
+                    .collect();
+                let bytes = rgit_pack::mtimes::mtimes_bytes(self.hash, &summary.checksum, &entries);
+                let tmp = dir.join(format!("tmp_mtimes_{}_{n}", std::process::id()));
+                temps.0.push((tmp.clone(), "mtimes"));
+                std::fs::write(&tmp, bytes).map_err(|e| write_error(&tmp, &e))?;
+                files.push((tmp, "mtimes"));
             }
             let bytes = indexed
                 .index_bytes(self.index_version)

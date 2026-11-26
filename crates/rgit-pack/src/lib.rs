@@ -16,6 +16,7 @@
 //! - [`index_pack`]: index a pack stream (`git index-pack`): object ids,
 //!   parallel delta resolution, thin pack completion, `.idx` and `.rev`
 //!   output.
+//! - [`mtimes`]: the `.mtimes` files of cruft packs.
 //! - [`write`]: writing packs (`pack-objects` without delta search).
 //!
 //! Objects come back as [`Object`] (= [`rgit_object::RawObject`]): the
@@ -35,6 +36,7 @@ mod index;
 pub mod index_pack;
 pub mod messages;
 mod mmap;
+pub mod mtimes;
 mod pack;
 mod store;
 pub mod write;
