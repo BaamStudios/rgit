@@ -166,6 +166,25 @@ impl RepositoryFormat {
         Ok(())
     }
 
+    /// Applies `GIT_REFERENCE_BACKEND` (`<format>` or `<format>://<payload>`),
+    /// which overrides `extensions.refStorage`.
+    pub fn apply_ref_backend(&mut self, value: &str) -> Result<(), Error> {
+        let (format, payload) = parse_ref_backend(value)?;
+        self.ref_storage = format;
+        self.ref_storage_payload = payload;
+        Ok(())
+    }
+
+    /// The directory that holds the references when the payload of
+    /// `extensions.refStorage` names one: relative to `common_dir`.
+    pub fn ref_dir(&self, common_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        let p = self
+            .ref_storage_payload
+            .as_ref()
+            .filter(|p| !p.is_empty())?;
+        Some(common_dir.join(crate::layout::bytes_to_path(p)))
+    }
+
     /// Refuse what `support` does not cover.
     pub fn check_support(&self, support: &Support) -> Result<(), Error> {
         if self.object_format == HashKind::Sha256 && !support.sha256 {
@@ -189,6 +208,21 @@ impl RepositoryFormat {
     pub fn uses_worktree_config(&self) -> bool {
         self.worktree_config
     }
+}
+
+/// Parses a `GIT_REFERENCE_BACKEND` value: the format and the payload
+/// after `://`.
+pub fn parse_ref_backend(value: &str) -> Result<(RefStorage, Option<BString>), Error> {
+    let (format, payload) = match value.find("://") {
+        Some(i) => (&value[..i], Some(BString::from(&value[i + 3..]))),
+        None => (value, None),
+    };
+    let format = match format {
+        "files" => RefStorage::Files,
+        "reftable" => RefStorage::Reftable,
+        other => return Err(Error::UnknownRefStorage(other.to_owned())),
+    };
+    Ok((format, payload))
 }
 
 fn string(e: &Entry) -> Result<&bstr::BStr, Error> {
@@ -244,6 +278,37 @@ mod tests {
             .into_iter()
             .map(|(l, m)| format!("{} {m}\n", l.prefix()))
             .collect()
+    }
+
+    #[test]
+    fn reference_backend_uris() {
+        let (f, p) = parse_ref_backend("reftable:///srv/refs").unwrap();
+        assert_eq!(f, RefStorage::Reftable);
+        assert_eq!(p, Some(BString::from("/srv/refs")));
+        assert_eq!(
+            parse_ref_backend("files").unwrap(),
+            (RefStorage::Files, None)
+        );
+        for (value, name) in [
+            ("reftable@/home/reftable", "reftable@/home/reftable"),
+            ("reftable:", "reftable:"),
+            ("db://.git", "db"),
+        ] {
+            assert_eq!(
+                parse_ref_backend(value).unwrap_err().to_string(),
+                format!("unknown ref storage format: '{name}'")
+            );
+        }
+        let mut f =
+            fmt("[core]\nrepositoryformatversion=1\n[extensions]\nrefstorage=files://refs\n")
+                .unwrap();
+        assert_eq!(
+            f.ref_dir(std::path::Path::new("/r/.git")),
+            Some(std::path::PathBuf::from("/r/.git/refs"))
+        );
+        f.apply_ref_backend("reftable://").unwrap();
+        assert_eq!(f.ref_storage, RefStorage::Reftable);
+        assert_eq!(f.ref_dir(std::path::Path::new("/r/.git")), None);
     }
 
     #[test]

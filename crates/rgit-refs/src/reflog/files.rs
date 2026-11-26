@@ -43,10 +43,10 @@ impl FilesReflog {
         common_dir: impl Into<PathBuf>,
         kind: HashKind,
     ) -> Self {
-        let common_dir = common_dir.into();
+        let common_dir = crate::location::resolve(&common_dir.into());
         FilesReflog {
             reftable: crate::reftable::backend::uses_reftable(&common_dir),
-            git_dir: git_dir.into(),
+            git_dir: crate::location::resolve(&git_dir.into()),
             common_dir,
             kind,
             shared: SharedRepository::default(),

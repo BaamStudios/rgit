@@ -37,6 +37,7 @@
 
 mod error;
 pub mod files;
+pub mod location;
 pub mod loose;
 pub mod messages;
 pub mod name;
@@ -58,6 +59,7 @@ pub use target::{Peeled, Reference, Resolved, Source, Target};
 /// format (`ref: <name>` or an object id, with a line feed): the file
 /// itself, or in a reftable repository the value stored in the stack.
 pub fn read_head_file(git_dir: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let git_dir = &location::resolve(git_dir);
     if !reftable::backend::uses_reftable(git_dir) {
         return std::fs::read(git_dir.join("HEAD"));
     }
@@ -69,6 +71,7 @@ pub fn read_head_file(git_dir: &std::path::Path) -> std::io::Result<Vec<u8>> {
 /// a reftable repository the value stored in the stack (and the file only
 /// when the stack has none).
 pub fn read_root_ref_file(git_dir: &std::path::Path, name: &str) -> std::io::Result<Vec<u8>> {
+    let git_dir = &location::resolve(git_dir);
     if reftable::backend::uses_reftable(git_dir) {
         match reftable::backend::root_ref_content(git_dir, name) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -86,6 +89,7 @@ pub fn write_root_ref_file(
     name: &str,
     content: &[u8],
 ) -> std::io::Result<()> {
+    let git_dir = &location::resolve(git_dir);
     if !reftable::backend::uses_reftable(git_dir) {
         return std::fs::write(git_dir.join(name), content);
     }
@@ -105,6 +109,7 @@ pub fn write_root_ref_file(
 /// Removes the root reference `name` of `git_dir` (the file, and in a
 /// reftable repository the value in the stack).
 pub fn remove_root_ref_file(git_dir: &std::path::Path, name: &str) -> std::io::Result<()> {
+    let git_dir = &location::resolve(git_dir);
     if reftable::backend::uses_reftable(git_dir) {
         let kind = reftable::backend::stack_hash(git_dir).unwrap_or(rgit_hash::HashKind::Sha1);
         root_ref_transaction(git_dir, RefUpdate::delete(name, kind, None))?;
@@ -134,6 +139,7 @@ pub fn read_head_text(git_dir: &std::path::Path) -> std::io::Result<String> {
 /// does nothing, when the directory uses the files format (the caller
 /// writes the file).
 pub fn write_head_symref(git_dir: &std::path::Path, target: &str) -> std::io::Result<bool> {
+    let git_dir = &location::resolve(git_dir);
     if !reftable::backend::uses_reftable(git_dir) {
         return Ok(false);
     }

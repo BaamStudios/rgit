@@ -298,6 +298,20 @@ pub fn init(
     // Object and reference formats.
     let hash = choose_hash(opts, env, &config, notify)?;
     let refs = choose_ref_format(opts, env, &config, notify)?;
+    // `GIT_REFERENCE_BACKEND=<format>[://<dir>]`: the format, and the
+    // references kept in `<dir>` (`extensions.refStorage`).
+    let backend = match env.var("GIT_REFERENCE_BACKEND") {
+        Some(v) => {
+            let v = v.to_string_lossy().into_owned();
+            let (format, payload) = crate::format::parse_ref_backend(&v)?;
+            Some((v, format, payload.filter(|p| !p.is_empty())))
+        }
+        None => None,
+    };
+    let refs = match &backend {
+        Some((_, format, _)) if opts.ref_format.is_none() => *format,
+        _ => refs,
+    };
     if let Some(f) = &existing {
         if opts.object_format.is_some_and(|h| h != f.object_format) {
             return Err(InitError::Fatal(messages::REINIT_DIFFERENT_HASH.into()));
@@ -381,6 +395,13 @@ pub fn init(
     template::copy(&template, &common_dir, shared, notify)?;
 
     let reinitialized = fs::symlink_metadata(git_dir.join("HEAD")).is_ok();
+    let alt_refs = match &backend {
+        Some((_, _, Some(p))) if !reinitialized => {
+            let common = path::real_path_lossy(&common_dir, Path::new("/"));
+            Some(common.join(crate::layout::bytes_to_path(p)))
+        }
+        _ => None,
+    };
 
     // A template may have brought a configuration file.
     let config_path = common_dir.join("config");
@@ -395,6 +416,10 @@ pub fn init(
         &ConfigValues {
             existing_version: existing.as_ref().map(|f| f.version),
             reftable: !reinitialized && refs == RefStorage::Reftable,
+            ref_uri: match &backend {
+                Some((uri, _, Some(_))) if !reinitialized => Some(uri.as_str()),
+                _ => None,
+            },
             sha256: !reinitialized && hash == HashKind::Sha256,
             git_dir: &git_dir,
             link: &link,
@@ -407,11 +432,48 @@ pub fn init(
 
     let refs_dir = common_dir.join("refs");
     template::make_dir(&refs_dir, shared)?;
+    if let Some(dir) = &alt_refs {
+        // The git directory keeps stand-ins; the references go to `dir`.
+        // git does not create it.
+        if !dir.is_dir() {
+            let sub = if refs == RefStorage::Reftable {
+                "reftable"
+            } else {
+                "refs"
+            };
+            return Err(InitError::Plain {
+                message: format!("{}: No such file or directory", dir.join(sub).display()),
+                code: 1,
+            });
+        }
+        rgit_refs::location::set_ref_dir(&common_dir, dir);
+        let stand_in =
+            |path: &Path, text: &str| template::write_new(path, text.as_bytes(), false, shared);
+        stand_in(
+            &git_dir.join("HEAD"),
+            rgit_refs::reftable::backend::HEAD_STAND_IN,
+        )?;
+        stand_in(&refs_dir.join("heads"), rgit_refs::location::HEADS_STAND_IN)?;
+        let branch = initial_branch(opts, env, &config, notify)?;
+        if refs == RefStorage::Reftable {
+            reftable_head(dir, hash, shared, &branch)?;
+            // Only the stack is kept there.
+            let _ = fs::remove_file(dir.join("HEAD"));
+            let _ = fs::remove_file(dir.join("refs").join("heads"));
+            let _ = fs::remove_dir(dir.join("refs"));
+        } else {
+            template::make_dir(&dir.join("refs"), shared)?;
+            template::make_dir(&dir.join("refs").join("heads"), shared)?;
+            template::make_dir(&dir.join("refs").join("tags"), shared)?;
+            let head = format!("ref: refs/heads/{branch}\n");
+            template::write_new(&dir.join("HEAD"), head.as_bytes(), false, shared)?;
+        }
+    }
     let reftable = match (&existing, reinitialized) {
         (Some(f), true) => f.ref_storage == RefStorage::Reftable,
         _ => refs == RefStorage::Reftable,
     };
-    if !reftable {
+    if alt_refs.is_none() && !reftable {
         template::make_dir(&refs_dir.join("heads"), shared)?;
         template::make_dir(&refs_dir.join("tags"), shared)?;
     }
@@ -420,6 +482,8 @@ pub fn init(
         if let Some(b) = &opts.initial_branch {
             notify(Notice::Warning(messages::reinit_ignored_branch(b)));
         }
+    } else if alt_refs.is_some() {
+        // Written with the stand-ins above.
     } else if reftable {
         let branch = initial_branch(opts, env, &config, notify)?;
         reftable_head(&git_dir, hash, shared, &branch)?;
@@ -588,6 +652,7 @@ pub fn restart_reftable(
     shared: SharedRepository,
     head: &str,
 ) -> Result<(), InitError> {
+    let git_dir = &rgit_refs::location::resolve(git_dir);
     let dir = git_dir.join("reftable");
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -624,6 +689,9 @@ struct ConfigValues<'a> {
     existing_version: Option<i64>,
     /// A new repository in the reftable format.
     reftable: bool,
+    /// A new repository with its references elsewhere: the value of
+    /// `extensions.refStorage` (`<format>://<dir>`).
+    ref_uri: Option<&'a str>,
     /// A new repository with SHA-256 object ids.
     sha256: bool,
     git_dir: &'a Path,
@@ -659,7 +727,10 @@ fn write_config(path: &Path, config: &ConfigSet, v: &ConfigValues<'_>) -> Result
         set("extensions.objectformat", "sha256")?;
         version = version.max(1);
     }
-    if v.reftable {
+    if let Some(uri) = v.ref_uri {
+        set("extensions.refstorage", uri)?;
+        version = version.max(1);
+    } else if v.reftable {
         set("extensions.refstorage", "reftable")?;
         version = version.max(1);
     }

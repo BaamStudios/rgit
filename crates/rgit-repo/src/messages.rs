@@ -120,6 +120,11 @@ pub(crate) fn same_compat_format() -> &'static str {
 
 /// rgit wording (git has no such message): the repository uses a known
 /// extension rgit cannot handle yet.
+/// `fatal: unknown ref storage format: '<name>'` (`GIT_REFERENCE_BACKEND`).
+pub(crate) fn unknown_ref_storage(name: impl Display) -> String {
+    format!("unknown ref storage format: '{name}'")
+}
+
 pub(crate) fn unsupported(what: impl Display) -> String {
     format!("this repository uses {what}, which rgit does not support yet")
 }

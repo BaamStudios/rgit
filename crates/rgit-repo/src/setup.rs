@@ -59,6 +59,8 @@ pub struct SetupOptions {
     pub owner: Owner,
     /// Extensions this build can handle.
     pub support: Support,
+    /// `GIT_REFERENCE_BACKEND`: overrides `extensions.refStorage`.
+    pub ref_backend: Option<String>,
 }
 
 impl SetupOptions {
@@ -79,6 +81,9 @@ impl SetupOptions {
                 .is_none_or(|v| rgit_config::value::parse_bool(Some(&v)).unwrap_or(true)),
             owner: Owner::current(env),
             support: Support::default(),
+            ref_backend: env
+                .var("GIT_REFERENCE_BACKEND")
+                .map(|v| v.to_string_lossy().into_owned()),
         }
     }
 
@@ -244,10 +249,18 @@ pub fn discover(
     opts: &SetupOptions,
     protected: &mut dyn ProtectedConfig,
 ) -> Result<Result<Setup, NotFound>, Error> {
-    match &opts.git_dir {
+    let found = match &opts.git_dir {
         Some(gd) => explicit(opts, gd).map(Ok),
         None => search(opts, protected),
+    }?;
+    if let Ok(setup) = &found {
+        // References kept outside the git directory (`<format>://<dir>`).
+        let common = setup.absolute_common_dir();
+        if let Some(dir) = setup.format.ref_dir(&common) {
+            rgit_refs::location::set_ref_dir(&common, &dir);
+        }
     }
+    Ok(found)
 }
 
 /// Locate the repository; not finding one is an error.
@@ -366,6 +379,9 @@ fn read_format(opts: &SetupOptions, cand: &Candidate) -> Result<RepositoryFormat
         Err(_) => ConfigSet::new(),
     };
     let mut format = RepositoryFormat::from_config(&set)?;
+    if let Some(v) = &opts.ref_backend {
+        format.apply_ref_backend(v)?;
+    }
     format.check()?;
     format.check_support(&opts.support)?;
     // A linked work tree (its git directory has a separate common

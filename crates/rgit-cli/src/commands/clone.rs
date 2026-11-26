@@ -1808,6 +1808,17 @@ fn write_packed_refs(setup: &Setup, config: &ConfigSet, refs: &[PackedRef]) -> R
         return Ok(());
     }
     let store = refs_support::ref_store(setup, config);
+    if rgit_refs::reftable::backend::uses_reftable(store.git_dir()) {
+        // A reftable repository takes them as one transaction.
+        let mut tx = rgit_refs::Transaction::new(&store);
+        for r in refs {
+            tx.push(rgit_refs::RefUpdate::create(r.name.clone(), r.oid))
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+        }
+        return tx
+            .commit(&mut rgit_refs::NoHooks)
+            .map_err(|e| Die::Fatal(e.to_string()));
+    }
     let packed = PackedRefs::from_refs(refs.to_vec());
     let mut lock = rgit_fs::LockFile::acquire(store.packed_refs_path(), &rgit_fs::LockOptions::default())
         .map_err(|e| Die::Fatal(e.to_string()))?;
