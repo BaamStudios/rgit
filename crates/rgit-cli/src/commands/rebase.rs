@@ -307,10 +307,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(Die::Error(msg::trailer_missing_key(t), 128));
         }
     }
-    let unsupported = [
-        ("--rerere-autoupdate", rerere.get() == 1),
-        ("--preserve-merges", preserve.get() == 1),
-    ];
+    let unsupported = [("--preserve-merges", preserve.get() == 1)];
     if let Some((what, _)) = unsupported.iter().find(|(_, set)| *set) {
         return Err(Die::Fatal(msg::not_supported(what)));
     }
@@ -403,6 +400,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         apply: apply_mode,
         am_opts,
         trailers: trailers.borrow().clone(),
+        rerere_autoupdate: crate::rerere::flag(rerere.get()),
     };
     rebase::start(ctx, &o)
 }

@@ -128,6 +128,8 @@ pub struct Options {
     pub am_opts: Vec<String>,
     /// `--trailer <trailer>`: added to every replayed commit.
     pub trailers: Vec<String>,
+    /// `--[no-]rerere-autoupdate`.
+    pub rerere_autoupdate: Option<bool>,
 }
 
 /// `--rebase-merges[=<mode>]`.
@@ -173,6 +175,8 @@ struct State {
     gpg_sign: Option<Sign>,
     /// `--trailer`s (state file `trailer`, one per line).
     trailers: Vec<String>,
+    /// `--[no-]rerere-autoupdate` (state file `allow_rerere_autoupdate`).
+    rerere: Option<bool>,
 }
 
 fn lossy(b: &[u8]) -> String {
@@ -923,6 +927,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
             reschedule_failed_exec: false,
             gpg_sign: signing::resolve(&repo.config, o.gpg_sign.clone()),
             trailers: Vec::new(),
+            rerere: o.rerere_autoupdate,
         };
         if !quiet {
             println!("{}", msg::REWINDING);
@@ -1039,6 +1044,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         reschedule_failed_exec,
         gpg_sign: signing::resolve(&repo.config, o.gpg_sign.clone()),
         trailers: o.trailers.clone(),
+        rerere: o.rerere_autoupdate,
     };
     if o.interactive {
         // git reads the setting once more before writing the list.
@@ -1733,6 +1739,14 @@ fn write_state(
         let lines: String = s.trailers.iter().map(|t| format!("{t}\n")).collect();
         write(&f("trailer"), lines)?;
     }
+    if let Some(r) = s.rerere {
+        let opt = if r {
+            "--rerere-autoupdate"
+        } else {
+            "--no-rerere-autoupdate"
+        };
+        write(&f("allow_rerere_autoupdate"), format!("{opt}\n"))?;
+    }
     if s.reschedule_failed_exec {
         write(&f("reschedule-failed-exec"), "")?;
     } else {
@@ -1802,6 +1816,11 @@ fn read_state(repo: &Repo, dir: &Path) -> Result<State, Die> {
         reschedule_failed_exec: exists("reschedule-failed-exec"),
         gpg_sign: read("gpg_sign_opt").and_then(|s| Sign::from_opt(s.trim_end_matches('\n'))),
         trailers,
+        rerere: match read("allow_rerere_autoupdate").as_deref().map(str::trim) {
+            Some("--rerere-autoupdate") => Some(true),
+            Some("--no-rerere-autoupdate") => Some(false),
+            _ => None,
+        },
     })
 }
 
@@ -2209,6 +2228,7 @@ impl<'c> Rebase<'c> {
             .advisor(&repo.config)?
             .advise(Advice::MergeConflict, msg::CONFLICT_ADVICE)
             .map_err(Die::Fatal)?;
+        crate::rerere::auto(self.ctx, self.state.rerere)?;
         match rest {
             Some(rest) => eprintln!("{}", msg::could_not_apply(&abbrev, rest)),
             None => eprint!("{}", self.edit_advice()),
@@ -2905,6 +2925,7 @@ impl<'c> Rebase<'c> {
                 Some(c) => repo.abbrev(&c, repo.default_abbrev()),
                 None => name.to_owned(),
             };
+            crate::rerere::auto(self.ctx, self.state.rerere)?;
             eprintln!("{}", msg::could_not_apply(&label, &item.arg));
             return Ok(Step::Exit(1));
         }
@@ -3763,6 +3784,7 @@ pub fn skip(ctx: &mut Context) -> CmdResult {
         let state = rb.state.clone();
         return apply::resume(rb.ctx, &state, "--skip");
     }
+    crate::rerere::clear(rb.ctx)?;
     let mut repo = rb.repo()?;
     if let Some(h) = sequencer::head_commit(&mut repo) {
         let tree = sequencer::tree_of(&repo, &h).map_err(fail_die)?;
@@ -3784,6 +3806,7 @@ pub fn skip(ctx: &mut Context) -> CmdResult {
 pub fn abort(ctx: &mut Context) -> CmdResult {
     let rb = Rebase::load(ctx)?;
     let dir = rb.dir()?;
+    crate::rerere::clear(rb.ctx)?;
     let mut repo = rb.repo()?;
     let head = sequencer::head_commit(&mut repo);
     let head_tree = match head {

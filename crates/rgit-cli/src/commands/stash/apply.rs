@@ -283,6 +283,8 @@ fn do_apply(
                 }
                 if !result.clean {
                     outcome = Outcome::Conflicts;
+                    // Records or replays the conflicts' resolutions.
+                    git.cmd(&["rerere"]).status()?;
                 }
             }
             Err(code) => failed = Some(code),

@@ -520,6 +520,7 @@ dependencies = [
  "rgit-refs",
  "rgit-remote",
  "rgit-repo",
+ "rgit-rerere",
  "rgit-revwalk",
  "rgit-submodule",
  "rgit-trace",
@@ -833,6 +834,15 @@ dependencies = [
  "rgit-trace",
  "rustix",
  "thiserror",
+]
+
+[[package]]
+name = "rgit-rerere"
+version = "0.1.0"
+dependencies = [
+ "rgit-diff",
+ "rgit-hash",
+ "tempfile",
 ]
 
 [[package]]
