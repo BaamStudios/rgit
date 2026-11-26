@@ -42,10 +42,6 @@ pub fn malformed_expiration(v: &str) -> String {
     format!("malformed expiration date '{v}'")
 }
 
-pub fn not_supported(what: &str) -> String {
-    format!("{what} is not supported by rgit yet")
-}
-
 // ---------------------------------------------------------------- gc
 
 pub const GC_USAGE: &[&str] = &["git gc [<options>]"];
@@ -173,6 +169,22 @@ pub const REPACK_H_FILTER_TO: &str = "pack prefix to store a pack containing fil
 pub const REPACK_H_DROP_FILTERED: &str = "delete filtered out objects (requires --filter)";
 pub const REPACK_H_DRY_RUN: &str = "only show which objects would be dropped";
 pub const REPACK_NOTHING_NEW: &str = "Nothing new to pack.";
+pub const REPACK_DROP_NEEDS_FILTER: &str = "--drop-filtered requires --filter";
+pub const REPACK_DRY_RUN_NEEDS_DROP: &str = "--dry-run only takes effect with --drop-filtered";
+pub const REPACK_DROP_AND_FILTER_TO: &str =
+    "options '--drop-filtered' and '--filter-to' cannot be used together";
+pub const REPACK_DROP_NEEDS_ALL: &str = "--drop-filtered requires -a";
+pub const REPACK_DROP_AND_BITMAP: &str =
+    "options '--drop-filtered' and '--write-bitmap-index' cannot be used together";
+pub const REPACK_DROP_ONLY_BLOB_LIMIT: &str =
+    "--drop-filtered only supports --filter=blob:limit=<n> for now";
+pub const REPACK_DROP_NEEDS_PROMISOR: &str = "--drop-filtered requires a promisor remote";
+pub const REPACK_DROP_IN_PROGRESS: &str = "--drop-filtered cannot be used while another operation (merge, rebase, am, cherry-pick, revert, or bisect) is in progress";
+pub const REPACK_FILTER_TO_NEEDS_FILTER: &str =
+    "option '--filter-to' can only be used along with '--filter'";
+pub fn repack_drop_in_index(path: &str, oid: &str) -> String {
+    format!("cannot drop '{path}' ({oid}): it is referenced by the current index")
+}
 pub const REPACK_PRECIOUS: &str = "cannot delete packs in a precious-objects repo";
 pub const REPACK_KEEP_AND_CRUFT: &str =
     "options '-k/--keep-unreachable' and '--cruft' cannot be used together";

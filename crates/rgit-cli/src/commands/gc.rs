@@ -313,6 +313,15 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 repack.push(format!("--keep-pack={}", p.file_name));
             }
         }
+        // gc.repackFilter, gc.repackFilterTo.
+        for (key, opt) in [
+            ("gc.repackfilter", "--filter"),
+            ("gc.repackfilterto", "--filter-to"),
+        ] {
+            if let Ok(Some(v)) = config.string(key) {
+                repack.push(format!("{opt}={v}"));
+            }
+        }
     } else {
         repack.push("--no-write-bitmap-index".into());
     }

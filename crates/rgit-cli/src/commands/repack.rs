@@ -48,7 +48,16 @@
 //! writes a reachability bitmap for the pack of everything reachable, or
 //! for the multi-pack index with `--write-midx`.
 //!
-//! Not yet: `--filter`, `--max-pack-size` for the reachable pack.
+//! `--filter=<spec>` writes the pack of everything reachable through a
+//! `pack-objects --filter` child, like git, and with `-a` the objects
+//! left out (those of the replaced packs not in the new pack) into a
+//! second pack through `pack-objects --stdin-packs`, in the pack
+//! directory or at `--filter-to`. `--drop-filtered` (only with
+//! `blob:limit`, in a partial clone) leaves the large blobs of the
+//! promisor packs out of the rewritten promisor pack instead; they can be
+//! fetched again from the promisor remote. `--dry-run` lists them.
+//!
+//! Not yet: `--max-pack-size` for the reachable pack without `--filter`.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -91,18 +100,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let path_walk = Cell::new(false);
     let name_hash_version: RefCell<Option<String>> = RefCell::new(None);
     let write_midx: RefCell<Option<String>> = RefCell::new(None);
-    // Options that change the result and are not implemented yet: the
-    // first one given is refused.
-    let unsupported: RefCell<Option<String>> = RefCell::new(None);
-    let reject = |name: &'static str| {
-        let unsupported = &unsupported;
-        move |_: Option<&str>, unset: bool| -> Result<(), CallbackError> {
-            if !unset {
-                unsupported.borrow_mut().get_or_insert_with(|| format!("--{name}"));
-            }
-            Ok(())
-        }
-    };
+    let filters: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let filter_to: RefCell<Option<String>> = RefCell::new(None);
+    let drop_filtered = Cell::new(false);
+    let dry_run = Cell::new(false);
     let mut parser = Parser::new(
         msg::REPACK_USAGE,
         vec![
@@ -158,7 +159,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string(None, "depth", &depth, "n", msg::REPACK_H_DEPTH),
             Opt::string(None, "threads", &threads, "n", msg::REPACK_H_THREADS),
             Opt::unsigned(None, "max-pack-size", &max_pack_size, msg::REPACK_H_MAX_PACK_SIZE),
-            Opt::callback(None, "filter", Some("args"), msg::REPACK_H_FILTER, reject("filter")),
+            Opt::callback(
+                None,
+                "filter",
+                Some("args"),
+                msg::REPACK_H_FILTER,
+                |v: Option<&str>, unset: bool| -> Result<(), CallbackError> {
+                    match (unset, v) {
+                        (false, Some(v)) => filters.borrow_mut().push(v.to_owned()),
+                        _ => filters.borrow_mut().clear(),
+                    }
+                    Ok(())
+                },
+            ),
             Opt::flag(None, "pack-kept-objects", &pack_kept, msg::REPACK_H_PACK_KEPT),
             Opt::string_list(None, "keep-pack", &keep_packs, "name", msg::REPACK_H_KEEP_PACK),
             Opt::integer('g', "geometric", &geometric, msg::REPACK_H_GEOMETRIC),
@@ -181,32 +194,36 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .noarg()
             .hidden(),
             Opt::string(None, "expire-to", &expire_to, "dir", msg::REPACK_H_EXPIRE_TO),
-            Opt::callback(None, "filter-to", Some("dir"), msg::REPACK_H_FILTER_TO, reject("filter-to")),
-            Opt::callback(
-                None,
-                "drop-filtered",
-                None,
-                msg::REPACK_H_DROP_FILTERED,
-                reject("drop-filtered"),
-            )
-            .noarg(),
-            Opt::callback(None, "dry-run", None, msg::REPACK_H_DRY_RUN, reject("dry-run")).noarg(),
+            Opt::string(None, "filter-to", &filter_to, "dir", msg::REPACK_H_FILTER_TO),
+            Opt::flag(None, "drop-filtered", &drop_filtered, msg::REPACK_H_DROP_FILTERED),
+            Opt::flag(None, "dry-run", &dry_run, msg::REPACK_H_DRY_RUN),
         ],
     );
     let _args = parser.parse(argv)?.args;
     drop(parser);
+    let filters = filters.take();
+    let filter_to = filter_to.take();
+    let drop_filtered = drop_filtered.get();
+    let drop_limit = check_filter_options(
+        &filters,
+        filter_to.is_some(),
+        drop_filtered,
+        dry_run.get(),
+        all.get() || all_loosen.get() || cruft.get(),
+        bitmap.get() == 1,
+    )?;
     if keep_unreachable.get() && cruft.get() {
         return Err(Die::Fatal(msg::REPACK_KEEP_AND_CRUFT.into()));
     }
     if geometric.get() != 0 && (all.get() || all_loosen.get() || cruft.get()) {
         return Err(Die::Fatal(msg::REPACK_GEOMETRIC_AND_ALL.into()));
     }
-    if let Some(opt) = unsupported.borrow().as_deref() {
-        return Err(Die::Fatal(msg::not_supported(opt)));
-    }
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::load_config(ctx, &setup)?;
+    if drop_filtered && !crate::promisor::has_remote(&config) {
+        return Err(Die::Fatal(msg::REPACK_DROP_NEEDS_PROMISOR.into()));
+    }
     let cruft = cruft.get();
     let all_loosen = all_loosen.get() && !cruft;
     let pack_everything = all.get() || all_loosen || cruft;
@@ -221,6 +238,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .unwrap_or_else(|| setup.is_bare() && write_midx.borrow().is_none()),
         v => v > 0,
     };
+    // A bitmap setting from the configuration is quietly off with
+    // --drop-filtered (an explicit -b was refused above).
+    if drop_filtered {
+        write_bitmaps = false;
+    }
     if write_bitmaps && !pack_everything && write_midx.borrow().is_none() {
         if bitmap.get() == -1 && setup.is_bare() {
             write_bitmaps = false;
@@ -228,7 +250,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(Die::Fatal(msg::REPACK_INCREMENTAL_BITMAP.into()));
         }
     }
-    let delete = delete.get();
+    let delete = delete.get() || (drop_filtered && !dry_run.get());
     if delete && setup.format.precious_objects {
         return Err(Die::Fatal(msg::REPACK_PRECIOUS.into()));
     }
@@ -290,6 +312,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     let packs = store::local_packs(&odb, &keep_names);
+    let dropped: HashSet<ObjectId> = match drop_limit {
+        Some(limit) => {
+            let candidates = drop_candidates(&odb, &packs, limit);
+            if !setup.is_bare() {
+                check_drop_safe(&setup, &candidates)?;
+            }
+            if dry_run.get() {
+                let mut out = std::io::stdout().lock();
+                for id in &candidates {
+                    let _ = writeln!(out, "{}", id.to_hex());
+                }
+                return Ok(0);
+            }
+            candidates.into_iter().collect()
+        }
+        None => HashSet::new(),
+    };
     let kept: Vec<&store::LocalPack> = packs.iter().filter(|p| p.keep).collect();
     let in_kept = |id: &ObjectId| kept.iter().any(|p| p.pack.contains(id));
     let in_local_pack = |id: &ObjectId| packs.iter().any(|p| p.pack.contains(id));
@@ -342,6 +381,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .iter()
             .filter(|p| !p.keep && p.pack.is_promisor())
             .flat_map(|p| p.pack.index().ids().collect::<Vec<_>>())
+            .filter(|id| !dropped.contains(id))
             .collect();
         ids.sort();
         ids.dedup();
@@ -364,7 +404,49 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         check_closure(&odb, &chosen)?;
     }
     let ordered = rgit_pack::write::pack_order(&chosen);
-    let new_pack = store::write_pack(&odb, &pack_dir, &ordered, &opts)?;
+    // With --filter, pack-objects writes the pack(s) (and its bitmap).
+    let filtered = !filters.is_empty() && !drop_filtered;
+    let new_pack = if filtered {
+        None
+    } else {
+        store::write_pack(&odb, &pack_dir, &ordered, &opts)?
+    };
+    let mut filter_names: Vec<String> = Vec::new();
+    if filtered {
+        let job = FilterJob {
+            ctx,
+            setup: &setup,
+            config: &config,
+            local: local.get(),
+            quiet: quiet.get(),
+            pack_kept,
+            window: window.borrow().clone(),
+            window_memory: window_memory.borrow().clone(),
+            depth: depth.borrow().clone(),
+            threads: threads.borrow().clone(),
+            max_pack_size: (max_pack_size.get() != u64::MAX).then_some(max_pack_size.get()),
+        };
+        let mut keep: Vec<String> = keep_names.clone();
+        if partial {
+            // Promisor objects stay in the promisor pack.
+            keep.extend(
+                store::local_packs(&odb, &keep_names)
+                    .iter()
+                    .filter(|p| p.pack.is_promisor())
+                    .map(|p| p.file_name.clone()),
+            );
+        }
+        let bitmap_arg = (write_bitmaps && pack_everything && write_midx.borrow().is_none())
+            .then_some(bitmap.get() == 1);
+        let hashes = job.write_reachable(
+            &pack_dir.join("pack"),
+            pack_everything,
+            &keep,
+            bitmap_arg,
+            &filters,
+        )?;
+        filter_names = hashes.iter().map(|h| format!("pack-{h}.pack")).collect();
+    }
     // A pack that leaves out reachable objects (kept or non-local ones)
     // gets no bitmap; git disables it quietly.
     let complete = chosen.len() >= walk.listed.len();
@@ -388,7 +470,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             !quiet.get() && rgit_progress::stderr_is_terminal(),
         )?;
     }
-    if new_pack.is_none() && !quiet.get() {
+    if new_pack.is_none() && filter_names.is_empty() && !quiet.get() {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{}", msg::REPACK_NOTHING_NEW);
     }
@@ -397,6 +479,48 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .into_iter()
         .collect();
     new_names.extend(promisor_name);
+    new_names.extend(filter_names);
+    if filtered && pack_everything {
+        // What the filter left out of the replaced packs goes into a pack
+        // of its own.
+        let mut input = String::new();
+        for p in &packs {
+            if new_names.contains(&p.file_name) {
+                continue;
+            }
+            if (p.keep && !pack_kept) || p.pack.is_promisor() {
+                input.push('^');
+            }
+            input.push_str(&p.file_name);
+            input.push('\n');
+        }
+        for n in &new_names {
+            input.push('^');
+            input.push_str(n);
+            input.push('\n');
+        }
+        let base = match &filter_to {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => pack_dir.join("pack"),
+        };
+        let job = FilterJob {
+            ctx,
+            setup: &setup,
+            config: &config,
+            local: local.get(),
+            quiet: quiet.get(),
+            pack_kept,
+            window: window.borrow().clone(),
+            window_memory: window_memory.borrow().clone(),
+            depth: depth.borrow().clone(),
+            threads: threads.borrow().clone(),
+            max_pack_size: (max_pack_size.get() != u64::MAX).then_some(max_pack_size.get()),
+        };
+        let hashes = job.write_left_out(&base, &input)?;
+        if filter_to.is_none() {
+            new_names.extend(hashes.iter().map(|h| format!("pack-{h}.pack")));
+        }
+    }
     let new_ids: HashSet<ObjectId> = ordered.iter().map(|o| o.id).collect();
 
     // The packs to replace: all but the kept ones (and, with
@@ -592,6 +716,202 @@ fn update_server_info(
     if update_info {
         let packs_now = store::local_packs(odb, keep_names);
         let _ = server_info::update(setup, odb, &packs_now, opts.shared, false);
+    }
+}
+
+/// Check the options of `--filter`, `--filter-to`, `--drop-filtered`
+/// and `--dry-run`, in git's order. Returns the size limit of
+/// `--drop-filtered`.
+fn check_filter_options(
+    filters: &[String],
+    filter_to: bool,
+    drop: bool,
+    dry_run: bool,
+    all: bool,
+    explicit_bitmap: bool,
+) -> Result<Option<u64>, Die> {
+    let fatal = |m: &str| Err(Die::Fatal(m.to_owned()));
+    if drop && filters.is_empty() {
+        return fatal(msg::REPACK_DROP_NEEDS_FILTER);
+    }
+    if dry_run && !drop {
+        return fatal(msg::REPACK_DRY_RUN_NEEDS_DROP);
+    }
+    if drop && filter_to {
+        return fatal(msg::REPACK_DROP_AND_FILTER_TO);
+    }
+    if drop && !all {
+        return fatal(msg::REPACK_DROP_NEEDS_ALL);
+    }
+    if drop && explicit_bitmap {
+        return fatal(msg::REPACK_DROP_AND_BITMAP);
+    }
+    if filter_to && filters.is_empty() {
+        return fatal(msg::REPACK_FILTER_TO_NEEDS_FILTER);
+    }
+    let parsed = crate::promisor::parse_filters(filters)?;
+    if !drop {
+        return Ok(None);
+    }
+    match parsed {
+        Some((rgit_pack::write::ObjectFilter::BlobLimit(n), _)) => Ok(Some(n)),
+        _ => fatal(msg::REPACK_DROP_ONLY_BLOB_LIMIT),
+    }
+}
+
+/// The objects `--drop-filtered` drops: the blobs of the promisor packs
+/// of at least `limit` bytes, in pack order.
+fn drop_candidates(
+    odb: &rgit_odb::ObjectDatabase,
+    packs: &[store::LocalPack],
+    limit: u64,
+) -> Vec<ObjectId> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for p in packs.iter().filter(|p| !p.keep && p.pack.is_promisor()) {
+        let index = p.pack.index();
+        let mut by_offset: Vec<(u64, u32)> = (0..index.len())
+            .filter_map(|pos| index.offset_at(pos).ok().map(|off| (off, pos)))
+            .collect();
+        by_offset.sort_unstable();
+        for (_, pos) in by_offset {
+            let id = index.id_at(pos);
+            let Ok(Some(h)) = odb.header(&id) else {
+                continue;
+            };
+            if h.kind == rgit_object::ObjectKind::Blob && h.size >= limit && seen.insert(id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// In a repository with a worktree, `--drop-filtered` refuses to run
+/// while an operation is in progress, and to drop a blob the index names.
+fn check_drop_safe(setup: &rgit_repo::Setup, candidates: &[ObjectId]) -> Result<(), Die> {
+    let dir = &setup.git_dir;
+    let busy = dir.join("MERGE_HEAD").is_file()
+        || dir.join("rebase-apply").is_dir()
+        || dir.join("rebase-merge").is_dir()
+        || dir.join("CHERRY_PICK_HEAD").is_file()
+        || dir.join("REVERT_HEAD").is_file()
+        || dir.join("BISECT_LOG").is_file();
+    if busy {
+        return Err(Die::Fatal(msg::REPACK_DROP_IN_PROGRESS.into()));
+    }
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let wanted: HashSet<&ObjectId> = candidates.iter().collect();
+    let index = rgit_index::Index::read_file(
+        rgit_index::index_path(dir),
+        setup.format.object_format,
+        &rgit_index::ReadOptions::default(),
+    );
+    if let Ok(index) = index
+        && let Some(e) = index.entries().iter().find(|e| wanted.contains(&e.id))
+    {
+        return Err(Die::Fatal(msg::repack_drop_in_index(
+            &String::from_utf8_lossy(e.path()),
+            &e.id.to_hex(),
+        )));
+    }
+    Ok(())
+}
+
+/// The `pack-objects` children of `--filter`.
+struct FilterJob<'a> {
+    ctx: &'a Context,
+    setup: &'a rgit_repo::Setup,
+    config: &'a rgit_config::ConfigSet,
+    local: bool,
+    quiet: bool,
+    pack_kept: bool,
+    window: Option<String>,
+    window_memory: Option<String>,
+    depth: Option<String>,
+    threads: Option<String>,
+    max_pack_size: Option<u64>,
+}
+
+impl FilterJob<'_> {
+    /// The options both children get, up to the base name.
+    fn common(&self, base: &std::path::Path) -> Vec<String> {
+        let mut args: Vec<String> = Vec::new();
+        if let Some(n) = self.max_pack_size {
+            args.push(format!("--max-pack-size={n}"));
+        }
+        if self.local {
+            args.push("--local".into());
+        }
+        if self.quiet {
+            args.push("--quiet".into());
+        }
+        if self
+            .config
+            .bool("repack.usedeltabaseoffset")
+            .ok()
+            .flatten()
+            .unwrap_or(true)
+        {
+            args.push("--delta-base-offset".into());
+        }
+        if !self.pack_kept {
+            args.push("--honor-pack-keep".into());
+        }
+        for (opt, given) in [
+            ("window", &self.window),
+            ("window-memory", &self.window_memory),
+            ("depth", &self.depth),
+            ("threads", &self.threads),
+        ] {
+            if let Some(v) = given {
+                args.push(format!("--{opt}={v}"));
+            }
+        }
+        args.push(base.display().to_string());
+        args
+    }
+
+    /// The pack of what is reachable, filtered. `bitmap`: `Some(true)`
+    /// for `-b`, `Some(false)` for a bitmap by configuration.
+    fn write_reachable(
+        &self,
+        base: &std::path::Path,
+        all: bool,
+        keep: &[String],
+        bitmap: Option<bool>,
+        filters: &[String],
+    ) -> Result<Vec<String>, Die> {
+        let mut args = self.common(base);
+        for a in ["--keep-true-parents", "--non-empty", "--all", "--reflog", "--indexed-objects"] {
+            args.push(a.into());
+        }
+        if !all {
+            args.push("--unpacked".into());
+            args.push("--incremental".into());
+        }
+        for k in keep {
+            args.push(format!("--keep-pack={k}"));
+        }
+        match bitmap {
+            Some(true) => args.push("--write-bitmap-index".into()),
+            Some(false) => args.push("--write-bitmap-index-quiet".into()),
+            None => {}
+        }
+        for f in filters {
+            args.push(format!("--filter={f}"));
+        }
+        crate::housekeeping::run_pack_objects(self.ctx, self.setup, &args, "")
+    }
+
+    /// The pack of the objects of the packs named in `input` (the
+    /// `--stdin-packs` list) that the filtered pack left out.
+    fn write_left_out(&self, base: &std::path::Path, input: &str) -> Result<Vec<String>, Die> {
+        let mut args = self.common(base);
+        args.push("--stdin-packs".into());
+        crate::housekeeping::run_pack_objects(self.ctx, self.setup, &args, input)
     }
 }
 

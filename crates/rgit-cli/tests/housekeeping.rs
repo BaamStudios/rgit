@@ -1027,3 +1027,145 @@ fn pack_garbage_is_removed() {
     );
     assert_eq!(left, "fake3.keep\nfoo.keep\nfoo.pack\n");
 }
+
+/// `repack --filter`: the reachable objects the filter keeps go into one
+/// pack, the others (of the replaced packs) into a second one, here or at
+/// `--filter-to`.
+#[test]
+fn repack_filter_splits_the_pack() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let out = sh(
+        &fx,
+        r#"G="$GIT" R="$RGIT"
+"$R" -c repack.writeBitmaps=false repack -a -d -q --filter=blob:none
+ls .git/objects/pack/*.pack | wc -l
+commit=$("$G" rev-parse HEAD)
+blob=$("$G" rev-parse HEAD:a.txt)
+for p in .git/objects/pack/*.idx; do
+  ids=$("$G" show-index <$p | cut -d' ' -f2)
+  case "$ids" in *$commit*) echo commit-pack-has-blob=$(echo "$ids" | grep -c $blob || true);; esac
+  case "$ids" in *$blob*) echo blob-pack-only-blobs=$(echo "$ids" | while read o; do "$G" cat-file -t $o; done | sort -u | tr '\n' ' ');; esac
+done
+"$G" fsck --no-dangling 2>&1
+"$G" init -q --bare ../filtered.git
+"$R" -c repack.writeBitmaps=false repack -a -d -q --filter=blob:none --filter-to=../filtered.git/objects/pack/pack
+ls .git/objects/pack/*.pack | wc -l
+ls ../filtered.git/objects/pack/*.pack | wc -l
+"$G" cat-file -e $blob 2>/dev/null || echo blob-gone
+echo "$(cd ../filtered.git/objects && pwd)" >.git/objects/info/alternates
+"$G" cat-file -p $blob
+"#,
+    );
+    assert_eq!(
+        out,
+        "2\ncommit-pack-has-blob=0\nblob-pack-only-blobs=blob\n1\n1\nblob-gone\na 3\n"
+    );
+}
+
+/// The checks of `--filter-to`, `--drop-filtered` and `--dry-run`.
+#[test]
+fn repack_drop_filtered_errors_match_git() {
+    let mut fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    for args in [
+        &["repack", "--drop-filtered", "--dry-run", "-a"][..],
+        &["repack", "--dry-run", "-a"],
+        &[
+            "repack",
+            "--drop-filtered",
+            "--filter=blob:limit=1k",
+            "--filter-to=x",
+        ],
+        &["repack", "--drop-filtered", "--filter=blob:limit=1k"],
+        &[
+            "repack",
+            "--drop-filtered",
+            "--filter=blob:limit=1k",
+            "-a",
+            "-b",
+        ],
+        &["repack", "--drop-filtered", "--filter=blob:none", "-a"],
+        &["repack", "--drop-filtered", "--filter=blob:limit=1k", "-a"],
+        &["repack", "--filter-to=x", "-a", "-d"],
+        &["repack", "-a", "-d", "--filter=bogus"],
+    ] {
+        fx.compare(args)
+            .checks([
+                Check::ExitCode,
+                Check::Stdout,
+                Check::Stderr,
+                Check::Objects,
+            ])
+            .run();
+    }
+}
+
+/// `--drop-filtered` in a partial clone: the large blobs of the promisor
+/// packs are listed (`--dry-run`) and dropped; small and local ones stay;
+/// an index entry or an operation in progress stops it.
+#[test]
+fn repack_drop_filtered_drops_large_promisor_blobs() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let setup = r#"G="$GIT" R="$RGIT"
+"$G" config core.repositoryformatversion 1
+"$G" config extensions.partialclone origin
+"$G" config remote.origin.promisor true
+"$G" config remote.origin.url .
+pb() {
+  head -c $1 /dev/zero | tr '\0' $2 >content
+  oid=$("$G" hash-object -w content)
+  h=$(echo $oid | "$G" pack-objects .git/objects/pack/pack)
+  : >.git/objects/pack/pack-$h.promisor
+  rm .git/objects/$(echo $oid | cut -c1-2)/$(echo $oid | cut -c3-)
+  echo $oid
+}
+big=$(pb 3000 b); big2=$(pb 2000 c); small=$(pb 500 s)
+head -c 4000 /dev/zero | tr '\0' l >local; loc=$("$G" hash-object -w local)
+"#;
+    let out = sh(
+        &fx,
+        &format!(
+            r#"{setup}
+"$R" -c repack.writeBitmaps=false repack --drop-filtered --filter=blob:limit=1k --dry-run -a | sort >actual
+printf '%s\n' $big $big2 | sort >expect
+cmp expect actual && echo listed
+"$G" cat-file -e $big && echo still-there
+"$R" -c repack.writeBitmaps=false repack --drop-filtered --filter=blob:limit=1k -a -q
+"$G" cat-file --batch-all-objects --batch-check='%(objectname)' >present 2>/dev/null
+grep -c $big present || true
+grep -c $small present
+grep -c $loc present
+"$G" fsck --no-dangling >/dev/null 2>&1 && echo fsck-ok
+"#
+        ),
+    );
+    assert_eq!(out, "listed\nstill-there\n0\n1\n1\nfsck-ok\n");
+
+    let fx = repo();
+    let out = sh(
+        &fx,
+        &format!(
+            r#"{setup}
+head -c 3000 /dev/zero | tr '\0' b >tracked.bin
+"$G" add tracked.bin
+"$R" repack --drop-filtered --filter=blob:limit=1k --dry-run -a 2>&1 | sed "s/$big/OID/"
+"$G" reset -q
+: >.git/MERGE_HEAD
+"$R" repack --drop-filtered --filter=blob:limit=1k --dry-run -a 2>&1 || echo failed
+"#
+        ),
+    );
+    assert_eq!(
+        out,
+        "fatal: cannot drop 'tracked.bin' (OID): it is referenced by the current index\n\
+         fatal: --drop-filtered cannot be used while another operation (merge, rebase, am, cherry-pick, revert, or bisect) is in progress\nfailed\n"
+    );
+}
