@@ -175,7 +175,7 @@ impl State<'_, '_> {
         let mut err = std::io::stderr();
         for d in diags {
             if (d.level == Level::Hint) == hints {
-                let _ = err.write_all(d.render().as_bytes());
+                let _ = err.write_all(&rgit_bstr::to_bytes(&d.render()));
             }
         }
     }
@@ -191,7 +191,7 @@ impl State<'_, '_> {
     /// End the command with `fatal: msg`. Standard output is written
     /// afterwards: git buffers it and it reaches the terminal at exit.
     fn die(&mut self, msg: String) -> Die {
-        let _ = writeln!(std::io::stderr(), "fatal: {msg}");
+        crate::argv::errln(&format!("fatal: {msg}"));
         self.flush();
         Die::Exit(rgit_options::EXIT_FATAL)
     }
@@ -337,7 +337,7 @@ impl State<'_, '_> {
         let diags = self.resolver.take_diagnostics();
         self.print_diags(&diags, false);
         if let Some(reason) = reason {
-            let _ = writeln!(std::io::stderr(), "fatal: {reason}");
+            crate::argv::errln(&format!("fatal: {reason}"));
             self.print_diags(&diags, true);
             self.flush();
             return Err(Die::Exit(rgit_options::EXIT_FATAL));

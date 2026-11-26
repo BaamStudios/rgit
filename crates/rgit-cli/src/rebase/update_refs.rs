@@ -89,7 +89,7 @@ pub(crate) fn add_commands(repo: &Repo, todo: &mut todo::Todo, head_name: &str, 
 
 /// The records of the file.
 pub(crate) fn read(repo: &Repo) -> BTreeMap<String, Record> {
-    let text = std::fs::read_to_string(state_dir(repo).join(FILE)).unwrap_or_default();
+    let text = super::read_text(state_dir(repo).join(FILE)).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     let parse = |s: &str| {
         ObjectId::from_hex(repo.hash, s.trim().as_bytes())
@@ -144,7 +144,7 @@ fn names_in(text: &str) -> Vec<String> {
 /// Makes the file follow the `update-ref` commands of the done list and
 /// `todo`: removed refs are dropped, new ones recorded with their value.
 pub(crate) fn sync(repo: &Repo, todo: &todo::Todo) -> Result<(), Die> {
-    let done = std::fs::read_to_string(state_dir(repo).join("done")).unwrap_or_default();
+    let done = super::read_text(state_dir(repo).join("done")).unwrap_or_default();
     let mut wanted = names_in(&done);
     wanted.extend(
         todo.items()

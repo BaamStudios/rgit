@@ -123,7 +123,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     if fetch.get() {
-        println!("{}", msg::updating(name));
+        crate::argv::outln(&msg::updating(name));
         let code = update::fetch_one(ctx, &["fetch".to_owned(), name.to_owned()]);
         if code != 0 {
             return Err(Die::Error(msg::could_not_fetch_add(name), 1));

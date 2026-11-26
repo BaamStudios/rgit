@@ -119,7 +119,7 @@ fn commit_arg(r: &Resolver<'_>, name: &str) -> Result<ObjectId, Die> {
     let print_diags = |r: &Resolver<'_>| {
         let mut err = std::io::stderr().lock();
         for d in r.take_diagnostics() {
-            let _ = err.write_all(d.render().as_bytes());
+            let _ = err.write_all(&rgit_bstr::to_bytes(&d.render()));
         }
     };
     let oid = match r.resolve(name) {

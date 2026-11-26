@@ -121,7 +121,7 @@ pub fn run(ctx: &mut Context, argv: &[String], verbose: bool) -> CmdResult {
     }
     let mut code = 0;
     for name in &names {
-        println!("{}", msg::fetching(name));
+        crate::argv::outln(&msg::fetching(name));
         let mut argv: Vec<String> = ["fetch", "--append", "--no-auto-gc", "--no-write-commit-graph"]
             .map(String::from)
             .into();

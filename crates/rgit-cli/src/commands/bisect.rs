@@ -221,7 +221,7 @@ impl<'c> Bisect<'c> {
     /// answer but one starting with `n` or `N`.
     fn offer_start(&self) -> Result<bool, Die> {
         use std::io::{BufRead, IsTerminal};
-        let _ = writeln!(std::io::stderr().lock(), "{}", msg::NEED_START);
+        crate::argv::errln(msg::NEED_START);
         if !std::io::stdin().is_terminal() {
             return Ok(false);
         }

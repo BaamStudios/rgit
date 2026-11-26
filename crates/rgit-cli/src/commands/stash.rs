@@ -132,7 +132,8 @@ fn fix_save_usage(text: &str) -> String {
 /// Prints `text` to standard output now (children may write after it).
 fn say(text: &str) {
     let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{text}");
+    let _ = out.write_all(&rgit_bstr::to_bytes(text));
+    let _ = out.write_all(b"\n");
     let _ = out.flush();
 }
 
@@ -221,6 +222,10 @@ fn write_commit(
         encoding: encoding.as_deref(),
         message,
     };
+    // A branch name that is not UTF-8 makes the message one too.
+    if !new.conforms() {
+        eprintln!("{}", rgit_commit::messages::NOT_UTF8_WARNING);
+    }
     rgit_commit::create_commit(repo.odb(), &new).map_err(|e| Die::Fatal(e.to_string()))
 }
 

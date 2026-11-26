@@ -512,7 +512,7 @@ pub(crate) fn main(ctx: &mut Context, argv: &[String], annotate: bool) -> CmdRes
             Err(RangeError::Fatal(m)) => return Err(Die::Fatal(m)),
             Err(RangeError::Usage) => {
                 let usage = if annotate { msg::USAGE_ANNOTATE } else { msg::USAGE };
-                let _ = writeln!(std::io::stderr(), "usage: {}", usage[0]);
+                crate::argv::errln(&format!("usage: {}", usage[0]));
                 return Err(Die::Exit(rgit_options::EXIT_USAGE));
             }
         }

@@ -387,7 +387,7 @@ impl Plan {
                 }))
             }
             Kind::Inherit(from) => {
-                let b = BranchConfig::from_config(repo.config, from.as_bytes())
+                let b = BranchConfig::from_config(repo.config, &rgit_bstr::to_bytes(from))
                     .map_err(|e| Die::Fatal(e.to_string()))?;
                 let Some(remote) = b.remote else {
                     eprintln!("warning: {}", msg::inherit_no_remote(from));
@@ -398,11 +398,11 @@ impl Plan {
                     return Ok(None);
                 }
                 Ok(Some(Upstream {
-                    remote: remote.to_str_lossy().into_owned(),
+                    remote: rgit_bstr::from_vec(remote.into()),
                     merges: b
                         .merge
                         .iter()
-                        .map(|m| m.to_str_lossy().into_owned())
+                        .map(|m| rgit_bstr::from_bytes(m).into_owned())
                         .collect(),
                     local: false,
                 }))
@@ -462,9 +462,9 @@ impl Plan {
             })
             .collect();
         if shown.len() == 1 {
-            println!("{}", msg::set_up_to_track(branch, &shown[0], rebase));
+            crate::argv::outln(&msg::set_up_to_track(branch, &shown[0], rebase));
         } else {
-            println!("{}", msg::set_up_to_track_many(branch, &shown));
+            crate::argv::outln(&msg::set_up_to_track_many(branch, &shown));
         }
         Ok(())
     }
@@ -478,9 +478,12 @@ fn config_edit(path: &Path, key: &str, value: Option<&str>, add: bool) -> Result
     } else {
         ValuePattern::Any
     };
+    // Names that are not UTF-8 go into the file as their raw bytes.
+    let key = rgit_bstr::to_bytes(key);
+    let value = value.map(rgit_bstr::to_bytes);
     let req = SetRequest {
-        key: key.as_bytes(),
-        value: value.map(str::as_bytes),
+        key: &key,
+        value: value.as_deref(),
         pattern: &pattern,
         all: false,
         comment: None,
@@ -496,6 +499,19 @@ fn config_edit(path: &Path, key: &str, value: Option<&str>, add: bool) -> Result
             _ => Err(Die::Fatal(e.to_string())),
         },
     }
+}
+
+/// The configuration key `branch.<name>.<var>` as the bytes git uses: a
+/// branch name that is not UTF-8 (escaped by [`rgit_bstr`]) is spelled
+/// with its raw bytes in the section header.
+pub fn branch_key(name: &str, var: &str) -> Vec<u8> {
+    let mut key = b"branch.".to_vec();
+    key.extend_from_slice(&rgit_bstr::to_bytes(name));
+    if !var.is_empty() {
+        key.push(b'.');
+        key.extend_from_slice(var.as_bytes());
+    }
+    key
 }
 
 /// Result of [`guess_remote_branch`].

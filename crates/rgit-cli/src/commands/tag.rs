@@ -861,7 +861,7 @@ impl Create<'_> {
         }
         if let Some(old) = existing {
             if old != new {
-                println!("{}", msg::updated(self.name, &repo.abbrev(&old, repo.default_abbrev())));
+                crate::argv::outln(&msg::updated(self.name, &repo.abbrev(&old, repo.default_abbrev())));
             }
         }
         Ok(0)

@@ -292,7 +292,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let branch = head
         .as_deref()
         .and_then(|h| h.strip_prefix("refs/heads/"))
-        .map(|b| BranchConfig::from_config(&config, b.as_bytes()))
+        .map(|b| BranchConfig::from_config(&config, &rgit_bstr::to_bytes(b)))
         .transpose()
         .map_err(fatal)?;
     let remotes = Remotes::from_config(&config).map_err(fatal)?;
@@ -1120,8 +1120,8 @@ impl Push<'_> {
         let kind = |id: &ObjectId| objects.kind(id);
         let upstream = |branch: &str| {
             let short = branch.strip_prefix("refs/heads/")?;
-            let bc = BranchConfig::from_config(self.config, short.as_bytes()).ok()?;
-            bc.merge.first().map(|m| m.to_string())
+            let bc = BranchConfig::from_config(self.config, &rgit_bstr::to_bytes(short)).ok()?;
+            bc.merge.first().map(|m| rgit_bstr::from_bytes(m).into_owned())
         };
         let upstream_mode = PushDefault::from_config(self.config).ok() == Some(PushDefault::Upstream);
         let local = Local {
@@ -1567,16 +1567,16 @@ impl Push<'_> {
                 continue;
             };
             if self.flags.dry_run {
-                println!("{}", msg::would_set_upstream(branch, dst, &remote));
+                crate::argv::outln(&msg::would_set_upstream(branch, dst, &remote));
                 continue;
             }
             for (key, value) in [
-                (format!("branch.{branch}.remote"), remote.as_str()),
-                (format!("branch.{branch}.merge"), r.dst.as_str()),
+                (crate::tracking::branch_key(branch, "remote"), remote.as_str()),
+                (crate::tracking::branch_key(branch, "merge"), r.dst.as_str()),
             ] {
                 let req = SetRequest {
-                    key: key.as_bytes(),
-                    value: Some(value.as_bytes()),
+                    key: &key,
+                    value: Some(&rgit_bstr::to_bytes(value)),
                     pattern: &ValuePattern::Any,
                     all: false,
                     comment: None,
@@ -1584,7 +1584,9 @@ impl Push<'_> {
                 rgit_config::write::set_in_file(&path, &rgit_fs::LockOptions::default(), &req)
                     .map_err(fatal)?;
             }
-            println!("{}", msg::upstream_set(branch, &remote, prettify(&r.dst)));
+            if !self.flags.quiet {
+                crate::argv::outln(&msg::upstream_set(branch, &remote, prettify(&r.dst)));
+            }
         }
         Ok(())
     }

@@ -485,14 +485,16 @@ fn fatal(s: impl Into<String>) -> Die {
     Die::Fatal(s.into())
 }
 
+/// Bytes from the configuration or a ref name as a string; bytes that
+/// are not UTF-8 are escaped ([`rgit_bstr`]).
 fn lossy(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
+    rgit_bstr::from_bytes(b).into_owned()
 }
 
 /// The last value of `key`, `None` when unset (a value-less key is
 /// "true").
 fn config_value(repo: &Repo, key: &str) -> Option<String> {
-    let e = repo.config.get(key)?;
+    let e = repo.config.get(rgit_bstr::to_bytes(key))?;
     Some(e.value.as_ref().map_or_else(|| "true".to_owned(), |v| lossy(v)))
 }
 
@@ -833,7 +835,7 @@ fn rebase_fork_point(
         }
         _ => {
             let config = &repo.config;
-            let b = BranchConfig::from_config(config, branch.as_bytes()).ok()?;
+            let b = BranchConfig::from_config(config, &rgit_bstr::to_bytes(branch)).ok()?;
             let remotes = Remotes::from_config(config).ok()?;
             lossy(&rgit_remote::upstream_ref(&remotes, Some(&repo.setup.git_dir), Some(&b)).ok()?)
         }
@@ -949,7 +951,7 @@ fn no_candidates(
     let config = &repo.config;
     let b = match branch {
         Some(b) => Some(
-            BranchConfig::from_config(config, b.as_bytes()).map_err(|e| fatal(e.to_string()))?,
+            BranchConfig::from_config(config, &rgit_bstr::to_bytes(b)).map_err(|e| fatal(e.to_string()))?,
         ),
         None => None,
     };

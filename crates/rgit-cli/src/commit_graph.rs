@@ -66,7 +66,7 @@ pub fn object_dirs(objects_dir: &Path) -> Vec<PathBuf> {
 /// End the command after a fatal commit-graph error (git dies there too).
 pub fn die(msg: &str) -> ! {
     let _ = std::io::stdout().flush();
-    let _ = writeln!(std::io::stderr(), "fatal: {msg}");
+    crate::argv::errln(&format!("fatal: {msg}"));
     std::process::exit(128)
 }
 
@@ -248,7 +248,7 @@ pub fn write_reachable(
     if let Err(e) =
         rgit_commitgraph::write::write(&objects, &objects_dir, existing.as_ref(), &start, &opts)
     {
-        let _ = writeln!(std::io::stderr(), "error: {e}");
+        crate::argv::errln(&format!("error: {e}"));
     }
 }
 
