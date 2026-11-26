@@ -1,0 +1,17 @@
+[package]
+name = "rgit-notes"
+description = "Notes for rgit: notes trees with fan-out, combining notes, notes refs and their display"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rgit-hash = { path = "../rgit-hash" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+thiserror = "2"

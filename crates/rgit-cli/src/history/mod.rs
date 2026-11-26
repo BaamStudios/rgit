@@ -954,11 +954,12 @@ pub fn walk_formatted(
         user,
         decorate: false,
         deco_colors: None,
-        notes: if formats.is_empty() {
+        notes: if formats.is_empty() || opts.notes.show == Some(false) {
             None
         } else {
-            notes_tree(&repo)
+            Some(load_notes(&repo, &opts.notes)?)
         },
+        notes_shown: false,
         sources: None,
         encoding: recode::output_encoding(repo.config),
         out: Vec::new(),
@@ -1044,7 +1045,10 @@ struct Printer<'r, 'a> {
     decorate: bool,
     /// Colours of decorations in built-in formats.
     deco_colors: Option<Colors>,
-    notes: Option<ObjectId>,
+    /// The notes for `%N` and the built-in formats.
+    notes: Option<crate::notes::Display>,
+    /// The built-in formats show notes.
+    notes_shown: bool,
     /// `%S`: the revision each commit was reached from (log only).
     sources: Option<HashMap<ObjectId, String>>,
     /// `i18n.logOutputEncoding` (else `i18n.commitEncoding`, UTF-8).
@@ -1110,8 +1114,7 @@ impl Lookup for FormatLookup<'_, '_, '_> {
     }
 
     fn notes(&self, id: &ObjectId) -> Option<Vec<u8>> {
-        let tree = self.p.notes?;
-        note(self.p.repo, &tree, &id.to_hex())
+        self.p.notes.as_ref()?.raw(self.p.repo.objects.odb(), id)
     }
 
     fn signature(&self, id: &ObjectId, commit: &rgit_object::Commit) -> std::rc::Rc<Check> {
@@ -1119,45 +1122,13 @@ impl Lookup for FormatLookup<'_, '_, '_> {
     }
 }
 
-/// The note of `hex` in the notes tree `tree` (with fan-out directories).
-fn note(repo: &Repo<'_>, tree: &ObjectId, hex: &str) -> Option<Vec<u8>> {
-    let (kind, data) = repo.objects.read(tree).ok()??;
-    if kind != ObjectKind::Tree {
-        return None;
-    }
-    for entry in TreeIter::new(repo.objects.hash_kind(), &data) {
-        let entry = entry.ok()?;
-        let name = std::str::from_utf8(entry.name).ok()?;
-        if name == hex {
-            return match repo.objects.read(&entry.oid).ok()?? {
-                (ObjectKind::Blob, blob) => Some(blob),
-                _ => None,
-            };
-        }
-        if entry.mode_bits & 0o170000 == 0o040000
-            && name.len() == 2
-            && let Some(rest) = hex.strip_prefix(name)
-            && let Some(found) = note(repo, &entry.oid, rest)
-        {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// The tree of the notes ref (`GIT_NOTES_REF`, `core.notesRef`, else
-/// `refs/notes/commits`).
-fn notes_tree(repo: &Repo<'_>) -> Option<ObjectId> {
-    let name = std::env::var("GIT_NOTES_REF").ok().or_else(|| {
-        repo.config
-            .string("core.notesRef")
-            .ok()
-            .flatten()
-            .map(|v| v.to_string())
-    });
-    let name = name.unwrap_or_else(|| "refs/notes/commits".to_string());
-    let id = repo.refs.resolve(&name).ok()??.oid?;
-    repo.tree_of(&id)
+/// The notes refs `opts` select (see [`crate::notes::Display`]).
+fn load_notes(
+    repo: &Repo<'_>,
+    opts: &crate::notes::DisplayOptions,
+) -> Result<crate::notes::Display, Die> {
+    let store = crate::refs_support::ref_store(repo.setup, repo.config);
+    crate::notes::Display::load(opts, repo.config, &store, repo.objects.odb())
 }
 
 impl Printer<'_, '_> {
@@ -1444,7 +1415,24 @@ impl Printer<'_, '_> {
                     _ => Vec::new(),
                 };
                 let signature = self.signature_block(&id, &commit, &raw);
+                let mut notes = match &self.notes {
+                    Some(n) if self.notes_shown => n.formatted(self.repo.objects.odb(), &id),
+                    _ => Vec::new(),
+                };
+                if !notes.is_empty() && matches!(self.style.pretty, Pretty::Email | Pretty::Mboxrd)
+                {
+                    // In mails the notes follow a `---` line; git writes
+                    // it for the first entry and when diffs are shown,
+                    // else an empty line.
+                    let sep: &[u8] = if self.first || self.diff.is_some() {
+                        b"---\n"
+                    } else {
+                        b"\n"
+                    };
+                    notes.splice(0..0, sep.iter().copied());
+                }
                 let entry = Entry {
+                    notes: &notes,
                     name: &commit_name,
                     shown_parents: &shown,
                     merge_parents: &merge,
@@ -2825,7 +2813,7 @@ fn user_settings(
         colors,
         trailers,
         columns,
-        notes: opts.notes && cmd == Command::Log,
+        notes: opts.notes.show != Some(false) && cmd == Command::Log,
         source: cmd == Command::Log,
     })
 }
@@ -3025,7 +3013,19 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
     } else {
         None
     };
-    let notes = if is_user { notes_tree(repo) } else { None };
+    if cmd == Command::RevList && opts.notes.show == Some(true) {
+        return Err(Die::Fatal(
+            crate::messages::notes::REV_LIST_NOTES.to_owned(),
+        ));
+    }
+    let notes_shown =
+        cmd == Command::Log && !is_user && opts.notes.shown(opts.pretty_arg.is_none());
+    let notes = if (is_user && cmd == Command::Log && opts.notes.show != Some(false)) || notes_shown
+    {
+        Some(load_notes(repo, &opts.notes)?)
+    } else {
+        None
+    };
     let show_signature = cmd == Command::Log
         && opts.show_signature.unwrap_or_else(|| {
             repo.config
@@ -3070,6 +3070,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         decorate,
         deco_colors,
         notes,
+        notes_shown,
         sources: None,
         encoding: opts
             .encoding

@@ -91,6 +91,11 @@ impl Objects {
     }
 
     /// Whether replace refs are in use (see [`Objects::use_replace_refs`]).
+    /// The object database.
+    pub fn odb(&self) -> &ObjectDatabase {
+        &self.odb
+    }
+
     pub fn replacing(&self) -> bool {
         self.replacing
     }

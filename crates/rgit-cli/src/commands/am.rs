@@ -1137,6 +1137,14 @@ impl<'c> Am<'c> {
         if self.rebasing
             && let Ok(list) = std::fs::read(self.path("rewritten"))
         {
+            if !list.is_empty() {
+                crate::notes::rewrite_list(
+                    self.ctx,
+                    "rebase",
+                    &list,
+                    &crate::messages::notes::added_by("rebase"),
+                )?;
+            }
             let repo = self.repo()?;
             let hooks = crate::hooks::for_repo(self.ctx, &repo.setup, &repo.config)?;
             if !list.is_empty() && hooks.exists("post-rewrite") {

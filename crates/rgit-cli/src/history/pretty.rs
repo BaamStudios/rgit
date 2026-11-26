@@ -250,6 +250,9 @@ pub struct Entry<'a> {
     pub as_mail: bool,
     /// The full commit id (the `From <id>` line of a mail).
     pub full_id: String,
+    /// The notes shown after the message (each block starts with an
+    /// empty line), may be empty.
+    pub notes: &'a [u8],
 }
 
 /// Settings shared by all entries.
@@ -302,6 +305,7 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
             }
             None => out.extend_from_slice(&subject(&lines)),
         }
+        out.extend_from_slice(e.notes);
         out.push(if style.zero { 0 } else { b'\n' });
         return;
     }
@@ -402,19 +406,19 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
     } else {
         &lines
     };
-    if shown.is_empty() {
-        return;
-    }
-    out.push(b'\n');
-    for line in shown {
-        out.extend_from_slice(b"    ");
-        if style.pretty == Pretty::Raw {
-            out.extend_from_slice(line);
-        } else {
-            push_expanded(out, line, style.tab_width.unwrap_or(8));
-        }
+    if !shown.is_empty() {
         out.push(b'\n');
+        for line in shown {
+            out.extend_from_slice(b"    ");
+            if style.pretty == Pretty::Raw {
+                out.extend_from_slice(line);
+            } else {
+                push_expanded(out, line, style.tab_width.unwrap_or(8));
+            }
+            out.push(b'\n');
+        }
     }
+    out.extend_from_slice(e.notes);
 }
 
 /// The `email` and `mboxrd` formats: for `log` a mail as `format-patch`
@@ -475,6 +479,8 @@ fn write_email(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>) {
     } else {
         out.extend_from_slice(&body);
     }
+    // The notes come with their separator (see `Printer::commit`).
+    out.extend_from_slice(e.notes);
 }
 
 #[cfg(test)]

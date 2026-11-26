@@ -2107,6 +2107,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     crate::hooks::run(&git_hooks, "post-commit", &hook_opts(&repo.index_path(), &[]))?;
     if let (Some(old), false) = (head.filter(|_| args.amend), args.no_post_rewrite) {
+        crate::notes::rewrite_after(
+            ctx,
+            "amend",
+            &[(old, oid)],
+            &crate::messages::notes::added_by("commit --amend"),
+            Some(&author),
+        )?;
         // githooks(5): `<old> <new>` lines on standard input, argument
         // `amend`.
         let input = format!("{} {}\n", old.to_hex(), oid.to_hex());
