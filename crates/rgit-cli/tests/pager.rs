@@ -22,8 +22,8 @@ fn openpty() -> (OwnedFd, OwnedFd) {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
         )
     };
     assert_eq!(r, 0, "openpty failed");
