@@ -337,6 +337,12 @@ impl MultiPackIndex {
             .is_some_and(|c| c.len as u64 == u64::from(self.num_objects) * 4)
     }
 
+    /// Whether a `RIDX` chunk is present but not of the size the object
+    /// count needs.
+    pub fn reverse_index_wrong_size(&self) -> bool {
+        self.ridx.is_some() && !self.has_reverse_index()
+    }
+
     /// Whether the bitmapped-packs chunk is present.
     pub fn has_bitmapped_packs(&self) -> bool {
         self.btmp.is_some()

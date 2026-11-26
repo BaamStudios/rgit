@@ -207,7 +207,17 @@ pub fn remove_pack_garbage(pack_dir: &Path) {
 /// corruption, so it is dropped (gitformat-pack(5), "multi-pack-index").
 pub fn remove_multi_pack_index(pack_dir: &Path) {
     let _ = std::fs::remove_file(pack_dir.join("multi-pack-index"));
-    let _ = std::fs::remove_dir_all(pack_dir.join("multi-pack-index.d"));
+    // The chain's directory stays, emptied, as with git.
+    if let Ok(rd) = std::fs::read_dir(pack_dir.join("multi-pack-index.d")) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let _ = if p.is_dir() {
+                std::fs::remove_dir_all(&p)
+            } else {
+                std::fs::remove_file(&p)
+            };
+        }
+    }
     if let Ok(rd) = std::fs::read_dir(pack_dir) {
         for e in rd.flatten() {
             let name = e.file_name();
@@ -313,7 +323,9 @@ pub fn write_pack(
             .map_err(|e| Die::Fatal(e.to_string()))?;
         out.flush().map_err(|e| io_fatal(&tmp_path, e))?;
     }
-    let ip_opts = ip::Options::new(hash);
+    let mut ip_opts = ip::Options::new(hash);
+    // Large blobs are hashed while streaming, as git does (GIT_ALLOC_LIMIT).
+    ip_opts.big_file_threshold = opts.write.big_file_threshold;
     let indexed = ip::index_pack(Input::File(&tmp_path), &ip_opts, None, None, None)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     let checksum = indexed.checksum();

@@ -185,6 +185,12 @@ pub const REPACK_FILTER_TO_NEEDS_FILTER: &str =
 pub fn repack_drop_in_index(path: &str, oid: &str) -> String {
     format!("cannot drop '{path}' ({oid}): it is referenced by the current index")
 }
+pub fn midx_bad_split_factor(v: i64) -> String {
+    format!("invalid value for --midx-split-factor: {v}")
+}
+pub fn midx_bad_layer_threshold(v: i64) -> String {
+    format!("invalid value for --midx-new-layer-threshold: {v}")
+}
 pub const REPACK_PRECIOUS: &str = "cannot delete packs in a precious-objects repo";
 pub const REPACK_KEEP_AND_CRUFT: &str =
     "options '-k/--keep-unreachable' and '--cruft' cannot be used together";

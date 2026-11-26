@@ -176,3 +176,10 @@ pub fn total_reused(
          pack-reused {pack_reused} (from 1)"
     )
 }
+
+pub fn invalid_name_hash_version(v: i32) -> String {
+    format!("invalid --name-hash-version option: {v}")
+}
+
+pub const BITMAP_NEEDS_NAME_HASH_V1: &str =
+    "currently, --write-bitmap-index requires --name-hash-version=1";
