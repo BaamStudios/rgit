@@ -417,6 +417,25 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 &root_display(&repo),
             ))
         })?;
+        if path.ends_with(b"/") && crate::sparse_index::sparse_dirs().contains(&path) {
+            if !state.quiet {
+                eprintln!("{}", msg::sparse_directory(&lossy(&path)));
+            }
+            state.errors = true;
+            continue;
+        }
+        crate::sparse_index::expand_for_path(&path);
+        if !ignore_skip.get()
+            && index
+                .get(&path, Stage::MERGED)
+                .is_some_and(|e| e.flags.skip_worktree)
+        {
+            if !state.quiet {
+                eprintln!("{}", msg::skip_worktree_enabled(&lossy(&path)));
+            }
+            state.errors = true;
+            continue;
+        }
         state.checkout_path(&mut index, &path)?;
     }
     if all.get() {

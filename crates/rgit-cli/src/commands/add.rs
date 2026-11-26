@@ -30,7 +30,7 @@
 //!
 //! `-p`, `-i` and `-e` are in `crate::interactive`.
 //!
-//! Not done yet: `--refresh`, untracked nested repositories.
+//! Not done yet: untracked nested repositories.
 
 use std::path::{Path, PathBuf};
 
@@ -361,6 +361,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let ignore_errors = Cell::new(-1);
     let ignore_missing = Cell::new(false);
     let sparse = Cell::new(false);
+    let refresh_only = Cell::new(false);
     let chmod: RefCell<Option<String>> = RefCell::new(None);
     let from_file: RefCell<Option<String>> = RefCell::new(None);
     let file_nul = Cell::new(false);
@@ -393,6 +394,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 Ok(())
             })
             .noarg(),
+            Opt::flag(None, "refresh", &refresh_only, msg::HELP_REFRESH),
             Opt::bool(None, "ignore-errors", &ignore_errors, msg::HELP_IGNORE_ERRORS),
             Opt::flag(None, "ignore-missing", &ignore_missing, msg::HELP_IGNORE_MISSING),
             Opt::flag(None, "sparse", &sparse, msg::HELP_SPARSE),
@@ -534,6 +536,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let attr_tree = PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
     let repo = repo;
     let (mut index, index_mtime) = repo.read_index()?;
+    if refresh_only.get() {
+        return refresh(&repo, &advisor, &mut index, index_mtime, &pathspec, sparse.get());
+    }
     let attr_index = attr_tree.is_some().then(|| index.clone());
     let attrs = attr_tree
         .zip(attr_index.as_ref())
@@ -1108,4 +1113,78 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .map_err(|e| Die::Fatal(e.to_string()))?;
     }
     Ok(code)
+}
+
+/// `add --refresh`: refresh the stat data of the entries matching
+/// `pathspec` without adding anything; a pathspec matching no entry is an
+/// error, one matching only skip-worktree entries is refused (unless
+/// `allow_sparse`, `--sparse`).
+fn refresh(
+    repo: &Repo,
+    advisor: &rgit_messages::Advisor,
+    index: &mut Index,
+    index_mtime: Option<rgit_index::Time>,
+    pathspec: &Pathspec,
+    allow_sparse: bool,
+) -> CmdResult {
+    let checker = repo.checker(index_mtime)?;
+    let mut seen = vec![false; pathspec.items().len()];
+    let mut sparse_seen = vec![false; seen.len()];
+    let mut changed = false;
+    for pos in 0..index.len() {
+        let e = &index.entries()[pos];
+        let mut one = vec![false; seen.len()];
+        if pathspec.match_path_seen(e.path(), &mut one).is_none() {
+            continue;
+        }
+        let skipped = e.flags.skip_worktree && e.stage() == Stage::MERGED && !allow_sparse;
+        let target = if skipped { &mut sparse_seen } else { &mut seen };
+        for (s, o) in target.iter_mut().zip(one) {
+            *s |= o;
+        }
+        if skipped
+            || e.stage() != Stage::MERGED
+            || e.flags.skip_worktree
+            || e.flags.assume_valid
+            || e.mode.is_gitlink()
+        {
+            continue;
+        }
+        if let Ok(Status::StatOnly) = checker.check(e) {
+            if let Ok(Some(meta)) = checker.lstat(e.path()) {
+                if let Some(entry) = index.entry_mut(pos) {
+                    checker.refresh(entry, &meta);
+                    changed = true;
+                }
+            }
+        }
+    }
+    let any_seen: Vec<bool> = seen.iter().zip(&sparse_seen).map(|(a, b)| *a || *b).collect();
+    if let Some(item) = pathspec.unmatched(&any_seen).next() {
+        return Err(Die::Fatal(rgit_pathspec::messages::did_not_match_any_files(
+            item.original(),
+        )));
+    }
+    let refused: Vec<Vec<u8>> = pathspec
+        .items()
+        .iter()
+        .zip(seen.iter().zip(&sparse_seen))
+        .filter(|(_, (dense, sparse))| **sparse && !**dense)
+        .map(|(item, _)| item.original().to_vec())
+        .collect();
+    if !refused.is_empty() {
+        crate::sparse::report_outside(advisor, &refused)?;
+        return Ok(1);
+    }
+    if changed {
+        if let Some(reference) = index_mtime {
+            let _ = smudge_racy_entries(index, reference, &checker);
+        }
+        let path = repo.setup.cwd.join(repo.index_path());
+        let opts = crate::index_config::write_options(&repo.config, index)?;
+        index
+            .write_file(&path, &repo.index_lock_options(), &opts)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
+    }
+    Ok(0)
 }

@@ -52,6 +52,7 @@ pub fn remove(path: &str) -> String {
 pub const HELP_INTENT_TO_ADD: &str = "record only the fact that the path will be added later";
 pub const HELP_IGNORE_ERRORS: &str = "just skip files which cannot be added because of errors";
 pub const HELP_IGNORE_MISSING: &str = "check if - even missing - files are ignored in dry run";
+pub const HELP_REFRESH: &str = "don't add, only refresh the index";
 pub const HELP_SPARSE: &str = "allow updating entries outside of the sparse-checkout cone";
 pub const HELP_CHMOD: &str = "override the executable bit of the listed files";
 pub const HELP_PATHSPEC_FROM_FILE: &str = "read pathspec from file";

@@ -75,9 +75,15 @@ impl Index {
     ) -> Result<Index, Error> {
         let path = path.as_ref();
         match FileData::open(path) {
-            Ok(data) => crate::read::parse_split(data.as_slice(), kind, opts, &mut |id| {
-                load_shared(path, git_dir, id)
-            }),
+            Ok(data) => {
+                let mut index = crate::read::parse_split(data.as_slice(), kind, opts, &mut |id| {
+                    load_shared(path, git_dir, id)
+                })?;
+                if !opts.keep_sparse && index.is_sparse_index() {
+                    crate::sparse::expand_with_reader(path, &mut index)?;
+                }
+                Ok(index)
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Index::new(kind)),
             Err(source) => Err(Error::Io {
                 path: path.to_owned(),
@@ -96,8 +102,10 @@ impl Index {
         opts: &WriteOptions,
     ) -> Result<(), WriteError> {
         let path = path.as_ref();
+        let transformed = crate::sparse::transform_for_write(path, self);
+        let index = transformed.as_ref().unwrap_or(self);
         let mut file = LockFile::acquire(path, lock)?;
-        file.write_all(&self.file_bytes(path, lock, opts))?;
+        file.write_all(&index.file_bytes(path, lock, opts))?;
         file.commit()?;
         notify_written(path);
         Ok(())
@@ -108,7 +116,9 @@ impl Index {
     /// operation.
     pub fn write_locked(&self, file: &mut LockFile, opts: &WriteOptions) -> io::Result<()> {
         let target = file.target().to_path_buf();
-        let bytes = self.file_bytes(&target, &LockOptions::default(), opts);
+        let transformed = crate::sparse::transform_for_write(&target, self);
+        let index = transformed.as_ref().unwrap_or(self);
+        let bytes = index.file_bytes(&target, &LockOptions::default(), opts);
         file.write_all(&bytes)
     }
 

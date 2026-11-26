@@ -93,7 +93,7 @@ advice_table! {
     SequencerInUse => "sequencerInUse", // sequencer
     SetUpstreamFailure => "setUpstreamFailure", // tracking
     SkippedCherryPicks => "skippedCherryPicks", // rebase
-    SparseIndexExpanded => "sparseIndexExpanded", // not emitted yet
+    SparseIndexExpanded => "sparseIndexExpanded", // sparse index
     StatusAheadBehind => "statusAheadBehind", // not emitted yet
     StatusHints => "statusHints", // commit, status, switch_branch
     StatusUoption => "statusUoption", // status

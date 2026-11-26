@@ -288,10 +288,8 @@ fn extensions() {
     let null = parse(&append_ext(&bytes, kind, b"link", &[0; 20]), kind).unwrap();
     assert!(null.shared_index().is_some_and(|id| id.is_null()));
     assert_eq!(null.entries(), sample(kind).entries());
-    assert!(matches!(
-        parse(&append_ext(&bytes, kind, b"sdir", b""), kind),
-        Err(Error::SparseIndex)
-    ));
+    // A sparse index (here without sparse directory entries) reads.
+    assert!(parse(&append_ext(&bytes, kind, b"sdir", b""), kind).is_ok());
 
     // Optional extension larger than the file: ignored like git does.
     let mut b = body(&bytes, kind);

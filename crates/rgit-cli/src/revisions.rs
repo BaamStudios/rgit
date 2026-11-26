@@ -524,7 +524,9 @@ impl IndexLookup for IndexFile {
             3 => Stage::THEIRS,
             _ => Stage::MERGED,
         };
-        index.as_ref()?.get(path, stage).map(|e| e.id)
+        let index = index.as_ref()?;
+        crate::sparse_index::note_lookup(index, path);
+        index.get(path, stage).map(|e| e.id)
     }
 }
 
