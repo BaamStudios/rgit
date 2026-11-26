@@ -18,6 +18,7 @@ use crate::cache_tree::repair_cache_tree;
 use crate::checkout::{self, Filter, join, lossy};
 use crate::messages as msg;
 use crate::objects::{Objects, read_blob, tree_entries};
+use crate::parallel::ParallelCheckout;
 use crate::path::{PathOptions, verify_checkout_path};
 use crate::submodule::{Move, Submodules};
 
@@ -304,6 +305,7 @@ pub struct Plan {
     /// Submodules to move ([`Options::submodules`]).
     moves: Vec<Move>,
     warnings: SparseWarnings,
+    collisions: bool,
 }
 
 /// What [`Plan::apply`] did.
@@ -317,6 +319,10 @@ pub struct Applied {
     pub errors: Vec<String>,
     /// Paths left despite the sparse patterns (see [`Options::sparse`]).
     pub sparse_warnings: SparseWarnings,
+    /// With [`Plan::detect_collisions`]: entries whose file already existed
+    /// when they were written (another entry wrote the same file, as on a
+    /// case-insensitive file system), in index order.
+    pub collided: Vec<Vec<u8>>,
 }
 
 impl Plan {
@@ -333,6 +339,15 @@ impl Plan {
     /// The merged index, for callers that do not update the work tree.
     pub fn into_index(self) -> Index {
         self.index
+    }
+
+    /// Treats a file found where an entry is about to be written as a
+    /// collision ([`Applied::collided`]): for an initial checkout into an
+    /// empty work tree (`clone`), where nothing can be there before.
+    #[must_use]
+    pub fn detect_collisions(mut self) -> Plan {
+        self.collisions = true;
+        self
     }
 
     /// Paths whose work tree files will be written, in index order.
@@ -421,6 +436,7 @@ impl Plan {
             update,
             moves: _,
             warnings,
+            collisions,
         } = self;
         let mut meter = progress.then(|| {
             rgit_progress::Progress::start_delayed(
@@ -454,13 +470,22 @@ impl Plan {
             .collect();
         odb.prefetch(&wanted);
         let mut delayed = 0u64;
+        let mut collided = Vec::new();
+        let mut parallel = ParallelCheckout::new(filter.parallel_config(), wt.root, odb)
+            .detect_existing(collisions);
         for path in &update {
             tick(&mut meter);
             let Ok(pos) = index.position(path, Stage::MERGED) else {
                 continue;
             };
             let entry = index.entries()[pos].clone();
+            let existed = collisions
+                && !entry.mode.is_gitlink()
+                && fs::symlink_metadata(join(wt.root, path)).is_ok();
             if let Some(res) = checkout::stream_entry(odb, filter, wt.root, path, &entry) {
+                if existed {
+                    collided.push(pos);
+                }
                 match res {
                     Ok(meta) => {
                         if let Some(e) = index.entry_mut(pos) {
@@ -470,6 +495,19 @@ impl Plan {
                     Err(e) => errors.push(e.to_string()),
                 }
                 continue;
+            }
+            if parallel.enabled() {
+                match parallel.enqueue(pos, path, &entry, filter) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => {
+                        errors.push(e.to_string());
+                        continue;
+                    }
+                }
+            }
+            if existed {
+                collided.push(pos);
             }
             let data = if entry.mode.is_gitlink() {
                 Vec::new()
@@ -485,8 +523,11 @@ impl Plan {
                         }
                     }
                     Ok(d) => d,
-                    Err(e) => {
-                        errors.push(e.to_string());
+                    Err(_) => {
+                        errors.push(msg::unable_to_read_sha1_of(
+                            &lossy(path),
+                            &entry.id.to_hex(),
+                        ));
                         continue;
                     }
                 }
@@ -501,6 +542,24 @@ impl Plan {
                 Err(e) => errors.push(e.to_string()),
             }
         }
+        for o in parallel.run() {
+            match o.result {
+                Ok(meta) => {
+                    if let Some(e) = index.entry_mut(o.key) {
+                        e.stat = stat_from_metadata(&meta);
+                    }
+                }
+                Err(e) => errors.push(e.to_string()),
+            }
+            if o.collided {
+                collided.push(o.key);
+            }
+        }
+        collided.sort_unstable();
+        let collided = collided
+            .into_iter()
+            .map(|pos| index.entries()[pos].path().to_vec())
+            .collect();
         // Like git, the work tree meter ends before the filters deliver
         // the delayed paths.
         if let Some(m) = meter {
@@ -546,6 +605,7 @@ impl Plan {
             index,
             errors,
             sparse_warnings: warnings,
+            collided,
         }
     }
 }
@@ -666,6 +726,7 @@ pub fn plan(
         update: u.update,
         moves: u.moves,
         warnings: u.warnings,
+        collisions: false,
     })
 }
 
@@ -717,6 +778,7 @@ pub fn reapply_sparse(
         update: u.update,
         moves: u.moves,
         warnings: u.warnings,
+        collisions: false,
     })
 }
 
@@ -916,6 +978,7 @@ fn three_way(
         update: u.update,
         moves: u.moves,
         warnings: u.warnings,
+        collisions: false,
     })
 }
 

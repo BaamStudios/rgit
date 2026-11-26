@@ -32,6 +32,12 @@ pub trait Objects {
     fn prefetch(&self, ids: &[ObjectId]) {
         let _ = ids;
     }
+
+    /// The same object store, when it can be shared between threads
+    /// (parallel checkout). The default says no.
+    fn as_sync(&self) -> Option<&(dyn Objects + Sync)> {
+        None
+    }
 }
 
 impl Objects for ObjectDatabase {
@@ -58,6 +64,10 @@ impl Objects for ObjectDatabase {
 
     fn prefetch(&self, ids: &[ObjectId]) {
         ObjectDatabase::prefetch(self, ids);
+    }
+
+    fn as_sync(&self) -> Option<&(dyn Objects + Sync)> {
+        Some(self)
     }
 }
 
