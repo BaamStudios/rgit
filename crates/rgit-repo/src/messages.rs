@@ -188,9 +188,3 @@ pub(crate) fn cannot_mkdir(path: impl Display, reason: impl Display) -> String {
 pub(crate) fn cannot_write(path: impl Display, reason: impl Display) -> String {
     format!("unable to write '{path}': {reason}")
 }
-
-/// rgit wording (git creates such repositories): the new repository would
-/// need a format rgit cannot handle yet.
-pub(crate) fn init_unsupported(what: impl Display) -> String {
-    format!("cannot create a repository with {what}, which rgit does not support yet")
-}

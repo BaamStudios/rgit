@@ -171,6 +171,21 @@ deepen-since deepen-not agent={}",
     assert_eq!(sent, String::from_utf8(expect).unwrap());
 }
 
+/// A server with another hash algorithm: nothing is sent, and the message
+/// is the one of the v0/v1 protocol (v2 names both algorithms).
+#[test]
+fn other_object_format() {
+    let mut a = args(&[id(1)]);
+    a.local_format = Some(HashKind::Sha256);
+    let (r, pack, sent) = run(advertisement(""), false, &a, vec![]);
+    assert_eq!(
+        r.unwrap_err().to_string(),
+        crate::messages::OBJECT_FORMAT_NOT_SUPPORTED
+    );
+    assert!(pack.is_empty());
+    assert_eq!(sent, "");
+}
+
 #[test]
 fn stateful_batches_are_pipelined() {
     let haves: Vec<ObjectId> = (10..50).map(id).collect();

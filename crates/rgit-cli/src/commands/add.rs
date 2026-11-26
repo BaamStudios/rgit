@@ -790,6 +790,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     n.flags = e.flags;
                     updates.push(n);
                 }
+            } else if repository::submodule_of_other_hash(&full, repo.hash) {
+                report_failure(e.path(), msg::DIFFERENT_HASH);
+                failed = true;
+                if !ignore_errors {
+                    return Err(Die::Fatal(msg::UPDATING_FAILED.to_string()));
+                }
             }
             continue;
         }
@@ -862,7 +868,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             shown.push(b'/');
             let full = os_path(&root, path);
             let Some(head) = repository::submodule_head(&full, repo.hash) else {
-                report_failure(&shown, &msg::no_commit_checked_out(&lossy(&shown)));
+                if repository::submodule_of_other_hash(&full, repo.hash) {
+                    report_failure(&shown, msg::DIFFERENT_HASH);
+                } else {
+                    report_failure(&shown, &msg::no_commit_checked_out(&lossy(&shown)));
+                }
                 add_failed = true;
                 if !ignore_errors {
                     return Err(Die::Fatal(msg::ADDING_FAILED.to_string()));

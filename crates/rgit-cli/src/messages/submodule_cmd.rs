@@ -217,7 +217,6 @@ pub fn in_index_not_submodule(path: &str) -> String {
 pub fn no_commit_checked_out(path: &str) -> String {
     format!("'{path}' does not have a commit checked out")
 }
-pub const DIFFERENT_HASH: &str = "cannot add a submodule of a different hash algorithm";
 pub fn adding_existing(path: &str) -> String {
     format!("Adding existing repo at '{path}' to the index")
 }

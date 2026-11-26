@@ -86,13 +86,9 @@ pub fn read_advertisement<R: Read>(
         let (refpart, caps) = split_ref_line(&line);
         if let Some(caps) = caps {
             if first {
-                if let Some(fmt) = caps.object_format() {
-                    if fmt != hash.name() {
-                        return Err(Error::MismatchedAlgorithms {
-                            client: hash.name(),
-                            server: HashKind::from_name(fmt).map_or("unknown", HashKind::name),
-                        });
-                    }
+                // A server that does not say uses SHA-1.
+                if caps.object_format().unwrap_or(HashKind::Sha1.name()) != hash.name() {
+                    return Err(Error::ReceiverHashNotSupported);
                 }
                 adv.caps = caps;
             }
@@ -384,6 +380,32 @@ mod tests {
         );
         assert_eq!(caps[3], "object-format=sha1");
         assert!(caps[4].starts_with("agent="));
+    }
+
+    /// The receiving end uses another hash algorithm: git's message, for a
+    /// server that names its format and for one that does not (SHA-1).
+    #[test]
+    fn other_hash_algorithm() {
+        let message = "the receiving end does not support this repository's hash algorithm";
+        let zero64 = "0".repeat(64);
+        let sha256 = format!("{zero64} capabilities^{{}}\0report-status object-format=sha256");
+        let sha1 = format!("{A} refs/heads/main\0report-status object-format=sha1");
+        let unnamed = format!("{A} refs/heads/main\0report-status");
+        for (line, local) in [
+            (&sha256, HashKind::Sha1),
+            (&sha1, HashKind::Sha256),
+            (&unnamed, HashKind::Sha256),
+        ] {
+            let data = pkts(&[line.as_bytes(), b""]);
+            let mut r = Reader::new(&data[..], "push");
+            let e = read_advertisement(&mut r, local).unwrap_err();
+            assert_eq!(e.to_string(), message);
+        }
+        let data = pkts(&[sha256.as_bytes(), b""]);
+        let mut r = Reader::new(&data[..], "push");
+        let adv = read_advertisement(&mut r, HashKind::Sha256).unwrap();
+        let caps = request_capabilities(&adv.caps, &Request::default());
+        assert_eq!(caps[1], "object-format=sha256");
     }
 
     #[test]

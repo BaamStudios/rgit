@@ -140,6 +140,76 @@ jobs:
             conformance/results/**/*.stderr
           if-no-files-found: warn
 
+  # The whole suite once more with GIT_TEST_DEFAULT_HASH=sha256 (#12): every
+  # repository the scripts create is a SHA-256 repository. The regression
+  # gate compares with the suite's baseline.sha256.txt; as long as
+  # rgit-conformance has none, `--check` reports that and the job only shows
+  # the results.
+  conformance-sha256:
+    name: Conformance, SHA-256 (fallback + strict)
+    needs: reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out rgit-conformance
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.reference.outputs.repo }}
+          ref: ${{ needs.reference.outputs.commit }}
+          path: conformance
+      - name: Cache key for this runner image
+        id: key
+        run: echo "cache-key=reference-git-${{ needs.reference.outputs.version }}-norust-$ImageOS-$ImageVersion" >>"$GITHUB_OUTPUT"
+      - name: Restore reference build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rgit-conformance/git-${{ needs.reference.outputs.version }}-norust
+          key: ${{ steps.key.outputs.cache-key }}
+      - name: Build reference git (only if this runner image missed the cache)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gettext libcurl4-openssl-dev libexpat1-dev libpcre2-dev libssl-dev zlib1g-dev
+          GIT_REF=${{ needs.reference.outputs.version }} scripts/fetch-upstream.sh
+          NO_RUST=YesPlease RGIT_REFERENCE_SOURCE="$PWD/upstream/git" conformance/run --build-only
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build rgit
+        run: cargo build --locked --bin rgit --bin rgit-test-tool
+      - name: Install Apache for lib-httpd.sh (#87)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apache2
+          sudo systemctl stop apache2 || :
+      - name: Run conformance suite with SHA-256 repositories
+        env:
+          GIT_TEST_HTTPD: "true"
+          GIT_TEST_GIT_DAEMON: "true"
+        run: |
+          conformance/run --hash sha256 --mode both --rgit target/debug/rgit --check \
+            --status "$RUNNER_TEMP/STATUS.sha256.md"
+      - name: Summary
+        if: always()
+        run: |
+          f=$RUNNER_TEMP/STATUS.sha256.md
+          test -f "$f" && sed -n '/^## Summary/,/^## Per-case/p' "$f" | sed '$d' >>"$GITHUB_STEP_SUMMARY" || true
+      - name: Drop the trash directories before the upload
+        if: always()
+        run: rm -rf conformance/results/*/*/output
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results-sha256
+          path: |
+            conformance/results/**/*.tap
+            conformance/results/**/*.tsv
+            conformance/results/**/*.meta
+            conformance/results/**/*.stderr
+          if-no-files-found: warn
+
   # Differential tests (rgit-difftest, #7) against the pinned reference git
   # (#237). RGIT_REQUIRE_REFERENCE=1 turns a missing reference into a failure
   # instead of a silent skip or a fallback to the runner's git.

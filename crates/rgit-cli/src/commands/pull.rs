@@ -689,9 +689,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let children = Children::new(ctx, &repo, &action)?;
     drop(repo);
 
-    let code = children.run(&args.fetch_argv())?;
-    if code != 0 {
-        return Ok(code);
+    // A failed fetch ends `pull` with status 1, whatever fetch's own was.
+    if children.run(&args.fetch_argv())? != 0 {
+        return Ok(1);
     }
     if args.dry_run {
         return Ok(0);

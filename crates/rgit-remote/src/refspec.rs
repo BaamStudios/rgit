@@ -268,15 +268,30 @@ pub struct RefspecSet {
 }
 
 impl RefspecSet {
-    /// Parse every item; the first invalid one is the error.
+    /// Parse every item for a SHA-1 repository; the first invalid one is
+    /// the error.
     pub fn parse<I, S>(items: I, direction: Direction) -> Result<RefspecSet, InvalidRefspec>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<[u8]>,
+    {
+        Self::parse_with_hash(items, direction, HashKind::Sha1)
+    }
+
+    /// Parse every item; `hash` decides what a full object name looks
+    /// like. The first invalid item is the error.
+    pub fn parse_with_hash<I, S>(
+        items: I,
+        direction: Direction,
+        hash: HashKind,
+    ) -> Result<RefspecSet, InvalidRefspec>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<[u8]>,
     {
         let items = items
             .into_iter()
-            .map(|s| Refspec::parse(s, direction))
+            .map(|s| Refspec::parse_with_hash(s, direction, hash))
             .collect::<Result<_, _>>()?;
         Ok(RefspecSet { items })
     }
@@ -601,6 +616,22 @@ mod tests {
         let hex = "0123456789012345678901234567890123456789";
         assert!(Refspec::parse(hex, Direction::Fetch).unwrap().exact_oid);
         assert!(Refspec::parse(format!("^{hex}"), Direction::Fetch).is_err());
+        // What a full object name is depends on the hash: with SHA-256, 40
+        // digits are a reference name and 64 an object name.
+        let hex64 = hex.repeat(2)[..64].to_owned();
+        let sha256 = |s: &str| Refspec::parse_with_hash(s, Direction::Fetch, HashKind::Sha256);
+        assert!(sha256(&hex64).unwrap().exact_oid);
+        assert!(sha256(&format!("^{hex64}")).is_err());
+        assert!(!sha256(hex).unwrap().exact_oid);
+        assert!(sha256(&format!("^{hex}")).unwrap().negative);
+        assert!(!Refspec::parse(&hex64, Direction::Fetch).unwrap().exact_oid);
+        let set =
+            RefspecSet::parse_with_hash([&hex64[..], hex], Direction::Fetch, HashKind::Sha256)
+                .unwrap();
+        assert_eq!(
+            set.items.iter().map(|r| r.exact_oid).collect::<Vec<_>>(),
+            [true, false]
+        );
         assert_eq!(
             Refspec::parse("a:b:c", Direction::Fetch)
                 .unwrap_err()

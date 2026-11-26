@@ -137,15 +137,50 @@ fn bare_shared_and_branch() {
 }
 
 #[test]
-fn refuses_unsupported_formats() {
-    let tmp = TempDir::new("formats");
+fn sha256_repository() {
+    let tmp = TempDir::new("sha256");
     let env = MapEnv::new([("HOME", tmp.0.join("home"))]);
     let mut opts = options(tmp.0.join("a/.git"));
     opts.object_format = Some(HashKind::Sha256);
-    let err = run(&opts, &env).0.unwrap_err();
-    assert!(err.to_string().contains("extensions.objectFormat=sha256"));
-    assert!(!tmp.0.join("a/.git").exists());
+    run(&opts, &env).0.unwrap();
+    // The extension comes first and needs format version 1.
+    let config = fs::read_to_string(tmp.0.join("a/.git/config")).unwrap();
+    assert!(
+        config.starts_with(
+            "[extensions]\n\tobjectformat = sha256\n[core]\n\trepositoryformatversion = 1\n"
+        ),
+        "{config}"
+    );
 
+    // `GIT_DEFAULT_HASH` wins over nothing but is overridden by the option.
+    let env256 = MapEnv::new([
+        ("HOME", tmp.0.join("home")),
+        ("GIT_DEFAULT_HASH", PathBuf::from("sha256")),
+    ]);
+    run(&options(tmp.0.join("b/.git")), &env256).0.unwrap();
+    let config = fs::read_to_string(tmp.0.join("b/.git/config")).unwrap();
+    assert!(config.contains("objectformat = sha256"), "{config}");
+    let mut opts = options(tmp.0.join("c/.git"));
+    opts.object_format = Some(HashKind::Sha1);
+    run(&opts, &env256).0.unwrap();
+    let config = fs::read_to_string(tmp.0.join("c/.git/config")).unwrap();
+    assert!(!config.contains("objectformat"), "{config}");
+    assert!(config.contains("repositoryformatversion = 0"), "{config}");
+
+    // Reinitialising keeps the format and refuses another one.
+    run(&options(tmp.0.join("a/.git")), &env).0.unwrap();
+    let config = fs::read_to_string(tmp.0.join("a/.git/config")).unwrap();
+    assert!(config.contains("objectformat = sha256"), "{config}");
+    let mut opts = options(tmp.0.join("a/.git"));
+    opts.object_format = Some(HashKind::Sha1);
+    let err = run(&opts, &env).0.unwrap_err();
+    assert_eq!(err.to_string(), messages::REINIT_DIFFERENT_HASH);
+}
+
+#[test]
+fn refuses_invalid_branch_name() {
+    let tmp = TempDir::new("formats");
+    let env = MapEnv::new([("HOME", tmp.0.join("home"))]);
     let mut opts = options(tmp.0.join("b/.git"));
     opts.initial_branch = Some("with space".into());
     let err = run(&opts, &env).0.unwrap_err();

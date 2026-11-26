@@ -110,6 +110,10 @@ pub fn no_commit_checked_out(path: &str) -> String {
     format!("'{path}' does not have a commit checked out")
 }
 
+/// A nested repository with another object format than the repository's
+/// cannot become a gitlink.
+pub const DIFFERENT_HASH: &str = "cannot add a submodule of a different hash algorithm";
+
 #[must_use]
 pub fn beyond_symlink(item: &str) -> String {
     format!("pathspec '{item}' is beyond a symbolic link")

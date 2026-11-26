@@ -8,6 +8,7 @@ use std::path::Path;
 
 use bstr::{BStr, BString, ByteSlice};
 use rgit_config::{ConfigSet, key::split_canonical};
+use rgit_hash::HashKind;
 
 use crate::error::{ConfigError, string_value};
 use crate::messages;
@@ -139,6 +140,9 @@ pub struct Remotes {
     warnings: Vec<String>,
     /// The `<head>` of a `$GIT_DIR/branches/<name>` file without `#<head>`.
     default_branch: BString,
+    /// The repository's object format (`extensions.objectFormat`): what a
+    /// full object name in a refspec looks like.
+    hash: HashKind,
 }
 
 impl Remotes {
@@ -152,6 +156,12 @@ impl Remotes {
         let mut push: Vec<Vec<BString>> = Vec::new();
         let mut push_default = None;
         let mut warnings = Vec::new();
+        let hash = config
+            .string("extensions.objectformat")
+            .ok()
+            .flatten()
+            .and_then(|v| HashKind::from_name(&v.to_str_lossy()))
+            .unwrap_or(HashKind::Sha1);
         for e in config.entries() {
             let (section, sub, key) = split_canonical(e.name.as_bstr());
             if section != "remote" {
@@ -224,8 +234,8 @@ impl Remotes {
             }
         }
         for (i, r) in raw.iter_mut().enumerate() {
-            r.fetch = RefspecSet::parse(&fetch[i], Direction::Fetch)?;
-            r.push = RefspecSet::parse(&push[i], Direction::Push)?;
+            r.fetch = RefspecSet::parse_with_hash(&fetch[i], Direction::Fetch, hash)?;
+            r.push = RefspecSet::parse_with_hash(&push[i], Direction::Push, hash)?;
         }
         // A branches file without `#<head>` names the default branch of
         // new repositories (`GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME`, which
@@ -248,6 +258,7 @@ impl Remotes {
             push_default,
             warnings,
             default_branch,
+            hash,
         })
     }
 
@@ -297,8 +308,10 @@ impl Remotes {
                         name.as_bstr(),
                     ));
                     raw.url = legacy.url;
-                    raw.fetch = RefspecSet::parse(&legacy.fetch, Direction::Fetch)?;
-                    raw.push = RefspecSet::parse(&legacy.push, Direction::Push)?;
+                    raw.fetch =
+                        RefspecSet::parse_with_hash(&legacy.fetch, Direction::Fetch, self.hash)?;
+                    raw.push =
+                        RefspecSet::parse_with_hash(&legacy.push, Direction::Push, self.hash)?;
                 }
                 None => {
                     if configured.is_none() {
@@ -465,6 +478,21 @@ mod tests {
         )
         .unwrap();
         Remotes::from_config(&cfg)
+    }
+
+    /// Configured refspecs follow the repository's object format.
+    #[test]
+    fn refspecs_use_the_object_format() {
+        let hex40 = "0123456789".repeat(4);
+        let hex64 = "0123456789abcdef".repeat(4);
+        let body = format!("[remote \"o\"]\n url = u\n fetch = {hex40}\n fetch = {hex64}\n");
+        let exact = |text: &str| -> Vec<bool> {
+            let r = remotes(text).unwrap().get(b"o", None).unwrap();
+            r.fetch.items.iter().map(|s| s.exact_oid).collect()
+        };
+        assert_eq!(exact(&body), [true, false]);
+        let sha256 = format!("[extensions]\n objectFormat = sha256\n{body}");
+        assert_eq!(exact(&sha256), [false, true]);
     }
 
     #[test]

@@ -62,17 +62,8 @@ pub fn check_command_line(ctx: &Context) -> Result<(), Die> {
 
 /// Set up the repository, change into [`Setup::cwd`] and return the setup.
 pub fn setup(ctx: &Context, mode: Mode) -> Result<Setup, Die> {
-    setup_with(ctx, mode, rgit_repo::format::Support::default())
-}
-
-/// [`setup`] for a command that can handle the repository formats in
-/// `support` (e.g. SHA-256).
-pub fn setup_with(
-    ctx: &Context,
-    mode: Mode,
-    support: rgit_repo::format::Support,
-) -> Result<Setup, Die> {
     // A required setup returns a repository or an error.
+    let support = rgit_repo::format::Support::default();
     setup_inner(ctx, support, mode == Mode::Required, true)?
         .ok_or(Die::Exit(rgit_options::EXIT_FATAL))
 }
