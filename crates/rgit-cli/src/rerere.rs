@@ -288,19 +288,10 @@ impl Host for RepoHost<'_> {
                 .map_err(|e| e.to_string())?;
         }
         let path = self.repo.setup.cwd.join(self.repo.index_path());
-        let skip_hash = self
-            .repo
-            .config
-            .bool("index.skiphash")
-            .ok()
-            .flatten()
-            .unwrap_or(false);
+        let opts =
+            crate::index_config::write_options(&self.repo.config, &index).map_err(die_text)?;
         index
-            .write_file(
-                &path,
-                &self.repo.index_lock_options(),
-                &rgit_index::WriteOptions { skip_hash },
-            )
+            .write_file(&path, &self.repo.index_lock_options(), &opts)
             .map_err(|e| e.to_string())?;
         self.index = index;
         Ok(())

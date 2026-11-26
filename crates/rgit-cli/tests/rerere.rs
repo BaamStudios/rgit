@@ -270,3 +270,41 @@ fn outside_repository_help() {
     }
     fx.compare(["rerere", "-h"]).checks(Check::OUTPUT).run();
 }
+
+/// `forget` on paths already resolved and added: the conflict comes back
+/// from the resolve-undo records of the index.
+#[test]
+fn forget_resolved_paths() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let _ = fx.git_output(["merge", "x"]);
+    let fx = fx
+        .write("f1", resolved())
+        .write("f2", resolved())
+        .git(["rerere"])
+        .git(["reset", "-q", "--hard"]);
+    let _ = fx.git_output(["merge", "x"]);
+    let mut fx = fx.git(["add", "f1", "f2"]);
+    rr_files(fx.compare(["rerere", "forget", "f1"])).run();
+    rr_files(fx.compare(["rerere", "forget", "f2", "f3"])).run();
+
+    // The same with the resolve-undo records written by rgit add.
+    let fx = fixture();
+    let _ = fx.git_output(["merge", "x"]);
+    let fx = fx
+        .write("f1", resolved())
+        .git(["rerere"])
+        .git(["reset", "-q", "--hard"]);
+    let _ = fx.git_output(["merge", "x"]);
+    assert!(rgit(&fx, &["add", "f1"]).status.success());
+    let out = rgit(&fx, &["rerere", "forget", "f1"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "Updated preimage for 'f1'\nForgot resolution for 'f1'\n"
+    );
+    let rr = std::fs::read(fx.work_dir().join(".git/MERGE_RR")).unwrap();
+    // f1 is back in MERGE_RR (next to the still unresolved f3).
+    assert!(rr.starts_with(format!("{ID}\tf1\0").as_bytes()));
+}
