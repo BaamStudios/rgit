@@ -69,7 +69,7 @@ impl Fixture {
             .prefix("rgit-difftest-")
             .tempdir()
             .expect("create temporary directory");
-        let root = dir.path().canonicalize().expect("canonicalize temp dir");
+        let root = env::canonical(dir.path()).expect("canonicalize temp dir");
         let home = root.join("state/home");
         fs::create_dir_all(&home).expect("create home");
         fs::create_dir_all(root.join("state/work")).expect("create work dir");
@@ -748,9 +748,7 @@ fn link_binary(dir: &Path, binary: &Path) {
     fs::create_dir_all(dir).expect("create bin dir");
     let link = dir.join(if cfg!(windows) { "git.exe" } else { "git" });
     let _ = fs::remove_file(&link);
-    let target = binary
-        .canonicalize()
-        .unwrap_or_else(|_| binary.to_path_buf());
+    let target = env::canonical(binary).unwrap_or_else(|_| binary.to_path_buf());
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, &link).expect("link binary");
     #[cfg(not(unix))]

@@ -56,6 +56,31 @@ fn is_executable(p: &Path) -> bool {
     }
 }
 
+/// `path` with symbolic links resolved, in a form every program accepts.
+///
+/// On Windows `std::fs::canonicalize` returns verbatim paths
+/// (`\\?\C:\dir`), which Git for Windows cannot use as `HOME` or as a
+/// working directory; the prefix is dropped where the rest is an ordinary
+/// drive path.
+///
+/// # Errors
+/// As `std::fs::canonicalize`.
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    let resolved = path.canonicalize()?;
+    #[cfg(windows)]
+    {
+        if let Some(text) = resolved.to_str() {
+            if let Some(rest) = text.strip_prefix(r"\\?\") {
+                let drive = rest.as_bytes();
+                if drive.len() >= 3 && drive[1] == b':' && drive[2] == b'\\' {
+                    return Ok(PathBuf::from(rest));
+                }
+            }
+        }
+    }
+    Ok(resolved)
+}
+
 /// Resolves the reference git binary.
 ///
 /// Order: `$RGIT_REFERENCE_GIT`, then `upstream/git/git` in the workspace
@@ -77,7 +102,7 @@ pub fn reference_git() -> Option<PathBuf> {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let upstream = workspace.join("upstream/git/git");
     if is_executable(&upstream) {
-        return Some(upstream.canonicalize().unwrap_or(upstream));
+        return Some(canonical(&upstream).unwrap_or(upstream));
     }
     which(if cfg!(windows) { "git.exe" } else { "git" })
 }
