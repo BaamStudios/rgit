@@ -322,7 +322,18 @@ impl PackSet {
     ) -> Option<(Arc<Pack>, u64)> {
         let (layer, pos) = self.midx.as_ref()?.lookup(id)?;
         let pack_id = layer.pack_id(pos).ok()?;
-        let offset = layer.offset(pos).ok()?;
+        let offset = match layer.offset(pos) {
+            Ok(o) => o,
+            // git dies when it reads such an offset; nothing else can
+            // find the object in the right pack.
+            Err(e) if e == crate::midx::messages::LARGE_OFFSET_OOB => {
+                use std::io::Write as _;
+                let _ = std::io::stdout().flush();
+                eprintln!("fatal: {e}");
+                std::process::exit(128);
+            }
+            Err(_) => return None,
+        };
         let name = layer.pack_name(pack_id)?;
         let idx = self.dir.join(name);
         if let Some(p) = packs.iter().find(|p| p.index().path() == idx) {

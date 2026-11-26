@@ -898,3 +898,39 @@ fn stdin_packs() {
             .run();
     }
 }
+
+/// `--name-hash-version`: 1 and 2 (negative means 1), anything else is
+/// fatal; version 2 turns `--write-bitmap-index` off with a warning.
+#[test]
+fn name_hash_version_checks_match_git() {
+    let mut fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    for v in ["0", "3"] {
+        let arg = format!("--name-hash-version={v}");
+        fx.compare(["pack-objects", "base", "--all", &arg])
+            .stdin("")
+            .checks([Check::ExitCode, Check::Stderr])
+            .run();
+    }
+    fx.compare([
+        "pack-objects",
+        "--stdout",
+        "--all",
+        "--name-hash-version=-1",
+    ])
+    .stdin("")
+    .checks([Check::ExitCode])
+    .run();
+    fx.compare([
+        "pack-objects",
+        "base",
+        "--all",
+        "--name-hash-version=2",
+        "--write-bitmap-index",
+    ])
+    .stdin("")
+    .checks([Check::ExitCode, Check::Stderr])
+    .run();
+}

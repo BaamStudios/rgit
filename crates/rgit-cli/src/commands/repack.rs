@@ -221,6 +221,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::load_config(ctx, &setup)?;
+    let int_config = |key: &str| config.int(key).map_err(|e| Die::Fatal(e.to_string()));
+    let midx_split_factor = int_config("repack.midxsplitfactor")?.unwrap_or(2);
+    if midx_split_factor < 2 {
+        return Err(Die::Fatal(msg::midx_bad_split_factor(midx_split_factor)));
+    }
+    let midx_new_layer_threshold = int_config("repack.midxnewlayerthreshold")?.unwrap_or(8);
+    if midx_new_layer_threshold < 1 {
+        return Err(Die::Fatal(msg::midx_bad_layer_threshold(
+            midx_new_layer_threshold,
+        )));
+    }
     if drop_filtered && !crate::promisor::has_remote(&config) {
         return Err(Die::Fatal(msg::REPACK_DROP_NEEDS_PROMISOR.into()));
     }
@@ -679,6 +690,14 @@ fn write_midx_after(
         bitmap,
         incremental: mode == "incremental",
         progress: !quiet && rgit_progress::stderr_is_terminal(),
+        // A new incremental layer leaves out kept packs.
+        only: (mode == "incremental")
+            .then(|| {
+                rgit_pack::midx::write::idx_names(pack_dir)
+                    .into_iter()
+                    .filter(|n| !pack_dir.join(n).with_extension("keep").exists())
+                    .collect()
+            }),
         ..Default::default()
     };
     let display = pack_dir.display().to_string();
