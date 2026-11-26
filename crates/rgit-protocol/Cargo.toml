@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+rgit-bstr = { path = "../rgit-bstr" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-trace = { path = "../rgit-trace" }
 rgit-version = { path = "../rgit-version" }

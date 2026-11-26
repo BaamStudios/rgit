@@ -957,7 +957,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let remote_head = refs.iter().find(|r| r.name == b"HEAD");
     let mut head_target: Option<String> = remote_head
         .and_then(|h| h.symref_target.as_ref())
-        .map(|t| String::from_utf8_lossy(t).into_owned());
+        .map(|t| rgit_bstr::from_bytes(t).into_owned());
     // The local default branch name.
     let default_branch = || {
         std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME")
@@ -984,7 +984,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             head_target = branches()
                 .find(|r| r.name == preferred.as_bytes())
                 .or_else(|| branches().next())
-                .map(|r| String::from_utf8_lossy(&r.name).into_owned());
+                .map(|r| rgit_bstr::from_bytes(&r.name).into_owned());
         }
     }
     let empty = refs.iter().all(|r| r.oid.is_none());
@@ -1142,7 +1142,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         let mut mapped: Vec<(String, ObjectId)> = refmap::map_refspecs(&specs, &refs, hash, &mut errors)
             .map_err(|e| fatal(&e))?
             .into_iter()
-            .filter_map(|e| Some((e.local?.to_str_lossy().into_owned(), e.oid)))
+            .filter_map(|e| Some((rgit_bstr::from_bytes(&e.local?).into_owned(), e.oid)))
             .collect();
         for e in errors {
             eprintln!("error: {e}");
@@ -1161,7 +1161,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         let is_tag = |r: &RemoteRef| r.name.starts_with(b"refs/tags/") && r.oid.is_some();
         if all_tags {
             for r in refs.iter().filter(|r| is_tag(r)) {
-                let name = String::from_utf8_lossy(&r.name).into_owned();
+                let name = rgit_bstr::from_bytes(&r.name).into_owned();
                 if !mapped.iter().any(|(n, _)| *n == name) {
                     mapped.push((name, r.oid.unwrap_or_else(|| hash.null())));
                 }
@@ -1231,7 +1231,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         if follow_tags && !all_tags {
             let mut more: Vec<ObjectId> = Vec::new();
             for r in refs.iter().filter(|r| is_tag(r)) {
-                let name = String::from_utf8_lossy(&r.name).into_owned();
+                let name = rgit_bstr::from_bytes(&r.name).into_owned();
                 let oid = r.oid.unwrap_or_else(|| hash.null());
                 if mapped.iter().any(|(n, _)| *n == name) {
                     continue;
@@ -1303,8 +1303,8 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
 
         if !opts.bare {
             if let Some(t) = &head_target {
-                if let Some(dst) = specs.map_src(t.as_bytes()) {
-                    let dst = dst.to_str_lossy().into_owned();
+                if let Some(dst) = specs.map_src(&rgit_bstr::to_bytes(t)) {
+                    let dst = rgit_bstr::from_bytes(&dst).into_owned();
                     if packed.iter().any(|p| p.name == dst) {
                         remote_head_ref = Some(dst);
                     }
@@ -1355,7 +1355,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             let branch = branch.or_else(|| {
                 let head = rgit_refs::read_head_file(&git_dir).ok()?;
                 let target = head.strip_prefix(b"ref: ")?.trim_ascii_end();
-                Some(String::from_utf8_lossy(target).into_owned())
+                Some(rgit_bstr::from_bytes(target).into_owned())
             });
             if let (Some(b), false) = (branch, opts.bare) {
                 write_branch_config(&config_path, config, &origin, &b)?;
@@ -2043,7 +2043,7 @@ fn promisor_refs(refs: &[RemoteRef]) -> String {
     let mut out = String::new();
     for r in refs {
         if let Some(oid) = r.oid {
-            out.push_str(&format!("{} {}\n", oid.to_hex(), String::from_utf8_lossy(&r.name)));
+            out.push_str(&format!("{} {}\n", oid.to_hex(), rgit_bstr::from_bytes(&r.name)));
         }
     }
     out

@@ -479,7 +479,7 @@ pub fn fetch(
     let local_tags: HashSet<BString> = if follow_tags {
         repo.list_refs("refs/tags/")
             .into_iter()
-            .map(|(name, _)| BString::from(name))
+            .map(|(name, _)| BString::from(rgit_bstr::to_bytes(&name).into_owned()))
             .collect()
     } else {
         HashSet::new()
@@ -766,9 +766,9 @@ pub fn fetch(
                 .append(true)
                 .create(true)
                 .open(&path)
-                .and_then(|mut f| f.write_all(text.as_bytes()))
+                .and_then(|mut f| f.write_all(&rgit_bstr::to_bytes(&text)))
         } else {
-            std::fs::write(&path, text)
+            std::fs::write(&path, rgit_bstr::to_bytes(&text))
         };
         written.map_err(|e| {
             Error::fatal(messages::cannot_open_fetch_head(

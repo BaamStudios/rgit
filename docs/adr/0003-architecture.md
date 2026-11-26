@@ -36,6 +36,7 @@ Infrastructure crates added in wave 1 (2026-11-12):
 | `rgit-fs` | Lock files, temp files, atomic replacement, signal cleanup |
 | `rgit-trace` | `GIT_TRACE*` output |
 | `rgit-date` | Date parsing and formatting |
+| `rgit-bstr` | Byte strings that are not UTF-8 (ref names, arguments) carried losslessly in `String` (#214) |
 | `rgit-difftest` | Differential test helper (dev only, not published) |
 | `rgit-simcheck` | Similarity check against git's source (CI only, not published) |
 | `rgit-test-tool` | MIT replacements for `test-tool` internals (tests only, not published) |

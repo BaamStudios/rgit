@@ -882,7 +882,7 @@ fn fetch_main(ctx: &mut Context, argv: &[String], action: Option<&str>) -> CmdRe
     let abbrev = |id: &rgit_hash::ObjectId| cli_repo.abbrev(id, abbrev_len);
     if args.porcelain {
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(display::porcelain(&result.lines, repo.hash).as_bytes());
+        let _ = out.write_all(&rgit_bstr::to_bytes(&display::porcelain(&result.lines, repo.hash)));
     } else {
         let text = display::render(
             &result.url,
@@ -895,7 +895,8 @@ fn fetch_main(ctx: &mut Context, argv: &[String], action: Option<&str>) -> CmdRe
                 compact,
             },
         );
-        let _ = err.write_all(text.as_bytes());
+        // Reference names that are not UTF-8 are printed as their bytes.
+        let _ = err.write_all(&rgit_bstr::to_bytes(&text));
     }
     // A ref that could not be written (e.g. a directory/file conflict
     // with a stale remote-tracking branch).

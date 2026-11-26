@@ -595,6 +595,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-bstr"
+version = "0.1.0"
+
+[[package]]
 name = "rgit-bundle"
 version = "0.1.0"
 dependencies = [
@@ -617,6 +621,7 @@ dependencies = [
  "rgit-apply",
  "rgit-archive",
  "rgit-attr",
+ "rgit-bstr",
  "rgit-bundle",
  "rgit-commit",
  "rgit-commitgraph",
@@ -739,6 +744,7 @@ name = "rgit-fetch"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "rgit-bstr",
  "rgit-bundle",
  "rgit-config",
  "rgit-fs",
@@ -949,6 +955,7 @@ dependencies = [
 name = "rgit-protocol"
 version = "0.1.0"
 dependencies = [
+ "rgit-bstr",
  "rgit-hash",
  "rgit-trace",
  "rgit-version",
@@ -1025,6 +1032,7 @@ name = "rgit-server"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "rgit-bstr",
  "rgit-config",
  "rgit-difftest",
  "rgit-hash",

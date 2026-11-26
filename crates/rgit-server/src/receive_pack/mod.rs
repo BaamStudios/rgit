@@ -537,7 +537,7 @@ fn advertise<B: Backend, W: Write>(
         out.clear();
         out.extend_from_slice(oid.to_hex().as_bytes());
         out.push(b' ');
-        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&rgit_bstr::to_bytes(name));
         if first {
             out.push(0);
             out.extend_from_slice(caps.as_bytes());
@@ -568,7 +568,7 @@ fn parse_command(hash: HashKind, line: &[u8]) -> Option<Command> {
     }
     let old = ObjectId::from_hex(hash, &line[..hl]).ok()?;
     let new = ObjectId::from_hex(hash, &line[hl + 1..2 * hl + 1]).ok()?;
-    let name = String::from_utf8_lossy(&line[2 * hl + 2..]).into_owned();
+    let name = rgit_bstr::from_bytes(&line[2 * hl + 2..]).into_owned();
     Some(Command {
         old,
         new,
@@ -1293,17 +1293,23 @@ impl<B: Backend, W: Write + Send> Push<'_, B, W> {
         pktline::encode_data(&mut buf, unpack.as_bytes())?;
         for c in &self.commands {
             if let Some(e) = &c.error {
-                pktline::encode_data(&mut buf, format!("ng {} {e}\n", c.name).as_bytes())?;
+                pktline::encode_data(
+                    &mut buf,
+                    &rgit_bstr::to_bytes(&format!("ng {} {e}\n", c.name)),
+                )?;
                 continue;
             }
             if c.reports.is_empty() || !self.req.report_status_v2 {
-                pktline::encode_data(&mut buf, format!("ok {}\n", c.name).as_bytes())?;
+                pktline::encode_data(&mut buf, &rgit_bstr::to_bytes(&format!("ok {}\n", c.name)))?;
                 continue;
             }
             for r in &c.reports {
-                pktline::encode_data(&mut buf, format!("ok {}\n", c.name).as_bytes())?;
+                pktline::encode_data(&mut buf, &rgit_bstr::to_bytes(&format!("ok {}\n", c.name)))?;
                 if let Some(n) = &r.refname {
-                    pktline::encode_data(&mut buf, format!("option refname {n}\n").as_bytes())?;
+                    pktline::encode_data(
+                        &mut buf,
+                        &rgit_bstr::to_bytes(&format!("option refname {n}\n")),
+                    )?;
                 }
                 if let Some(o) = &r.old {
                     pktline::encode_data(

@@ -358,10 +358,11 @@ impl<W: Write> Writer<W> {
         Ok(())
     }
 
-    /// Write a text line: `line` followed by LF.
+    /// Write a text line: `line` followed by LF. Reference names in it
+    /// that are not UTF-8 (escaped, see `rgit_bstr`) go out as their bytes.
     pub fn write_line(&mut self, line: &str) -> Result<()> {
         let mut data = Vec::with_capacity(line.len() + 1);
-        data.extend_from_slice(line.as_bytes());
+        data.extend_from_slice(&rgit_bstr::to_bytes(line));
         data.push(b'\n');
         self.write_data(&data)
     }
@@ -538,6 +539,15 @@ mod tests {
             w.into_inner(),
             b"0014command=ls-refs\n00010008peel00000002000dERR nope\n"
         );
+    }
+
+    /// Reference names that are not UTF-8 travel as their bytes (#214).
+    #[test]
+    fn write_line_sends_raw_name_bytes() {
+        let mut w = Writer::new(Vec::new(), "test");
+        let name = rgit_bstr::from_bytes(b"ref-prefix refs/heads/caf\xe9");
+        w.write_line(&name).unwrap();
+        assert_eq!(w.into_inner(), b"001fref-prefix refs/heads/caf\xe9\n");
     }
 
     #[test]

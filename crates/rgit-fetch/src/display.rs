@@ -25,7 +25,7 @@ use crate::update::{RefLine, Status};
 
 /// Strip `refs/heads/`, `refs/tags/` or `refs/remotes/`.
 pub fn pretty_ref(name: &BStr) -> String {
-    let s = name.to_str_lossy();
+    let s = rgit_bstr::from_bytes(name);
     for p in ["refs/heads/", "refs/tags/", "refs/remotes/"] {
         if let Some(rest) = s.strip_prefix(p) {
             return rest.to_string();
@@ -229,7 +229,7 @@ pub fn porcelain(lines: &[RefLine], hash: rgit_hash::HashKind) -> String {
         }
         let local = l.local.as_ref().map_or_else(
             || "FETCH_HEAD".to_owned(),
-            |r| r.to_str_lossy().into_owned(),
+            |r| rgit_bstr::from_bytes(r).into_owned(),
         );
         out.push_str(&format!("{flag} {old} {new} {local}\n"));
     }
@@ -244,7 +244,7 @@ pub fn fetch_head(url: &str, entries: &[Entry]) -> String {
     let (merge, rest): (Vec<&Entry>, Vec<&Entry>) = listed.partition(|e| e.for_merge);
     for e in merge.into_iter().chain(rest) {
         let note = if e.for_merge { "" } else { "not-for-merge" };
-        let r = e.remote.to_str_lossy();
+        let r = rgit_bstr::from_bytes(&e.remote);
         let desc = if r == "HEAD" {
             url.to_string()
         } else if let Some(b) = r.strip_prefix("refs/heads/") {
