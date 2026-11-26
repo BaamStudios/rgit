@@ -16,16 +16,22 @@ other two need, what is done and how it is checked.
 | Windows | `windows-latest` (NTFS, MSVC toolchain, Git for Windows as reference) | the same | the same |
 
 The job `platform` in `.github/workflows/ci.yml` runs the complete test suite
-on macOS and Windows. `scripts/platform-tests.sh` compares the test targets
-that fail with the recorded baseline of the platform:
+on macOS and Windows. `scripts/platform-tests.py` builds every test target,
+runs each test executable on its own with a time limit (a test that hangs
+fails its target instead of the whole job) and compares the targets that fail
+with the recorded baseline of the platform:
 
 - `ci/platform/macos.txt`, `ci/platform/windows.txt`: one test target per line
   as cargo names it (`-p rgit-cli --test add`), or `-p <crate>` for a whole
-  crate, each with the number of the issue that tracks the failure.
+  crate, each with the number of the issue that tracks the failure. A line
+  that starts with `skip` names a target that is not run at all (it hangs).
 - A target that fails and is not listed fails the job. A listed target that
   passes produces a notice: remove the line.
 - Nothing is skipped silently: a target is either green or listed with an
   issue.
+
+Locally: `PLATFORM_TESTS_ONLY='rgit-index' scripts/platform-tests.py macos`
+runs the targets whose name matches.
 
 Tests that only make sense on a POSIX system (signals, pseudo terminals, Unix
 sockets, file modes) are compiled with `#[cfg(unix)]` and do not exist on

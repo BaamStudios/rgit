@@ -20,7 +20,7 @@ jobs:
   # macOS). Build and clippy must be clean. The tests run completely; the
   # test targets that are known to fail on a platform are recorded with an
   # issue reference in ci/platform/<platform>.txt, any other failure fails
-  # the job (scripts/platform-tests.sh, docs/platforms.md).
+  # the job (scripts/platform-tests.py, docs/platforms.md).
   platform:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -29,8 +29,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: macOS, os: macos-latest, baseline: macos }
-          - { name: Windows, os: windows-latest, baseline: windows }
+          - { name: macOS, os: macos-latest, baseline: macos, python: python3 }
+          - { name: Windows, os: windows-latest, baseline: windows, python: python }
     defaults:
       run:
         shell: bash
@@ -43,8 +43,8 @@ jobs:
           components: clippy
       - run: git --version
       - run: cargo clippy --all-targets -- -D warnings
-      - name: cargo test --all (failures compared with ci/platform/${{ matrix.baseline }}.txt)
-        run: scripts/platform-tests.sh ${{ matrix.baseline }}
+      - name: Tests (failures compared with ci/platform/${{ matrix.baseline }}.txt)
+        run: ${{ matrix.python }} scripts/platform-tests.py ${{ matrix.baseline }}
 
   # MSRV (#237): the workspace must build and pass its tests on the
   # `rust-version` declared in Cargo.toml, not only on stable.
