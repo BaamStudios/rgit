@@ -744,6 +744,7 @@ pub const SCRIPTS: &[&str] = &[
     "mergetool",
     "request-pull",
     "send-email",
+    "subtree",
 ];
 
 /// The catalogue entry of `name`.
