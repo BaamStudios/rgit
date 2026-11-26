@@ -168,6 +168,7 @@ pub fn not_a_git_command(cmd: &str) -> String {
 }
 
 /// An external `git-<cmd>` was killed by a signal.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn died_of_signal(prog: &str, sig: i32) -> String {
     format!("{prog} died of signal {sig}")
 }

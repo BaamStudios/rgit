@@ -82,6 +82,7 @@ pub fn strerror(err: &io::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]

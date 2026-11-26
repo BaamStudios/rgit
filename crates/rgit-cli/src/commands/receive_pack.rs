@@ -45,6 +45,14 @@ fn usage_error(msg: &str) -> Die {
 struct RawStdin;
 
 impl Read for RawStdin {
+    // Outside Unix std's handle is used; its buffer may hold bytes a child
+    // was meant to read (#682).
+    #[cfg(not(unix))]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::stdin().lock().read(buf)
+    }
+
+    #[cfg(unix)]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         loop {
             // SAFETY: reads into a valid buffer of the given length.
@@ -65,6 +73,15 @@ impl Read for RawStdin {
 struct RawStdout;
 
 impl Write for RawStdout {
+    #[cfg(not(unix))]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut out = std::io::stdout().lock();
+        let n = out.write(buf)?;
+        out.flush()?;
+        Ok(n)
+    }
+
+    #[cfg(unix)]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         loop {
             // SAFETY: writes from a valid buffer of the given length.
@@ -311,6 +328,15 @@ struct CliBackend {
 /// Runs `f` with this process's standard error (and so that of the
 /// children and hooks it starts) relayed to `sink` when the sink is a
 /// sideband.
+#[cfg(not(unix))]
+fn relay_stderr<T>(_sink: &dyn Sink, f: impl FnOnce() -> T) -> T {
+    // Redirecting the standard error of this process and its children
+    // needs handle duplication that is not written yet (#682).
+    f()
+}
+
+/// See the other definition: the Unix implementation.
+#[cfg(unix)]
 fn relay_stderr<T>(sink: &dyn Sink, f: impl FnOnce() -> T) -> T {
     if !sink.is_sideband() {
         return f();

@@ -40,6 +40,7 @@ pub(crate) struct FoundRepo {
     /// `.git` added where that was needed. For a `.git` file this is the
     /// file, not where it points (`git daemon` checks this path against
     /// its directory list, as git does).
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub path: PathBuf,
     /// The git directory.
     pub git_dir: PathBuf,

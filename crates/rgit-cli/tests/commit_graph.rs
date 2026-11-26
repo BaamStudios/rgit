@@ -237,8 +237,7 @@ fn verify_reports_corruption() {
     for &(at, byte) in cases {
         let mut bad = good.clone();
         bad[at] = byte;
-        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644))
-            .unwrap();
+        make_writable(&path);
         std::fs::write(&path, &bad).unwrap();
         eprintln!("corrupting byte {at} with {byte:#x}");
         fx.compare(["commit-graph", "verify"]).output_only().run();
@@ -309,4 +308,18 @@ fn sha256_repository() {
         &["commit-graph", "write", "--reachable", "--split=no-merge"],
     );
     same_graph(&mut fx, &["commit-graph", "verify"]);
+}
+
+/// The graph file is written read-only; the test overwrites it.
+fn make_writable(path: &std::path::Path) {
+    #[cfg(unix)]
+    let perms = std::os::unix::fs::PermissionsExt::from_mode(0o644);
+    #[cfg(not(unix))]
+    let perms = {
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        perms
+    };
+    std::fs::set_permissions(path, perms).unwrap();
 }

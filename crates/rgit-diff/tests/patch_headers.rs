@@ -3,6 +3,9 @@
 //! Patch headers (`diff --git`, modes, index lines, quoting, binary files,
 //! symlinks) compared with `git diff` between two commits.
 
+// Most cases here need a POSIX system; their helpers are unused elsewhere.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 mod support;
 
 use rgit_diff::{MODE_SYMLINK, PatchFile, PatchOptions, write_file_patch};

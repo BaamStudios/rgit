@@ -2,7 +2,6 @@
 //! What counts as a repository directory, and `.git` files
 //! (`gitdir: <path>`), following `gitrepository-layout(5)`.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::error::GitfileError;
@@ -122,7 +121,7 @@ fn trim_start(b: &[u8]) -> &[u8] {
 #[cfg(unix)]
 pub(crate) fn bytes_to_path(b: &[u8]) -> PathBuf {
     use std::os::unix::ffi::OsStrExt;
-    PathBuf::from(OsStr::from_bytes(b))
+    PathBuf::from(std::ffi::OsStr::from_bytes(b))
 }
 
 #[cfg(not(unix))]

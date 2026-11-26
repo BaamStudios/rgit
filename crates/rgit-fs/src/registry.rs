@@ -44,7 +44,9 @@ struct Snapshot {
     pid: libc::pid_t,
     #[cfg(unix)]
     paths: Vec<CString>,
+    // No signal handler removes them on other platforms yet (#183).
     #[cfg(not(unix))]
+    #[allow(dead_code)]
     paths: Vec<PathBuf>,
     /// Directories to remove on a signal (`true`: only their contents).
     #[cfg(unix)]
@@ -320,6 +322,7 @@ mod tree {
 }
 
 /// Async-signal-safe removal of all registered files.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn remove_from_snapshot() {
     READERS.fetch_add(1, Ordering::SeqCst);
     let snap = CURRENT.load(Ordering::SeqCst);

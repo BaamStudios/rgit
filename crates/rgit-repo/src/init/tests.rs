@@ -57,6 +57,19 @@ fn run(opts: &InitOptions, env: &MapEnv) -> (Result<Outcome, InitError>, Vec<Not
     (r, notices)
 }
 
+/// `config` without the settings that record what the file system can do
+/// (they depend on where the test runs).
+fn without_probes(config: &str) -> String {
+    config
+        .lines()
+        .filter(|line| {
+            let key = line.trim_start().split(' ').next().unwrap_or("");
+            !matches!(key, "symlinks" | "ignorecase" | "precomposeunicode")
+        })
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
 #[test]
 fn fresh_and_reinit() {
     let tmp = TempDir::new("fresh");
@@ -71,7 +84,7 @@ fn fresh_and_reinit() {
         fs::read_to_string(git_dir.join("HEAD")).unwrap(),
         "ref: refs/heads/master\n"
     );
-    let config = fs::read_to_string(git_dir.join("config")).unwrap();
+    let config = without_probes(&fs::read_to_string(git_dir.join("config")).unwrap());
     assert!(config.starts_with("[core]\n\trepositoryformatversion = 0\n\tfilemode = "));
     assert!(config.ends_with("\tbare = false\n\tlogallrefupdates = true\n"));
     for d in [
@@ -97,7 +110,7 @@ fn fresh_and_reinit() {
         )]
     );
     assert_eq!(
-        fs::read_to_string(git_dir.join("config")).unwrap(),
+        without_probes(&fs::read_to_string(git_dir.join("config")).unwrap()),
         config,
         "reinit keeps the configuration"
     );
@@ -122,7 +135,7 @@ fn bare_shared_and_branch() {
         fs::read_to_string(git_dir.join("HEAD")).unwrap(),
         "ref: refs/heads/trunk\n"
     );
-    let config = fs::read_to_string(git_dir.join("config")).unwrap();
+    let config = without_probes(&fs::read_to_string(git_dir.join("config")).unwrap());
     assert!(config.ends_with(
         "\tbare = true\n\tsharedrepository = 0640\n[receive]\n\tdenyNonFastforwards = true\n"
     ));

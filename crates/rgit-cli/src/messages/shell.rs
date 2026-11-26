@@ -2,6 +2,9 @@
 //! Messages of `git shell`, word for word as git 2.56 prints them
 //! (observed from the binary).
 
+// `git shell` exists on Unix only so far (#682).
+#![cfg_attr(not(unix), allow(dead_code))]
+
 /// Anything but no arguments or `-c <command>`.
 pub const USAGE: &str = "Run with no arguments or with -c cmd";
 

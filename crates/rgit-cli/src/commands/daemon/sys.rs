@@ -115,10 +115,15 @@ pub fn credentials(user: &str, group: Option<&str>) -> Result<Credentials, Looku
 /// Become the user and group of `credentials`. `false` when the system
 /// does not allow it.
 pub fn drop_privileges(credentials: &Credentials) -> bool {
+    // The base group of initgroups is an int on macOS and the BSDs.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let base = credentials.gid;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let base = credentials.gid as libc::c_int;
     // SAFETY: plain system calls with values looked up above; on failure
     // the caller ends the process.
     unsafe {
-        libc::initgroups(credentials.user.as_ptr(), credentials.gid) == 0
+        libc::initgroups(credentials.user.as_ptr(), base) == 0
             && libc::setgid(credentials.gid) == 0
             && libc::setuid(credentials.uid) == 0
     }

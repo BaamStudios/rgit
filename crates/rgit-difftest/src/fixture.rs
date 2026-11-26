@@ -69,7 +69,7 @@ impl Fixture {
             .prefix("rgit-difftest-")
             .tempdir()
             .expect("create temporary directory");
-        let root = dir.path().canonicalize().expect("canonicalize temp dir");
+        let root = env::canonical(dir.path()).expect("canonicalize temp dir");
         let home = root.join("state/home");
         fs::create_dir_all(&home).expect("create home");
         fs::create_dir_all(root.join("state/work")).expect("create work dir");
@@ -258,15 +258,18 @@ impl Fixture {
         self
     }
 
-    /// Creates a symbolic link at `rel` pointing to `target` (Unix only).
-    #[cfg(unix)]
+    /// Creates a symbolic link at `rel` pointing to `target`.
+    ///
+    /// On Windows this needs the privilege to create symbolic links
+    /// (Developer Mode or an elevated process); the link is a directory
+    /// link when `target` names an existing directory, else a file link.
     pub fn symlink(self, target: impl AsRef<Path>, rel: impl AsRef<Path>) -> Self {
         if self.inner.is_some() {
             let path = self.path(rel);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).expect("create parent directories");
             }
-            std::os::unix::fs::symlink(target, &path).expect("create symlink");
+            make_symlink(target.as_ref(), &path).expect("create symlink");
         }
         self
     }
@@ -745,9 +748,7 @@ fn link_binary(dir: &Path, binary: &Path) {
     fs::create_dir_all(dir).expect("create bin dir");
     let link = dir.join(if cfg!(windows) { "git.exe" } else { "git" });
     let _ = fs::remove_file(&link);
-    let target = binary
-        .canonicalize()
-        .unwrap_or_else(|_| binary.to_path_buf());
+    let target = env::canonical(binary).unwrap_or_else(|_| binary.to_path_buf());
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, &link).expect("link binary");
     #[cfg(not(unix))]
@@ -771,6 +772,28 @@ fn retire(root: &Path, snapshot: &Path) {
     if fs::rename(snapshot, retired.join(n.to_string())).is_err() {
         let _ = fs::remove_dir_all(snapshot);
     }
+}
+
+#[cfg(unix)]
+fn make_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn make_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    let resolved = link
+        .parent()
+        .map_or_else(|| target.to_path_buf(), |p| p.join(target));
+    if resolved.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn make_symlink(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 #[cfg(unix)]

@@ -1,0 +1,32 @@
+# Test targets known to fail on macOS (format: scripts/platform-tests.py).
+# Recorded from the run of 2026-11-26 (349 targets pass).
+
+# A test of the fetch suite never returns on macOS.
+skip -p rgit-cli --test fetch  #680 hangs
+
+# Fixtures that need GNU tools or a short temporary directory.
+-p rgit-cli --test branch              #680 fixture script uses GNU sed -i
+-p rgit-cli --test cruft               #680 fixture script uses GNU touch/date options
+-p rgit-cli --test housekeeping        #680 fixture script uses GNU touch -d
+-p rgit-cli --test verify_signatures   #680 gpg socket path too long below /private/var/folders
+
+# System libraries answer differently than glibc.
+-p rgit-cli --test blame               #680 message of the system regex library
+-p rgit-cli --test diff_rename         #680 pickaxe with an invalid regex: system regex library
+-p rgit-cli --test grep                #680 system regex library (bracket and interval expressions)
+-p rgit-cli --test convert             #680 working-tree-encoding: iconv output differs
+-p rgit-cli --test i18n                #680 --date=iso-local
+-p rgit-transport --lib                #680 text of ENXIO ("Device not configured")
+
+# Differences that were not looked into yet.
+-p rgit-cli --test bitmaps             #680 multi-pack bitmap differs from git's
+-p rgit-pack --test bitmap_git         #680 bitmap differs from git's
+-p rgit-cli --test bundle              #680 bundle create --version=3
+-p rgit-cli --test daemon              #680 --interpolated-path with an IPv6 host
+-p rgit-cli --test for_each_ref        #680
+-p rgit-cli --test maintenance_cmd     #680 maintenance start/stop use launchctl on macOS
+-p rgit-cli --test name_rev_ties       #680
+-p rgit-cli --test var                 #680
+
+# The file system folds case.
+-p rgit-cli --test diff_routing_fixes  #685 a fixture commits paths that differ only in case

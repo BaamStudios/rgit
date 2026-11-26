@@ -12,5 +12,6 @@ Milestones:
 
 Topics:
 
+- [Platforms: Linux, Windows, macOS; what CI checks on each](platforms.md)
 - [Hooks: runner, call sites and owners](hooks.md)
 - [HTTP configuration: what rgit supports](http-config.md)

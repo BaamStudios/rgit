@@ -267,7 +267,8 @@ pub fn launch_with_term(
     if status.success() {
         return Ok(());
     }
-    let mut lines = Vec::new();
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut lines = Vec::with_capacity(2);
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;

@@ -3,6 +3,9 @@
 //! (must always match, which also proves the fixture is deterministic) and
 //! with deliberately wrong wrappers (must produce readable diffs).
 
+// Most cases here need a POSIX system; their helpers are unused elsewhere.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 use rgit_difftest::{Check, Fixture, Normalizer};
 
 /// A fixture whose "rgit" is the reference git itself.

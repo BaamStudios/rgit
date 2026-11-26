@@ -1,0 +1,41 @@
+# Test targets known to fail on Windows (format: scripts/platform-tests.py).
+# Recorded from the run of 2026-11-26 (137 targets pass).
+
+# The differential tests of the command line: about two thirds of the
+# targets differ from Git for Windows (paths, shell scripts in fixtures,
+# file modes, names NTFS cannot hold), and the whole set takes more than an
+# hour on the runner. Not run until the areas of #681, #682 and #683 are done.
+skip -p rgit-cli --test *  #679 not run on Windows yet
+
+# Paths: drive letters, backslashes, \\?\ prefixes, names NTFS cannot hold.
+-p rgit-config --lib                      #681 absolute paths get a drive letter
+-p rgit-config --test differential        #681 backslashes in include paths and origins
+-p rgit-fs --test git_compat              #681 lock file messages name the path differently
+-p rgit-odb --lib                         #681 alternates with \\?\ paths
+-p rgit-options --test parse              #681 what counts as an absolute path
+-p rgit-pathspec --test git_differential  #681 fixture paths NTFS cannot hold
+-p rgit-remote --test differential        #681 file:// URLs
+-p rgit-repo --lib                        #681 ceiling directories, core.sharedRepository
+-p rgit-repo --test setup_cases           #681 repository discovery
+-p rgit-repo --test setup_matrix          #681 repository discovery
+
+# Processes and the environment: helper programs, descriptors, system messages.
+-p rgit-http --test h2_trace              #682 helper program not found
+-p rgit-http --test trace                 #682 helper program not found
+-p rgit-protocol --test ls_remote_trace   #682 trace target from the environment
+-p rgit-protocol --test sideband_git      #682 helper program not found
+-p rgit-protocol --test v2_fetch_trace    #682 helper program not found
+-p rgit-trace --lib                       #682 text of system errors
+-p rgit-trace --test targets              #682 file descriptor trace targets
+-p rgit-transport --lib                   #682 text of system errors (no terminal)
+-p rgit-messages --lib                    #682 text of system errors
+
+# Files: read-only and memory-mapped files, stat data.
+-p rgit-odb --test git_differential       #683 read-only object files, path form in messages
+-p rgit-odb --test mixed                  #683 replacing a memory-mapped pack
+-p rgit-pack --test differential          #683 replacing a memory-mapped pack
+
+# Not looked into yet.
+-p rgit-date --test differential          #679 time zone rules (TZ) differ from git's
+-p rgit-refs --test reflog                #679
+-p rgit-refs --test transactions          #679

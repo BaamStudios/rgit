@@ -4,12 +4,22 @@
 //! `GIT_WORK_TREE`, `--ref-format`, `-c`, `--revision`, guessing the
 //! branch of a detached remote `HEAD`, and `branch.autoSetupRebase`.
 
-use std::os::unix::fs::MetadataExt;
-
 use rgit_difftest::{Check, Fixture};
 
 mod common;
 use common::servers::server_path;
+
+/// Number of hard links of `path`; `None` where std cannot tell (Windows).
+#[cfg(unix)]
+fn link_count(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    Some(std::fs::metadata(path).unwrap().nlink())
+}
+
+#[cfg(not(unix))]
+fn link_count(_: &std::path::Path) -> Option<u64> {
+    None
+}
 
 fn source() -> Fixture {
     Fixture::new()
@@ -80,7 +90,7 @@ fn local_clone_links_the_object_store_like_git() {
                     stack.push(p);
                 } else {
                     let rel = p.strip_prefix(&root).unwrap().to_path_buf();
-                    files.push((rel, std::fs::metadata(&p).unwrap().nlink()));
+                    files.push((rel, link_count(&p)));
                 }
             }
         }
@@ -91,9 +101,17 @@ fn local_clone_links_the_object_store_like_git() {
         if rel.ends_with("alternates") {
             continue;
         }
-        assert!(links >= 2, "{} is not hard-linked", rel.display());
+        assert!(
+            links.is_none_or(|n| n >= 2),
+            "{} is not hard-linked",
+            rel.display()
+        );
     }
-    assert!(objects("copied").iter().all(|(_, links)| *links == 1));
+    assert!(
+        objects("copied")
+            .iter()
+            .all(|(_, links)| links.is_none_or(|n| n == 1))
+    );
     // Copies keep the modification time (the age of loose objects).
     let mtime = |p: std::path::PathBuf| std::fs::metadata(p).unwrap().modified().unwrap();
     for (rel, _) in objects("copied") {

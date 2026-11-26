@@ -580,6 +580,7 @@ impl Hooks {
 /// A started hook.
 struct Running {
     child: Child,
+    #[cfg_attr(not(unix), allow(dead_code))]
     shown: String,
     feeder: Option<JoinHandle<()>>,
     output: Option<JoinHandle<Vec<u8>>>,
