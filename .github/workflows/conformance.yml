@@ -6,6 +6,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Dispatched on bot/compat-table by compat-table.yml (required checks).
+  workflow_dispatch:
 
 jobs:
   reference:
