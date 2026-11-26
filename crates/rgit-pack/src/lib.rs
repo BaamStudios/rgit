@@ -36,6 +36,7 @@ mod index;
 pub mod index_pack;
 pub mod messages;
 pub mod midx;
+pub mod bitmap;
 mod mmap;
 mod pack;
 mod store;
