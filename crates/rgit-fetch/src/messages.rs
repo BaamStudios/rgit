@@ -155,6 +155,34 @@ pub const FSCK_ERROR: &str = "fsck error in packed object";
 pub const INDEX_PACK_FAILED: &str = "index-pack failed";
 /// git: the last line of a clone whose pack fails its checks.
 pub const INVALID_INDEX_PACK_OUTPUT: &str = "fetch-pack: invalid index-pack output";
+/// git: a `.gitmodules` blob in another pack than its tree fails the
+/// checks (found once every pack is in).
+pub const FSCK_FAILED: &str = "fsck failed";
+/// git: a tree names a non-blob as `.gitmodules`.
+pub const GITMODULES_BLOB: &str = "non-blob found at .gitmodules";
+
+/// git: the pack of a `packfile-uris` URI has another checksum than the
+/// server said.
+pub fn pack_hash_mismatch(uri: &str, hash: &str) -> String {
+    format!("fetch-pack: pack downloaded from {uri} does not match expected hash {hash}")
+}
+
+/// git (`http-fetch`): a `packfile-uris` URI cannot be downloaded, with
+/// `GIT_TRACE_REDACT` on.
+pub fn failed_to_get_url(scheme: &str, host: &str) -> String {
+    format!(
+        "failed to get '{scheme}' url from '{host}' (full URL redacted due to GIT_TRACE_REDACT setting)"
+    )
+}
+
+/// git (`http-fetch`): the same with `GIT_TRACE_REDACT=0`.
+pub fn unable_to_get_pack_file(uri: &str) -> String {
+    format!("unable to get pack file '{uri}'")
+}
+
+/// git: the last line after a failed `packfile-uris` download.
+pub const NO_HTTP_FETCH_OUTPUT: &str =
+    "fetch-pack: expected pack or keep then TAB at start of http-fetch output";
 
 /// git: a `fetch.fsck.<msg-id>` that names no message id.
 pub fn skipping_unknown_msg_id(id: &str) -> String {

@@ -20,7 +20,11 @@
 //! - a packet starting with `PACK` (or `\1PACK` on a sideband stream) is
 //!   written as `PACK ...`, and from then on sideband channel 1 packets are
 //!   no longer traced; other channels and flush packets still are;
-//! - long payloads are not shortened.
+//! - long payloads are not shortened;
+//! - in the `packfile-uris` section of a `fetch` response each URI is cut
+//!   after the `/` that follows its host and `<redacted>` is appended
+//!   (`<hash> https://host:port/<redacted>`), unless `GIT_TRACE_REDACT` is
+//!   false.
 
 use std::borrow::Cow;
 
@@ -105,6 +109,29 @@ fn is_pack_start(p: &[u8]) -> bool {
 pub struct Tracer {
     name: Cow<'static, str>,
     pack_seen: bool,
+    redact_uris: bool,
+}
+
+/// `GIT_TRACE_REDACT` (default true).
+fn redact_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("GIT_TRACE_REDACT") {
+        Err(_) => true,
+        Ok(v) => !matches!(
+            v.to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        ),
+    })
+}
+
+/// `payload` with the path of a URI replaced by `<redacted>`; `None` if
+/// it has no `scheme://host/`.
+fn redact_uri(payload: &[u8]) -> Option<Vec<u8>> {
+    let scheme = payload.windows(3).position(|w| w == b"://")? + 3;
+    let slash = scheme + payload[scheme..].iter().position(|&b| b == b'/')?;
+    let mut out = payload[..=slash].to_vec();
+    out.extend_from_slice(b"<redacted>");
+    Some(out)
 }
 
 impl Tracer {
@@ -113,6 +140,7 @@ impl Tracer {
         Tracer {
             name: name.into(),
             pack_seen: false,
+            redact_uris: false,
         }
     }
 
@@ -127,6 +155,12 @@ impl Tracer {
         self.name = name.into();
     }
 
+    /// Trace the paths of URIs as `<redacted>` (the `packfile-uris`
+    /// section) while `on`.
+    pub fn set_redact_uris(&mut self, on: bool) {
+        self.redact_uris = on;
+    }
+
     /// The message for `packet`, or `None` if it is not traced. Updates the
     /// pack state. Exposed for tests; [`Tracer::packet`] writes it.
     pub fn message(&mut self, dir: Direction, packet: Traced<'_>) -> Option<Vec<u8>> {
@@ -136,6 +170,11 @@ impl Tracer {
             }
             if is_pack_start(p) {
                 self.pack_seen = true;
+            }
+            if self.redact_uris && redact_enabled() {
+                if let Some(r) = redact_uri(p) {
+                    return Some(format_packet(&self.name, dir, Traced::Data(&r)));
+                }
             }
         }
         Some(format_packet(&self.name, dir, packet))
@@ -182,6 +221,20 @@ mod tests {
             fmt("ls-remote", Direction::Read, Traced::Data(b"")),
             "packet:    ls-remote< "
         );
+    }
+
+    #[test]
+    fn uri_redaction() {
+        // Observed from git 2.56.0 (t5702 "packfile-uri path redacted").
+        let mut t = Tracer::new("clone");
+        t.set_redact_uris(true);
+        let line = b"\x01abc http://u:pw@127.0.0.1:80/dumb/p.pack\n";
+        assert_eq!(
+            redact_uri(line).unwrap(),
+            b"\x01abc http://u:pw@127.0.0.1:80/<redacted>".to_vec()
+        );
+        assert_eq!(redact_uri(b"\x01abc no-uri"), None);
+        assert_eq!(redact_uri(b"x https://host"), None);
     }
 
     #[test]

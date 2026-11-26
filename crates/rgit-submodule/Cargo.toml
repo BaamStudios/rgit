@@ -13,4 +13,5 @@ workspace = true
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
 rgit-config = { path = "../rgit-config" }
+rgit-object = { path = "../rgit-object" }
 rgit-pathspec = { path = "../rgit-pathspec" }

@@ -41,5 +41,5 @@ pub use options::{
     ProxyKind, SslVersion,
 };
 pub use smart::{Advertisement, RpcBody, RpcResponse, Service, SmartHttp};
-pub use transport::{HttpTransport, download, target_for, transport_for};
+pub use transport::{HttpTransport, download, download_stream, target_for, transport_for};
 pub use url::{Scheme, Url};

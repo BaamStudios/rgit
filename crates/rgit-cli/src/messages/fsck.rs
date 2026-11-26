@@ -157,23 +157,6 @@ pub fn type_mismatch(oid: &str, is: &str, not: &str) -> String {
 
 pub const GITATTRIBUTES_BLOB: &str = "non-blob found at .gitattributes";
 pub const GITMODULES_BLOB: &str = "non-blob found at .gitmodules";
-pub const GITMODULES_PARSE: &str = "could not parse gitmodules blob";
-
-pub fn disallowed_name(name: &str) -> String {
-    format!("disallowed submodule name: {name}")
-}
-
-pub fn disallowed_url(url: &str) -> String {
-    format!("disallowed submodule url: {url}")
-}
-
-pub fn disallowed_path(path: &str) -> String {
-    format!("disallowed submodule path: {path}")
-}
-
-pub fn disallowed_update(value: &str) -> String {
-    format!("disallowed submodule update setting: {value}")
-}
 
 pub fn invalid_rev_index(pack: &str) -> String {
     format!("invalid rev-index for pack '{pack}'")

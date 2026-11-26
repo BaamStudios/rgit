@@ -51,3 +51,24 @@ pub fn multiple_configurations(label: &str, name: &BStr, key: &str) -> String {
         "{label}, multiple configurations found for 'submodule.{name}.{key}'. Skipping second one!"
     )
 }
+
+/// Findings of the `.gitmodules` object checks ([`crate::fsck`]).
+pub mod fsck {
+    pub const GITMODULES_PARSE: &str = "could not parse gitmodules blob";
+
+    pub fn disallowed_name(name: &str) -> String {
+        format!("disallowed submodule name: {name}")
+    }
+
+    pub fn disallowed_url(url: &str) -> String {
+        format!("disallowed submodule url: {url}")
+    }
+
+    pub fn disallowed_path(path: &str) -> String {
+        format!("disallowed submodule path: {path}")
+    }
+
+    pub fn disallowed_update(value: &str) -> String {
+        format!("disallowed submodule update setting: {value}")
+    }
+}

@@ -25,6 +25,7 @@ rgit-protocol = { path = "../rgit-protocol" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-remote = { path = "../rgit-remote" }
 rgit-repo = { path = "../rgit-repo" }
+rgit-submodule = { path = "../rgit-submodule" }
 rgit-trace = { path = "../rgit-trace" }
 rgit-transport = { path = "../rgit-transport" }
 thiserror = "2"
