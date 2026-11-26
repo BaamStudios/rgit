@@ -923,7 +923,9 @@ dependencies = [
  "rgit-object",
  "rgit-odb",
  "rgit-progress",
+ "rgit-trace",
  "rgit-worktree",
+ "tempfile",
  "thiserror",
 ]
 

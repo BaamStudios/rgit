@@ -123,6 +123,16 @@ pub fn unable_to_read_sha1(id: &str) -> String {
     format!("unable to read sha1 file of {id}")
 }
 
+/// A blob to be checked out at `path` is missing (`error: `).
+pub fn unable_to_read_sha1_of(path: &str, id: &str) -> String {
+    format!("unable to read sha1 file of {path} ({id})")
+}
+
+/// A checkout worker could not read the blob of `path` (`error: `).
+pub fn cannot_read_object(id: &str, path: &str) -> String {
+    format!("cannot read object {id} '{path}'")
+}
+
 /// Progress title while the work tree is updated (shown after
 /// `GIT_PROGRESS_DELAY` seconds).
 pub const PROGRESS_UPDATING_FILES: &str = "Updating files";

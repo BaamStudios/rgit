@@ -729,4 +729,41 @@ impl rgit_unpack::Filter for Converter {
     fn finish_delayed(&self, ready: &mut dyn FnMut(&[u8], Vec<u8>)) -> Vec<String> {
         Converter::finish_delayed(self, ready)
     }
+
+    fn parallel_conversion(&self, path: &[u8], id: &ObjectId) -> Option<rgit_unpack::Conversion> {
+        let conv = self.conversion(path);
+        if self.driver(&conv).is_some() {
+            return None;
+        }
+        if conv.is_identity() {
+            return Some(Box::new(|data| data));
+        }
+        let shown = String::from_utf8_lossy(path).into_owned();
+        let hex = id.to_hex();
+        Some(Box::new(move |data| {
+            rgit_convert::to_worktree(&shown, data, &conv, &hex, &mut print_notice)
+        }))
+    }
+
+    fn parallel_config(&self) -> rgit_unpack::ParallelConfig {
+        parallel_config(&self.git_config)
+    }
+}
+
+/// `checkout.workers` and `checkout.thresholdForParallelism` (default 1
+/// and 100); `GIT_TEST_CHECKOUT_WORKERS` overrides both (threshold 0).
+pub fn parallel_config(cfg: &ConfigSet) -> rgit_unpack::ParallelConfig {
+    if let Some(n) = std::env::var("GIT_TEST_CHECKOUT_WORKERS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+    {
+        return rgit_unpack::ParallelConfig::new(n, 0);
+    }
+    let workers = cfg.int("checkout.workers").ok().flatten().unwrap_or(1);
+    let threshold = cfg
+        .int("checkout.thresholdForParallelism")
+        .ok()
+        .flatten()
+        .unwrap_or(100);
+    rgit_unpack::ParallelConfig::new(workers, threshold)
 }

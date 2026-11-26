@@ -1408,11 +1408,22 @@ fn initial_checkout(
     let plan = rgit_unpack::plan(repo.odb(), &old, &Merge::OneWay(tree), Some(&wt), &mut opts)
         .map_err(unpack_failed)?;
     let conv = crate::convert::Converter::checkout(&repo, plan.index())?;
-    let applied =
-        plan.apply_with_progress(repo.odb(), &wt, &conv, crate::switch_branch::progress());
+    let applied = plan.detect_collisions().apply_with_progress(
+        repo.odb(),
+        &wt,
+        &conv,
+        crate::switch_branch::progress(),
+    );
     for e in &applied.errors {
         eprintln!("error: {e}");
     }
+    let ignore_case = repo
+        .config
+        .bool("core.ignorecase")
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    report_collisions(&root, &applied.index, &applied.collided, ignore_case);
     let opts = crate::index_config::write_options(&repo.config, &applied.index)?;
     let unable = || Die::Fatal(crate::messages::read_tree::UNABLE_TO_WRITE_INDEX.into());
     applied
@@ -1427,6 +1438,46 @@ fn initial_checkout(
     }
 }
 
+/// Warns about paths of the initial checkout that were written to the
+/// same file (a case-insensitive file system): every collided path and
+/// every other entry that now names the same file (or, with
+/// `core.ignoreCase`, the same path in another case), in index order.
+fn report_collisions(
+    root: &std::path::Path,
+    index: &rgit_index::Index,
+    collided: &[Vec<u8>],
+    ignore_case: bool,
+) {
+    if collided.is_empty() {
+        return;
+    }
+    let file_id = |path: &[u8]| -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            use std::os::unix::fs::MetadataExt;
+            let m = std::fs::symlink_metadata(root.join(std::ffi::OsStr::from_bytes(path))).ok()?;
+            Some((m.dev(), m.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            None
+        }
+    };
+    let ids: HashSet<(u64, u64)> = collided.iter().filter_map(|p| file_id(p)).collect();
+    let folded: HashSet<Vec<u8>> = collided.iter().map(|p| p.to_ascii_lowercase()).collect();
+    eprint!("warning: {}", msg::PATHS_COLLIDED);
+    for e in index.entries() {
+        let p = e.path();
+        let peer = collided.iter().any(|c| c.as_slice() == p)
+            || (ignore_case && folded.contains(&p.to_ascii_lowercase()))
+            || (!e.mode.is_gitlink() && file_id(p).is_some_and(|id| ids.contains(&id)));
+        if peer {
+            eprintln!("  '{}'", String::from_utf8_lossy(p));
+        }
+    }
+}
 
 /// `--revision`: a full object name, or a ref the remote advertises
 /// (full name, or the usual `refs/`, `refs/tags/`, `refs/heads/`,

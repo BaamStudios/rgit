@@ -366,23 +366,27 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
     }
     let conv = crate::convert::Converter::paths(repo, &index)?;
     // Writes `data` for `entry` and records the new stat data.
+    // Records the stat data of the file just written for `entry`.
+    let record = |index: &mut Index, path: &[u8], entry: &Entry, meta: &std::fs::Metadata| {
+        // The index entry (for `--ours`/`--theirs` the stage written) now
+        // describes the new file, unless the index keeps something else
+        // (worktree-only restore from a tree).
+        let stage = if how.source.is_some() { Stage::MERGED } else { entry.stage() };
+        if how.source.is_none() || how.index {
+            if let Ok(pos) = index.position(path, stage) {
+                if let Some(e) = index
+                    .entry_mut(pos)
+                    .filter(|e| e.id == entry.id && e.mode == entry.mode)
+                {
+                    e.stat = rgit_worktree::stat::stat_from_metadata(meta);
+                }
+            }
+        }
+    };
     let write = |index: &mut Index, path: &[u8], entry: &Entry, data: &[u8]| -> bool {
         match rgit_unpack::write_entry(&work_tree, path, entry, data, symlinks) {
             Ok(Some(meta)) => {
-                // The index entry (for `--ours`/`--theirs` the stage
-                // written) now describes the new file, unless the index
-                // keeps something else (worktree-only restore from a tree).
-                let stage = if how.source.is_some() { Stage::MERGED } else { entry.stage() };
-                if how.source.is_none() || how.index {
-                    if let Ok(pos) = index.position(path, stage) {
-                        if let Some(e) = index
-                            .entry_mut(pos)
-                            .filter(|e| e.id == entry.id && e.mode == entry.mode)
-                        {
-                            e.stat = rgit_worktree::stat::stat_from_metadata(&meta);
-                        }
-                    }
-                }
+                record(index, path, entry, &meta);
                 true
             }
             Ok(None) => true,
@@ -392,9 +396,14 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
             }
         }
     };
+    let mut parallel = rgit_unpack::ParallelCheckout::new(
+        rgit_unpack::Filter::parallel_config(&conv),
+        &work_tree,
+        repo.odb(),
+    );
     let mut delayed: Vec<(&[u8], &Entry)> = Vec::new();
     let mut recreated = 0usize;
-    for (path, action) in &actions {
+    for (i, (path, action)) in actions.iter().enumerate() {
         if let Action::Merge(stages) = action {
             let (base, ours, theirs) = &**stages;
             recreated += 1;
@@ -413,25 +422,26 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         }
         if let Some(res) = rgit_unpack::stream_entry(repo.odb(), &conv, &work_tree, path, entry) {
             match res {
-                Ok(meta) => {
-                    let stage = if how.source.is_some() { Stage::MERGED } else { entry.stage() };
-                    if how.source.is_none() || how.index {
-                        if let Ok(pos) = index.position(path, stage) {
-                            if let Some(e) = index
-                                .entry_mut(pos)
-                                .filter(|e| e.id == entry.id && e.mode == entry.mode)
-                            {
-                                e.stat = rgit_worktree::stat::stat_from_metadata(&meta);
-                            }
-                        }
-                    }
-                }
+                Ok(meta) => record(&mut index, path, entry, &meta),
                 Err(e) => {
                     eprintln!("error: {e}");
                     failed = true;
+                    count -= 1;
                 }
             }
             continue;
+        }
+        if parallel.enabled() {
+            match parallel.enqueue(i, path, entry, &conv) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    failed = true;
+                    count -= 1;
+                    continue;
+                }
+            }
         }
         let data = if entry.mode.is_gitlink() {
             Vec::new()
@@ -447,14 +457,38 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
                     }
                 }
                 Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
+                Err(_) => {
+                    eprintln!(
+                        "error: {}",
+                        rgit_unpack::messages::unable_to_read_sha1_of(
+                            &String::from_utf8_lossy(path),
+                            &entry.id.to_hex()
+                        )
+                    );
                     failed = true;
+                    count -= 1;
                     continue;
                 }
             }
         };
-        failed |= !write(&mut index, path, entry, &data);
+        if !write(&mut index, path, entry, &data) {
+            failed = true;
+            count -= 1;
+        }
+    }
+    for o in parallel.run() {
+        let (path, action) = &actions[o.key];
+        let Action::Write(entry) = action else {
+            continue;
+        };
+        match o.result {
+            Ok(meta) => record(&mut index, path, entry, &meta),
+            Err(e) => {
+                eprintln!("error: {e}");
+                failed = true;
+                count -= 1;
+            }
+        }
     }
     if !delayed.is_empty() {
         let mut filtering = crate::switch_branch::progress().then(|| {
@@ -477,7 +511,10 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
                 m.set(filtered);
             }
             if let Some((p, entry)) = delayed.iter().find(|(p, _)| *p == path) {
-                failed |= !write(&mut index, p, entry, &data);
+                if !write(&mut index, p, entry, &data) {
+                    failed = true;
+                    count -= 1;
+                }
             }
         });
         if let Some(m) = filtering {
@@ -487,6 +524,7 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
             eprintln!("error: {m}");
         }
         failed |= !missing.is_empty();
+        count = count.saturating_sub(missing.len());
     }
     if index_changed {
         index.set_cache_tree(None);

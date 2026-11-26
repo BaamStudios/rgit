@@ -110,6 +110,11 @@
 //! [`write_entry`] and [`remove_entry`] are public for `checkout-index` and
 //! path-wise checkouts.
 //!
+//! With `checkout.workers` above one ([`Filter::parallel_config`]),
+//! regular files that need no external filter driver are queued and
+//! written by worker threads after the other entries
+//! ([`ParallelCheckout`]); the result is the same as a sequential checkout.
+//!
 //! Tree paths are checked with [`verify_checkout_path`] (`.git` in any
 //! case and its NTFS/HFS+ equivalents, `..`, symbolic `.gitmodules`);
 //! a bad path ends the merge with [`Error::InvalidPath`]
@@ -119,6 +124,7 @@ mod cache_tree;
 mod checkout;
 pub mod messages;
 mod objects;
+mod parallel;
 mod path;
 mod unpack;
 
@@ -128,6 +134,7 @@ pub use checkout::{
     stream_entry, write_entry,
 };
 pub use objects::{Objects, read_blob, tree_entries};
+pub use parallel::{Conversion, Outcome, ParallelCheckout, ParallelConfig};
 pub use path::{PathOptions, verify_checkout_path};
 pub use unpack::{Applied, Merge, Options, Plan, Porcelain, Problem, Rejection, Worktree, plan};
 

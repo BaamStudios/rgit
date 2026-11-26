@@ -44,6 +44,25 @@ pub trait Filter {
         let _ = path;
         false
     }
+
+    /// The conversion of blob `id` at `path` as a function that can run
+    /// on a worker thread, when it needs no external filter driver; `None`
+    /// keeps the entry out of a parallel checkout. The default says `None`.
+    fn parallel_conversion(
+        &self,
+        path: &[u8],
+        id: &ObjectId,
+    ) -> Option<crate::parallel::Conversion> {
+        let _ = (path, id);
+        None
+    }
+
+    /// `checkout.workers` and `checkout.thresholdForParallelism` of the
+    /// repository the filter belongs to. The default is a sequential
+    /// checkout.
+    fn parallel_config(&self) -> crate::parallel::ParallelConfig {
+        crate::parallel::ParallelConfig::default()
+    }
 }
 
 /// The filter that changes nothing.
@@ -57,6 +76,14 @@ impl Filter for Identity {
 
     fn passes_unchanged(&self, _path: &[u8]) -> bool {
         true
+    }
+
+    fn parallel_conversion(
+        &self,
+        _path: &[u8],
+        _id: &ObjectId,
+    ) -> Option<crate::parallel::Conversion> {
+        Some(Box::new(|data| data))
     }
 }
 
@@ -84,6 +111,14 @@ pub enum CheckoutError {
     ReadBlob {
         /// The blob.
         id: ObjectId,
+    },
+    /// A checkout worker could not read the blob of `path`.
+    #[error("{}", msg::cannot_read_object(&.id.to_hex(), .path))]
+    ReadObject {
+        /// The blob.
+        id: ObjectId,
+        /// The path, as shown.
+        path: String,
     },
     /// Creating the symbolic link failed.
     #[error("{}", msg::unable_to_create_symlink(.path, .error))]
@@ -160,7 +195,7 @@ pub fn create_leading_dirs(root: &Path, rel: &[u8], force: bool) -> Result<(), C
 }
 
 /// Removes whatever is at `full` (a file, symbolic link or directory tree).
-fn remove_any(full: &Path) -> io::Result<()> {
+pub(crate) fn remove_any(full: &Path) -> io::Result<()> {
     match fs::symlink_metadata(full) {
         Ok(m) if m.is_dir() => fs::remove_dir_all(full),
         Ok(_) => fs::remove_file(full),
