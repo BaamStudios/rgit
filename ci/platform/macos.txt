@@ -1,1 +1,18 @@
 # Test targets known to fail on macOS (format: scripts/platform-tests.py).
+#
+# Recorded from the run of 2026-11-26, which was cancelled after
+# `-p rgit-cli --test hook` (alphabetical order): the targets after it and
+# the crates after rgit-cli still have to be recorded from a complete run.
+
+# A test of the fetch suite never returns on macOS.
+skip -p rgit-cli --test fetch  #680 hangs
+
+-p rgit-cli --test blame               #680 regexec() message of the system regex library
+-p rgit-cli --test branch              #680 fixture script uses GNU sed -i
+-p rgit-cli --test cli                 #680 a closed pipe ends rgit with a panic message instead of quietly
+-p rgit-cli --test convert             #680 working-tree-encoding: iconv output differs
+-p rgit-cli --test cruft               #680 fixture script uses GNU touch/date options
+-p rgit-cli --test diff_rename         #680
+-p rgit-cli --test diff_routing_fixes  #680
+-p rgit-cli --test for_each_ref        #680
+-p rgit-cli --test grep                #680
