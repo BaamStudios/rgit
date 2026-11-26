@@ -56,6 +56,7 @@ pub mod merge_base;
 pub mod merge_file;
 pub mod merge_plumbing;
 pub mod merge_tree;
+pub mod mergetool;
 pub mod mktag;
 pub mod mktree;
 pub mod multi_pack_index;

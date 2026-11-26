@@ -735,7 +735,13 @@ pub const DEPRECATED: &[&str] = &["pack-redundant", "whatchanged"];
 
 /// Commands rgit implements natively that git ships as scripts: they are
 /// not listed by `--list-cmds=builtins` (as with git).
-pub const SCRIPTS: &[&str] = &["merge-octopus", "merge-one-file", "merge-resolve"];
+pub const SCRIPTS: &[&str] = &[
+    "difftool--helper",
+    "merge-octopus",
+    "merge-one-file",
+    "merge-resolve",
+    "mergetool",
+];
 
 /// The catalogue entry of `name`.
 pub fn lookup(name: &str) -> Option<&'static Entry> {
