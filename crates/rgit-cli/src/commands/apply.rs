@@ -1899,6 +1899,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .and_then(|()| lock.commit())
             .map_err(|e| Die::Fatal(e.to_string()))?;
     }
+    if state.conflicted && repo.is_some() && !state.s.cached {
+        // A three-way merge left conflicts: rerere records or replays.
+        crate::rerere::auto(ctx, None)?;
+    }
     let ws = if state.ws_summary_printed {
         128
     } else {

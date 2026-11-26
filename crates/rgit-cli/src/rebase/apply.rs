@@ -49,6 +49,11 @@ fn am_args(state: &State) -> Vec<String> {
     if let Some(s) = &state.gpg_sign {
         a.push(s.to_opt());
     }
+    match state.rerere {
+        Some(true) => a.push("--rerere-autoupdate".to_owned()),
+        Some(false) => a.push("--no-rerere-autoupdate".to_owned()),
+        None => {}
+    }
     a
 }
 
@@ -93,6 +98,14 @@ fn write_state(repo: &Repo, state: &State) -> Result<(), Die> {
     }
     if let Some(a) = &state.autostash {
         write(&dir.join("autostash"), format!("{a}\n"))?;
+    }
+    if let Some(r) = state.rerere {
+        let opt = if r {
+            "--rerere-autoupdate"
+        } else {
+            "--no-rerere-autoupdate"
+        };
+        write(&dir.join("allow_rerere_autoupdate"), format!("{opt}\n"))?;
     }
     Ok(())
 }

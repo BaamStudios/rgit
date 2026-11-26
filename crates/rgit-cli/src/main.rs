@@ -76,6 +76,7 @@ mod refs_support;
 mod repo;
 mod repo_objects;
 mod repository;
+mod rerere;
 mod revision;
 mod revisions;
 mod sequencer;

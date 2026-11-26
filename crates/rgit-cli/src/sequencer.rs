@@ -20,8 +20,12 @@
 //! against the `git` binary (`tests/sequencer.rs`). The sequencer only
 //! knows `pick` and `revert` so far; rebase (#154) will add its commands.
 //!
+//! rerere runs after a conflict (`--[no-]rerere-autoupdate` is kept in
+//! `opts` as `allow-rerere-auto`); `--continue` commits through
+//! `git commit`, which records the resolution.
+//!
 //! Not yet: the merge strategies `resolve`, `octopus` and `subtree`
-//! (#153), rerere (#156), `-S` (#51).
+//! (#153), `-S` (#51).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -107,6 +111,8 @@ pub struct Opts {
     /// `-S[<key>]` or `commit.gpgSign` (resolved when the operation
     /// starts).
     pub gpg_sign: Option<crate::signing::Sign>,
+    /// `--[no-]rerere-autoupdate`; `None` follows `rerere.autoUpdate`.
+    pub allow_rerere_auto: Option<bool>,
 }
 
 impl Opts {
@@ -128,6 +134,7 @@ impl Opts {
             cleanup: None,
             reference: false,
             gpg_sign: None,
+            allow_rerere_auto: None,
         }
     }
 
@@ -180,6 +187,9 @@ impl Opts {
         if let Some(c) = &self.cleanup {
             kv("default-msg-cleanup", c);
         }
+        if let Some(r) = self.allow_rerere_auto {
+            kv("allow-rerere-auto", if r { "true" } else { "false" });
+        }
         match &self.gpg_sign {
             Some(crate::signing::Sign::Key(k)) => kv("gpg-sign", k),
             Some(crate::signing::Sign::Default) => kv("gpg-sign", ""),
@@ -224,6 +234,7 @@ impl Opts {
                 "strategy" => self.strategy = Some(value),
                 "strategy-option" => self.xopts.push(value),
                 "default-msg-cleanup" => self.cleanup = Some(value),
+                "allow-rerere-auto" => self.allow_rerere_auto = Some(truth()),
                 "gpg-sign" => self.gpg_sign = Some(crate::signing::Sign::from_arg(Some(&value))),
                 _ => {}
             }
@@ -724,6 +735,7 @@ impl<'c> Sequencer<'c> {
                 .advisor(&repo.config)?
                 .advise(Advice::MergeConflict, &advice)
                 .map_err(Die::Fatal)?;
+            crate::rerere::auto(self.ctx, self.opts.allow_rerere_auto)?;
             return Ok(Step::Stopped);
         }
 

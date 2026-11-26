@@ -2105,6 +2105,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if deferred {
         write_index(&repo, &mut index.clone(), index_mtime)?;
     }
+    // Records the resolutions of the conflicts this commit concludes.
+    crate::rerere::auto(ctx, None)?;
     crate::hooks::run(&git_hooks, "post-commit", &hook_opts(&repo.index_path(), &[]))?;
     if let (Some(old), false) = (head.filter(|_| args.amend), args.no_post_rewrite) {
         crate::notes::rewrite_after(
