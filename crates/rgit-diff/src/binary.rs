@@ -11,13 +11,15 @@
 //! `a`-`z` for 27-52) followed by the bytes in base 85 (RFC 1924
 //! alphabet, groups of four bytes as five digits, most significant first,
 //! the last group padded with zero bytes). `delta <size>` hunks hold a
-//! delta in the pack format instead; rgit writes literal hunks only,
-//! which every `git apply` accepts.
+//! delta in the pack format instead (see [`delta`]); which kind a hunk
+//! gets is decided as described at `hunk`.
 
 use std::io::Write;
 
-use flate2::Compression;
-use flate2::write::{ZlibDecoder, ZlibEncoder};
+use flate2::write::ZlibDecoder;
+use flate2::{Compress, Compression, FlushCompress, Status};
+
+pub mod delta;
 
 const ALPHABET: &[u8; 85] =
     b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
@@ -75,10 +77,23 @@ pub fn decode_line(line: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// zlib-compresses `data` (fastest level, as git does).
+///
+/// The whole input goes to the compressor in one call that also finishes
+/// the stream, as git does; feeding it in pieces can end the data with an
+/// extra empty block.
 pub fn deflate(data: &[u8]) -> Vec<u8> {
-    let mut e = ZlibEncoder::new(Vec::new(), Compression::fast());
-    e.write_all(data).expect("in memory");
-    e.finish().expect("in memory")
+    let mut c = Compress::new(Compression::fast(), true);
+    let mut out = Vec::with_capacity(data.len() + data.len() / 1000 + 64);
+    loop {
+        let consumed = c.total_in() as usize;
+        let status = c
+            .compress_vec(&data[consumed..], &mut out, FlushCompress::Finish)
+            .expect("in memory");
+        if status == Status::StreamEnd {
+            return out;
+        }
+        out.reserve(out.capacity().max(64));
+    }
 }
 
 /// Inflates zlib data; `None` if it is corrupt.
@@ -88,17 +103,30 @@ pub fn inflate(data: &[u8]) -> Option<Vec<u8>> {
     d.finish().ok()
 }
 
-fn literal(out: &mut Vec<u8>, data: &[u8]) {
-    writeln!(out, "literal {}", data.len()).unwrap();
-    encode_lines(out, &deflate(data));
+/// Appends one hunk that turns `from` into `to`: a delta when it is
+/// written without ever growing past the compressed contents and then
+/// compresses to fewer bytes than they do, else the contents.
+fn hunk(out: &mut Vec<u8>, from: &[u8], to: &[u8]) {
+    let literal = deflate(to);
+    if let Some(raw) = delta::make_delta(from, to, literal.len()) {
+        let zipped = deflate(&raw);
+        if zipped.len() < literal.len() {
+            writeln!(out, "delta {}", raw.len()).unwrap();
+            encode_lines(out, &zipped);
+            out.push(b'\n');
+            return;
+        }
+    }
+    writeln!(out, "literal {}", to.len()).unwrap();
+    encode_lines(out, &literal);
     out.push(b'\n');
 }
 
 /// Appends the `GIT binary patch` block that turns `old` into `new`.
 pub fn write_binary_patch(out: &mut Vec<u8>, old: &[u8], new: &[u8]) {
     out.extend_from_slice(b"GIT binary patch\n");
-    literal(out, new);
-    literal(out, old);
+    hunk(out, old, new);
+    hunk(out, new, old);
 }
 
 #[cfg(test)]
