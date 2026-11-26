@@ -894,6 +894,82 @@ fn serves_the_reference_client() {
     );
 }
 
+/// The other services: push with `--enable=receive-pack` (or the
+/// repository's `daemon.receivepack`), `git archive --remote` with
+/// `--enable=upload-archive`.
+#[test]
+fn push_and_archive_through_the_daemon() {
+    let fx = fixture()
+        .git(["clone", "-q", "--bare", "srv", "own.git"])
+        .git(["-C", "own.git", "config", "daemon.receivepack", "true"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let work = fx.work_dir();
+    let srv = work.join("srv");
+    let head = git_ok(&fx, &srv, &["rev-parse", "HEAD"]);
+    let d = start(
+        &fx,
+        "d",
+        &[
+            "--export-all",
+            "--enable=receive-pack",
+            "--enable=upload-archive",
+        ],
+    );
+    for version in ["0", "2"] {
+        let config = format!("protocol.version={version}");
+        let branch = format!("HEAD:refs/heads/pushed-{version}");
+        git_ok(
+            &fx,
+            &srv,
+            &["-c", &config, "push", "-q", &d.url("bare.git"), &branch],
+        );
+        let name = format!("refs/heads/pushed-{version}");
+        assert_eq!(
+            git_ok(&fx, &work.join("bare.git"), &["rev-parse", &name]),
+            head
+        );
+    }
+    let remote = format!("--remote={}", d.url("srv"));
+    let listed = git_ok(&fx, &work, &["archive", &remote, "--format=tar", "HEAD"]);
+    let local = git_ok(&fx, &srv, &["archive", "--format=tar", "HEAD"]);
+    assert_eq!(listed, local);
+    drop(d);
+
+    // Off by default; a repository can switch push on for itself.
+    let d = start(&fx, "o", &["--export-all", "--informative-errors"]);
+    let refused = git(
+        &fx,
+        &srv,
+        &["push", &d.url("bare.git"), "HEAD:refs/heads/no"],
+    );
+    assert!(
+        text(&refused.stderr).contains("remote error: service not enabled: /bare.git"),
+        "{}",
+        text(&refused.stderr)
+    );
+    let refused = git(
+        &fx,
+        &work,
+        &["archive", &format!("--remote={}", d.url("srv")), "HEAD"],
+    );
+    assert!(
+        text(&refused.stderr).contains("remote error: service not enabled: /srv"),
+        "{}",
+        text(&refused.stderr)
+    );
+    git_ok(
+        &fx,
+        &srv,
+        &["push", "-q", &d.url("own.git"), "HEAD:refs/heads/own"],
+    );
+    assert_eq!(
+        git_ok(&fx, &work.join("own.git"), &["rev-parse", "refs/heads/own"]),
+        head
+    );
+}
+
 #[test]
 fn informative_errors_and_virtual_hosts() {
     let fx = fixture();

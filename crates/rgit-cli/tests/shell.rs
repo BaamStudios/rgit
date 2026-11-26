@@ -184,6 +184,30 @@ fn commands_equal_git() {
         let git = shell(&fx, fx.reference_git(), &["-c", &command], b"0000", None);
         assert_eq!(git.status.code(), Some(0), "{command}");
     }
+    // The other services start as well: an advertisement for push, the
+    // acknowledgment of `git archive --remote`.
+    let pushed = shell(
+        &fx,
+        &rgit(),
+        &["-c", &format!("git-receive-pack '{repo}'")],
+        b"0000",
+        None,
+    );
+    assert_eq!(pushed.status.code(), Some(0), "{}", text(&pushed.stderr));
+    assert!(
+        text(&pushed.stdout).contains("capabilities^{}"),
+        "{}",
+        text(&pushed.stdout)
+    );
+    let archive_request = b"0012argument HEAD\n0000";
+    let command = format!("git-upload-archive '{repo}'");
+    let archived = shell(&fx, &rgit(), &["-c", &command], archive_request, None);
+    assert!(
+        text(&archived.stdout).starts_with("0008ACK\n0000"),
+        "{:?}",
+        archived
+    );
+
     // The quoting of the clients: `'\''` and `'\!'`.
     for (command, dir) in [
         ("git-upload-pack 'no'\\''such.git'", "no'such.git"),
