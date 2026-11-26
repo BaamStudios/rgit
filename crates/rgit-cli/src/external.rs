@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! Dashed external commands: `git foo` runs `git-foo` from the exec path,
 //! then from `$PATH`, with the exec path prepended to the child's `PATH`
-//! and the global options passed on through the environment.
+//! and the global options passed on through the environment. Commands
+//! rgit hands off to an installed git (`svn`, `p4`, ...) are also looked
+//! up in that git's exec path (see `handoff`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,7 +41,8 @@ pub fn is_self(p: &Path) -> bool {
         .is_ok_and(|me| me == target)
 }
 
-/// Find `git-<name>`: the exec path first, then each `$PATH` entry.
+/// Find `git-<name>`: the exec path first, then each `$PATH` entry, then
+/// (for a handed-off command) the exec path of an installed git.
 pub fn find(ctx: &Context, name: &str) -> Option<PathBuf> {
     if name.is_empty() || name.contains('/') {
         return None;
@@ -58,6 +61,7 @@ pub fn find(ctx: &Context, name: &str) -> Option<PathBuf> {
     dirs.into_iter()
         .map(|d| d.join(&file))
         .find(|p| is_executable(p) && !is_self(p))
+        .or_else(|| crate::handoff::find(name))
 }
 
 /// Run the external command `argv[0]`; `None` if there is no such program.
@@ -78,7 +82,18 @@ pub fn run(ctx: &Context, argv: &[String]) -> Option<CmdResult> {
         use std::os::unix::process::CommandExt;
         cmd.arg0(format!("git-{}", argv[0]));
     }
-    for (k, v) in ctx.child_env() {
+    let mut env = ctx.child_env();
+    // A handed-off program calls `git` for the plumbing: make that rgit.
+    let shim = crate::handoff::lookup(&argv[0]).and_then(|_| crate::handoff::GitShim::new(ctx));
+    if let Some(shim) = &shim {
+        let old = env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.clone());
+        env.retain(|(k, _)| k != "PATH");
+        env.push(("PATH".into(), shim.path(old.as_ref())));
+    }
+    for (k, v) in env {
         cmd.env(k, v);
     }
     let info = rgit_trace::trace2::ChildInfo {
