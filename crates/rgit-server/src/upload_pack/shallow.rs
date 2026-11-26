@@ -179,11 +179,7 @@ pub(crate) fn plan(
 
 /// The distance (a head counts as 1) of the nearest commit in `targets`
 /// from `heads`.
-fn nearest(
-    graph: &mut Graph<'_>,
-    heads: &[ObjectId],
-    targets: &HashSet<ObjectId>,
-) -> Option<u64> {
+fn nearest(graph: &mut Graph<'_>, heads: &[ObjectId], targets: &HashSet<ObjectId>) -> Option<u64> {
     let mut seen: HashSet<ObjectId> = heads.iter().copied().collect();
     let mut queue: VecDeque<(ObjectId, u64)> = heads.iter().map(|id| (*id, 1)).collect();
     while let Some((id, distance)) = queue.pop_front() {
@@ -236,7 +232,10 @@ fn by_depth(
             if stop.contains(&id) {
                 continue;
             }
-            let parents = graph.commit(&id).map(|c| c.parents.clone()).unwrap_or_default();
+            let parents = graph
+                .commit(&id)
+                .map(|c| c.parents.clone())
+                .unwrap_or_default();
             for p in parents {
                 let shorter = depth_of.get(&p).is_none_or(|old| *old > d + 1);
                 if shorter && graph.commit(&p).is_some() {
@@ -267,9 +266,7 @@ fn by_revs(
     since: Option<i64>,
     not: &[ObjectId],
 ) -> (Vec<ObjectId>, HashSet<ObjectId>) {
-    let excluded: HashSet<ObjectId> = reachable(graph, not, &HashSet::new())
-        .into_iter()
-        .collect();
+    let excluded: HashSet<ObjectId> = reachable(graph, not, &HashSet::new()).into_iter().collect();
     let mut included: HashSet<ObjectId> = HashSet::new();
     let mut order = Vec::new();
     let mut seen: HashSet<ObjectId> = HashSet::new();
@@ -293,7 +290,10 @@ fn by_revs(
         }
         included.insert(id);
         order.push(id);
-        let parents = graph.commit(&id).map(|c| c.parents.clone()).unwrap_or_default();
+        let parents = graph
+            .commit(&id)
+            .map(|c| c.parents.clone())
+            .unwrap_or_default();
         for p in parents {
             push(graph, &mut queue, p);
         }
@@ -313,11 +313,7 @@ fn by_revs(
 
 /// The commits reachable from `heads`, not looking behind the commits in
 /// `stop` (which are part of the result).
-fn reachable(
-    graph: &mut Graph<'_>,
-    heads: &[ObjectId],
-    stop: &HashSet<ObjectId>,
-) -> Vec<ObjectId> {
+fn reachable(graph: &mut Graph<'_>, heads: &[ObjectId], stop: &HashSet<ObjectId>) -> Vec<ObjectId> {
     let mut seen: HashSet<ObjectId> = HashSet::new();
     let mut order = Vec::new();
     let mut queue: VecDeque<ObjectId> = heads.iter().copied().collect();

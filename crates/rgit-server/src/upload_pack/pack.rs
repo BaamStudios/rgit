@@ -79,7 +79,14 @@ impl PackRequest {
         if self.include_tag {
             args.push("--include-tag".into());
         }
-        args.push(if self.progress { "--progress" } else { "--quiet" }.into());
+        args.push(
+            if self.progress {
+                "--progress"
+            } else {
+                "--quiet"
+            }
+            .into(),
+        );
         if let Some(spec) = &self.filter {
             args.push(format!("--filter={spec}").into());
         }
@@ -139,7 +146,10 @@ pub(crate) fn send<R: Read, W: Write>(
         Some(hook) => {
             // `sh -c '<hook> "$@"' <hook> git pack-objects ...`
             let mut c = Command::new("/bin/sh");
-            c.arg("-c").arg(format!("{hook} \"$@\"")).arg(hook).arg("git");
+            c.arg("-c")
+                .arg(format!("{hook} \"$@\""))
+                .arg(hook)
+                .arg("git");
             c
         }
         None => {

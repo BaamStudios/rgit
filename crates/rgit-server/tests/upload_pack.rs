@@ -150,7 +150,10 @@ fn advertisement() {
         "fetch=shallow wait-for-done filter ref-in-want sideband-all\n"
     );
     assert!(lines[6].starts_with("session-id="), "{lines:?}");
-    assert_eq!(&lines[7..], ["object-info=size type\n", "bundle-uri\n", "0000"]);
+    assert_eq!(
+        &lines[7..],
+        ["object-info=size type\n", "bundle-uri\n", "0000"]
+    );
 
     // One request and no advertisement with --stateless-rpc.
     let served = serve(&dir, "", true, b"");
@@ -384,7 +387,11 @@ fn request_errors() {
         "expected flush after fetch arguments"
     );
     // Features that are switched off are unknown arguments.
-    for arg in ["filter blob:none", "want-ref refs/heads/main", "sideband-all"] {
+    for arg in [
+        "filter blob:none",
+        "want-ref refs/heads/main",
+        "sideband-all",
+    ] {
         assert_eq!(
             fatal("", &["command=fetch", "0001", arg, "0000"]).0,
             format!("unexpected line: '{arg}'")
@@ -413,7 +420,14 @@ fn request_errors() {
     assert_eq!(
         fatal(
             "[uploadpack]\nallowFilter = true\n[uploadpackfilter \"blob:none\"]\nallow = false\n",
-            &["command=fetch", "0001", &want, "filter blob:none", "done", "0000"]
+            &[
+                "command=fetch",
+                "0001",
+                &want,
+                "filter blob:none",
+                "done",
+                "0000"
+            ]
         ),
         (
             "filter 'blob:none' not supported".to_owned(),
@@ -423,14 +437,27 @@ fn request_errors() {
     assert_eq!(
         fatal(
             "[uploadpack]\nallowFilter = true\n[uploadpackfilter \"tree\"]\nmaxDepth = 1\n",
-            &["command=fetch", "0001", &want, "filter tree:3", "done", "0000"]
+            &[
+                "command=fetch",
+                "0001",
+                &want,
+                "filter tree:3",
+                "done",
+                "0000"
+            ]
         )
         .0,
         "tree filter allows max depth 1, but got 3"
     );
     for (arg, message) in [
-        ("want xyz", "git upload-pack: protocol error, expected to get oid, not 'want xyz'"),
-        ("have xyz", "git upload-pack: expected SHA1 object, got 'xyz'"),
+        (
+            "want xyz",
+            "git upload-pack: protocol error, expected to get oid, not 'want xyz'",
+        ),
+        (
+            "have xyz",
+            "git upload-pack: expected SHA1 object, got 'xyz'",
+        ),
         ("shallow xyz", "invalid shallow line: shallow xyz"),
         ("deepen 0", "Invalid deepen: deepen 0"),
         ("deepen-since x", "Invalid deepen-since: deepen-since x"),
@@ -454,13 +481,13 @@ fn several_requests_on_one_connection() {
     }
     let dir = fx.work_dir();
     let side = rev(&fx, "side");
-    let mut input = request(&[
+    let mut input = request(&["command=ls-refs", "0001", "ref-prefix refs/heads/s", "0000"]);
+    input.extend(request(&[
         "command=ls-refs",
         "0001",
-        "ref-prefix refs/heads/s",
+        "ref-prefix refs/x",
         "0000",
-    ]);
-    input.extend(request(&["command=ls-refs", "0001", "ref-prefix refs/x", "0000"]));
+    ]));
     // A lone flush packet ends the conversation; what follows is not read.
     input.extend(request(&["0000", "command=bogus", "0000"]));
     let served = serve(&dir, "", false, &input);

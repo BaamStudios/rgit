@@ -169,7 +169,9 @@ impl<'a> RefView<'a> {
         let mut out = Vec::new();
         for item in self.store.iter(&all)? {
             let IterItem::Ref(r) = item else { continue };
-            let Some(name) = self.strip(&r.name) else { continue };
+            let Some(name) = self.strip(&r.name) else {
+                continue;
+            };
             let Some(id) = r.oid else { continue };
             if self.hidden(name) {
                 continue;

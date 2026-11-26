@@ -419,6 +419,11 @@ pub struct EnumerateOptions<'a> {
     /// what a reader that got its objects through the same filter has:
     /// trees for the filters that keep all trees, else nothing.
     pub filter: Option<&'a ObjectFilter>,
+    /// Tips that nobody named: they come from a set of references
+    /// (`--all`, `--reflog`, ...). The filter applies to the trees and
+    /// blobs among them and behind their tags, as it does not to the
+    /// tips given one by one.
+    pub unnamed_tips: &'a [ObjectId],
 }
 
 /// [`enumerate_with_edges`] with all options: the listed objects and the
@@ -442,6 +447,7 @@ pub fn enumerate_with<S: ObjectSource + ?Sized>(
         opts.aggressive,
         Some(&mut edges),
         filter.as_ref(),
+        opts.unnamed_tips,
     )?;
     if let Some(f) = &filter {
         let trees = f.keeps_all_trees();
@@ -458,7 +464,16 @@ fn walk_objects<S: ObjectSource + ?Sized>(
     aggressive: bool,
     edge_objects: Option<&mut Vec<ListedObject>>,
 ) -> Result<Vec<ListedObject>, WriteError> {
-    walk_objects_filtered(source, hash, tips, sparse, aggressive, edge_objects, None)
+    walk_objects_filtered(
+        source,
+        hash,
+        tips,
+        sparse,
+        aggressive,
+        edge_objects,
+        None,
+        &[],
+    )
 }
 
 /// What the filtered tree walk has done so far.
@@ -599,6 +614,7 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_objects_filtered<S: ObjectSource + ?Sized>(
     source: &S,
     hash: HashKind,
@@ -607,6 +623,7 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
     aggressive: bool,
     mut edge_objects: Option<&mut Vec<ListedObject>>,
     filter: Option<&Compiled>,
+    unnamed_tips: &[ObjectId],
 ) -> Result<Vec<ListedObject>, WriteError> {
     let mut w = Walker {
         source,
@@ -618,6 +635,9 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
     let mut include_commits = Vec::new();
     let mut exclude_commits = Vec::new();
     let mut pending: Vec<ListedObject> = Vec::new(); // tags, trees, blobs named directly
+    // Trees and blobs from tips nobody named: a filter applies to them.
+    let unnamed_tips: HashSet<ObjectId> = unnamed_tips.iter().copied().collect();
+    let mut unnamed: HashSet<ObjectId> = HashSet::new();
     let mut excluded_roots: Vec<(ObjectId, ObjectKind)> = Vec::new();
     for tip in tips {
         let (tags, id, kind) = w.peel(tip.id)?;
@@ -629,6 +649,11 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
             // Excluded tags themselves are not sent either.
             excluded_roots.extend(tags.iter().map(|t| (t.id, ObjectKind::Tag)));
             continue;
+        }
+        if unnamed_tips.contains(&tip.id) {
+            unnamed.insert(id);
+        } else {
+            unnamed.remove(&id);
         }
         pending.extend(tags);
         match kind {
@@ -776,12 +801,30 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
                 out.push(ListedObject::new(*id, ObjectKind::Commit));
             }
         }
-        // The objects named as tips, in their order.
+        // The objects named as tips, in their order. A tree or blob from
+        // a tip nobody named goes through the filter like the root tree
+        // (or a file in the root tree) of a commit.
         let mut state = FilterState::default();
         for o in pending {
+            let named = !unnamed.contains(&o.id);
             match o.kind {
                 ObjectKind::Tree => {
-                    w.walk_tree_filtered(o.id, true, filter, &seen, &mut state, &mut out)?;
+                    w.walk_tree_filtered(o.id, named, filter, &seen, &mut state, &mut out)?;
+                }
+                ObjectKind::Blob if !named => {
+                    let mut wanted = filter.allows(ObjectKind::Blob)
+                        && filter.tree_depth != Some(0)
+                        && !seen.contains(&o.id);
+                    if let (true, Some(max)) = (wanted, filter.blob_limit) {
+                        wanted = match w.source.header(&o.id) {
+                            Ok(Some((_, size))) => size < max,
+                            Ok(None) => return Err(WriteError::Missing(o.id)),
+                            Err(e) => return Err(WriteError::read(o.id, e)),
+                        };
+                    }
+                    if wanted && state.listed.insert(o.id) {
+                        out.push(o);
+                    }
                 }
                 _ => {
                     if !seen.contains(&o.id)

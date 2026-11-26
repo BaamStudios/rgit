@@ -339,6 +339,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         let mut shallow_commits: std::collections::HashSet<ObjectId> =
             shallow_file_commits(ctx, &setup).into_iter().collect();
+        // Tips from `--all`, `--reflog` and `--indexed-objects`, as opposed
+        // to the revisions read next.
+        let from_sets: Vec<ObjectId> = tips.iter().map(|t| t.id).collect();
         read_revs(&mut input, &repo, &mut tips, &mut shallow_commits)?;
         let sparse = match sparse.get() {
             -1 => config.bool("pack.usesparse").ok().flatten().unwrap_or(true),
@@ -355,6 +358,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             sparse: sparse && !aggressive,
             aggressive,
             filter: filter.as_ref(),
+            unnamed_tips: &from_sets,
         };
         let (listed, bases) = pw::enumerate_with(&source, hash, &tips, &walk)
             .map_err(|e| Die::Fatal(e.to_string()))?;

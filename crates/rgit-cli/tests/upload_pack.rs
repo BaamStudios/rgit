@@ -34,9 +34,7 @@ fn commit(fx: Fixture, dir: &str, file: &str, content: &str) -> Fixture {
 /// branch `side` at the first commit with a commit of its own, annotated
 /// tags `v1` (third commit) and `v2` (tip), a lightweight tag.
 fn fixture() -> Fixture {
-    let fx = Fixture::new()
-        .rgit(rgit())
-        .git(["init", "-q", "srv"]);
+    let fx = Fixture::new().rgit(rgit()).git(["init", "-q", "srv"]);
     if fx.is_skipped() {
         return fx;
     }
@@ -345,10 +343,34 @@ fn advertisement_equals_git() {
 fn ls_refs_equals_git() {
     let fx = fixture()
         .git(["init", "-q", "unborn"])
-        .git(["-C", "srv", "symbolic-ref", "refs/heads/alias", "refs/heads/side"])
-        .git(["-C", "srv", "symbolic-ref", "refs/heads/alias2", "refs/heads/alias"])
-        .git(["-C", "srv", "symbolic-ref", "refs/heads/dangling", "refs/heads/nope"])
-        .git(["-C", "srv", "update-ref", "refs/remotes/origin/main", "HEAD"])
+        .git([
+            "-C",
+            "srv",
+            "symbolic-ref",
+            "refs/heads/alias",
+            "refs/heads/side",
+        ])
+        .git([
+            "-C",
+            "srv",
+            "symbolic-ref",
+            "refs/heads/alias2",
+            "refs/heads/alias",
+        ])
+        .git([
+            "-C",
+            "srv",
+            "symbolic-ref",
+            "refs/heads/dangling",
+            "refs/heads/nope",
+        ])
+        .git([
+            "-C",
+            "srv",
+            "update-ref",
+            "refs/remotes/origin/main",
+            "HEAD",
+        ])
         .git(["-C", "srv", "update-ref", "ORIG_HEAD", "HEAD"])
         .git(["clone", "-q", "srv", "detached"])
         .git(["-C", "detached", "checkout", "-q", "--detach", "HEAD~1"]);
@@ -361,7 +383,11 @@ fn ls_refs_equals_git() {
         &["symrefs", "peel", "unborn"],
         &["peel", "ref-prefix refs/tags/"],
         &["symrefs", "ref-prefix refs/heads/a", "ref-prefix HEAD"],
-        &["ref-prefix refs/heads/", "ref-prefix refs/heads/m", "ref-prefix refs/he"],
+        &[
+            "ref-prefix refs/heads/",
+            "ref-prefix refs/heads/m",
+            "ref-prefix refs/he",
+        ],
         &["ref-prefix nothing"],
         &["no-such-arg"],
     ];
@@ -380,7 +406,11 @@ fn ls_refs_equals_git() {
     lines.push("0000".into());
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
     let all = same(&fx, &[], "srv", &refs);
-    assert!(all.packets.iter().any(|p| p.ends_with(" refs/heads/main\n")));
+    assert!(
+        all.packets
+            .iter()
+            .any(|p| p.ends_with(" refs/heads/main\n"))
+    );
 }
 
 #[test]
@@ -403,7 +433,14 @@ fn requests_and_errors_equal_git() {
         &["command=ls-refs", "session-id=abc", "0000"],
         &["command=ls-refs", "promisor-remote", "0000"],
         &["command=fetch", "object-format", "0001", "0000"],
-        &["command=fetch", "agent", "server-option", "server-option=x", "0001", "0000"],
+        &[
+            "command=fetch",
+            "agent",
+            "server-option",
+            "server-option=x",
+            "0001",
+            "0000",
+        ],
         &["command=object-info", "0000"],
         &["command=bundle-uri", "0000"],
         &["command=ls-refs", "0001", "0001"],
@@ -441,11 +478,17 @@ fn requests_and_errors_equal_git() {
         (&["uploadpack.allowFilter=true"], &["filter bogus", "done"]),
         (&["uploadpack.allowFilter=true"], &["filter tree:x", "done"]),
         (
-            &["uploadpack.allowFilter=true", "uploadpackfilter.blob:none.allow=false"],
+            &[
+                "uploadpack.allowFilter=true",
+                "uploadpackfilter.blob:none.allow=false",
+            ],
             &["filter blob:none", "done"],
         ),
         (
-            &["uploadpack.allowFilter=true", "uploadpackfilter.tree.maxDepth=1"],
+            &[
+                "uploadpack.allowFilter=true",
+                "uploadpackfilter.tree.maxDepth=1",
+            ],
             &["filter tree:3", "done"],
         ),
         (
@@ -519,11 +562,23 @@ fn negotiation_and_packs_equal_git() {
     let cases: Vec<Vec<String>> = vec![
         // Clone.
         vec![want(&head), want(&side), done(), quiet()],
-        vec![want(&head), "ofs-delta".into(), "include-tag".into(), done(), quiet()],
+        vec![
+            want(&head),
+            "ofs-delta".into(),
+            "include-tag".into(),
+            done(),
+            quiet(),
+        ],
         vec![want(&head), done()],
         // Nothing in common, something in common, ready.
         vec![want(&head), have(&unknown)],
-        vec![want(&head), have(&parent), have(&unknown), have(&parent), quiet()],
+        vec![
+            want(&head),
+            have(&parent),
+            have(&unknown),
+            have(&parent),
+            quiet(),
+        ],
         vec![want(&head), have(&root), quiet()],
         vec![want(&head), want(&side), have(&parent), quiet()],
         vec![want(&head), want(&side), have(&old), quiet()],
@@ -603,7 +658,11 @@ fn shallow_requests_equal_git() {
         case(&[&want, "deepen 2147483647"]),
         // A client that is shallow already.
         case(&[&want, &shallow1]),
-        case(&[&want, &shallow1, "shallow 1111111111111111111111111111111111111111"]),
+        case(&[
+            &want,
+            &shallow1,
+            "shallow 1111111111111111111111111111111111111111",
+        ]),
         case(&[&want, &shallow1, &have1]),
         case(&[&want, &shallow1, &have1, "deepen 1"]),
         case(&[&want, &shallow1, &have1, "deepen 2"]),
@@ -627,7 +686,12 @@ fn shallow_requests_equal_git() {
         case(&[&format!("want {}", r("v1")), "deepen 1"]),
         case(&[&format!("want {}", r("HEAD^{tree}")), "deepen 1"]),
         // Negotiation and a shallow request in one.
-        vec![want.clone(), "deepen 1".into(), have1.clone(), "no-progress".into()],
+        vec![
+            want.clone(),
+            "deepen 1".into(),
+            have1.clone(),
+            "no-progress".into(),
+        ],
     ];
     for args in &cases {
         same_fetch(&fx, &[], "srv", args);
@@ -650,6 +714,238 @@ fn shallow_requests_equal_git() {
     ];
     for args in &cases {
         same_fetch(&fx, &[], "shallow", args);
+    }
+}
+
+/// `merges`: a history with merges, every commit tagged with its name.
+///
+/// ```text
+/// r - a1 - a2 - m1 - a3 - m2 - a4 - m3 - a5   (main)
+///  \\- b1 - b2 -/   \\         /    \\- d1 -/
+///   \\- c1 - c2 ------\\-------/
+/// ```
+fn merged_history() -> Fixture {
+    let fx = Fixture::new().rgit(rgit()).git(["init", "-q", "merges"]);
+    let commit = |fx: Fixture, name: &str| {
+        fx.write(format!("merges/{name}"), format!("{name}\n"))
+            .git(["-C", "merges", "add", name])
+            .git(["-C", "merges", "commit", "-q", "-m", name])
+            .git(["-C", "merges", "tag", name])
+            .tick()
+    };
+    let merge = |fx: Fixture, name: &str, other: &str| {
+        fx.git(["-C", "merges", "merge", "-q", "--no-ff", "-m", name, other])
+            .git(["-C", "merges", "tag", name])
+            .tick()
+    };
+    let branch = |fx: Fixture, name: &str, from: &str| {
+        fx.git(["-C", "merges", "checkout", "-q", "-b", name, from])
+    };
+    let main = |fx: Fixture| fx.git(["-C", "merges", "checkout", "-q", "main"]);
+    let mut fx = commit(fx, "r");
+    for name in ["a1", "a2"] {
+        fx = commit(fx, name);
+    }
+    fx = branch(fx, "b", "r");
+    for name in ["b1", "b2"] {
+        fx = commit(fx, name);
+    }
+    fx = branch(fx, "c", "r");
+    for name in ["c1", "c2"] {
+        fx = commit(fx, name);
+    }
+    fx = merge(main(fx), "m1", "b");
+    fx = commit(fx, "a3");
+    fx = merge(fx, "m2", "c");
+    fx = commit(fx, "a4");
+    fx = commit(branch(fx, "d", "m1"), "d1");
+    fx = merge(main(fx), "m3", "d");
+    commit(fx, "a5")
+}
+
+#[test]
+fn merged_history_equals_git() {
+    let fx = merged_history();
+    if fx.is_skipped() {
+        return;
+    }
+    let r = |name: &str| rev(&fx, "merges", name);
+    let want = |name: &str| format!("want {}", r(name));
+    let have = |name: &str| format!("have {}", r(name));
+    let shallow = |name: &str| format!("shallow {}", r(name));
+    let quiet = || "no-progress".to_owned();
+    let done = || "done".to_owned();
+    let unknown = format!("have {}", "1".repeat(40));
+
+    // Which `have`s are acknowledged, and when the server is ready.
+    let negotiation: Vec<Vec<String>> = vec![
+        vec![want("a5"), have("a4"), have("d1"), quiet()],
+        vec![want("a5"), have("d1"), have("a4"), quiet()],
+        // m2 is the parent of a4: known already, not acknowledged.
+        vec![
+            want("a5"),
+            unknown.clone(),
+            have("c1"),
+            have("b1"),
+            have("a4"),
+            have("d1"),
+            have("m2"),
+            quiet(),
+        ],
+        vec![
+            want("a5"),
+            want("c2"),
+            have("a1"),
+            have("b1"),
+            have("r"),
+            have("c1"),
+            quiet(),
+        ],
+        // A chain: every commit makes its parent known.
+        vec![
+            want("a5"),
+            have("a3"),
+            have("m1"),
+            have("a2"),
+            have("a1"),
+            have("r"),
+            quiet(),
+        ],
+        vec![
+            want("a5"),
+            have("a4"),
+            have("d1"),
+            "wait-for-done".into(),
+            quiet(),
+        ],
+        vec![want("a5"), have("a4"), have("d1"), done(), quiet()],
+        vec![
+            want("a5"),
+            format!("have {}", r("a5^{tree}")),
+            have("a4"),
+            have("d1"),
+            quiet(),
+        ],
+        vec![want("c2"), have("a5"), quiet()],
+        vec![want("a5"), want("c2"), have("a2")],
+        vec![want("a5"), want("c2"), have("a1"), quiet()],
+    ];
+    for args in &negotiation {
+        same_fetch(&fx, &[], "merges", args);
+    }
+
+    // The order of the `shallow` and `unshallow` lines.
+    let time = |name: &str| {
+        text(&fx.git_stdout(["-C", "merges", "log", "-1", "--format=%ct", name, "--"]))
+            .trim()
+            .to_owned()
+    };
+    let tail = || vec![done(), quiet()];
+    let mut shallows: Vec<Vec<String>> = Vec::new();
+    for depth in 2..=7 {
+        shallows.push(vec![want("a5"), format!("deepen {depth}")]);
+    }
+    shallows.extend([
+        vec![want("a5"), want("d1"), want("c2"), "deepen 2".into()],
+        vec![want("c2"), want("d1"), want("a5"), "deepen 2".into()],
+        // A wanted commit that an earlier one reaches at the limit.
+        vec![want("a5"), want("m3"), want("a4"), "deepen 2".into()],
+        vec![
+            want("a5"),
+            shallow("a3"),
+            shallow("d1"),
+            shallow("c1"),
+            shallow("m1"),
+            "deepen 6".into(),
+        ],
+        vec![
+            want("a5"),
+            shallow("c1"),
+            shallow("m1"),
+            shallow("d1"),
+            shallow("a3"),
+            "deepen 2147483647".into(),
+        ],
+        vec![
+            want("a5"),
+            shallow("a4"),
+            shallow("d1"),
+            "deepen 2".into(),
+            "deepen-relative".into(),
+        ],
+        vec![
+            want("a5"),
+            shallow("d1"),
+            shallow("a4"),
+            "deepen 1".into(),
+            "deepen-relative".into(),
+        ],
+        vec![
+            want("a5"),
+            shallow("a3"),
+            shallow("c1"),
+            shallow("m1"),
+            "deepen 1".into(),
+            "deepen-relative".into(),
+        ],
+        vec![
+            want("a5"),
+            shallow("m1"),
+            shallow("a3"),
+            shallow("c2"),
+            shallow("d1"),
+            "deepen 1".into(),
+            "deepen-relative".into(),
+        ],
+        vec![
+            want("a5"),
+            shallow("m3"),
+            "deepen 3".into(),
+            "deepen-relative".into(),
+        ],
+        vec![
+            want("a5"),
+            shallow("m2"),
+            shallow("d1"),
+            shallow("a5"),
+            format!("deepen-since {}", time("b1")),
+        ],
+        vec![
+            want("a5"),
+            "deepen-not a2".into(),
+            "deepen-not b1".into(),
+            "deepen-not c1".into(),
+        ],
+        vec![want("a5"), "deepen-not c2".into(), "deepen-not a3".into()],
+    ]);
+    for name in ["a1", "b1", "c1", "a3", "m1", "d1"] {
+        shallows.push(vec![want("a5"), format!("deepen-since {}", time(name))]);
+    }
+    for name in ["r", "a1", "b2", "m1"] {
+        shallows.push(vec![want("a5"), format!("deepen-not {name}")]);
+    }
+    for mut args in shallows {
+        args.extend(tail());
+        same_fetch(&fx, &[], "merges", &args);
+    }
+
+    // The same history, shallow on the server at a1, b1 and c2.
+    let work = fx.work_dir();
+    copy_dir(&work.join("merges"), &work.join("cut"));
+    let cut = format!("{}\n{}\n{}\n", r("a1"), r("b1"), r("c2"));
+    std::fs::write(work.join("cut/.git/shallow"), cut).unwrap();
+    let cases: Vec<Vec<String>> = vec![
+        vec![want("a5")],
+        vec![want("c2"), want("a5")],
+        vec![want("a5"), shallow("b1"), shallow("m2")],
+        vec![want("a5"), "deepen 6".into()],
+        vec![want("a5"), "deepen 20".into()],
+        vec![want("a5"), shallow("m1"), "deepen 2147483647".into()],
+        vec![want("a5"), have("a4")],
+    ];
+    for mut args in cases {
+        args.extend(tail());
+        same_fetch(&fx, &[], "cut", &args);
     }
 }
 
@@ -708,9 +1004,23 @@ fn several_requests_on_one_connection() {
     for l in ["command=ls-refs", "0001", "ref-prefix refs/heads/s", "0000"] {
         lines.push(l.into());
     }
-    lines.extend(fetch_request(&[format!("want {head}"), format!("have {root}"), "no-progress".into()]));
-    lines.extend(fetch_request(&[format!("want {head}"), "done".into(), "no-progress".into()]));
-    for l in ["command=ls-refs", "0001", "ref-prefix refs/tags/v", "0000", "0000"] {
+    lines.extend(fetch_request(&[
+        format!("want {head}"),
+        format!("have {root}"),
+        "no-progress".into(),
+    ]));
+    lines.extend(fetch_request(&[
+        format!("want {head}"),
+        "done".into(),
+        "no-progress".into(),
+    ]));
+    for l in [
+        "command=ls-refs",
+        "0001",
+        "ref-prefix refs/tags/v",
+        "0000",
+        "0000",
+    ] {
         lines.push(l.into());
     }
     // Not read any more.
@@ -775,12 +1085,32 @@ fn command_line_equals_git() {
     ] {
         both(&["upload-pack", "--stateless-rpc", name], &dir);
         both(&["upload-pack", "--stateless-rpc", "--strict", name], &dir);
-        both(&["upload-pack", "--advertise-refs", "--no-strict", name], &dir);
+        both(
+            &["upload-pack", "--advertise-refs", "--no-strict", name],
+            &dir,
+        );
     }
     // `~` is the home directory.
     both(&["upload-pack", "--advertise-refs", "~/in-home"], &dir);
-    both(&["upload-pack", "--advertise-refs", "--strict", "~/in-home.git"], &dir);
-    both(&["upload-pack", "--timeout=30", "--no-timeout", "--advertise-refs", "srv"], &dir);
+    both(
+        &[
+            "upload-pack",
+            "--advertise-refs",
+            "--strict",
+            "~/in-home.git",
+        ],
+        &dir,
+    );
+    both(
+        &[
+            "upload-pack",
+            "--timeout=30",
+            "--no-timeout",
+            "--advertise-refs",
+            "srv",
+        ],
+        &dir,
+    );
 }
 
 #[test]
@@ -793,7 +1123,14 @@ fn dashed_names_and_help_outside_a_repository() {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let env = [("GIT_PROTOCOL", "version=2")];
-    let direct = run(&fx, &rgit(), &["upload-pack", "--advertise-refs", "srv"], &env, &dir, b"");
+    let direct = run(
+        &fx,
+        &rgit(),
+        &["upload-pack", "--advertise-refs", "srv"],
+        &env,
+        &dir,
+        b"",
+    );
     assert!(direct.status.success());
     for name in ["git-upload-pack", "rgit-upload-pack"] {
         let link = bin.join(name);
@@ -805,7 +1142,10 @@ fn dashed_names_and_help_outside_a_repository() {
         assert_eq!(text(&out.stdout), text(&direct.stdout), "{name}");
         assert!(out.status.success(), "{name}: {}", text(&out.stderr));
         let help = run(&fx, &link, &["-h"], &[], &fx.home_dir(), b"");
-        assert!(text(&help.stdout).starts_with("usage: git-upload-pack "), "{name}");
+        assert!(
+            text(&help.stdout).starts_with("usage: git-upload-pack "),
+            "{name}"
+        );
     }
 }
 
@@ -857,7 +1197,12 @@ fn older_protocol_versions() {
     let out = run_with_path(&fx, &other, &["upload-pack", "srv"], Some("version=1"));
     assert_eq!(text(&out.stdout), "other upload-pack: srv (version=1)\n");
     // Protocol v2 is served here.
-    let out = run_with_path(&fx, &other, &["upload-pack", "--advertise-refs", "srv"], Some("version=2"));
+    let out = run_with_path(
+        &fx,
+        &other,
+        &["upload-pack", "--advertise-refs", "srv"],
+        Some("version=2"),
+    );
     assert!(text(&out.stdout).starts_with("000eversion 2\n"));
     // A link to rgit under the dashed name is not "another" program.
     #[cfg(unix)]
@@ -882,7 +1227,10 @@ fn namespaces_and_hidden_refs_equal_git() {
         ("refs/namespaces/ns/refs/heads/in-ns", "HEAD"),
         ("refs/namespaces/ns/refs/heads/hidden", "HEAD~1"),
         ("refs/namespaces/ns/refs/tags/t", "v1"),
-        ("refs/namespaces/ns/refs/namespaces/inner/refs/heads/deep", "HEAD~2"),
+        (
+            "refs/namespaces/ns/refs/namespaces/inner/refs/heads/deep",
+            "HEAD~2",
+        ),
         ("refs/heads/outside", "HEAD"),
         ("refs/heads/hidden", "HEAD"),
         ("refs/hidden/a", "HEAD"),
@@ -892,8 +1240,14 @@ fn namespaces_and_hidden_refs_equal_git() {
         fx = fx.git(["-C", "srv", "update-ref", name, target]);
     }
     for (name, target) in [
-        ("refs/namespaces/ns/HEAD", "refs/namespaces/ns/refs/heads/in-ns"),
-        ("refs/namespaces/ns/refs/heads/sym", "refs/namespaces/ns/refs/heads/in-ns"),
+        (
+            "refs/namespaces/ns/HEAD",
+            "refs/namespaces/ns/refs/heads/in-ns",
+        ),
+        (
+            "refs/namespaces/ns/refs/heads/sym",
+            "refs/namespaces/ns/refs/heads/in-ns",
+        ),
         (
             "refs/namespaces/ns/refs/namespaces/inner/HEAD",
             "refs/namespaces/ns/refs/namespaces/inner/refs/heads/unborn",
@@ -913,13 +1267,23 @@ fn namespaces_and_hidden_refs_equal_git() {
             if let Some(ns) = namespace {
                 env.push(("GIT_NAMESPACE", ns));
             }
-            decode(&fx, &run(&fx, program, &args, &env, &fx.work_dir(), &request(&lines)))
+            decode(
+                &fx,
+                &run(&fx, program, &args, &env, &fx.work_dir(), &request(&lines)),
+            )
         };
         let (git, ours) = (serve(fx.reference_git()), serve(&rgit()));
         assert_eq!(git, ours, "{lines:?} in {namespace:?} with {config:?}");
         ours
     };
-    let list = ["command=ls-refs", "0001", "symrefs", "peel", "unborn", "0000"];
+    let list = [
+        "command=ls-refs",
+        "0001",
+        "symrefs",
+        "peel",
+        "unborn",
+        "0000",
+    ];
     // Namespaces. (git lists the HEAD of a namespace twice.)
     let plain = both(None, &[], &list);
     let ns = both(Some("ns"), &[], &list);
@@ -932,8 +1296,20 @@ fn namespaces_and_hidden_refs_equal_git() {
     let cases: &[(Option<&str>, &[&str])] = &[
         (None, &["transfer.hideRefs=refs/hidden"]),
         (None, &["transfer.hideRefs=refs/hidden/"]),
-        (None, &["transfer.hideRefs=refs/hidden", "transfer.hideRefs=!refs/hidden/b"]),
-        (None, &["transfer.hideRefs=!refs/hidden/b", "transfer.hideRefs=refs/hidden"]),
+        (
+            None,
+            &[
+                "transfer.hideRefs=refs/hidden",
+                "transfer.hideRefs=!refs/hidden/b",
+            ],
+        ),
+        (
+            None,
+            &[
+                "transfer.hideRefs=!refs/hidden/b",
+                "transfer.hideRefs=refs/hidden",
+            ],
+        ),
         (
             None,
             &[
@@ -947,8 +1323,14 @@ fn namespaces_and_hidden_refs_equal_git() {
         (None, &["transfer.hideRefs=refs/heads/main"]),
         (None, &["transfer.hideRefs=^refs/heads/hidden"]),
         (Some("ns"), &["transfer.hideRefs=refs/heads/hidden"]),
-        (Some("ns"), &["transfer.hideRefs=^refs/namespaces/ns/refs/heads/in-ns"]),
-        (Some("ns"), &["transfer.hideRefs=refs/namespaces/ns/refs/heads/in-ns"]),
+        (
+            Some("ns"),
+            &["transfer.hideRefs=^refs/namespaces/ns/refs/heads/in-ns"],
+        ),
+        (
+            Some("ns"),
+            &["transfer.hideRefs=refs/namespaces/ns/refs/heads/in-ns"],
+        ),
         (
             Some("ns"),
             &[
@@ -962,7 +1344,11 @@ fn namespaces_and_hidden_refs_equal_git() {
     }
     // `want-ref` sees the same references.
     let want = |name: &str| -> Vec<String> {
-        fetch_request(&[format!("want-ref {name}"), "done".into(), "no-progress".into()])
+        fetch_request(&[
+            format!("want-ref {name}"),
+            "done".into(),
+            "no-progress".into(),
+        ])
     };
     let on = "uploadpack.allowRefInWant=true";
     let hide = "transfer.hideRefs=refs/heads/hidden";
@@ -983,7 +1369,11 @@ fn namespaces_and_hidden_refs_equal_git() {
     // An object can be asked for by id whatever hides its reference, and
     // `deepen-not` names references of the repository as they are.
     let hidden = rev(&fx, "srv", "refs/heads/hidden");
-    let lines = fetch_request(&[format!("want {hidden}"), "done".into(), "no-progress".into()]);
+    let lines = fetch_request(&[
+        format!("want {hidden}"),
+        "done".into(),
+        "no-progress".into(),
+    ]);
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
     both(None, &["transfer.hideRefs=refs/heads"], &refs);
     for (namespace, config, not) in [
@@ -1053,7 +1443,11 @@ fn trace2_events_equal_git() {
         (
             &[],
             [
-                vec![format!("want {head}"), "deepen 2".into(), format!("shallow {parent}")],
+                vec![
+                    format!("want {head}"),
+                    "deepen 2".into(),
+                    format!("shallow {parent}"),
+                ],
                 tail(),
             ]
             .concat(),
@@ -1073,14 +1467,22 @@ fn trace2_events_equal_git() {
         (
             &[],
             [
-                vec![format!("want {head}"), "deepen 1".into(), "deepen-relative".into()],
+                vec![
+                    format!("want {head}"),
+                    "deepen 1".into(),
+                    "deepen-relative".into(),
+                ],
                 tail(),
             ]
             .concat(),
         ),
         (
             &["uploadpack.allowFilter=true"],
-            [vec![format!("want {head}"), "filter blob:limit=1k".into()], tail()].concat(),
+            [
+                vec![format!("want {head}"), "filter blob:limit=1k".into()],
+                tail(),
+            ]
+            .concat(),
         ),
         (
             &["uploadpack.allowRefInWant=true"],
@@ -1093,7 +1495,10 @@ fn trace2_events_equal_git() {
         let git = server_events(&fx, fx.reference_git(), config, &lines);
         let ours = server_events(&fx, &rgit(), config, &lines);
         assert_eq!(git, ours, "{args:?}");
-        assert!(ours.iter().any(|l| l.contains("\"key\":\"fetch-info\"")), "{ours:?}");
+        assert!(
+            ours.iter().any(|l| l.contains("\"key\":\"fetch-info\"")),
+            "{ours:?}"
+        );
         assert!(ours[0].contains("\"key\":\"negotiated-version\",\"value\":\"2\""));
     }
     // The client's session id, when the server advertises its own.
@@ -1105,7 +1510,10 @@ fn trace2_events_equal_git() {
     let git = server_events(&fx, fx.reference_git(), on, &lines);
     let ours = server_events(&fx, &rgit(), on, &lines);
     assert_eq!(git, ours);
-    assert!(ours.iter().any(|l| l.contains("\"key\":\"client-sid\",\"value\":\"client-1\"")));
+    assert!(
+        ours.iter()
+            .any(|l| l.contains("\"key\":\"client-sid\",\"value\":\"client-1\""))
+    );
 }
 
 #[test]
@@ -1135,7 +1543,11 @@ fn keep_alive_while_pack_objects_is_silent() {
     let out = serve("uploadpack.keepAlive=1");
     let raw = out.stdout.clone();
     let keep_alives = raw.windows(5).filter(|w| w == b"0005\x01").count();
-    assert!(keep_alives >= 1, "no keep-alive packet in {} bytes", raw.len());
+    assert!(
+        keep_alives >= 1,
+        "no keep-alive packet in {} bytes",
+        raw.len()
+    );
     let reply = decode(&fx, &out);
     assert_eq!(reply.code, Some(0));
     assert_eq!(reply.packs.len(), 1, "{:?}", reply.packets);
@@ -1198,19 +1610,20 @@ fn failing_pack_objects_is_reported() {
     assert_eq!(git.stderr, ours.stderr);
     assert_eq!(git.packets, ours.packets);
     assert!(
-        ours.packets.iter().any(|p| p
-            == "band 3: aborting due to possible repository corruption on the remote side."),
+        ours.packets
+            .iter()
+            .any(|p| p
+                == "band 3: aborting due to possible repository corruption on the remote side."),
         "{ours:?}"
     );
 }
 
 #[test]
 fn pack_objects_hook() {
-    let fx = fixture()
-        .write_executable(
-            "hook",
-            "#!/bin/sh\necho \"$*\" >\"$HOOK_LOG\"\ncat >\"$HOOK_LOG.in\"\n\"$@\" <\"$HOOK_LOG.in\"\n",
-        );
+    let fx = fixture().write_executable(
+        "hook",
+        "#!/bin/sh\necho \"$*\" >\"$HOOK_LOG\"\ncat >\"$HOOK_LOG.in\"\n\"$@\" <\"$HOOK_LOG.in\"\n",
+    );
     if fx.is_skipped() {
         return;
     }
@@ -1227,8 +1640,18 @@ fn pack_objects_hook() {
             argv.extend(["-c", c.as_str()]);
         }
         argv.extend(["upload-pack", "--stateless-rpc", "srv"]);
-        let env = [("GIT_PROTOCOL", "version=2"), ("HOOK_LOG", log.to_str().unwrap())];
-        let out = run(&fx, program, &argv, &env, &dir, &request(&fetch_request(args)));
+        let env = [
+            ("GIT_PROTOCOL", "version=2"),
+            ("HOOK_LOG", log.to_str().unwrap()),
+        ];
+        let out = run(
+            &fx,
+            program,
+            &argv,
+            &env,
+            &dir,
+            &request(&fetch_request(args)),
+        );
         let reply = decode(&fx, &out);
         let logged = std::fs::read_to_string(&log).ok();
         let input = std::fs::read_to_string(dir.join("hook.log.in")).ok();
@@ -1259,14 +1682,21 @@ fn pack_objects_hook() {
         let ours = serve(&rgit(), &hooked, args);
         assert_eq!(git.1, ours.1, "arguments for {args:?}");
         assert_eq!(git.2, ours.2, "input for {args:?}");
-        assert!(ours.1.as_deref().is_some_and(|l| l.starts_with("git ")), "{ours:?}");
+        assert!(
+            ours.1.as_deref().is_some_and(|l| l.starts_with("git ")),
+            "{ours:?}"
+        );
         if !args.contains(&"thin-pack".to_owned()) {
             assert_eq!(git.0, ours.0);
         }
     }
     // The repository's own configuration cannot name a hook.
     let set = ["-C", "srv", "config", "uploadpack.packObjectsHook", hook];
-    assert!(run(&fx, fx.reference_git(), &set, &[], &dir, b"").status.success());
+    assert!(
+        run(&fx, fx.reference_git(), &set, &[], &dir, b"")
+            .status
+            .success()
+    );
     let (reply, logged, _) = serve(&rgit(), &[], &requests[0]);
     assert_eq!(reply.code, Some(0));
     assert_eq!(logged, None);
@@ -1300,11 +1730,12 @@ fn state(fx: &Fixture, repo: &Path) -> String {
     let refs = get(&["for-each-ref", "--format=%(refname) %(objectname)"]);
     out.push_str(&text(&refs.stdout));
     let git_dir = text(&get(&["rev-parse", "--absolute-git-dir"]).stdout);
-    let mut shallow: Vec<String> = std::fs::read_to_string(Path::new(git_dir.trim()).join("shallow"))
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_owned)
-        .collect();
+    let mut shallow: Vec<String> =
+        std::fs::read_to_string(Path::new(git_dir.trim()).join("shallow"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect();
     shallow.sort();
     out.push_str(&format!("shallow: {shallow:?}\n"));
     let listed = get(&["rev-list", "--objects", "--all", "--missing=print"]);
@@ -1332,7 +1763,10 @@ fn state(fx: &Fixture, repo: &Path) -> String {
 /// The quoted `--upload-pack` commands of the two servers.
 fn servers(fx: &Fixture) -> [(&'static str, String); 2] {
     [
-        ("git", format!("'{}' upload-pack", fx.reference_git().display())),
+        (
+            "git",
+            format!("'{}' upload-pack", fx.reference_git().display()),
+        ),
         ("rgit", format!("'{}' upload-pack", rgit().display())),
     ]
 }
@@ -1363,7 +1797,10 @@ fn flow_with(
         }
         let args: Vec<String> = args
             .iter()
-            .map(|a| a.replace("{UP}", &up).replace("{WORK}", work.to_str().unwrap()))
+            .map(|a| {
+                a.replace("{UP}", &up)
+                    .replace("{WORK}", work.to_str().unwrap())
+            })
             .collect();
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = run(fx, client, &args, env, &dir.join(cwd), b"");
@@ -1384,7 +1821,14 @@ fn flow_with(
 }
 
 #[track_caller]
-fn flow(fx: &Fixture, client: &Path, base: Option<&str>, cwd: &str, repo: &str, args: &[&str]) -> String {
+fn flow(
+    fx: &Fixture,
+    client: &Path,
+    base: Option<&str>,
+    cwd: &str,
+    repo: &str,
+    args: &[&str],
+) -> String {
     flow_with(fx, client, base, cwd, repo, args, &[])
 }
 
@@ -1457,7 +1901,16 @@ fn reference_client_partial_clones() {
             None,
             "",
             "c",
-            &["clone", "-q", "--no-checkout", "--upload-pack", "{UP}", &filter, url, "c"],
+            &[
+                "clone",
+                "-q",
+                "--no-checkout",
+                "--upload-pack",
+                "{UP}",
+                &filter,
+                url,
+                "c",
+            ],
         );
         // Something was left out.
         assert!(st.contains('?'), "{filter}: {st}");
@@ -1469,8 +1922,16 @@ fn reference_client_partial_clones() {
         "",
         "c",
         &[
-            "clone", "-q", "--no-checkout", "--upload-pack", "{UP}", "--filter=blob:none", "--depth",
-            "2", url, "c",
+            "clone",
+            "-q",
+            "--no-checkout",
+            "--upload-pack",
+            "{UP}",
+            "--filter=blob:none",
+            "--depth",
+            "2",
+            url,
+            "c",
         ],
     );
     // Checking out fetches the blobs that are missing, through the same
@@ -1501,7 +1962,13 @@ fn reference_client_partial_clones() {
 fn with_old_clone(fx: Fixture) -> Fixture {
     fx.git(["clone", "-q", "--no-local", "srv", "base/c"])
         .git(["-C", "base/c", "reset", "-q", "--hard", "HEAD~3"])
-        .git(["-C", "base/c", "update-ref", "refs/remotes/origin/main", "HEAD"])
+        .git([
+            "-C",
+            "base/c",
+            "update-ref",
+            "refs/remotes/origin/main",
+            "HEAD",
+        ])
         .git(["-C", "base/c", "tag", "-d", "v2", "light"])
         .git(["-C", "base/c", "reflog", "expire", "--expire=now", "--all"])
         .git(["-C", "base/c", "gc", "-q", "--prune=now"])
@@ -1541,7 +2008,15 @@ fn reference_client_fetches() {
         Some("base"),
         "c",
         "c",
-        &["pull", "-q", "--ff-only", "--upload-pack", "{UP}", "origin", "main"],
+        &[
+            "pull",
+            "-q",
+            "--ff-only",
+            "--upload-pack",
+            "{UP}",
+            "origin",
+            "main",
+        ],
     );
     assert!(pulled.contains(&format!("refs/heads/main {}", rev(&fx, "srv", "main"))));
 }
@@ -1584,14 +2059,31 @@ fn reference_client_wants_refs() {
     }
     let git = fx.reference_git().to_path_buf();
     let url = "file://{WORK}/srv";
-    flow(&fx, &git, None, "", "c", &["clone", "-q", "--upload-pack", "{UP}", url, "c"]);
     flow(
         &fx,
         &git,
         None,
         "",
         "c",
-        &["clone", "-q", "--upload-pack", "{UP}", "-b", "side", "--single-branch", url, "c"],
+        &["clone", "-q", "--upload-pack", "{UP}", url, "c"],
+    );
+    flow(
+        &fx,
+        &git,
+        None,
+        "",
+        "c",
+        &[
+            "clone",
+            "-q",
+            "--upload-pack",
+            "{UP}",
+            "-b",
+            "side",
+            "--single-branch",
+            url,
+            "c",
+        ],
     );
     flow(
         &fx,
@@ -1647,7 +2139,10 @@ fn reference_client_wants_refs() {
     );
     assert!(cloned.status.success(), "{}", text(&cloned.stderr));
     let st = state(&fx, &dst);
-    assert!(st.contains("fsck: Some(0) []") && !st.contains("shallow: []"), "{st}");
+    assert!(
+        st.contains("fsck: Some(0) []") && !st.contains("shallow: []"),
+        "{st}"
+    );
 }
 
 #[test]
@@ -1670,9 +2165,32 @@ fn rgit_client_against_both_servers() {
     clone(&["--no-tags"]);
     for args in [
         &["fetch", "-q", "--upload-pack", "{UP}", "origin"][..],
-        &["fetch", "-q", "--upload-pack", "{UP}", "--no-tags", "origin"],
-        &["fetch", "-q", "--upload-pack", "{UP}", "origin", "tag", "v2"],
-        &["pull", "-q", "--ff-only", "--upload-pack", "{UP}", "origin", "main"],
+        &[
+            "fetch",
+            "-q",
+            "--upload-pack",
+            "{UP}",
+            "--no-tags",
+            "origin",
+        ],
+        &[
+            "fetch",
+            "-q",
+            "--upload-pack",
+            "{UP}",
+            "origin",
+            "tag",
+            "v2",
+        ],
+        &[
+            "pull",
+            "-q",
+            "--ff-only",
+            "--upload-pack",
+            "{UP}",
+            "origin",
+            "main",
+        ],
     ] {
         flow(&fx, &client, Some("base"), "c", "c", args);
     }
@@ -1703,7 +2221,10 @@ fn over_ssh() {
     }
     let git = fx.reference_git().to_path_buf();
     let ssh = fx.work_dir().join("ssh");
-    let env = [("GIT_SSH", ssh.to_str().unwrap()), ("GIT_SSH_VARIANT", "ssh")];
+    let env = [
+        ("GIT_SSH", ssh.to_str().unwrap()),
+        ("GIT_SSH_VARIANT", "ssh"),
+    ];
     let url = "ssh://localhost{WORK}/srv";
     flow_with(
         &fx,
@@ -1720,7 +2241,16 @@ fn over_ssh() {
         None,
         "",
         "c",
-        &["clone", "-q", "--depth", "2", "--upload-pack", "{UP}", url, "c"],
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "2",
+            "--upload-pack",
+            "{UP}",
+            url,
+            "c",
+        ],
         &env,
     );
     flow_with(
@@ -1729,7 +2259,14 @@ fn over_ssh() {
         Some("base"),
         "c",
         "c",
-        &["fetch", "-q", "--upload-pack", "{UP}", url, "refs/heads/*:refs/remotes/ssh/*"],
+        &[
+            "fetch",
+            "-q",
+            "--upload-pack",
+            "{UP}",
+            url,
+            "refs/heads/*:refs/remotes/ssh/*",
+        ],
         &env,
     );
 }
@@ -1777,18 +2314,41 @@ fn over_http() {
         let url = format!("{base}/srv");
         let steps: Vec<(Vec<&str>, &str, &str)> = vec![
             (vec!["clone", "-q", &url, "full"], "", "full"),
-            (vec!["clone", "-q", "--depth", "2", &url, "shallow"], "", "shallow"),
             (
-                vec!["clone", "-q", "--no-checkout", "--filter=blob:none", &url, "partial"],
+                vec!["clone", "-q", "--depth", "2", &url, "shallow"],
+                "",
+                "shallow",
+            ),
+            (
+                vec![
+                    "clone",
+                    "-q",
+                    "--no-checkout",
+                    "--filter=blob:none",
+                    &url,
+                    "partial",
+                ],
                 "",
                 "partial",
             ),
-            (vec!["fetch", "-q", &url, "refs/heads/*:refs/remotes/http/*"], "c", "c"),
-            (vec!["fetch", "-q", "--deepen=2", "origin"], "shallow", "shallow"),
+            (
+                vec!["fetch", "-q", &url, "refs/heads/*:refs/remotes/http/*"],
+                "c",
+                "c",
+            ),
+            (
+                vec!["fetch", "-q", "--deepen=2", "origin"],
+                "shallow",
+                "shallow",
+            ),
         ];
         for (args, cwd, repo) in steps {
             let out = run(&fx, &git, &args, &[], &dir.join(cwd), b"");
-            assert!(out.status.success(), "{name}: {args:?}: {}", text(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{name}: {args:?}: {}",
+                text(&out.stderr)
+            );
             let st = state(&fx, &dir.join(repo));
             assert!(st.contains("fsck: Some(0) []"), "{name}: {args:?}: {st}");
             states.push(st);

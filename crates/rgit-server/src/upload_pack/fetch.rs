@@ -76,9 +76,9 @@ fn resolve_ref(repo: &Repository<'_>, name: &str) -> Option<ObjectId> {
 /// through the buckets in order. Returns indexes into `names`.
 fn wanted_refs_order(names: &[&str]) -> Vec<usize> {
     let bucket = |name: &str, size: usize| {
-        let hash = name
-            .bytes()
-            .fold(0x811c_9dc5_u32, |h, b| h.wrapping_mul(0x0100_0193) ^ u32::from(b));
+        let hash = name.bytes().fold(0x811c_9dc5_u32, |h, b| {
+            h.wrapping_mul(0x0100_0193) ^ u32::from(b)
+        });
         hash as usize & (size - 1)
     };
     let mut size = 64;

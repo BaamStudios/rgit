@@ -20,7 +20,10 @@ pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]
             "size" => size = true,
             "type" => kind = true,
             END_WITHOUT_FLUSH => {
-                problem = Some(format!("object-info: {}", msg::expected_flush_after("object-info")));
+                problem = Some(format!(
+                    "object-info: {}",
+                    msg::expected_flush_after("object-info")
+                ));
                 break;
             }
             _ => match line.strip_prefix("oid ") {

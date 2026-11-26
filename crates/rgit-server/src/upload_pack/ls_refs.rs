@@ -70,7 +70,7 @@ pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]
             line.push_str(" symref-target:");
             line.push_str(target);
         }
-        if let Some(p) = Some(r).filter(|_| args.peel).and_then(peeled) {
+        if let Some(p) = args.peel.then_some(r).and_then(peeled) {
             line.push_str(&format!(" peeled:{p}"));
         }
         line

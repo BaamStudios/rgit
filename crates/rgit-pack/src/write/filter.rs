@@ -319,15 +319,26 @@ mod tests {
             ("tree:3", "tree:3"),
             ("combine:tree:2+blob:none", "combine:tree:2+blob:none"),
             (
-                "combine:blob:none+combine:tree:1+object:type=blob",
+                "combine:blob:none+combine:tree:1%2Bobject:type=blob",
                 "combine:blob:none+combine:tree:1%2bobject:type=blob",
             ),
         ] {
             let f = ObjectFilter::parse(spec).unwrap();
             assert_eq!(f.to_spec(), want);
             let again = ObjectFilter::parse(&f.to_spec()).unwrap();
-            assert_eq!(again.to_spec(), want);
+            assert_eq!(again, f);
         }
+        // A combined filter inside a combined filter keeps its own list.
+        assert_eq!(
+            ObjectFilter::parse("combine:blob:none+combine:tree:1%2bobject:type=blob"),
+            Ok(ObjectFilter::Combine(vec![
+                ObjectFilter::BlobNone,
+                ObjectFilter::Combine(vec![
+                    ObjectFilter::TreeDepth(1),
+                    ObjectFilter::ObjectType(ObjectKind::Blob)
+                ]),
+            ]))
+        );
     }
 
     #[test]
