@@ -164,6 +164,11 @@ impl Remotes {
             .unwrap_or(HashKind::Sha1);
         for e in config.entries() {
             let (section, sub, key) = split_canonical(e.name.as_bstr());
+            // Like git, which reads `branch.*` together with `remote.*`:
+            // a branch section without a name is an error.
+            if section == "branch" && sub.is_some_and(|b| b.is_empty()) {
+                return Err(ConfigError::bad_variable(e).into());
+            }
             if section != "remote" {
                 continue;
             }

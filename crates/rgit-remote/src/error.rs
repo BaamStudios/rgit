@@ -19,6 +19,17 @@ pub enum ConfigError {
         /// 1-based line (0 for the command line).
         line: usize,
     },
+    /// A variable git refuses outright (`branch..remote`: a branch
+    /// section with an empty name).
+    #[error("{}", messages::bad_variable(.name.as_bstr(), .origin, *.line))]
+    BadVariable {
+        /// Canonical variable name.
+        name: BString,
+        /// Where it was set.
+        origin: Origin,
+        /// 1-based line (0 for the command line).
+        line: usize,
+    },
     /// A value of the wrong type (for example `bad boolean config value`).
     #[error(transparent)]
     Value(#[from] ValueError),
@@ -46,6 +57,14 @@ pub enum ConfigError {
 impl ConfigError {
     pub(crate) fn missing(entry: &Entry) -> ConfigError {
         ConfigError::MissingValue {
+            name: entry.name.clone(),
+            origin: entry.source.origin.clone(),
+            line: entry.line,
+        }
+    }
+
+    pub(crate) fn bad_variable(entry: &Entry) -> ConfigError {
+        ConfigError::BadVariable {
             name: entry.name.clone(),
             origin: entry.source.origin.clone(),
             line: entry.line,

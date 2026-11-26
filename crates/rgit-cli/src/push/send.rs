@@ -266,11 +266,12 @@ pub fn exchange(session: &mut Session, out: &Outgoing<'_>) -> Result<Option<Repo
     })
 }
 
-/// End a session without updates: a flush packet, then close.
-pub fn finish_empty(mut session: Session) {
+/// End a session without updates: a flush packet, then close. False
+/// when the server ended in an error (e.g. a failing `receive-pack`).
+pub fn finish_empty(mut session: Session) -> bool {
     let _ = session.conn.write_all(b"0000");
     let _ = session.conn.end_request();
-    let _ = session.conn.close();
+    session.conn.close().is_ok()
 }
 
 /// Turn a protocol error while reading the advertisement into git's

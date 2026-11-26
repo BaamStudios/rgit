@@ -58,6 +58,15 @@ pub(crate) fn bad_config_variable(name: &BStr, origin: &Origin, line: usize) -> 
     )
 }
 
+/// The fatal line for a variable that is invalid as such: where it was
+/// set, or the command-line form.
+pub(crate) fn bad_variable(name: &BStr, origin: &Origin, line: usize) -> String {
+    match origin {
+        Origin::CommandLine => unable_to_parse_cmdline(name),
+        _ => bad_config_variable(name, origin, line),
+    }
+}
+
 /// The fatal line after an error from command-line configuration.
 pub(crate) fn unable_to_parse_cmdline(name: &BStr) -> String {
     format!("unable to parse '{name}' from command-line config")
