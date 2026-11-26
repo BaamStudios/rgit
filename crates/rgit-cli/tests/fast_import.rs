@@ -199,3 +199,26 @@ fn import_notes_fanout() {
     }
     import(&mut fx, &["--quiet", "--import-marks=marks"], &d);
 }
+
+/// Marks named by `feature import-marks` are loaded (and so exported
+/// again) also when the stream ends before any other command, even
+/// early (the remote-helper `import` of a failing helper).
+#[test]
+fn import_marks_when_stream_ends_early() {
+    let mut fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    import(
+        &mut fx,
+        &["--quiet", "--export-marks=marks"],
+        &main_stream(),
+    );
+    for (i, tail) in ["feature done\n", "", "feature done\ndone\n"]
+        .iter()
+        .enumerate()
+    {
+        let stream = format!("feature import-marks=marks\nfeature export-marks=out{i}\n{tail}");
+        import(&mut fx, &["--quiet", "--allow-unsafe-features"], &stream);
+    }
+}

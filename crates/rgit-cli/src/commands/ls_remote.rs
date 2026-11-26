@@ -242,13 +242,28 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         git_dir: setup.as_ref().map(|s| s.git_dir.clone()),
     };
     let target = rgit_http::target_for(&url, &settings, &helper_ctx).map_err(|e| fatal(&e))?;
+    let version = rgit_fetch::protocol_version(&config, &env).map_err(|e| fatal(&e))?;
     let (transport, helper) = match target {
         Some(Target::Transport(t)) => (Some(t), None),
-        Some(Target::Helper(h)) => (None, Some(h)),
+        Some(Target::Helper(mut h)) => {
+            h.standard_options(false, 1).map_err(|e| fatal(&e))?;
+            // Protocol v2 goes through `stateless-connect` when the helper
+            // offers it.
+            if version == ProtocolVersion::V2 && h.capabilities().stateless_connect {
+                match h
+                    .stateless_connect(Service::UploadPack, &helper_ctx)
+                    .map_err(|e| fatal(&e))?
+                {
+                    Ok(t) => (Some(t), None),
+                    Err(h) => (None, Some(Box::new(h))),
+                }
+            } else {
+                (None, Some(h))
+            }
+        }
         None => (None, None),
     };
     let refs: Vec<RemoteRef> = if let Some(mut helper) = helper {
-        helper.standard_options(false, 1).map_err(|e| fatal(&e))?;
         let list = helper.list(false).map_err(|e| fatal(&e))?;
         helper.disconnect().map_err(|e| fatal(&e))?;
         rgit_fetch::helper_refs(&list)
@@ -265,8 +280,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .as_ref()
             .map(|p| p.to_str_lossy().into_owned())
     });
-    options.protocol_version =
-        rgit_fetch::protocol_version(&config, &env).map_err(|e| fatal(&e))?;
+    options.protocol_version = version;
     options.trace_name = Some("ls-remote".into());
     let conn = transport.connect(&options).map_err(|e| fatal(&e))?;
     let mut reader = Reader::new(conn, "ls-remote");
