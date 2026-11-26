@@ -109,6 +109,10 @@ pub fn rev_not_supported(rev: &str) -> String {
 
 /// git: `--thin` without `--stdout`.
 pub const THIN_NOT_INDEXABLE: &str = "--thin cannot be used to build an indexable pack";
+/// git: `--cruft` with an option that makes pack-objects walk revisions.
+pub const CRUFT_REVS: &str = "cannot use internal rev list with --cruft";
+/// git: `--cruft` with `--stdin-packs`.
+pub const CRUFT_STDIN_PACKS: &str = "options '--stdin-packs' and '--cruft' cannot be used together";
 
 /// git: `--index-version` that does not parse.
 pub fn bad_index_version(v: &str) -> String {

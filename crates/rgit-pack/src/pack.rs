@@ -33,6 +33,8 @@ pub struct Pack {
     data: OnceLock<Result<PackData, Error>>,
     /// (offset, index position), sorted by offset.
     revindex: OnceLock<Vec<(u64, u32)>>,
+    /// The `.mtimes` file, read on first use (`None`: absent or bad).
+    mtimes: OnceLock<Option<crate::mtimes::Mtimes>>,
     uid: u64,
     keep: bool,
     promisor: bool,
@@ -87,6 +89,7 @@ impl Pack {
             pack_path,
             data: OnceLock::new(),
             revindex: OnceLock::new(),
+            mtimes: OnceLock::new(),
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             keep,
             promisor,
@@ -116,6 +119,34 @@ impl Pack {
     /// Whether a `.promisor` file exists for this pack.
     pub fn is_promisor(&self) -> bool {
         self.promisor
+    }
+
+    /// Whether this is a cruft pack: a `.mtimes` file exists next to it
+    /// (checked on every call, as `repack` may add one to an existing
+    /// pack).
+    pub fn is_cruft(&self) -> bool {
+        self.pack_path.with_extension("mtimes").exists()
+    }
+
+    /// The `.mtimes` file of a cruft pack (`None` when there is none or it
+    /// cannot be read).
+    pub fn mtimes(&self) -> Option<&crate::mtimes::Mtimes> {
+        self.mtimes
+            .get_or_init(|| {
+                crate::mtimes::Mtimes::open(
+                    &self.pack_path.with_extension("mtimes"),
+                    self.index.hash_kind(),
+                    self.index.len(),
+                )
+                .ok()
+            })
+            .as_ref()
+    }
+
+    /// The modification time a cruft pack records for `id`.
+    pub fn object_mtime(&self, id: &ObjectId) -> Option<u32> {
+        let pos = self.index.lookup(id)?;
+        self.mtimes()?.get(pos)
     }
 
     /// Whether the index lists `id`.

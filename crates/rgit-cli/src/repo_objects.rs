@@ -72,6 +72,11 @@ impl ObjectStore for PackStore {
         self.set.contains(oid) || (self.set.rescan_if_changed() && self.set.contains(oid))
     }
 
+    /// A copy in a cruft pack does not count (see `PackSet::freshen`).
+    fn freshen(&self, oid: &ObjectId) -> bool {
+        self.set.freshen(oid)
+    }
+
     fn header(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, rgit_odb::Error> {
         if !self.contains(oid) {
             return Ok(None);
@@ -343,6 +348,17 @@ impl Repo {
             }
         }
         None
+    }
+
+    /// Whether a pack with a `.keep` file holds `oid`.
+    pub fn in_kept_pack(&self, oid: &ObjectId) -> bool {
+        self.dirs.iter().any(|d| {
+            d.packs
+                .set
+                .packs()
+                .iter()
+                .any(|p| p.is_keep() && p.contains(oid))
+        })
     }
 
     /// Bytes the copy of `oid` takes on disk.

@@ -243,6 +243,9 @@ pub struct Options {
     pub ignore_missing: bool,
     /// `--unpacked`: leave out objects (and commits) found in packs.
     pub unpacked: bool,
+    /// `--no-kept-objects[=on-disk]`: leave out objects found in packs
+    /// with a `.keep` file.
+    pub no_kept: bool,
     /// `--disk-usage[=human]`: `Some(human)`.
     pub disk_usage: Option<bool>,
     /// `--maximal-only`.
@@ -389,6 +392,7 @@ impl Options {
             single_worktree: false,
             ignore_missing: false,
             unpacked: false,
+            no_kept: false,
             disk_usage: None,
             maximal_only: false,
         }
@@ -600,6 +604,9 @@ impl Options {
                 "--single-worktree" => o.single_worktree = true,
                 "--ignore-missing" => o.ignore_missing = true,
                 "--unpacked" => o.unpacked = true,
+                // Packs kept only in memory exist in pack-objects alone.
+                "--no-kept-objects" | "--no-kept-objects=on-disk" => o.no_kept = true,
+                "--no-kept-objects=in-core" => {}
                 "--maximal-only" => o.maximal_only = true,
                 "--disk-usage" if cmd == Command::RevList => o.disk_usage = Some(false),
                 "--bisect" => o.bisect = true,

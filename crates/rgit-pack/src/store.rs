@@ -148,6 +148,27 @@ impl PackSet {
             .any(|p| p.contains(id))
     }
 
+    /// Instead of writing `id` again: if a pack other than a cruft pack
+    /// has it, update that `.pack` file's modification time (so that it
+    /// counts as recent) and return `true`. A copy in a cruft pack does
+    /// not count, because its age is recorded per object in the `.mtimes`
+    /// file: the caller writes a loose copy instead, which makes the object
+    /// recent (gitformat-pack(5), "cruft packs").
+    pub fn freshen(&self, id: &ObjectId) -> bool {
+        if !self.contains(id) && !(self.rescan_if_changed() && self.contains(id)) {
+            return false;
+        }
+        for pack in self.packs() {
+            if pack.contains(id) && !pack.is_cruft() {
+                if let Ok(f) = std::fs::File::open(pack.path()) {
+                    let _ = f.set_modified(SystemTime::now());
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     /// Read `id` from the first pack that has a readable copy.
     ///
     /// - `Ok(None)`: no pack lists it, also after

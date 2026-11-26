@@ -172,6 +172,13 @@ pub enum Error {
         /// The `.pack` file.
         path: PathBuf,
     },
+    /// A `.mtimes` file is malformed (`what`: which check failed).
+    Mtimes {
+        /// The `.mtimes` file.
+        path: PathBuf,
+        /// The failed check, e.g. `has unknown signature`.
+        what: &'static str,
+    },
     /// An object does not hash to the id recorded in the index.
     HashMismatch {
         /// The object.
@@ -230,6 +237,7 @@ impl fmt::Display for Error {
             Error::Checksum { path } => m::checksum(f, path),
             Error::CrcMismatch { id, path } => m::crc_mismatch(f, id, path),
             Error::HashMismatch { id, path } => m::hash_mismatch(f, id, path),
+            Error::Mtimes { path, what } => m::mtimes(f, path, what),
         }
     }
 }

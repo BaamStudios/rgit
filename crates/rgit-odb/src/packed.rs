@@ -82,6 +82,11 @@ impl ObjectStore for PackStore {
         self.set.contains(oid) || (self.set.rescan_if_changed() && self.set.contains(oid))
     }
 
+    /// A copy in a cruft pack does not count (see [`PackSet::freshen`]).
+    fn freshen(&self, oid: &ObjectId) -> bool {
+        self.set.freshen(oid)
+    }
+
     fn header(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
         self.header_reporting(oid, &mut |_| {})
     }
