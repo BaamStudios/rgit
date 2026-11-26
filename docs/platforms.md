@@ -35,7 +35,7 @@ The conformance suite (git's own test scripts, `rgit-conformance`) runs on
 Linux only so far. The file-system scripts (`t0050`, `t6419`, `t7062`) need a
 case-insensitive file system; on Linux they can be run on a `casefold` tmpfs
 (see below). Running the suite on macOS and Windows runners with a recorded
-baseline is tracked in the follow-up issues of #183.
+baseline is issue #684.
 
 ## File-system differences and the settings that describe them
 
@@ -45,8 +45,8 @@ rgit reads the same `core.*` settings as git (git-config(1)). `git init` and
 | Setting | Meaning | Default / probe | State in rgit |
 |---|---|---|---|
 | `core.ignoreCase` | names that differ only in case are one file | probed at `init` (`true` on APFS/HFS+, NTFS, FAT) | probe; case-insensitive index lookups in `add`, `status`, `ls-files -o`, `clean`, `mv`, checkout/merge/reset (untracked-file checks), collision warning of `clone` |
-| `core.precomposeUnicode` | macOS only: file names read from disk and from the command line are converted from decomposed (NFD) to precomposed (NFC) form | probed at `init` on macOS | see the follow-up issues of #183 |
-| `core.protectNTFS` | refuse paths NTFS treats as `.git` (`git~1`, `.git.`, `.git ` , `.git::$INDEX_ALLOCATION`, backslash-separated) | `true` on every platform | checkout paths and tree checks (`fsck`); index writers see the follow-up issues |
+| `core.precomposeUnicode` | macOS only: file names read from disk and from the command line are converted from decomposed (NFD) to precomposed (NFC) form | probed at `init` on macOS | probe; work tree walks (`add`, `status`, `ls-files -o`, `grep`, checkout checks), command-line arguments and the repository's own directories. Ignored on other platforms, as in git |
+| `core.protectNTFS` | refuse paths NTFS treats as `.git` (`git~1`, `.git.`, `.git ` , `.git::$INDEX_ALLOCATION`, backslash-separated) and symbolic links it treats as `.gitmodules` | `true` on every platform | every index writer (`add`, `update-index`, `mv`, `reset`, `apply`, ...), checkout paths and tree checks (`fsck`) |
 | `core.protectHFS` | refuse `.git` with code points HFS+ ignores (zero-width joiners, direction marks, ...) | `true` on macOS | as `core.protectNTFS` |
 | `core.symlinks` | `false`: symbolic links are checked out as small text files | probed at `init` (`false` on Windows without the privilege) | probe and checkout |
 | `core.fileMode` | `false`: the executable bit of the work tree is not trusted | probed at `init` (`false` on Windows, FAT) | probe and stat comparison |
@@ -71,12 +71,24 @@ directory, and the conformance scripts see the `CASE_INSENSITIVE_FS`
 prerequisite when `./run --out /path/to/dir/results` puts the trash
 directories there.
 
+`core.precomposeUnicode` is implemented by git on macOS only, so rgit ignores
+it elsewhere too. For testing, `RGIT_TEST_PRECOMPOSE_UNICODE=1` makes rgit
+honour the setting on any platform; on the casefold tmpfs (which does not
+tell NFC and NFD names apart, like APFS) `t3910-mac-os-precompose.sh` then
+runs against rgit. The variable is a test switch, not a feature.
+
 ## Windows: what is missing
 
 rgit builds for Windows, and clippy is clean. The larger areas that are not
-done are tracked in their own issues (see #183 for the list): path handling
-(drive letters, UNC paths, backslashes on the command line, `\\?\` prefixes,
-reserved device names), process handling (pager, hooks and aliases through a
-POSIX shell, signals), the credential cache daemon (Unix sockets), file modes
-and symbolic links without the privilege to create them, and time stamp
-resolution.
+done have their own issues:
+
+| Issue | Area |
+|---|---|
+| #679 | the test targets that fail on the Windows runner (`ci/platform/windows.txt`) |
+| #681 | path handling: drive letters, UNC paths, backslashes on the command line, `\\?\` prefixes, reserved device names |
+| #682 | process handling: pager, hooks and aliases through a POSIX shell, signals, the credential cache daemon, the system configuration of Git for Windows |
+| #683 | file modes, symbolic links without the privilege to create them, stat data and time stamp resolution |
+| #684 | the conformance suite on macOS and Windows runners |
+
+macOS: #680 lists the test targets that fail on the macOS runner
+(`ci/platform/macos.txt`). Remaining `core.ignoreCase` cases are in #685.
