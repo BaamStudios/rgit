@@ -4,7 +4,16 @@
 //! `<id> TAB <name>`, followed by `<peeled id> TAB <name>^{}` for
 //! annotated tags; `objects/info/packs` lists the local packs as
 //! `P <file name>` and ends with an empty line.
+//!
+//! The order of `objects/info/packs` follows git (observed on the git
+//! binary, it is not documented): packs outside the multi-pack index in
+//! directory order (as `readdir` returns the `.idx` files), then the packs
+//! of the multi-pack index in its order. Without `-f` the packs already
+//! listed keep their place and new ones are appended; a listed pack that
+//! no longer exists, or a line of the old `D`/`T` formats, makes the list
+//! start over.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +24,7 @@ use rgit_refs::{IterItem, IterOptions, RefStore};
 use rgit_repo::Setup;
 
 use super::store::LocalPack;
+use crate::messages::housekeeping as msg;
 
 /// Rewrite `info/refs` and `objects/info/packs`. Unless `force`, a file
 /// whose content would not change is left alone (its mtime stays, as
@@ -65,31 +75,106 @@ pub fn update(
         write_atomic(&refs_file, &refs, shared).map_err(|e| (refs_path, e))?;
     }
 
-    let mut names: Vec<&str> = packs.iter().map(|p| p.file_name.as_str()).collect();
-    names.sort_unstable();
+    let objects = rgit_odb::objects_dir(&setup.common_dir);
+    let packs_path = objects.join("info").join("packs");
+    let order = pack_order(odb, packs);
+    let old = std::fs::read(&packs_path).ok();
+    let names = match old.as_deref().filter(|_| !force) {
+        Some(old) => keep_listed_order(old, order),
+        None => order,
+    };
     let mut list = Vec::new();
     for n in names {
         list.extend_from_slice(format!("P {n}\n").as_bytes());
     }
     list.push(b'\n');
-    let objects = rgit_odb::objects_dir(&setup.common_dir);
-    let packs_path = objects.join("info").join("packs");
-    let listed = |data: &[u8]| {
-        let mut lines: Vec<Vec<u8>> = data
-            .split(|&b| b == b'\n')
-            .filter(|l| !l.is_empty())
-            .map(<[u8]>::to_vec)
-            .collect();
-        lines.sort_unstable();
-        lines
-    };
-    let unchanged = std::fs::read(&packs_path)
-        .ok()
-        .is_some_and(|old| listed(&old) == listed(&list));
+    let unchanged = old.as_deref() == Some(&list[..]);
     if force || !unchanged {
         write_atomic(&packs_path, &list, shared).map_err(|e| (packs_path, e))?;
     }
     Ok(())
+}
+
+/// The local packs (`pack-<hash>.pack` names) in git's order: those the
+/// multi-pack index does not cover in directory order, then the covered
+/// ones in the order of the index.
+fn pack_order(odb: &ObjectDatabase, packs: &[LocalPack]) -> Vec<String> {
+    let known: HashSet<&str> = packs.iter().map(|p| p.file_name.as_str()).collect();
+    let mut midx_names: Vec<String> = Vec::new();
+    if let Some(store) = odb.packs()
+        && let Some(chain) = store.set().midx()
+    {
+        for layer in chain.layers() {
+            for name in layer.pack_names() {
+                let stem = name.strip_suffix(".idx").unwrap_or(name);
+                let pack = format!("{stem}.pack");
+                if known.contains(pack.as_str()) && !midx_names.contains(&pack) {
+                    midx_names.push(pack);
+                }
+            }
+        }
+    }
+    let mut out: Vec<String> = Vec::with_capacity(packs.len());
+    let dir = packs
+        .first()
+        .and_then(|p| p.pack.path().parent().map(Path::to_path_buf));
+    if let Some(dir) = dir {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".idx")) else {
+                continue;
+            };
+            let pack = format!("{stem}.pack");
+            if known.contains(pack.as_str()) && !midx_names.contains(&pack) && !out.contains(&pack)
+            {
+                out.push(pack);
+            }
+        }
+    }
+    // Packs the directory scan missed (a concurrent repack).
+    for p in packs {
+        if !out.contains(&p.file_name) && !midx_names.contains(&p.file_name) {
+            out.push(p.file_name.clone());
+        }
+    }
+    out.extend(midx_names);
+    out
+}
+
+/// Without `-f`: the packs listed in the old file `old`, in its order,
+/// then the other packs of `order`. A listed pack that is
+/// gone, or a `D`/`T` line of the old formats, discards the old list;
+/// other lines are reported and skipped.
+fn keep_listed_order(old: &[u8], order: Vec<String>) -> Vec<String> {
+    // A pack listed twice takes the place of its last line.
+    let mut kept: Vec<String> = Vec::new();
+    for line in old.split(|&b| b == b'\n') {
+        match line {
+            [] => {}
+            [b'P', b' ', name @ ..] if !name.is_empty() => {
+                let name = String::from_utf8_lossy(name);
+                if !order.iter().any(|n| *n == name) {
+                    return order;
+                }
+                kept.retain(|n| *n != name);
+                kept.push(name.into_owned());
+            }
+            [b'D' | b'T', ..] => return order,
+            _ => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "error: {}",
+                    msg::info_packs_unrecognized(&String::from_utf8_lossy(line))
+                );
+            }
+        }
+    }
+    for n in order {
+        if !kept.contains(&n) {
+            kept.push(n);
+        }
+    }
+    kept
 }
 
 fn write_atomic(

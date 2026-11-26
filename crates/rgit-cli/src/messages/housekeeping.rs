@@ -113,6 +113,11 @@ pub fn unrecognized_argument(arg: &str) -> String {
     format!("unrecognized argument: {arg}")
 }
 
+/// An unknown line in `objects/info/packs` (`update-server-info`).
+pub fn info_packs_unrecognized(line: &str) -> String {
+    format!("unrecognized: {line}")
+}
+
 pub fn removing_stale(path: &str) -> String {
     format!("Removing stale temporary file {path}")
 }
