@@ -190,6 +190,10 @@ pub fn resolve_not_handling(path: &str, base: &str, ours: &str, theirs: &str) ->
 pub fn resolve_symlink(path: &str) -> String {
     format!("ERROR: {path}: Not merging symbolic link changes.")
 }
+/// A content conflict and a permissions conflict on the same path.
+pub fn resolve_content_and_permissions(path: &str, base: &str, ours: &str, theirs: &str) -> String {
+    format!("ERROR: content conflict, permissions conflict: {base}->{ours},{theirs} in {path}")
+}
 pub fn resolve_permissions(path: &str, base: &str, ours: &str, theirs: &str) -> String {
     format!("ERROR: permissions conflict: {base}->{ours},{theirs} in {path}")
 }
@@ -269,6 +273,10 @@ pub fn option_not_supported(name: &str) -> String {
 pub const APPLY_STASH_WHEN_FINISHED: &str =
     "When finished, apply stashed changes with `git stash pop`";
 
+/// `merge-recursive --<option>` with an unknown strategy option.
+pub fn merge_recursive_unknown_option(opt: &str) -> String {
+    format!("unknown option --{opt}")
+}
 /// `git merge-recursive -h`.
 pub const MERGE_RECURSIVE_USAGE: &str =
     "usage: git merge-recursive <base>... -- <head> <remote> ...";

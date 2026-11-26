@@ -189,6 +189,7 @@ fn list_cmds(ctx: &Context, groups: &str) -> Result<(), Die> {
                     commands::COMMANDS
                         .iter()
                         .filter(|c| !cmdlist::NOT_BUILTIN.contains(&c.name))
+                        .filter(|c| !cmdlist::SCRIPTS.contains(&c.name))
                         .map(|c| c.name.to_string()),
                 );
             }
