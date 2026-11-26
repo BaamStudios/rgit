@@ -742,6 +742,7 @@ pub const SCRIPTS: &[&str] = &[
     "merge-one-file",
     "merge-resolve",
     "mergetool",
+    "subtree",
 ];
 
 /// The catalogue entry of `name`.
