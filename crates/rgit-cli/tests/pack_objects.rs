@@ -606,8 +606,11 @@ fn progress_meters() {
             "p",
         ],
     );
-    // Reused deltas are not searched again: they do not count.
-    let mut fx = fx.git(["repack", "-adq"]);
+    // Reused deltas are not searched again: they do not count. git's
+    // threaded delta search hands work between threads as they finish, so
+    // the pack a multi-threaded repack writes (and with it what is reused
+    // below) depends on scheduling; one thread makes it reproducible.
+    let mut fx = fx.git(["-c", "pack.threads=1", "repack", "-adq"]);
     progress_case(
         &mut fx,
         &[

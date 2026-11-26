@@ -10,6 +10,28 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Replaces std's `eprintln!` in this crate (textual scope shadows the
+/// prelude). std writes the formatted pieces and the newline to the
+/// unbuffered stderr one `write` at a time, so a child that shares our
+/// stderr (`upload-pack` over `file://`, hooks, filters) can land in the
+/// middle of a line. Like git, each message goes out in a single write.
+/// A failed write is ignored, as git does, instead of panicking.
+macro_rules! eprintln {
+    () => {
+        $crate::write_stderr("\n")
+    };
+    ($($arg:tt)*) => {{
+        let mut line = ::std::format!($($arg)*);
+        line.push('\n');
+        $crate::write_stderr(&line)
+    }};
+}
+
+/// Writes `s` to stderr with one `write_all` (see `eprintln!` above).
+fn write_stderr(s: &str) {
+    let _ = std::io::stderr().lock().write_all(s.as_bytes());
+}
+
 mod abbrev;
 mod alias;
 mod argv;
@@ -107,12 +129,12 @@ impl Die {
         match self {
             Die::Fatal(m) => {
                 rgit_trace::trace2::error(&m);
-                let _ = writeln!(std::io::stderr(), "{}", prefixed(Level::Fatal, &m));
+                eprintln!("{}", prefixed(Level::Fatal, &m));
                 rgit_messages::EXIT_FATAL
             }
             Die::Error(m, code) => {
                 rgit_trace::trace2::error(&m);
-                let _ = writeln!(std::io::stderr(), "{}", prefixed(Level::Error, &m));
+                eprintln!("{}", prefixed(Level::Error, &m));
                 code
             }
             Die::Output(e) => e.emit(),
