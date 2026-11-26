@@ -634,6 +634,7 @@ dependencies = [
  "rgit-index",
  "rgit-mail",
  "rgit-mailinfo",
+ "rgit-mailnet",
  "rgit-merge",
  "rgit-messages",
  "rgit-notes",
@@ -853,6 +854,15 @@ name = "rgit-mailinfo"
 version = "0.1.0"
 dependencies = [
  "encoding_rs",
+]
+
+[[package]]
+name = "rgit-mailnet"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
 ]
 
 [[package]]

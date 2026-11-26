@@ -42,6 +42,7 @@ rgit-hash = { path = "../rgit-hash" }
 rgit-hook = { path = "../rgit-hook" }
 rgit-index = { path = "../rgit-index" }
 rgit-mail = { path = "../rgit-mail" }
+rgit-mailnet = { path = "../rgit-mailnet" }
 rgit-notes = { path = "../rgit-notes" }
 rgit-mailinfo = { path = "../rgit-mailinfo" }
 rgit-merge = { path = "../rgit-merge" }
