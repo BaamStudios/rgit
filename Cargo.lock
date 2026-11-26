@@ -892,6 +892,7 @@ dependencies = [
  "rgit-submodule",
  "rgit-trace",
  "rgit-version",
+ "tempfile",
 ]
 
 [[package]]

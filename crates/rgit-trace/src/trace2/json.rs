@@ -50,6 +50,12 @@ impl Json {
         self
     }
 
+    pub(crate) fn uint(&mut self, k: &str, v: u64) -> &mut Json {
+        self.key(k);
+        let _ = write!(self.body, "{v}");
+        self
+    }
+
     pub(crate) fn float(&mut self, k: &str, v: f64) -> &mut Json {
         self.key(k);
         let _ = write!(self.body, "{v:.6}");
