@@ -279,10 +279,15 @@ fn extensions() {
             "fatal: index file corrupt"
         ]
     );
+    // A split index needs its shared index, which `from_bytes` cannot
+    // read; one without shared index (null id) is complete.
     assert!(matches!(
-        parse(&append_ext(&bytes, kind, b"link", &[0; 20]), kind),
+        parse(&append_ext(&bytes, kind, b"link", &[7; 20]), kind),
         Err(Error::SplitIndex)
     ));
+    let null = parse(&append_ext(&bytes, kind, b"link", &[0; 20]), kind).unwrap();
+    assert!(null.shared_index().is_some_and(|id| id.is_null()));
+    assert_eq!(null.entries(), sample(kind).entries());
     assert!(matches!(
         parse(&append_ext(&bytes, kind, b"sdir", b""), kind),
         Err(Error::SparseIndex)

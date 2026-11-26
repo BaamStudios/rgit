@@ -289,21 +289,22 @@ impl Repo {
         let path = self.index_path();
         let mtime = index_mtime(&path).ok().flatten();
         let opts = crate::index_config::read_options(&self.config);
-        let mut index = Index::read_file(&path, self.hash, &opts).map_err(|e| {
-            // git's lines; the last one ends the command.
-            let mut lines = e.report(&path.display().to_string());
-            let last = lines.pop().unwrap_or_default();
-            for l in lines {
-                eprintln!("{l}");
-            }
-            match last.strip_prefix("fatal: ") {
-                Some(m) => Die::Fatal(m.to_owned()),
-                None => Die::Error(
-                    last.strip_prefix("error: ").unwrap_or(&last).to_owned(),
-                    128,
-                ),
-            }
-        })?;
+        let mut index = Index::read_file_in(&path, self.hash, &opts, Some(&self.setup.git_dir))
+            .map_err(|e| {
+                // git's lines; the last one ends the command.
+                let mut lines = e.report(&path.display().to_string());
+                let last = lines.pop().unwrap_or_default();
+                for l in lines {
+                    eprintln!("{l}");
+                }
+                match last.strip_prefix("fatal: ") {
+                    Some(m) => Die::Fatal(m.to_owned()),
+                    None => Die::Error(
+                        last.strip_prefix("error: ").unwrap_or(&last).to_owned(),
+                        128,
+                    ),
+                }
+            })?;
         if crate::index_config::apply_untracked_setting(
             &self.config,
             self.setup.work_tree.as_deref(),

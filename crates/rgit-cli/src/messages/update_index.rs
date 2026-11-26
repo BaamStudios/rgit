@@ -35,6 +35,8 @@ pub const HELP_SPLIT_INDEX: &str = "enable or disable split index";
 pub const HELP_UNTRACKED_CACHE: &str = "enable/disable untracked cache";
 pub const UNTRACKED_CACHE_SET_FALSE: &str = "core.untrackedCache is set to false; remove or change it, if you really want to enable the untracked cache";
 pub const UNTRACKED_CACHE_SET_TRUE: &str = "core.untrackedCache is set to true; remove or change it, if you really want to disable the untracked cache";
+pub const SPLIT_INDEX_SET_FALSE: &str = "core.splitIndex is set to false; remove or change it, if you really want to enable split index";
+pub const SPLIT_INDEX_SET_TRUE: &str = "core.splitIndex is set to true; remove or change it, if you really want to disable split index";
 pub const UNTRACKED_CACHE_DISABLED: &str = "untracked cache is disabled on this system or location";
 
 pub fn testing_mtime(dir: &str) -> String {

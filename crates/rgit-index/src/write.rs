@@ -4,7 +4,7 @@
 
 use rgit_hash::{HashKind, Hasher};
 
-use crate::entry::bits;
+use crate::entry::{Entry, bits};
 use crate::read::SIGNATURE;
 use crate::{Index, varint};
 
@@ -25,6 +25,10 @@ pub struct WriteOptions {
     /// `index.recordOffsetTable`) for this many loading threads, see
     /// [`OffsetTable`].
     pub offset_table: OffsetTable,
+    /// Split index settings (used by [`Index::write_file`] and
+    /// [`Index::write_locked`]; [`Index::to_bytes`] always writes a whole
+    /// index).
+    pub split: crate::SplitOptions,
 }
 
 /// How many blocks the Index Entry Offset Table splits the entries into.
@@ -60,23 +64,51 @@ impl OffsetTable {
     }
 }
 
+/// What a file written by [`write`] holds.
+pub(crate) enum Content<'a> {
+    /// The whole index.
+    Whole,
+    /// A shared index: all entries, no extensions.
+    Shared,
+    /// A split index: these entries (`true`: written without a name) and
+    /// the `link` data.
+    Split(Vec<(&'a Entry, bool)>, Vec<u8>),
+}
+
 pub(crate) fn serialize(index: &Index, opts: &WriteOptions) -> Vec<u8> {
+    write(index, opts, Content::Whole)
+}
+
+pub(crate) fn write(index: &Index, opts: &WriteOptions, content: Content<'_>) -> Vec<u8> {
     let kind = index.kind;
     let version = index.write_version(opts);
-    let mut out = Vec::with_capacity(12 + index.entries.len() * 80);
+    let is_shared = matches!(content, Content::Shared);
+    let (entries, link): (Vec<(&Entry, bool)>, Option<Vec<u8>>) = match content {
+        Content::Whole | Content::Shared => {
+            (index.entries.iter().map(|e| (e, false)).collect(), None)
+        }
+        Content::Split(own, link) => (own, Some(link)),
+    };
+    let mut out = Vec::with_capacity(12 + entries.len() * 80);
     out.extend_from_slice(SIGNATURE);
     out.extend_from_slice(&version.to_be_bytes());
     out.extend_from_slice(
-        &u32::try_from(index.entries.len())
+        &u32::try_from(entries.len())
             .unwrap_or(u32::MAX)
             .to_be_bytes(),
     );
 
-    let block_size = opts.offset_table.block_size(index.entries.len());
+    // The offset table only for a whole index.
+    let block_size = if link.is_none() && !is_shared {
+        opts.offset_table.block_size(entries.len())
+    } else {
+        None
+    };
     // (offset, count) per block of the offset table.
     let mut blocks: Vec<(usize, usize)> = Vec::new();
     let mut prev_path: &[u8] = &[];
-    for (i, e) in index.entries.iter().enumerate() {
+    for (i, &(e, nameless)) in entries.iter().enumerate() {
+        let name: &[u8] = if nameless { b"" } else { &e.path };
         let start = out.len();
         let block_start = block_size.is_some_and(|n| i % n == 0);
         if block_start {
@@ -103,7 +135,7 @@ pub(crate) fn serialize(index: &Index, opts: &WriteOptions) -> Vec<u8> {
         out.extend_from_slice(e.id.as_bytes());
         let extended = version >= 3 && e.flags.needs_extended();
         let mut flags = u16::from(e.stage.get()) << bits::STAGE_SHIFT;
-        flags |= u16::try_from(e.path.len())
+        flags |= u16::try_from(name.len())
             .unwrap_or(bits::NAME_MASK)
             .min(bits::NAME_MASK);
         if e.flags.assume_valid {
@@ -125,16 +157,16 @@ pub(crate) fn serialize(index: &Index, opts: &WriteOptions) -> Vec<u8> {
             } else {
                 prev_path
                     .iter()
-                    .zip(&e.path)
+                    .zip(name)
                     .take_while(|(a, b)| a == b)
                     .count()
             };
             varint::encode(prev_path.len() - common, &mut out);
-            out.extend_from_slice(&e.path[common..]);
+            out.extend_from_slice(&name[common..]);
             out.push(0);
-            prev_path = &e.path;
+            prev_path = name;
         } else {
-            out.extend_from_slice(&e.path);
+            out.extend_from_slice(name);
             let len = out.len() - start;
             let padded = (len + 8) & !7;
             out.resize(start + padded, 0);
@@ -153,7 +185,17 @@ pub(crate) fn serialize(index: &Index, opts: &WriteOptions) -> Vec<u8> {
         }
         push_extension(&mut out, &mut written, b"IEOT", &data);
     }
-    if let Some(tree) = &index.tree {
+    if let Some(link) = &link {
+        push_extension(&mut out, &mut written, b"link", link);
+    }
+    if is_shared {
+        trailer(&mut out, kind, false);
+        return out;
+    }
+    // Like git, no cache tree while an entry has a null id
+    // (GIT_ALLOW_NULL_SHA1): the trees could not be written.
+    let null_entry = || index.entries.iter().any(|e| e.id.is_null());
+    if let Some(tree) = index.tree.as_ref().filter(|_| !null_entry()) {
         let mut data = Vec::new();
         tree.write(&mut data);
         push_extension(&mut out, &mut written, b"TREE", &data);

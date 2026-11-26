@@ -32,6 +32,14 @@ pub enum Error {
     /// The index is split (`link` extension); not supported yet.
     #[error("{}", messages::SPLIT_INDEX_UNSUPPORTED)]
     SplitIndex,
+    /// The shared index of a split index cannot be opened.
+    #[error("{path}: index file open failed: {}", messages::os_error(source))]
+    SharedIndexOpen {
+        /// The shared index file as git names it.
+        path: String,
+        /// The underlying error.
+        source: io::Error,
+    },
     /// The index is sparse (`sdir` extension); not supported yet.
     #[error("{}", messages::SPARSE_INDEX_UNSUPPORTED)]
     SparseIndex,
@@ -63,7 +71,10 @@ impl Error {
             | Error::BadVersion(_)
             | Error::BadChecksum
             | Error::UnknownExtension(_) => vec![format!("error: {self}"), corrupt],
-            Error::SplitIndex | Error::SparseIndex | Error::UnknownEntryFormat(_) => {
+            Error::SplitIndex
+            | Error::SparseIndex
+            | Error::SharedIndexOpen { .. }
+            | Error::UnknownEntryFormat(_) => {
                 vec![format!("fatal: {self}")]
             }
             Error::Corrupt(_) => vec![corrupt],

@@ -175,7 +175,7 @@ impl Flags {
 ///
 /// The path and stage determine the entry's position in the index, so they
 /// can only be set when the entry is created.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 pub struct Entry {
     /// Cached `stat(2)` data.
     pub stat: Stat,
@@ -187,6 +187,34 @@ pub struct Entry {
     pub flags: Flags,
     pub(crate) stage: Stage,
     pub(crate) path: Vec<u8>,
+    /// Split index: 1 + the position of the shared index entry this one
+    /// came from, 0 for an entry the shared index does not have. Not part
+    /// of the entry's value (ignored by `==`).
+    pub(crate) base: u32,
+}
+
+impl PartialEq for Entry {
+    fn eq(&self, other: &Entry) -> bool {
+        self.stat == other.stat
+            && self.mode == other.mode
+            && self.id == other.id
+            && self.flags == other.flags
+            && self.stage == other.stage
+            && self.path == other.path
+    }
+}
+
+impl Eq for Entry {}
+
+impl std::hash::Hash for Entry {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.stat.hash(h);
+        self.mode.hash(h);
+        self.id.hash(h);
+        self.flags.hash(h);
+        self.stage.hash(h);
+        self.path.hash(h);
+    }
 }
 
 impl Entry {
@@ -199,6 +227,7 @@ impl Entry {
             flags: Flags::default(),
             stage,
             path: path.into(),
+            base: 0,
         }
     }
 

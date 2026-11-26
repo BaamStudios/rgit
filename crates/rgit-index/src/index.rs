@@ -38,6 +38,7 @@ pub struct Index {
     pub(crate) tree: Option<CacheTree>,
     pub(crate) resolve_undo: Option<Vec<ResolveUndo>>,
     pub(crate) untracked: Option<UntrackedCache>,
+    pub(crate) split: Option<crate::split::Split>,
     pub(crate) ignored: Vec<[u8; 4]>,
     pub(crate) dropped: Vec<[u8; 4]>,
     pub(crate) checksum: Option<ObjectId>,
@@ -54,6 +55,7 @@ impl Index {
             tree: None,
             resolve_undo: None,
             untracked: None,
+            split: None,
             ignored: Vec::new(),
             dropped: Vec::new(),
             checksum: None,
@@ -241,7 +243,12 @@ impl Index {
         }
         self.invalidate_path(&entry.path);
         match self.position(&entry.path, stage) {
-            Ok(pos) => self.entries[pos] = entry,
+            Ok(pos) => {
+                // A replaced entry stays the shared index entry it was.
+                let base = self.entries[pos].base;
+                self.entries[pos] = entry;
+                self.entries[pos].base = base;
+            }
             Err(pos) => {
                 if self.path_range(&entry.path).is_empty() {
                     self.untracked_changed(&entry.path);
@@ -464,6 +471,12 @@ impl Index {
         if let Some(uc) = &mut self.untracked {
             uc.invalidate_path(path);
         }
+    }
+
+    /// The checksum of the shared index this index was read with, if it
+    /// is a split index (null for a split index without shared index).
+    pub fn shared_index(&self) -> Option<&ObjectId> {
+        self.split.as_ref().map(|s| &s.base_id)
     }
 
     /// Drops the resolve undo extension.

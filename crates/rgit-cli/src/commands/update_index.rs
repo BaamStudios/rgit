@@ -40,6 +40,7 @@ enum Event {
     ClearResolveUndo,
     Unresolve,
     UntrackedCache(bool),
+    SplitIndex(bool),
     TestUntrackedCache,
     Unsupported(&'static str),
 }
@@ -103,6 +104,8 @@ struct State<'a> {
     untracked_cache: Option<bool>,
     /// `--test-untracked-cache`.
     test_untracked_cache: bool,
+    /// `--[no-]split-index`.
+    split_index: Option<bool>,
     out: Vec<u8>,
     /// A fatal conversion problem met while processing a path.
     pending: Option<Die>,
@@ -620,11 +623,17 @@ impl State<'_> {
             let _ = smudge_racy_entries(&mut self.index, reference, &checker);
         }
         let path = self.repo.setup.cwd.join(self.repo.index_path());
-        let opts = crate::index_config::write_options(&self.repo.config, &self.index).map_err(Stop::Die)?;
+        let mut opts =
+            crate::index_config::write_options(&self.repo.config, &self.index).map_err(Stop::Die)?;
+        match self.split_index {
+            Some(true) => opts.split.mode = rgit_index::SplitMode::Renew,
+            Some(false) => opts.split.mode = rgit_index::SplitMode::Off,
+            None => {}
+        }
         crate::hooks::index_changes(crate::hooks::IndexChange::SkipWorktree);
         match self
             .index
-            .write_file(&path, &rgit_fs::LockOptions::default(), &opts)
+            .write_file(&path, &self.repo.index_lock_options(), &opts)
         {
             Ok(()) => Ok(()),
             Err(rgit_index::WriteError::Lock(e)) => {
@@ -920,9 +929,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         )
         .noarg(),
         Opt::callback(None, "split-index", None, msg::HELP_SPLIT_INDEX, |_, neg| {
-            if !neg {
-                push(Event::Unsupported("--split-index"));
-            }
+            push(Event::SplitIndex(!neg));
             Ok(())
         })
         .noarg(),
@@ -1049,6 +1056,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         index_version: None,
         untracked_cache: None,
         test_untracked_cache: false,
+        split_index: None,
         out: Vec::new(),
         pending: None,
     };
@@ -1104,6 +1112,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 eprintln!("warning: {}", msg::UNTRACKED_CACHE_SET_TRUE);
             }
             st.index.set_untracked_cache(None);
+        }
+        st.changed = true;
+    }
+    if let Some(on) = st.split_index {
+        let setting = crate::index_config::split_setting(&repo.config);
+        if on && setting == Some(false) {
+            eprintln!("warning: {}", msg::SPLIT_INDEX_SET_FALSE);
+        }
+        if !on && setting == Some(true) {
+            eprintln!("warning: {}", msg::SPLIT_INDEX_SET_TRUE);
         }
         st.changed = true;
     }
@@ -1212,6 +1230,7 @@ impl State<'_> {
             }
             Event::UntrackedCache(on) => self.untracked_cache = Some(on),
             Event::TestUntrackedCache => self.test_untracked_cache = true,
+            Event::SplitIndex(on) => self.split_index = Some(on),
             Event::Unresolve => {
                 // Every argument after it names a path to unresolve.
                 let args: Vec<String> = if last_in_batch {
