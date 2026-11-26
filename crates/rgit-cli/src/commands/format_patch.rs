@@ -7,8 +7,9 @@
 //! Mail headers are written with `rgit_mail` (RFC 2047 encoding, quoting,
 //! folding). `--attach`/`--inline` write multipart mails, `--base` adds
 //! the base tree information, `--interdiff` and `--commit-list-format`
-//! fill the cover letter. Not yet supported: `--notes` (rgit #138) and
-//! `--range-diff` (rgit #140).
+//! fill the cover letter, `--notes[=<ref>]` adds notes after the `---`
+//! line (see [`crate::notes`]). Not yet supported: `--range-diff`
+//! (rgit #140).
 
 #[path = "format_patch/mail.rs"]
 pub(crate) mod mail;
@@ -1238,6 +1239,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         None
     };
 
+    let notes = if o.notes.shown(false) {
+        let store = crate::refs_support::ref_store(&repo.setup, &repo.config);
+        Some(crate::notes::Display::load(&o.notes, &repo.config, &store, repo.odb())?)
+    } else {
+        None
+    };
     let mut progress = rgit_progress::Progress::start_delayed(
         msg::GENERATING_PATCHES,
         u64::try_from(count).unwrap_or(u64::MAX),
@@ -1344,8 +1351,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             out.push(b'\n');
         }
         out.extend_from_slice(&text);
+        let note = notes
+            .as_ref()
+            .map(|d| d.formatted(repo.odb(), &p.id))
+            .unwrap_or_default();
+        if !note.is_empty() {
+            // The notes are commentary after the `---` line.
+            out.extend_from_slice(b"---\n");
+            out.extend_from_slice(&note);
+            if !p.diff.is_empty() {
+                out.push(b'\n');
+            }
+        }
         if !p.diff.is_empty() {
-            out.extend_from_slice(if p.has_stat { b"---\n" } else { b"\n" });
+            if note.is_empty() {
+                out.extend_from_slice(if p.has_stat { b"---\n" } else { b"\n" });
+            }
             match (&s.attach, &p.parts) {
                 // The patch goes into a part of its own after the stat.
                 (Some((boundary, inline)), Some((head, patch))) if !head.is_empty() => {

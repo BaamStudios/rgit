@@ -50,6 +50,7 @@ pub mod mktag;
 pub mod mktree;
 pub mod mv;
 pub mod name_rev;
+pub mod notes;
 pub mod objects;
 pub mod pack_objects;
 pub mod pack_refs;

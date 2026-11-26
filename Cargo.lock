@@ -510,6 +510,7 @@ dependencies = [
  "rgit-mailinfo",
  "rgit-merge",
  "rgit-messages",
+ "rgit-notes",
  "rgit-object",
  "rgit-odb",
  "rgit-options",
@@ -723,6 +724,16 @@ version = "0.1.0"
 dependencies = [
  "rgit-config",
  "unicode-width",
+]
+
+[[package]]
+name = "rgit-notes"
+version = "0.1.0"
+dependencies = [
+ "rgit-hash",
+ "rgit-object",
+ "rgit-odb",
+ "thiserror",
 ]
 
 [[package]]

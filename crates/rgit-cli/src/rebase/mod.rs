@@ -3390,6 +3390,12 @@ impl<'c> Rebase<'c> {
         }
         let rewritten = std::fs::read(dir.join("rewritten-list")).unwrap_or_default();
         if !rewritten.is_empty() {
+            crate::notes::rewrite_list(
+                self.ctx,
+                "rebase",
+                &rewritten,
+                &crate::messages::notes::added_by("notes copy"),
+            )?;
             let hooks = crate::hooks::for_repo(self.ctx, &repo.setup, &repo.config)?;
             if hooks.exists("post-rewrite") {
                 let mut o = RunOptions::with_args(["rebase"]);

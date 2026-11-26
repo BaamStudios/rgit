@@ -60,6 +60,7 @@ mod interactive;
 mod large;
 mod maintenance;
 mod messages;
+mod notes;
 mod objects;
 mod pager;
 mod patch_id;

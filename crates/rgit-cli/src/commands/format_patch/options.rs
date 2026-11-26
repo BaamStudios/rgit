@@ -94,6 +94,8 @@ pub struct Options {
     pub creation_factor: Option<usize>,
     /// `--progress`.
     pub progress: bool,
+    /// `--[no-]notes[=<ref>]` and friends.
+    pub notes: crate::notes::DisplayOptions,
     /// `-<n>`, `--max-count=<n>`.
     pub max_count: Option<String>,
     /// Other revision options, passed to the walk.
@@ -331,8 +333,15 @@ impl Options {
             ("no-creation-factor", None) => self.creation_factor = None,
             ("progress", None) => self.progress = true,
             ("no-progress", None) => self.progress = false,
-            ("no-notes", None) => {}
-            ("notes", _) => return Err(Die::Fatal(msg::not_supported(&format!("--{name}")))),
+            ("notes" | "no-notes" | "show-notes" | "standard-notes" | "no-standard-notes", _) => {
+                let arg = match value {
+                    Some(v) => format!("--{name}={v}"),
+                    None => format!("--{name}"),
+                };
+                if !self.notes.parse(&arg) {
+                    return Ok(false);
+                }
+            }
             _ => return Ok(false),
         }
         Ok(true)

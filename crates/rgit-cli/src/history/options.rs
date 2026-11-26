@@ -153,8 +153,9 @@ pub struct Options {
     pub decorate: Option<Decorate>,
     /// `--decorate-refs*` and `--clear-decorations`.
     pub decorate_filter: Filter,
-    /// `--no-notes` turns `%N` off.
-    pub notes: bool,
+    /// `--[no-]notes[=<ref>]`, `--show-notes[=<ref>]`,
+    /// `--[no-]standard-notes`.
+    pub notes: crate::notes::DisplayOptions,
     /// `--[no-]show-signature`.
     pub show_signature: Option<bool>,
     /// `-z` (log).
@@ -352,7 +353,7 @@ impl Options {
             decorate: None,
             decorate_filter: Filter::default(),
             zero: false,
-            notes: true,
+            notes: crate::notes::DisplayOptions::default(),
             show_signature: None,
             commit_header: true,
             mailmap: None,
@@ -728,7 +729,7 @@ impl Options {
                 "--pretty" => o.pretty_arg = Some("medium".into()),
                 "--show-signature" => o.show_signature = Some(true),
                 "--no-show-signature" => o.show_signature = Some(false),
-                "--no-notes" => o.notes = false,
+                a if o.notes.parse(a) => {}
                 "--no-decorate" => o.decorate = Some(Decorate::No),
                 "--decorate" => o.decorate = Some(Decorate::Short),
                 "--clear-decorations" => {

@@ -92,6 +92,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let usage = || usage_exit(help.clone());
     let (argv_rest, mut header) = split_header(&argv[1..]);
+    let mut notes = crate::notes::DisplayOptions::default();
+    for a in &header.show_args {
+        notes.parse(a);
+    }
+    if notes.shown(false) {
+        let setup = crate::repo::setup(ctx, crate::repo::Mode::Required)?;
+        let config = crate::refs_support::load_config(ctx, &setup)?;
+        crate::notes::check_display_config(&config)?;
+    }
     let mut merge_base = false;
     let mut stdin = false;
     let mut root = false;
@@ -510,12 +519,11 @@ impl Sink {
     fn new(header: &Header, diff_args: &[String], paths: &[String], c: &Commits<'_>) -> Sink {
         let pretty = header.pretty.then(|| {
             // diff-tree is plumbing: none of the porcelain defaults of
-            // `show` apply (abbreviated ids, renames, notes, decorations,
+            // `show` apply (abbreviated ids, renames, decorations,
             // mailmap, colours); the options given come after them.
             let mut a: Vec<String> = [
                 "--no-abbrev",
                 "--no-renames",
-                "--no-notes",
                 "--no-decorate",
                 "--no-mailmap",
                 "--no-color",
