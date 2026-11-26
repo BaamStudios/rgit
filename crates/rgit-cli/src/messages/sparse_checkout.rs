@@ -55,6 +55,10 @@ pub const OUTSIDE_SPARSE_HEADER: &str = "The following paths and/or pathspecs ma
 /// Advice `updateSparsePath`.
 pub const UPDATE_SPARSE_PATH_HINT: &str = "If you intend to update such entries, try one of the following:\n* Use the --sparse option.\n* Disable or modify the sparsity rules.";
 
+/// Advice `sparseIndexExpanded`: a sparse index read with directories
+/// present in the work tree that its sparse directory entries stand for.
+pub const SPARSE_INDEX_EXPANDED_HINT: &str = "The sparse index is expanding to a full index, a slow operation.\nYour working directory likely has contents that are outside of\nyour sparse-checkout patterns. Use 'git sparse-checkout list' to\nsee your sparse-checkout definition and compare it to your working\ndirectory contents. Cleaning up any merge conflicts or staged\nchanges before running 'git sparse-checkout clean' or 'git\nsparse-checkout reapply' may assist in this cleanup.";
+
 pub fn not_a_directory(arg: &str) -> String {
     format!(
         "'{arg}' is not a directory; to treat it as a directory anyway, rerun with --skip-checks"

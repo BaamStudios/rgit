@@ -18,6 +18,9 @@ pub struct ReadOptions {
     /// (`IEOT`, `index.threads`): 0 picks one per CPU, 1 parses in the
     /// calling thread only.
     pub threads: usize,
+    /// Keep sparse directory entries instead of expanding them with the
+    /// registered tree reader ([`crate::set_tree_reader`]).
+    pub keep_sparse: bool,
 }
 
 impl ReadOptions {
@@ -160,7 +163,7 @@ fn parse_one(
                     crate::split::Link::parse(ext, kind).ok_or(Error::Corrupt("link extension"))?,
                 );
             }
-            b"sdir" => return Err(Error::SparseIndex),
+            b"sdir" => index.sparse = true,
             // Written anew from the entries when asked for.
             b"EOIE" | b"IEOT" => {}
             // Known optional extensions that rgit does not keep yet:

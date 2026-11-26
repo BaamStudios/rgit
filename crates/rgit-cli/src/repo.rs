@@ -154,6 +154,7 @@ fn setup_inner(
             rgit_trace::trace2::def_repo(&setup.cwd.join(wt).to_string_lossy());
         }
     }
+    crate::sparse_index::install_reader(&setup);
     Ok(Some(setup))
 }
 

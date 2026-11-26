@@ -445,7 +445,10 @@ fn local_changes(
                 gi += 1;
                 if g.iter().any(|e| e.stage().is_conflict()) {
                     line(b'U', g[0].path());
-                } else if checker.lstat(g[0].path()).ok().flatten().is_some() {
+                } else if g[0].flags.skip_worktree
+                    || checker.lstat(g[0].path()).ok().flatten().is_some()
+                {
+                    // Skip-worktree entries count as present.
                     line(b'A', g[0].path());
                 }
             }
@@ -466,9 +469,13 @@ fn local_changes(
                     }
                     continue;
                 }
-                let st = checker
-                    .check(e)
-                    .map_err(|err| Die::Fatal(err.to_string()))?;
+                let st = if e.flags.skip_worktree {
+                    Status::Unchanged
+                } else {
+                    checker
+                        .check(e)
+                        .map_err(|err| Die::Fatal(err.to_string()))?
+                };
                 match st {
                     Status::Deleted => line(b'D', e.path()),
                     Status::TypeChanged => line(b'T', e.path()),

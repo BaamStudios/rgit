@@ -40,9 +40,6 @@ pub enum Error {
         /// The underlying error.
         source: io::Error,
     },
-    /// The index is sparse (`sdir` extension); not supported yet.
-    #[error("{}", messages::SPARSE_INDEX_UNSUPPORTED)]
-    SparseIndex,
     /// An entry with unknown extended flag bits. The value is the extended
     /// flags shifted into the upper 16 bits, as git prints it.
     #[error("{}", messages::unknown_entry_format(*.0))]
@@ -71,10 +68,7 @@ impl Error {
             | Error::BadVersion(_)
             | Error::BadChecksum
             | Error::UnknownExtension(_) => vec![format!("error: {self}"), corrupt],
-            Error::SplitIndex
-            | Error::SparseIndex
-            | Error::SharedIndexOpen { .. }
-            | Error::UnknownEntryFormat(_) => {
+            Error::SplitIndex | Error::SharedIndexOpen { .. } | Error::UnknownEntryFormat(_) => {
                 vec![format!("fatal: {self}")]
             }
             Error::Corrupt(_) => vec![corrupt],

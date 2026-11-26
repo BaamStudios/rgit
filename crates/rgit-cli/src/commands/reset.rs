@@ -376,6 +376,13 @@ fn reset_patch(
     opts.pathspec = split.paths.clone();
     opts.set_context(unified, inter_hunk);
     opts.auto_advance = auto_advance;
+    // The sparse index is compared with the tree.
+    let tree = ObjectId::from_hex(repo.hash, opts.rev.as_bytes())
+        .ok()
+        .or_else(|| head.and_then(|h| tree_of(&objects, &h)));
+    let (index, _) = repo.read_index()?;
+    crate::sparse_index::expand_if_differs(repo, &index, tree);
+    drop(index);
     crate::interactive::patch::run(ctx, repo, &opts)?;
     Ok(0)
 }
@@ -582,6 +589,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             None => true,
         };
         let (mut index, index_mtime) = repo.read_index()?;
+        if let Some(ps) = &pathspec {
+            crate::sparse_index::expand_for_pathspec(ps);
+        }
         reset_index(&repo, &mut index, tree.as_ref(), &wanted, intent_to_add.get())?;
         let work_tree = repo.work_tree()?;
         let checker = repo.checker(index_mtime)?;

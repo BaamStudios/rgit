@@ -18,8 +18,9 @@
 //!   a conflict stage leaves the index; `UNTR` (untracked cache) is parsed,
 //!   written and invalidated when paths appear in or vanish from the
 //!   index. `FSMN` and unknown optional (uppercase) extensions are dropped
-//!   on write. `sdir` (sparse index) and unknown required (lowercase)
-//!   extensions are refused.
+//!   on write. Unknown required (lowercase) extensions are refused.
+//! - Sparse index (`sdir`): sparse directory entries are read and written;
+//!   see [`Index::expand_sparse`] and [`Index::collapse_sparse`].
 //! - Split index (`link`): read together with its `sharedindex.<hash>`;
 //!   [`Index::write_file`] writes split as [`SplitOptions`] asks, with
 //!   replaced, added and deleted entries against the shared index it was
@@ -50,6 +51,7 @@ mod file;
 mod index;
 pub mod messages;
 mod read;
+mod sparse;
 mod split;
 mod tree;
 mod untracked;
@@ -65,6 +67,10 @@ pub use file::{
 };
 pub use index::{AddOptions, Index, ResolveUndo};
 pub use read::ReadOptions;
+pub use sparse::{
+    CollapseRules, SparseOrigin, TreeReader, WriteTransform, has_tree_reader, set_tree_reader,
+    set_write_transform,
+};
 pub use split::{SplitMode, SplitOptions};
 pub use tree::{CacheTree, TreeNode};
 pub use untracked::{CacheDir, CacheStat, ExcludeFile, UntrackedCache};

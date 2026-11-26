@@ -229,6 +229,9 @@ impl<'a> Resolver<'a> {
             &rgit_index::ReadOptions::default(),
         )
         .ok();
+        if let Some(i) = &index {
+            crate::sparse_index::note_lookup(i, path.as_bytes());
+        }
         let entries = index
             .as_ref()
             .map(|i| i.entries_for_path(path.as_bytes()).to_vec())
