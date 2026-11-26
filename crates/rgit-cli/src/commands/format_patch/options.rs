@@ -94,8 +94,9 @@ pub struct Options {
     pub creation_factor: Option<usize>,
     /// `--progress`.
     pub progress: bool,
-    /// `--[no-]notes[=<ref>]` and friends.
-    pub notes: crate::notes::DisplayOptions,
+    /// `--[no-]notes[=<ref>]` and friends, in order (applied after
+    /// `format.notes`).
+    pub notes: Vec<String>,
     /// `-<n>`, `--max-count=<n>`.
     pub max_count: Option<String>,
     /// Other revision options, passed to the walk.
@@ -338,9 +339,10 @@ impl Options {
                     Some(v) => format!("--{name}={v}"),
                     None => format!("--{name}"),
                 };
-                if !self.notes.parse(&arg) {
+                if !crate::notes::DisplayOptions::default().parse(&arg) {
                     return Ok(false);
                 }
+                self.notes.push(arg);
             }
             _ => return Ok(false),
         }

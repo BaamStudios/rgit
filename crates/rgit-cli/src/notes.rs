@@ -406,6 +406,9 @@ pub struct DisplayOptions {
     pub standard: Option<bool>,
     /// Refs given with `--notes=<ref>` / `--show-notes=<ref>` (expanded).
     pub extra: Vec<String>,
+    /// `--show-notes-by-default`: the default notes are shown unless an
+    /// option says otherwise, whatever the format.
+    pub by_default: bool,
 }
 
 impl DisplayOptions {
@@ -422,6 +425,7 @@ impl DisplayOptions {
                 self.standard = Some(false);
                 self.extra.clear();
             }
+            "--show-notes-by-default" => self.by_default = true,
             "--standard-notes" => self.standard = Some(true),
             "--no-standard-notes" => self.standard = Some(false),
             _ => {
@@ -444,7 +448,7 @@ impl DisplayOptions {
 
     /// Whether notes are shown, `default` when no option said so.
     pub fn shown(&self, default: bool) -> bool {
-        self.show.unwrap_or(default)
+        self.show.unwrap_or(default || self.by_default)
     }
 }
 
