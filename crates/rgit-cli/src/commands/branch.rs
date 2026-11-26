@@ -336,22 +336,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let creating = !modes.iter().any(|m| *m)
         && !(list.get() || filtering || format.borrow().is_some() || !sorts.borrow().is_empty())
         && !args.is_empty();
+    let propagate = c
+        .config
+        .bool("submodule.propagatebranches")
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    // `submodule.recurse` alone only recurses where branches propagate.
     let recursing = match recurse.get() {
         1 => true,
         0 => false,
-        _ => creating && rgit_submodule::settings::recurse(c.config),
+        _ => creating && propagate && rgit_submodule::settings::recurse(c.config),
     };
     if recursing && !creating {
         return Err(Die::Fatal(msg::RECURSE_ONLY_CREATE.to_owned()));
     }
-    if recursing
-        && !c
-            .config
-            .bool("submodule.propagatebranches")
-            .ok()
-            .flatten()
-            .unwrap_or(false)
-    {
+    if recursing && !propagate {
         return Err(Die::Fatal(msg::PROPAGATE_BRANCHES_NEEDED.to_owned()));
     }
     if delete.get() > 0 {
