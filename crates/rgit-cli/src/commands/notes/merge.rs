@@ -211,7 +211,7 @@ impl Merge<'_> {
         };
         let local = match store.read_raw(MERGE_REF).ok().flatten() {
             Some(rgit_refs::Target::Symbolic(name)) => name,
-            _ => return Err(fatal("failed to resolve NOTES_MERGE_REF")),
+            _ => return Err(fatal(msg::RESOLVE_MERGE_REF_FAILED)),
         };
         let (shown, real) = self.worktree();
         say(self.verbosity, 3, &msg::committing_worktree(&shown));

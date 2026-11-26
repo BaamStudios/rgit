@@ -72,6 +72,7 @@ pub const NOTES_EDITMSG: &str = "NOTES_EDITMSG";
 pub const MUST_SPECIFY_REF: &str = "must specify a notes ref to merge";
 pub const CANNOT_MIX: &str = "cannot mix --commit, --abort or -s/--strategy";
 pub const READ_PARTIAL_FAILED: &str = "failed to read ref NOTES_MERGE_PARTIAL";
+pub const RESOLVE_MERGE_REF_FAILED: &str = "failed to resolve NOTES_MERGE_REF";
 pub const REMOVE_WORKTREE_FAILED: &str = "failed to remove 'git notes merge' worktree";
 pub const AUTOMATIC_MERGE_FAILED: &str = "Automatic notes merge failed. Fix conflicts in %s and commit the result with 'git notes merge --commit', or abort the merge with 'git notes merge --abort'.";
 pub const FAST_FORWARD: &str = "Fast-forward";
