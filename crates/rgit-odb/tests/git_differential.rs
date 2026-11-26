@@ -5,6 +5,9 @@
 //! --disambiguate`, permissions match under `core.sharedRepository`, and
 //! corruption is reported with git's messages.
 
+// Most cases here need a POSIX system; their helpers are unused elsewhere.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 mod common;
 
 use std::collections::BTreeSet;

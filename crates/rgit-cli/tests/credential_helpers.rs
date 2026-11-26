@@ -9,6 +9,9 @@
 //! temporary directory and stopped by [`Daemons`] (with `exit`, then by
 //! killing whatever still serves that socket).
 
+// Most cases here need a POSIX system; their helpers are unused elsewhere.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};

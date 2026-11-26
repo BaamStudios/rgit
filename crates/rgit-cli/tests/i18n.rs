@@ -7,6 +7,9 @@
 //! arguments, `%(describe)`, `%>|(<column>)` after `--graph` and POSIX
 //! `TZ` values without rules.
 
+// Most cases here need a POSIX system; their helpers are unused elsewhere.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 use std::ffi::OsString;
 
 use rgit_difftest::{Check, Fixture};

@@ -27,6 +27,7 @@ use std::io::{IsTerminal, Write};
 
 use rgit_config::{ConfigSet, Environment, SystemEnv};
 
+#[cfg(unix)]
 use crate::messages::pager as msg;
 use crate::{Context, Die};
 
