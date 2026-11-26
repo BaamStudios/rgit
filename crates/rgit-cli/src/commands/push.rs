@@ -350,7 +350,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     for w in &remote.warnings {
         eprintln!("warning: {w}");
     }
-    if repo_arg.is_none() && !remote.is_configured() {
+    // A configured name (`branch.<name>.pushRemote`, `remote.pushDefault`,
+    // `branch.<name>.remote`) need not name a remote: it is then a URL.
+    // Only the implicit default must be configured.
+    let named_in_config = branch
+        .as_ref()
+        .is_some_and(|b| b.push_remote.is_some() || b.remote.is_some())
+        || remotes.push_default().is_some();
+    if repo_arg.is_none() && !named_in_config && !remote.is_configured() {
         return Err(Die::Fatal(msg::NO_DESTINATION.into()));
     }
 
@@ -512,6 +519,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         sub_remote: remote.is_configured().then(|| remote_name.clone()),
         sub_refspecs: cli_specs.to_vec(),
     };
+    let by_url = (!remote.is_configured())
+        .then(|| remote_by_push_url(&remotes, &remote, &setup.git_dir))
+        .flatten();
     let push = Push {
         ctx,
         setup: &setup,
@@ -521,6 +531,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         refs: &refs,
         head: head.as_deref(),
         remote: &remote,
+        tracking: if remote.is_configured() {
+            Some(&remote)
+        } else {
+            by_url.as_ref()
+        },
         refspecs: &refspecs,
         remote_push: (from_cli && !remote.push.is_empty()).then_some(&remote.push),
         flags: &flags,
@@ -533,6 +548,26 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 }
 
 /// The members of the remote group `remotes.<name>`, if there is one.
+/// The one configured remote that pushes to the URL(s) `url_remote` (a
+/// URL given as remote) pushes to, after URL rewriting; `None` when no
+/// remote or several do.
+fn remote_by_push_url(remotes: &Remotes, url_remote: &Remote, git_dir: &std::path::Path) -> Option<Remote> {
+    let mut found: Option<Remote> = None;
+    for name in remotes.names() {
+        let Ok(r) = remotes.get(name, Some(git_dir)) else {
+            continue;
+        };
+        if !r.push_url.iter().any(|u| url_remote.push_url.contains(u)) {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(r);
+    }
+    found
+}
+
 fn remote_group(config: &ConfigSet, name: &str) -> Option<Vec<String>> {
     let key = format!("remotes.{name}");
     let mut found = false;
@@ -760,6 +795,10 @@ struct Push<'a> {
     refs: &'a crate::refs::Refs,
     head: Option<&'a str>,
     remote: &'a Remote,
+    /// The remote whose remote-tracking refs follow the push: the remote
+    /// pushed to, or for a URL the one configured remote pushing to that
+    /// URL (none when several do).
+    tracking: Option<&'a Remote>,
     refspecs: &'a RefspecSet,
     remote_push: Option<&'a RefspecSet>,
     flags: &'a Flags,
@@ -824,22 +863,23 @@ impl Push<'_> {
     }
 
     /// The refs of a remote helper (`list for-push`) as an advertisement;
-    /// unknown values (`?`) are the null id. A helper must be able to
-    /// `push` or `export`, and an exporting one needs `refspec`.
+    /// unknown values (`?`) are the null id. An exporting helper needs
+    /// `refspec`. A helper that can neither `push` nor `export` is still
+    /// asked for its refs (a plain `list`, as git sends it); the push
+    /// then fails in [`Self::helper_send`].
     fn helper_advertisement(&self, h: &mut Helper) -> Result<Advertisement, Die> {
         let f = self.flags;
         let caps = h.capabilities().clone();
-        if !caps.push && !caps.export {
-            return Err(Die::Fatal(msg::helper_cannot_push(&h.spec().name)));
-        }
-        if !caps.push && caps.refspecs.is_empty() {
+        if !caps.push && (caps.export || caps.import) && caps.refspecs.is_empty() {
             eprintln!("warning: {}", rgit_fetch::messages::HELPER_NEEDS_REFSPEC);
-            return Err(Die::Fatal(msg::EXPORT_NEEDS_REFSPEC.into()));
         }
         let verbosity = if f.quiet { 0 } else { 1 + f.verbosity };
         h.standard_options(f.progress, verbosity).map_err(fatal)?;
         // An exporting helper gets a plain `list` (as git sends it).
         let listed = h.list(caps.push).map_err(fatal)?;
+        if !caps.push && caps.export && caps.refspecs.is_empty() {
+            return Err(Die::Fatal(msg::EXPORT_NEEDS_REFSPEC.into()));
+        }
         let null = ObjectId::null(self.setup.format.object_format);
         let refs = rgit_fetch::helper_refs(&listed)
             .into_iter()
@@ -877,11 +917,13 @@ impl Push<'_> {
         if f.force {
             h.set_option("force", "true").map_err(fatal)?;
         }
-        if f.atomic {
-            h.set_option("atomic", "true").map_err(fatal)?;
+        if f.atomic && h.set_option("atomic", "true").map_err(fatal)? != OptionReply::Ok {
+            return Err(Die::Fatal(msg::helper_no_atomic(&name)));
         }
         for o in &f.push_options {
-            h.set_option("push-option", o).map_err(fatal)?;
+            if h.set_option("push-option", o).map_err(fatal)? != OptionReply::Ok {
+                return Err(Die::Fatal(msg::helper_no_push_option(&name)));
+            }
         }
         // The value the helper's private ref holds is the old value as far
         // as rgit knows.
@@ -1096,11 +1138,15 @@ impl Push<'_> {
         };
         // Printed before the connection is dropped (the server then
         // reports the hang-up), like git.
-        if f.atomic && !session.adv.caps.contains("atomic") {
+        // A helper is asked with `option atomic` / `option push-option`.
+        if f.atomic && helper.is_none() && !session.adv.caps.contains("atomic") {
             eprintln!("fatal: {}", msg::NO_ATOMIC);
             return Err(Die::Exit(rgit_options::EXIT_FATAL));
         }
-        if !f.push_options.is_empty() && !session.adv.caps.contains("push-options") {
+        if !f.push_options.is_empty()
+            && helper.is_none()
+            && !session.adv.caps.contains("push-options")
+        {
             eprintln!("fatal: {}", msg::NO_PUSH_OPTIONS);
             return Err(Die::Exit(rgit_options::EXIT_FATAL));
         }
@@ -1270,9 +1316,19 @@ impl Push<'_> {
                 name: r.dst.clone(),
             })
             .collect();
+        let mut transport_failed = false;
         if let Some(h) = helper {
             let listed = session.adv.refs.clone();
             send::finish_empty(session);
+            // Neither `push` nor `export`: nothing can be sent, not even
+            // when everything is up to date; git only reports the failed
+            // push (before it lets the helper go).
+            let caps = h.capabilities();
+            if !caps.push && !caps.export {
+                self.failed_to_push(&display);
+                let _ = h.disconnect();
+                return Ok(1);
+            }
             if !self.helper_send(h, &mut list, &listed)? {
                 self.failed_to_push(&display);
                 return Ok(1);
@@ -1281,7 +1337,7 @@ impl Push<'_> {
             for r in list.iter_mut().filter(|r| r.status == Status::None) {
                 r.status = Status::Ok;
             }
-            send::finish_empty(session);
+            transport_failed = !send::finish_empty(session);
         } else {
             let request = Request {
                 quiet: !f.progress,
@@ -1320,7 +1376,9 @@ impl Push<'_> {
                 }
             };
             let result = send::exchange(&mut session, &out);
-            let _ = session.conn.close();
+            // A server that exits with an error after its report fails
+            // the push as a whole (the report still stands), like git.
+            transport_failed = session.conn.close().is_err() && result.is_ok();
             match result {
                 Ok(Some(report)) => {
                     if let Some(e) = &report.unpack_error {
@@ -1357,8 +1415,9 @@ impl Push<'_> {
             porcelain: f.porcelain,
             abbrev: &abbrev,
             rejected,
+            done: !transport_failed,
         };
-        let failed = output::print(&list, &style);
+        let failed = output::print(&list, &style) || transport_failed;
         if !f.dry_run {
             self.update_tracking(&list)?;
         }
@@ -1512,9 +1571,9 @@ impl Push<'_> {
     /// Remote-tracking refs of a configured remote follow what the server
     /// now has.
     fn update_tracking(&self, list: &[PushRef]) -> Result<(), Die> {
-        if !self.remote.is_configured() {
+        let Some(remote) = self.tracking else {
             return Ok(());
-        }
+        };
         let store = refs_support::ref_store(self.setup, self.config);
         let objects = refs_support::Objects::open(self.setup);
         let mut hooks = refs_support::UpdateHooks::new(self.setup, self.config, &objects);
@@ -1523,7 +1582,7 @@ impl Push<'_> {
             .iter()
             .filter(|r| matches!(r.status, Status::Ok | Status::UpToDate))
         {
-            let Some(tracking) = self.remote.fetch.map_src(r.dst.as_bytes()) else {
+            let Some(tracking) = remote.fetch.map_src(r.dst.as_bytes()) else {
                 continue;
             };
             let tracking = tracking.to_string();
@@ -1806,6 +1865,7 @@ pub fn run_send_pack(ctx: &mut Context, argv: &[String]) -> CmdResult {
         refs: &refs,
         head: head.as_deref(),
         remote: &remote,
+        tracking: None,
         refspecs: &refspecs,
         remote_push: None,
         flags: &flags,

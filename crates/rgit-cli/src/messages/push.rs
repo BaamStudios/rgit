@@ -43,9 +43,14 @@ pub fn helper_no_dry_run(name: &str) -> String {
     format!("helper {name} does not support dry-run")
 }
 
-/// `fatal:` for a remote helper that can neither `push` nor `export`.
-pub fn helper_cannot_push(name: &str) -> String {
-    format!("helper {name} does not support push")
+/// `fatal:` for `--atomic` through a helper without the option.
+pub fn helper_no_atomic(name: &str) -> String {
+    format!("helper {name} does not support --atomic")
+}
+
+/// `fatal:` for `--push-option` through a helper without the option.
+pub fn helper_no_push_option(name: &str) -> String {
+    format!("helper {name} does not support 'push-option'")
 }
 
 /// rgit: a transport that cannot push yet.
