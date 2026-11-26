@@ -23,6 +23,8 @@ pub mod config;
 pub mod describe;
 pub mod diff;
 pub mod diff_tree;
+pub mod fast_export;
+pub mod fast_import;
 pub mod fetch;
 pub mod fmt_merge_msg;
 pub mod for_each_ref;

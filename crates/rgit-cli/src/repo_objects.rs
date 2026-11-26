@@ -336,6 +336,11 @@ impl Repo {
             .collect()
     }
 
+    /// Whether a pack (local or of an alternate) holds `oid`.
+    pub fn is_packed(&self, oid: &ObjectId) -> bool {
+        self.dirs.iter().any(|d| d.packs.contains(oid))
+    }
+
     /// Where the first copy of `oid` lives (loose before packed, local
     /// before alternates, as lookups go).
     pub fn locate(&self, oid: &ObjectId) -> Option<Location> {

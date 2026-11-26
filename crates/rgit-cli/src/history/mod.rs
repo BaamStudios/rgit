@@ -699,6 +699,107 @@ pub fn walk_marked(ctx: &Context, args: &[String]) -> Result<Vec<(ObjectId, bool
     Ok(walked.commits.into_iter().zip(walked.same).collect())
 }
 
+/// What `fast-export` exports: [`walk_export`].
+pub struct ExportWalk {
+    /// The commits, parents before children (`--topo-order --reverse`).
+    pub commits: Vec<ObjectId>,
+    /// The parents of each commit as the walk saw them (rewritten when
+    /// paths limit the walk).
+    pub parents: HashMap<ObjectId, Vec<ObjectId>>,
+    /// Committer times of the commits.
+    pub times: HashMap<ObjectId, i64>,
+    /// The starting points in command-line order: `(object, excluded,
+    /// argument or ref name)`.
+    pub tips: Vec<(ObjectId, bool, String)>,
+    /// The paths limiting the walk.
+    pub paths: Vec<String>,
+}
+
+/// The commits `rev-list --topo-order --reverse <args>` lists, for
+/// `fast-export`, with the starting points as given.
+pub fn walk_export(ctx: &Context, args: &[String]) -> Result<ExportWalk, Die> {
+    let mut opts = Options::parse(Command::RevList, args)?;
+    let setup = repo::setup(ctx, Mode::Required)?;
+    let kind = setup.format.object_format;
+    let config = revisions::load_config(ctx, &setup)?;
+    let rev_opts = revisions::options(ctx, &config, kind)?;
+    let shallow = setup.common_dir.join("shallow");
+    let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    let refs = Refs::new(&setup, kind);
+    objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    let cfg = Config(&config);
+    let index = IndexFile::new(&setup, kind);
+    let work_tree = setup.work_tree.clone().map(WorkTree);
+    let rev_repo = revision::Repo {
+        objects: &objects,
+        refs: &refs,
+        config: &cfg,
+        index: Some(&index),
+        work_tree: work_tree
+            .as_ref()
+            .map(|w| w as &dyn revision::WorkTreeLookup),
+        work_tree_info: revisions::work_tree_info(&setup),
+    };
+    let resolver = Resolver::new(rev_repo, rev_opts);
+    let repo = Repo {
+        setup: &setup,
+        config: &config,
+        objects: &objects,
+        refs: &refs,
+        resolver: &resolver,
+    };
+    if opts.stdin {
+        let mut input = Vec::new();
+        let _ = std::io::stdin().lock().read_to_end(&mut input);
+        opts.read_stdin(&input)?;
+    }
+    let resolved = tips::resolve(&repo, &opts)?;
+    let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
+    let mut walk_opts = opts.walk.clone();
+    walk_opts.order = rgit_revwalk::walk::Order::Topo;
+    walk_opts.reverse = true;
+    walk_opts.rewrite_parents = true;
+    let paths = path_filter(ctx, &repo, &opts, &resolved.paths, &mut walk_opts)?;
+    let mut walk = Walk::new(
+        Commits {
+            repo: &repo,
+            grep: None,
+            patch_ids: None,
+            paths,
+            mailmap: None,
+            diff_limit: None,
+            line_log: None,
+        },
+        walk_opts,
+    );
+    for (id, negative, side) in &resolved.commits {
+        walk.push_side(id, *negative, *side).map_err(walk_error)?;
+    }
+    let mut out = ExportWalk {
+        commits: Vec::new(),
+        parents: HashMap::new(),
+        times: HashMap::new(),
+        tips: resolved.tips.clone(),
+        paths: resolved.paths.clone(),
+    };
+    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+        if s.boundary {
+            continue;
+        }
+        out.commits.push(s.id);
+        out.parents.insert(
+            s.id,
+            walk.parents(&s.id)
+                .map(<[ObjectId]>::to_vec)
+                .unwrap_or_default(),
+        );
+        if let Some(t) = walk.time(&s.id) {
+            out.times.insert(s.id, t);
+        }
+    }
+    Ok(out)
+}
+
 /// The result of [`walk_args`].
 struct Walked {
     commits: Vec<ObjectId>,

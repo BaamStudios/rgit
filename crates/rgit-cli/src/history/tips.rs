@@ -43,6 +43,9 @@ pub struct Resolved {
     pub paths: Vec<String>,
     /// All arguments turned out to be paths: no revision was given.
     pub no_revisions: bool,
+    /// Every starting point in command-line order as given (tags not
+    /// peeled): `(object, excluded, source)`.
+    pub tips: Vec<(ObjectId, bool, String)>,
 }
 
 fn print_diagnostics(resolver: &Resolver<'_>) {
@@ -144,6 +147,7 @@ impl Resolved {
         name: Vec<u8>,
         source: &str,
     ) -> Result<(), Die> {
+        self.tips.push((id, negative, source.to_string()));
         let mut name = name;
         for _ in 0..64 {
             // Blobs are not read (they may be large).

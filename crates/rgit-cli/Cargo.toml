@@ -67,6 +67,8 @@ regex = { version = "1.13", default-features = false, features = ["std", "perf",
 fancy-regex = { version = "0.20", default-features = false, features = ["std", "perf", "unicode", "variable-lookbehinds", "leftmost_longest"] }
 regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "hybrid", "unicode"] }
 unicode-width = { version = "0.2", default-features = false }
+crc32fast = "1.5.0"
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
