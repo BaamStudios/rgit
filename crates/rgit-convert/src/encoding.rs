@@ -182,6 +182,7 @@ impl Encoding {
                 let s: String = data.iter().map(|&b| char::from(b)).collect();
                 s.into_bytes()
             }
+            Kind::Other(enc) if enc == encoding_rs::EUC_JP => decode_euc_jp(data)?,
             Kind::Other(enc) => {
                 let (s, had_errors) = enc.decode_without_bom_handling(data);
                 if had_errors {
@@ -262,10 +263,13 @@ impl Encoding {
             Kind::Other(enc) => {
                 let s = std::str::from_utf8(data).ok()?;
                 let (out, _, had_errors) = enc.output_encoding().encode(s);
-                if had_errors || enc.output_encoding() != enc {
+                if enc.output_encoding() != enc {
                     return None;
                 }
-                Some(out.into_owned())
+                if enc == encoding_rs::EUC_JP {
+                    return encode_euc_jp(s);
+                }
+                (!had_errors).then(|| out.into_owned())
             }
             Kind::Unicode { width, endian, bom } => {
                 let s = std::str::from_utf8(data).ok()?;
@@ -284,6 +288,102 @@ impl Encoding {
             }
         }
     }
+}
+
+/// The JIS X 0208 code points iconv reads as the classic characters where
+/// encoding_rs has their full-width forms.
+const EUC_JP_CLASSIC: [([u8; 2], char); 6] = [
+    ([0xA1, 0xC1], '\u{301C}'),
+    ([0xA1, 0xC2], '\u{2016}'),
+    ([0xA1, 0xDD], '\u{2212}'),
+    ([0xA1, 0xF1], '\u{A2}'),
+    ([0xA1, 0xF2], '\u{A3}'),
+    ([0xA2, 0xCC], '\u{AC}'),
+];
+
+/// EUC-JP text to UTF-8 like iconv: the classic characters above, and
+/// no NEC or IBM extension rows (lead bytes `A9`-`AF`, `F5`-`FE`).
+fn decode_euc_jp(data: &[u8]) -> Option<Vec<u8>> {
+    let mut out = String::with_capacity(data.len() * 3 / 2);
+    let mut i = 0;
+    while i < data.len() {
+        let len = match data[i] {
+            0x8E => 2,
+            0x8F => 3,
+            0xA9..=0xAF | 0xF5..=0xFE => return None,
+            0xA1..=0xFE => 2,
+            _ => 1,
+        };
+        let seq = data.get(i..i + len)?;
+        match EUC_JP_CLASSIC.iter().find(|(b, _)| b[..] == *seq) {
+            Some((_, c)) => out.push(*c),
+            None => {
+                let s =
+                    encoding_rs::EUC_JP.decode_without_bom_handling_and_without_replacement(seq)?;
+                out.push_str(&s);
+            }
+        }
+        i += len;
+    }
+    Some(out.into_bytes())
+}
+
+/// EUC-JP like iconv: JIS X 0208 where encoding_rs has it, else the
+/// three-byte JIS X 0212 form (`0x8F` and two bytes; `é` is `8F AB B1`).
+/// encoding_rs also writes the NEC and IBM extension rows (lead bytes
+/// `A9`-`AF`, `F5`-`FE`), which iconv's EUC-JP does not have.
+fn encode_euc_jp(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 2);
+    let mut buf = [0u8; 4];
+    for c in s.chars() {
+        // iconv's JIS X 0208 has the classic code points for these, where
+        // encoding_rs has their full-width forms.
+        if let Some((bytes, _)) = EUC_JP_CLASSIC.iter().find(|(_, x)| *x == c) {
+            out.extend_from_slice(bytes);
+            continue;
+        }
+        let (bytes, _, had_errors) = encoding_rs::EUC_JP.encode(c.encode_utf8(&mut buf));
+        // The full-width forms encoding_rs puts on those code points are
+        // not JIS X 0208 for iconv (U+FF5E is JIS X 0212 there).
+        let full_width = matches!(
+            c,
+            '\u{FF5E}' | '\u{2225}' | '\u{FFE0}' | '\u{FFE1}' | '\u{FFE2}' | '\u{FF0D}'
+        );
+        let extension =
+            full_width || bytes.len() == 2 && matches!(bytes[0], 0xA9..=0xAF | 0xF5..=0xFE);
+        if had_errors || extension {
+            out.extend_from_slice(jis_x_0212().get(&c)?);
+        } else {
+            out.extend_from_slice(&bytes);
+        }
+    }
+    Some(out)
+}
+
+/// The JIS X 0212 characters of EUC-JP, built once from encoding_rs's
+/// decoder (which reads the `0x8F` sequences; its encoder does not write
+/// them).
+fn jis_x_0212() -> &'static std::collections::HashMap<char, [u8; 3]> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<char, [u8; 3]>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut map = std::collections::HashMap::new();
+        for b1 in 0xA1..=0xFEu8 {
+            for b2 in 0xA1..=0xFEu8 {
+                let seq = [0x8F, b1, b2];
+                let Some(text) =
+                    encoding_rs::EUC_JP.decode_without_bom_handling_and_without_replacement(&seq)
+                else {
+                    continue;
+                };
+                let mut chars = text.chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    map.entry(c).or_insert(seq);
+                }
+            }
+        }
+        map
+    })
 }
 
 /// `data`, text in encoding `from`, converted to encoding `to` (like
@@ -406,5 +506,29 @@ mod tests {
         let data = sj.encode("p", "\u{3042}".as_bytes()).unwrap();
         assert_eq!(sj.decode("p", &data, true).unwrap(), "\u{3042}".as_bytes());
         assert!(Encoding::new("UTF-16LE").encode("p", b"\xff").is_err());
+        // JIS X 0212 characters, as iconv writes them.
+        let ej = Encoding::new("EUC-JP");
+        let data = ej.encode("p", "caf\u{e9} \u{3042}".as_bytes()).unwrap();
+        assert_eq!(data, b"caf\x8f\xab\xb1 \xa4\xa2");
+        assert_eq!(
+            ej.decode("p", &data, true).unwrap(),
+            "caf\u{e9} \u{3042}".as_bytes()
+        );
+        assert!(ej.encode("p", "\u{20ac}".as_bytes()).is_err());
+        // iconv's classic JIS X 0208 characters, no NEC/IBM rows.
+        assert_eq!(
+            ej.to_utf8(b"\xa1\xc1\xa1\xf1").unwrap(),
+            "\u{301c}\u{a2}".as_bytes()
+        );
+        assert_eq!(
+            ej.from_utf8("\u{301c}\u{ac}".as_bytes()).unwrap(),
+            b"\xa1\xc1\xa2\xcc"
+        );
+        assert_eq!(
+            ej.from_utf8("\u{ff5e}".as_bytes()).unwrap(),
+            b"\x8f\xa2\xb7"
+        );
+        assert!(ej.from_utf8("\u{ffe0}".as_bytes()).is_none());
+        assert!(ej.to_utf8(b"\xad\xa1").is_none());
     }
 }

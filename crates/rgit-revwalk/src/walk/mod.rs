@@ -579,6 +579,17 @@ impl<S: CommitSource> Walk<S> {
         Ok(out)
     }
 
+    /// The included commits a limited walk collected before filtering
+    /// (also those path limiting hides), in walk order. Empty for a
+    /// streamed walk. Call after the walk.
+    pub fn collected(&self) -> Vec<ObjectId> {
+        self.limited_list
+            .iter()
+            .filter(|&&n| self.nodes[n as usize].flags & UNINTERESTING == 0)
+            .map(|&n| self.nodes[n as usize].id)
+            .collect()
+    }
+
     /// Children of `id` met during the walk, the last one first
     /// ([`WalkOptions::children`]).
     pub fn children(&self, id: &ObjectId) -> &[ObjectId] {
@@ -754,6 +765,18 @@ impl<S: CommitSource> Walk<S> {
             .is_some_and(|age| self.nodes[n as usize].time < age)
     }
 
+    /// `--remove-empty` cut the first parent of `n`: `--first-parent`
+    /// ends there (the other parents only remain as boundary).
+    fn first_parent_cut(&self, n: u32) -> bool {
+        let node = &self.nodes[n as usize];
+        node.flags & ADDED != 0
+            && node
+                .orig_parents
+                .as_ref()
+                .and_then(|o| o.first())
+                .is_some_and(|first| node.parents.first() != Some(first))
+    }
+
     /// Take `n` out of the queue: put its parents in.
     fn expand(&mut self, n: u32) -> Result<(), S::Error> {
         let uninteresting = self.uninteresting(n);
@@ -769,7 +792,9 @@ impl<S: CommitSource> Walk<S> {
         if self.opts.prune && !uninteresting && self.nodes[n as usize].flags & SIMPLIFIED == 0 {
             self.simplify_parents(n)?;
         }
-        let count = if (self.opts.first_parent && !uninteresting)
+        let count = if self.opts.first_parent && !uninteresting && self.first_parent_cut(n) {
+            0
+        } else if (self.opts.first_parent && !uninteresting)
             || (self.opts.exclude_first_parent_only && uninteresting)
         {
             self.nodes[n as usize].parents.len().min(1)
@@ -1067,9 +1092,15 @@ impl<S: CommitSource> Walk<S> {
         let mut out = VecDeque::new();
         for i in 0..self.shown_list.len() {
             let n = self.shown_list[i];
-            // All parents, also with `--first-parent`.
-            for j in 0..self.nodes[n as usize].parents.len() {
-                let p = self.nodes[n as usize].parents[j];
+            // All parents, also with `--first-parent`. The parents
+            // `--remove-empty` cut (the paths were added on them) are still
+            // the boundary unless parents are rewritten.
+            let node = &self.nodes[n as usize];
+            let parents = match &node.orig_parents {
+                Some(orig) if node.flags & ADDED != 0 && !self.opts.rewrite_parents => orig.clone(),
+                _ => node.parents.clone(),
+            };
+            for p in parents {
                 let known = self.index.contains_key(&p);
                 let pn = self.node(&p)?;
                 if !known {

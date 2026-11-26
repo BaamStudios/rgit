@@ -1388,13 +1388,14 @@ impl Printer<'_, '_> {
             None => {
                 line.extend_from_slice(mark.as_bytes());
                 line.extend_from_slice(self.name(&id, opts.abbrev_commit).as_bytes());
-                if let Some(d) = self.dist_decoration(&id) {
-                    line.extend_from_slice(&d);
-                }
                 for p in &related {
                     line.push(b' ');
                     // rev-list abbreviates only the commit itself.
                     line.extend_from_slice(p.to_hex().as_bytes());
+                }
+                // The distance follows the parents.
+                if let Some(d) = self.dist_decoration(&id) {
+                    line.extend_from_slice(&d);
                 }
                 line.push(b'\n');
                 self.out.extend_from_slice(&line);
@@ -3442,6 +3443,23 @@ fn run_bisect(p: &mut Printer<'_, '_>, walk: &mut Walk<Commits<'_, '_>>) -> Resu
     );
     let found = bisect::find(&cands, opts.bisect_all);
     let all = cands.len();
+    // Path limiting left nothing to count: git still names the last
+    // commit it walked, with every number at -1 (`--count` says 0).
+    if cands.is_empty()
+        && (opts.bisect_vars || opts.count)
+        && let Some(last) = walk.collected().last()
+    {
+        if opts.bisect_all {
+            p.out.extend_from_slice(b"------\n");
+        }
+        if opts.bisect_vars {
+            bisect_vars(p, last, bisect::Vars::new(0, 0));
+        } else {
+            p.out.extend_from_slice(b"0\n");
+        }
+        p.flush();
+        return Ok(0);
+    }
     if opts.bisect_all {
         let mut order = bisect::sorted(&cands, &found.weights);
         let first = order.first().copied();
