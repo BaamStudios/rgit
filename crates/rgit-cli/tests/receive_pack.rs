@@ -393,6 +393,16 @@ fn git(reference: &Path, home: &Path, dir: &Path, args: &[&str]) -> std::process
 /// references, same work tree (`updateInstead`).
 #[test]
 fn push_from_git_to_rgit_receive_pack() {
+    push_to_rgit_receive_pack("sha1");
+}
+
+/// The same in SHA-256 repositories.
+#[test]
+fn push_from_git_to_rgit_receive_pack_sha256() {
+    push_to_rgit_receive_pack("sha256");
+}
+
+fn push_to_rgit_receive_pack(format: &str) {
     let Some(reference) = rgit_difftest::env::reference_git() else {
         return;
     };
@@ -406,7 +416,8 @@ fn push_from_git_to_rgit_receive_pack() {
         let root = tmp.path().join(side);
         std::fs::create_dir_all(&root).unwrap();
         let run = |dir: &Path, args: &[&str]| git(&reference, tmp.path(), dir, args);
-        run(&root, &["init", "-q", "-b", "main", "srv"]);
+        let object_format = format!("--object-format={format}");
+        run(&root, &["init", "-q", &object_format, "-b", "main", "srv"]);
         std::fs::write(root.join("srv/f"), "1\n").unwrap();
         run(&root.join("srv"), &["add", "f"]);
         run(&root.join("srv"), &["commit", "-q", "-m", "one"]);
@@ -448,4 +459,10 @@ fn push_from_git_to_rgit_receive_pack() {
         results.push(log.replace(&root.display().to_string(), "<root>"));
     }
     rgit_difftest::assert_same_text("push to receive-pack", &results[0], &results[1]);
+    // The pushes really went through (not failing the same way).
+    assert!(
+        results[1].contains(" * [new branch]      main -> side"),
+        "{}",
+        results[1]
+    );
 }

@@ -138,14 +138,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let git_dir = enter_repo(&dir).ok_or_else(|| Die::Fatal(m::not_a_repository(&dir)))?;
     std::env::set_current_dir(&git_dir).map_err(|_| Die::Fatal(m::not_a_repository(&dir)))?;
     ctx.git_dir = Some(".".to_string());
-    let setup = repo::setup_with(
-        ctx,
-        Mode::Required,
-        rgit_repo::format::Support {
-            sha256: true,
-            ..Default::default()
-        },
-    )?;
+    let setup = repo::setup(ctx, Mode::Required)?;
     let config = refs_support::load_config(ctx, &setup)?;
     if let Some(e) = config
         .get_all("receive.fsck.skiplist")
@@ -424,6 +417,9 @@ impl CliBackend {
         c.args(args);
         c.envs(self.ctx.child_env());
         c.envs(self.quarantine_env());
+        // The server works on the objects as stored: no replace refs
+        // (git's receive-pack does not read them either).
+        c.env("GIT_NO_REPLACE_OBJECTS", "1");
         if let Some(f) = &self.shallow_file {
             c.env("GIT_SHALLOW_FILE", f);
         }
