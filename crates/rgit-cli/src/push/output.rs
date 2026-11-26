@@ -30,6 +30,9 @@ pub struct Style<'a> {
     /// Colour and reset for the flag and summary of failed refs
     /// (`color.transport.rejected`, `color.transport.reset`).
     pub rejected: Option<(String, String)>,
+    /// Whether the porcelain table ends with `Done`: not when the
+    /// connection to the server ended in an error, like git.
+    pub done: bool,
 }
 
 /// `refs/heads/x` → `x` (also `refs/tags/`, `refs/remotes/`).
@@ -133,7 +136,9 @@ pub fn print(refs: &[PushRef], style: &Style<'_>) -> bool {
         }
     }
     if style.porcelain {
-        text.push_str("Done\n");
+        if style.done {
+            text.push_str("Done\n");
+        }
         let mut out = std::io::stdout().lock();
         let _ = out.write_all(text.as_bytes());
         let _ = out.flush();
@@ -175,6 +180,7 @@ mod tests {
             porcelain: false,
             abbrev: &ab,
             rejected: None,
+            done: true,
         };
         let r = pref(
             "refs/heads/main",

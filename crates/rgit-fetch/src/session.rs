@@ -24,6 +24,7 @@ use rgit_fs::TempFile;
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::fsck::{MsgId, Severity};
 use rgit_pack::index_pack::{self as ip, IndexVersion, Input, ObjectDb, Options};
+use rgit_protocol::trace::{Direction as TraceDirection, Traced, Tracer};
 use rgit_protocol::v0::{self, Advertisement};
 use rgit_protocol::v2::{
     Client, ConsecutiveNegotiator, FetchArgs, FetchOutcome, LsRefsArgs, Negotiator, RemoteRef,
@@ -207,11 +208,37 @@ fn open(
             other => return Err(other.unexpected().into()),
         }
     }
-    if reader.peek().map_err(|e| hung_up(&read_any, e))?.is_none() {
+    let first = reader.peek().map_err(|e| hung_up(&read_any, e))?;
+    if first.is_none() {
         return Err(Error::fatal(messages::COULD_NOT_READ_REMOTE));
+    }
+    // git's remote helper checks the version line before it reads it: a
+    // v2 answer over HTTP traces `git< version 2` twice.
+    if stateless
+        && matches!(first, Some(Packet::Data(d)) if d.strip_suffix(b"\n").unwrap_or(d) == b"version 2")
+    {
+        reader
+            .tracer_mut()
+            .packet(TraceDirection::Read, Traced::Data(b"version 2\n"));
     }
     let version = ProtocolVersion::read(&mut reader)?;
     Ok((reader, version))
+}
+
+/// Over HTTP git's remote helper hands the v2 capability advertisement on
+/// to the fetching process, which traces it again under its own name
+/// (`fetch< version 2`, observed in t5702).
+fn retrace_v2_capabilities(stateless: bool, program: &'static str, caps: &Capabilities) {
+    if !stateless {
+        return;
+    }
+    let mut tracer = Tracer::new(program);
+    tracer.packet(TraceDirection::Read, Traced::Data(b"version 2\n"));
+    for c in caps.iter() {
+        let line = format!("{}\n", c.to_wire());
+        tracer.packet(TraceDirection::Read, Traced::Data(line.as_bytes()));
+    }
+    tracer.packet(TraceDirection::Read, Traced::Flush);
 }
 
 /// The trace name after the advertisement: over HTTP, git's v0/v1
@@ -316,6 +343,7 @@ impl Session {
             ProtocolVersion::V2 => {
                 let caps = Capabilities::read_v2(&mut reader)?;
                 rgit_protocol::session_id::note_server(&caps);
+                retrace_v2_capabilities(reader.get_ref().is_stateless(), program, &caps);
                 after_advertisement(&mut reader, program, false);
                 Proto::V2(Client::with_capabilities(reader, caps)?)
             }
