@@ -13,6 +13,14 @@ workspace = true
 [dependencies]
 rgit-config = { path = "../rgit-config" }
 rgit-hash = { path = "../rgit-hash" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+rgit-pack = { path = "../rgit-pack" }
 rgit-protocol = { path = "../rgit-protocol" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-trace = { path = "../rgit-trace" }
+thiserror = "2"
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
+tempfile = "3"

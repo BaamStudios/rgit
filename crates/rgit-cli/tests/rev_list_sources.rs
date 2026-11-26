@@ -207,3 +207,35 @@ fn missing_parent_fails_the_traversal() {
         fx.compare(args).checks(Check::OUTPUT).run();
     }
 }
+
+/// `log --source` names what a commit was reached from: the ref without
+/// its prefix for `--branches`, `--tags` and `--remotes`, the full name
+/// for `--all`, `.alternate` for `--alternate-refs`.
+#[test]
+fn source_names_of_ref_sets() {
+    let mut fx = history()
+        .git(["tag", "-a", "-m", "tag", "annotated", "side"])
+        .git(["clone", "-q", "-s", ".", "child"]);
+    if fx.is_skipped() {
+        return;
+    }
+    for set in [
+        &["--branches"][..],
+        &["--tags"],
+        &["--remotes"],
+        &["--remotes=origin"],
+        &["--branches=ma*"],
+        &["--all"],
+        &["--glob=refs/remotes/origin/s*"],
+        &["--alternate-refs"],
+        &["--alternate-refs", "HEAD"],
+        &["--branches", "--tags", "--remotes"],
+    ] {
+        let mut args = vec!["-C", "child", "log", "--oneline", "--source"];
+        args.extend_from_slice(set);
+        fx.compare(&args).checks(Check::OUTPUT).run();
+        let mut args = vec!["-C", "child", "log", "--format=%h %S"];
+        args.extend_from_slice(set);
+        fx.compare(&args).checks(Check::OUTPUT).run();
+    }
+}

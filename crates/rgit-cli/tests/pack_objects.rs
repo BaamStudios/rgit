@@ -712,3 +712,93 @@ fn local_option() {
     // Same number of objects in the pack header.
     assert_eq!(out.git.stdout[8..12], out.rgit.stdout[8..12]);
 }
+
+/// `--filter=<spec>` (what a partial clone asks for) and commits cut off
+/// with `--shallow <id>` lines.
+#[test]
+fn filters_and_shallow_lines() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx;
+    for filter in [
+        "blob:none",
+        "blob:limit=0",
+        "blob:limit=20",
+        "blob:limit=1k",
+        "tree:0",
+        "tree:1",
+        "tree:2",
+        "tree:3",
+        "object:type=blob",
+        "object:type=tree",
+        "object:type=commit",
+        "object:type=tag",
+        "combine:blob:none+tree:2",
+        "combine:object:type=tree+tree:1",
+    ] {
+        let filter = format!("--filter={filter}");
+        for input in ["HEAD\n", "HEAD\n^HEAD~3\n", "v1\nside\n"] {
+            fx = same_objects(fx, &["--revs", "--stdout", &filter], input);
+        }
+        fx = same_objects(fx, &["--stdout", "--all", &filter], "");
+    }
+    // Several filters combine; --no-filter forgets them.
+    let two = [
+        "--revs",
+        "--stdout",
+        "--filter=blob:none",
+        "--filter=tree:2",
+    ];
+    fx = same_objects(fx, &two, "HEAD\n");
+    let none = ["--revs", "--stdout", "--filter=blob:none", "--no-filter"];
+    fx = same_objects(fx, &none, "HEAD\n");
+    // Objects named as tips are packed whatever the filter says.
+    fx = same_objects(
+        fx,
+        &["--revs", "--stdout", "--filter=tree:0"],
+        "v1\nt-tree\n",
+    );
+
+    let rev = |fx: &Fixture, name: &str| {
+        String::from_utf8(fx.git_stdout(["rev-parse", name]))
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let (cut, side) = (rev(&fx, "HEAD~2"), rev(&fx, "side"));
+    fx = same_objects(
+        fx,
+        &["--revs", "--stdout"],
+        &format!("--shallow {cut}\nHEAD\n"),
+    );
+    fx = same_objects(
+        fx,
+        &["--revs", "--stdout", "--shallow", "--include-tag"],
+        &format!("--shallow {cut}\n--shallow {side}\nHEAD\n--not\n{side}\n"),
+    );
+
+    for (args, input) in [
+        (&["--revs", "--stdout", "--filter=bogus"][..], "HEAD\n"),
+        (&["--revs", "--stdout", "--filter=tree:x"][..], "HEAD\n"),
+        (
+            &["--revs", "--stdout", "--filter=object:type=x"][..],
+            "HEAD\n",
+        ),
+        (&["--revs", "--stdout", "--filter=combine:"][..], "HEAD\n"),
+        (&["--revs", "--stdout"][..], "--shallow xyz\nHEAD\n"),
+        (&["--revs", "--stdout"][..], "--shallow\nHEAD\n"),
+    ] {
+        let mut argv = vec!["pack-objects"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv)
+            .stdin(input)
+            .checks([Check::ExitCode, Check::Stderr])
+            .run();
+    }
+    // `git --shallow-file` needs its file.
+    fx.compare(["--shallow-file"])
+        .checks([Check::ExitCode, Check::Stderr])
+        .run();
+}
