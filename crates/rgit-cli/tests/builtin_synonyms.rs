@@ -47,6 +47,85 @@ fn whatchanged_same_as_git() {
     }
 }
 
+/// `whatchanged` shows only the commits that change something: no empty
+/// commit, a merge only with `-m`, `-c` or `--cc` (not with
+/// `--first-parent` alone), a root commit only with `log.showRoot`.
+#[test]
+fn whatchanged_shows_only_commits_with_changes() {
+    let mut fx = repo()
+        .git(["commit", "-q", "--allow-empty", "-m", "empty"])
+        .write("g", "newer\n")
+        .git(["commit", "-qam", "after"]);
+    let cases: &[&[&str]] = &[
+        &["whatchanged", "--i-still-use-this"],
+        &["whatchanged", "--i-still-use-this", "-s"],
+        &["whatchanged", "--i-still-use-this", "-m"],
+        &["whatchanged", "--i-still-use-this", "-c"],
+        &["whatchanged", "--i-still-use-this", "--cc", "--stat"],
+        &["whatchanged", "--i-still-use-this", "--first-parent"],
+        &[
+            "whatchanged",
+            "--i-still-use-this",
+            "--no-merges",
+            "--oneline",
+        ],
+        &["whatchanged", "--i-still-use-this", "--graph", "--oneline"],
+        &[
+            "-c",
+            "log.showRoot=false",
+            "whatchanged",
+            "--i-still-use-this",
+        ],
+        &[
+            "-c",
+            "log.showRoot=false",
+            "whatchanged",
+            "--i-still-use-this",
+            "--root",
+            "-p",
+        ],
+    ];
+    for argv in cases {
+        fx.compare(*argv).checks(Check::OUTPUT).run();
+    }
+}
+
+/// An alias shadows a deprecated builtin, also as a step of an alias
+/// expansion (t0014).
+#[test]
+fn aliases_shadow_deprecated_builtins_in_expansions() {
+    let mut fx = repo();
+    let cases: &[&[&str]] = &[
+        &[
+            "-c",
+            "alias.whatchanged=pack-redundant",
+            "-c",
+            "alias.pack-redundant=whatchanged",
+            "whatchanged",
+            "-h",
+        ],
+        &[
+            "-c",
+            "alias.whatchanged=pack-redundant",
+            "-c",
+            "alias.pack-redundant=status",
+            "whatchanged",
+            "-h",
+        ],
+        &[
+            "-c",
+            "alias.wc=whatchanged",
+            "-c",
+            "alias.whatchanged=status",
+            "wc",
+            "-s",
+        ],
+    ];
+    for argv in cases {
+        fx.compare(*argv).checks(Check::OUTPUT).run();
+    }
+}
+
 #[test]
 fn synonyms_same_as_git() {
     let mut fx = repo();

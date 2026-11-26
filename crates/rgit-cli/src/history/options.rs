@@ -192,6 +192,9 @@ pub struct Options {
     /// `diff-tree` with a pretty format: plumbing diffs (full raw ids,
     /// recursive only when asked for).
     pub plumbing: bool,
+    /// `whatchanged`: only commits whose diff has a change are shown (a
+    /// merge only when its diff is asked for).
+    pub changed_only: bool,
     /// `-g`, `--walk-reflogs`: walk the reflogs of the tips instead of
     /// the history.
     pub walk_reflogs: bool,
@@ -408,6 +411,7 @@ impl Options {
             combined_all_paths: false,
             show: false,
             plumbing: false,
+            changed_only: false,
             walk_reflogs: false,
             linear_break: None,
             source: false,
