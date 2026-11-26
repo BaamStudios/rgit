@@ -13,6 +13,9 @@
 //!   before the index is written, and a content check that counts the files
 //!   it hashes.
 //!
+//! - [`precompose`]: `core.precomposeUnicode`, file names in precomposed
+//!   form on macOS.
+//!
 //! Behaviour follows git's documentation (gitignore(5),
 //! git-check-ignore(1), git-config(1) `core.*`, the racy-git technical
 //! note) and was checked against the `git` binary; see the differential
@@ -20,6 +23,7 @@
 
 pub mod ignore;
 pub mod messages;
+pub mod precompose;
 pub mod stat;
 
 mod os;

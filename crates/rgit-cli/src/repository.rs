@@ -92,12 +92,50 @@ impl DerefMut for Repo {
     }
 }
 
+/// With `core.precomposeUnicode` in effect, the directories of the
+/// repository are spelled in precomposed form as well: the system reports
+/// the current directory as it is stored (often decomposed), while the
+/// arguments were converted, and paths given on the command line are
+/// compared with these to find their place in the work tree.
+fn precompose_setup(setup: &mut rgit_repo::Setup) {
+    use std::borrow::Cow;
+    if !rgit_worktree::precompose::enabled() {
+        return;
+    }
+    fn nfc(text: &std::ffi::OsStr) -> Option<String> {
+        match rgit_worktree::precompose::to_nfc(text.as_encoded_bytes()) {
+            Cow::Owned(bytes) => String::from_utf8(bytes).ok(),
+            Cow::Borrowed(_) => None,
+        }
+    }
+    let paths = [
+        Some(&mut setup.git_dir),
+        Some(&mut setup.common_dir),
+        setup.work_tree.as_mut(),
+        Some(&mut setup.cwd),
+        Some(&mut setup.original_cwd),
+    ];
+    for path in paths.into_iter().flatten() {
+        if let Some(composed) = nfc(path.as_os_str()) {
+            *path = PathBuf::from(composed);
+        }
+    }
+    if let Some(prefix) = setup.prefix.as_mut() {
+        if let Some(composed) = nfc(prefix) {
+            *prefix = composed.into();
+        }
+    }
+}
+
 impl Repo {
     /// Set up the repository and open its configuration and objects.
     pub fn open(ctx: &Context, mode: Mode) -> Result<Repo, Die> {
         let setup = repo::setup(ctx, mode)?;
-        let inner = repo_objects::Repo::open(ctx, setup)?;
+        let mut inner = repo_objects::Repo::open(ctx, setup)?;
         crate::index_config::apply_max_path_len(&inner.config)?;
+        crate::index_config::apply_path_protection(&inner.config);
+        crate::index_config::apply_precompose_unicode(&inner.config);
+        precompose_setup(&mut inner.setup);
         Ok(Repo {
             inner,
             auto_abbrev: OnceCell::new(),
@@ -110,8 +148,11 @@ impl Repo {
     /// Open the repository of an existing `setup` (e.g. one a command
     /// just created).
     pub fn from_setup(ctx: &Context, setup: rgit_repo::Setup) -> Result<Repo, Die> {
-        let inner = repo_objects::Repo::open(ctx, setup)?;
+        let mut inner = repo_objects::Repo::open(ctx, setup)?;
         crate::index_config::apply_max_path_len(&inner.config)?;
+        crate::index_config::apply_path_protection(&inner.config);
+        crate::index_config::apply_precompose_unicode(&inner.config);
+        precompose_setup(&mut inner.setup);
         Ok(Repo {
             inner,
             auto_abbrev: OnceCell::new(),

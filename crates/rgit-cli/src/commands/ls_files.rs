@@ -433,7 +433,7 @@ fn os_path(root: &Path, rel: &[u8]) -> PathBuf {
 }
 
 fn name_bytes(name: &std::ffi::OsStr) -> Vec<u8> {
-    name.as_encoded_bytes().to_vec()
+    rgit_worktree::precompose::file_name(name)
 }
 
 impl Walk<'_> {

@@ -170,7 +170,9 @@ impl Walk<'_, '_> {
             let Ok(mut rd) = std::fs::read_dir(os_path(&self.root, &dir[..at])) else {
                 return true;
             };
-            if !rd.any(|e| e.is_ok_and(|e| e.file_name().as_encoded_bytes() == name)) {
+            if !rd.any(|e| {
+                e.is_ok_and(|e| rgit_worktree::precompose::file_name(&e.file_name()) == name)
+            }) {
                 return false;
             }
             at += len + 1;
@@ -184,7 +186,10 @@ impl Walk<'_, '_> {
         };
         let mut entries: Vec<(Vec<u8>, std::fs::FileType)> = rd
             .flatten()
-            .filter_map(|e| Some((e.file_name().as_encoded_bytes().to_vec(), e.file_type().ok()?)))
+            .filter_map(|e| {
+                let name = rgit_worktree::precompose::file_name(&e.file_name());
+                Some((name, e.file_type().ok()?))
+            })
             .collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, ft) in entries {
@@ -1019,7 +1024,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         match entry_for(&repo, &checker, &root, path, None, dry_run, dry_run) {
             Err(EntryError::Fatal(d)) => return Err(d),
             Ok(n) => {
-                if show {
+                // A path the index refuses is reported when it is added.
+                let valid = n
+                    .as_ref()
+                    .is_none_or(|n| rgit_index::verify_path_mode(n.path(), n.mode));
+                if show && valid {
                     println!("{}", msg::add(&lossy(path)));
                 }
                 if let Some(mut n) = n {

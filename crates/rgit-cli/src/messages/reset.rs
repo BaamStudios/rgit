@@ -95,3 +95,11 @@ pub const UPDATING_ORIG_HEAD: &str = "updating ORIG_HEAD";
 pub fn could_not_reset_index(rev: &str) -> String {
     format!("Could not reset index file to revision '{rev}'.")
 }
+/// A path of the target tree may not enter the index (`error: `).
+pub fn invalid_path(path: &str) -> String {
+    format!("invalid path '{path}'")
+}
+/// The `fatal: ` line after [`invalid_path`].
+pub fn make_cache_entry_failed(path: &str) -> String {
+    format!("make_cache_entry failed for path '{path}'")
+}

@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use rgit_hash::{HashKind, ObjectId};
 
-use crate::entry::{Entry, Mode, Stage, verify_path};
+use crate::entry::{Entry, Mode, Stage, verify_path_mode};
 use crate::error::{AddError, OrderError};
 use crate::read::{self, ReadOptions};
 use crate::write::{self, WriteOptions};
@@ -21,7 +21,7 @@ pub struct AddOptions {
     pub ok_to_replace: bool,
     /// Do not look for file/directory conflicts at all.
     pub skip_df_check: bool,
-    /// Do not check the path with [`verify_path`].
+    /// Do not check the path with [`verify_path_mode`].
     pub skip_path_check: bool,
 }
 
@@ -213,7 +213,7 @@ impl Index {
     /// file or is an existing directory at the same stage (unless
     /// [`AddOptions::ok_to_replace`] removes those entries).
     pub fn add(&mut self, entry: Entry, opts: AddOptions) -> Result<(), AddError> {
-        if !opts.skip_path_check && !verify_path(&entry.path) {
+        if !opts.skip_path_check && !verify_path_mode(&entry.path, entry.mode) {
             return Err(AddError::InvalidPath(entry.path));
         }
         let stage = entry.stage;
