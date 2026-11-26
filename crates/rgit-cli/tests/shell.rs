@@ -41,7 +41,11 @@ fn with_commands(fx: &Fixture) {
         rgit_difftest::write_executable(dir.join(name), format!("#!/bin/sh\n{body}\n"));
     };
     write("ping", "echo pong \"$@\"");
-    write("args", "echo \"args: $# <$1> <$2> <$3>\"; pwd");
+    // printf: `echo` of some shells reads backslashes in the arguments.
+    write(
+        "args",
+        "printf 'args: %s <%s> <%s> <%s>\\n' \"$#\" \"$1\" \"$2\" \"$3\"; pwd",
+    );
     write("fail", "exit 7");
     write("a-b", "echo \"ran $0\"");
     write("sp ace", "echo \"ran $0\"");
