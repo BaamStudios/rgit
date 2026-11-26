@@ -283,6 +283,41 @@ pub fn odb(ctx: &Context, setup: &Setup) -> Result<rgit_odb::ObjectDatabase, Die
 }
 
 /// [`odb`] with an already loaded configuration.
+/// [`rgit_odb::ObjectDatabase::open_with_midx`]; a multi-pack index git
+/// dies on ends the process like git (`fatal: ...`, exit 128).
+pub fn odb_with_midx_or_die(
+    dir: &std::path::Path,
+    kind: rgit_hash::HashKind,
+    options: rgit_odb::LooseOptions,
+) -> rgit_odb::ObjectDatabase {
+    match rgit_odb::ObjectDatabase::open_with_midx(dir, kind, options.clone()) {
+        Ok(db) => db,
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "fatal: {e}");
+            std::process::exit(128);
+        }
+    }
+}
+
+/// The pack set of `pack_dir`, with its multi-pack index when `use_midx`
+/// (`core.multiPackIndex`). Problems that make the MIDX unusable are
+/// printed as `error: ...`; one git dies on is returned as fatal.
+pub fn pack_set(
+    pack_dir: std::path::PathBuf,
+    kind: rgit_hash::HashKind,
+    use_midx: bool,
+) -> Result<rgit_pack::PackSet, Die> {
+    if !use_midx {
+        return Ok(rgit_pack::PackSet::open(pack_dir, kind));
+    }
+    let mut errors = Vec::new();
+    let set = rgit_pack::PackSet::open_with_midx(pack_dir, kind, &mut errors);
+    for e in &errors {
+        let _ = writeln!(std::io::stderr(), "error: {e}");
+    }
+    set.map_err(|e| Die::Fatal(e.0))
+}
+
 pub fn odb_with_config(
     setup: &Setup,
     config: &rgit_config::ConfigSet,

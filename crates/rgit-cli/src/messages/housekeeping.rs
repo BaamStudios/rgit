@@ -127,7 +127,7 @@ pub const TOO_MANY_ARGUMENTS: &str = "too many arguments";
 // ------------------------------------------------------------ repack
 
 pub const REPACK_USAGE: &[&str] = &[
-    "git repack [-a] [-A] [-d] [-f] [-F] [-l] [-n] [-q] [-b] [-m]\n       [--window=<n>] [--depth=<n>] [--threads=<n>] [--keep-pack=<pack-name>]\n       [--write-midx[=<mode>]] [--name-hash-version=<n>] [--path-walk]\n       [--filter=<filter-spec>] [--drop-filtered [--dry-run]]",
+    "git repack [-a] [-A] [-d] [-f] [-F] [-l] [-n] [-q] [-b] [-m]\n\t[--window=<n>] [--depth=<n>] [--threads=<n>] [--keep-pack=<pack-name>]\n\t[--write-midx[=<mode>]] [--name-hash-version=<n>] [--path-walk]\n\t[--filter=<filter-spec>] [--drop-filtered [--dry-run]]",
 ];
 pub const REPACK_H_A: &str = "pack everything in a single pack";
 pub const REPACK_H_BIG_A: &str = "same as -a, and turn unreachable objects loose";
