@@ -378,5 +378,6 @@ fn merge_nodes(
         &base_tree,
         &ours_tree,
         &theirs_tree,
+        None,
     )
 }

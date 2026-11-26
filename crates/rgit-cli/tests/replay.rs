@@ -128,3 +128,67 @@ fn replay_updates_refs() {
     fx.compare(["replay", "--revert", "topic4", "topic4~1..topic4"])
         .run();
 }
+
+/// A commit and its revert replayed across a rename (#744, t6429): the
+/// rename found for the first pick carries over to the second, so rename
+/// detection runs once (one `diffcore_rename` trace2 region, as in git).
+#[test]
+fn replay_remembers_renames() {
+    let mut fx = Fixture::new().rgit(env!("CARGO_BIN_EXE_rgit"));
+    if fx.is_skipped() {
+        return;
+    }
+    let numbers = |a: u32, b: u32| (a..=b).map(|i| format!("{i}\n")).collect::<String>();
+    fx = fx
+        .git(["init", "-q", "-b", "main"])
+        .write("numbers", numbers(11, 30))
+        .git(["add", "."])
+        .tick()
+        .git(["commit", "-q", "-m", "orig"])
+        .git(["branch", "topic"])
+        .write("numbers", numbers(1, 30))
+        .git(["add", "."])
+        .git(["mv", "numbers", "sequence"])
+        .tick()
+        .git(["commit", "-q", "-m", "renamed"])
+        .git(["switch", "-q", "topic"])
+        .write("numbers", numbers(11, 13))
+        .git(["add", "."])
+        .tick()
+        .git(["commit", "-q", "-m", "A"])
+        .tick()
+        .git(["revert", "--no-edit", "HEAD"])
+        .git(["switch", "-q", "main"]);
+    let args = [
+        "replay",
+        "--ref-action=print",
+        "--onto",
+        "HEAD",
+        "main~1..topic",
+    ];
+    fx.compare(args).checks(Check::OUTPUT).run();
+
+    let trace = fx.work_dir().join("../perf");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
+        .args(args)
+        .current_dir(fx.work_dir())
+        .env("HOME", fx.work_dir())
+        .env("XDG_CONFIG_HOME", fx.work_dir())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_COMMITTER_NAME", "C O Mitter")
+        .env("GIT_COMMITTER_EMAIL", "committer@example.com")
+        .env("GIT_TRACE2_PERF", &trace)
+        .output()
+        .expect("run rgit");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(&trace).unwrap_or_default();
+    let calls = text
+        .lines()
+        .filter(|l| l.contains("region_enter") && l.contains("diffcore_rename"))
+        .count();
+    assert_eq!(calls, 1, "{text}");
+}

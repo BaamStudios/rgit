@@ -64,8 +64,11 @@
 //! on one side descends from the other's is fast-forwarded).
 //! `-X ours`/`-X theirs` also pick a side of conflicting symbolic links.
 //!
-//! Not implemented yet: rename caching across a sequence of picks (a
-//! performance feature), some reports of directory rename splits when
+//! A sequence of picks ([`merge_trees_cached`], as `git replay` does)
+//! remembers the renames of our side from one merge to the next, as
+//! described in `Documentation/technical/remembering-renames.adoc`.
+//!
+//! Not implemented yet: some reports of directory rename splits when
 //! both sides renamed the same files.
 
 mod engine;
@@ -484,7 +487,77 @@ pub fn merge_trees(
         base: &opts.ancestor,
     };
     let (base, theirs) = subtree::shift_both(objects, &opts.subtree, ours, base, theirs)?;
-    engine::merge(objects, opts, labels, 0, &base, ours, &theirs)
+    engine::merge(objects, opts, labels, 0, &base, ours, &theirs, None)
+}
+
+/// What a sequence of merges remembers about the renames of our side
+/// (the side picks are made onto) from one merge to the next.
+///
+/// When a merge of `base`, `ours` and `theirs` was clean, the next merge
+/// whose base is that `theirs` and whose `ours` is that result sees our
+/// side's renames again (`Documentation/technical/remembering-renames.adoc`):
+/// they are taken from here instead of being detected a second time,
+/// together with the files our side deleted without a rename. Renames
+/// that only now matter are still detected.
+#[derive(Debug, Clone, Default)]
+pub struct RenameCache {
+    /// The `theirs` and the result of the last clean merge.
+    trees: Option<(ObjectId, ObjectId)>,
+    /// Our side's sources: their target, or `None` for a plain deletion.
+    pairs: std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>,
+}
+
+impl RenameCache {
+    /// The remembered pairs, when they apply to a merge of `base` and
+    /// `ours`.
+    pub(crate) fn usable(
+        &self,
+        base: &ObjectId,
+        ours: &ObjectId,
+    ) -> Option<&std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>> {
+        (self.trees == Some((*base, *ours))).then_some(&self.pairs)
+    }
+
+    /// Remembers the outcome of a merge (forgets everything after a merge
+    /// that was not clean or that ran into the rename limit).
+    pub(crate) fn store(
+        &mut self,
+        keep: bool,
+        theirs: &ObjectId,
+        result: &ObjectId,
+        pairs: std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>,
+    ) {
+        if keep {
+            self.trees = Some((*theirs, *result));
+            self.pairs = pairs;
+        } else {
+            *self = Self::default();
+        }
+    }
+}
+
+/// [`merge_trees`] as one merge of a sequence of picks: the renames our
+/// side made are remembered in `cache` for the next merge, whose base
+/// is `theirs` and whose `ours` is the result of this one (see
+/// [`RenameCache`]).
+///
+/// # Errors
+/// As [`merge_trees`].
+pub fn merge_trees_cached(
+    objects: &dyn Objects,
+    base: &ObjectId,
+    ours: &ObjectId,
+    theirs: &ObjectId,
+    opts: &Options,
+    cache: &mut RenameCache,
+) -> Result<MergeResult, Error> {
+    let labels = engine::Labels {
+        ours: &opts.branch1,
+        theirs: &opts.branch2,
+        base: &opts.ancestor,
+    };
+    let (base, theirs) = subtree::shift_both(objects, &opts.subtree, ours, base, theirs)?;
+    engine::merge(objects, opts, labels, 0, &base, ours, &theirs, Some(cache))
 }
 
 /// Merges the commits `ours` and `theirs` like `git merge`: against their
