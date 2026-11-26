@@ -189,3 +189,27 @@ fn reflog_edges_and_previous_branch() {
         .checks([Check::ExitCode, Check::Stdout, Check::Refs])
         .run();
 }
+
+/// `--local-env-vars`: alone also outside a repository, else in order
+/// with the other arguments.
+#[test]
+fn local_env_vars() {
+    let mut fx = Fixture::new().rgit(env!("CARGO_BIN_EXE_rgit"));
+    if fx.is_skipped() {
+        return;
+    }
+    fx.compare(["rev-parse", "--local-env-vars"])
+        .checks(Check::OUTPUT)
+        .run();
+    let mut fx =
+        fx.git(["init", "-q", "-b", "main"])
+            .git(["commit", "-q", "--allow-empty", "-m", "a"]);
+    for args in [
+        &["rev-parse", "--local-env-vars"][..],
+        &["rev-parse", "HEAD", "--local-env-vars"],
+        &["rev-parse", "--local-env-vars", "HEAD", "--git-dir"],
+        &["rev-parse", "--local-env-vars", "--local-env-vars"],
+    ] {
+        fx.compare(args).checks(Check::OUTPUT).run();
+    }
+}

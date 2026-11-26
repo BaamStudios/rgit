@@ -282,7 +282,20 @@ impl Session {
         let mut transport = match rgit_http::target_for(url, &tsettings, ctx)? {
             Some(Target::Transport(t)) => t,
             Some(Target::Helper(helper)) => {
-                return Session::with_helper(url, *helper, settings, program);
+                let mut helper = *helper;
+                if helper.capabilities().import && helper.capabilities().refspecs.is_empty() {
+                    eprintln!("warning: {}", messages::HELPER_NEEDS_REFSPEC);
+                }
+                helper.standard_options(false, if settings.verbose { 2 } else { 1 })?;
+                // Protocol v2 goes through `stateless-connect` when the
+                // helper offers it.
+                if version != ProtocolVersion::V2 || !helper.capabilities().stateless_connect {
+                    return Session::with_helper(url, helper, settings, program);
+                }
+                match helper.stateless_connect(Service::UploadPack, ctx)? {
+                    Ok(t) => t,
+                    Err(helper) => return Session::with_helper(url, helper, settings, program),
+                }
             }
             None => {
                 let scheme = url.split("://").next().unwrap_or(url);
@@ -1103,17 +1116,13 @@ impl Session {
 
     /// A session with a remote helper that has no `connect`: set the
     /// usual options and read its `list`.
+    /// A session through a helper that got its standard options already.
     fn with_helper(
         url: &str,
         mut helper: Helper,
         settings: &ConnectSettings<'_>,
         program: &'static str,
     ) -> Result<Session> {
-        let caps = helper.capabilities().clone();
-        if caps.import && caps.refspecs.is_empty() {
-            eprintln!("warning: {}", messages::HELPER_NEEDS_REFSPEC);
-        }
-        helper.standard_options(false, if settings.verbose { 2 } else { 1 })?;
         let list = helper.list(false)?;
         let format = list
             .object_format

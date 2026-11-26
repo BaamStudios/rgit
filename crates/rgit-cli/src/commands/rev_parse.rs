@@ -27,7 +27,6 @@ const NOT_YET: &[&str] = &[
     "--prefix",
     "--resolve-git-dir",
     "--path-format",
-    "--local-env-vars",
     "--show-superproject-working-tree",
     "--exclude-hidden",
     "--output-object-format",
@@ -539,6 +538,12 @@ impl State<'_, '_> {
             let _ = writeln!(self.out, "{line}");
             return Ok(true);
         }
+        if arg == "--local-env-vars" {
+            for v in rgit_transport::command::LOCAL_ENV_VARS {
+                let _ = writeln!(self.out, "{v}");
+            }
+            return Ok(true);
+        }
         if NOT_YET.iter().any(|o| arg == *o || arg.starts_with(&format!("{o}="))) {
             return Err(self.die(messages::rev_parse_not_supported(arg)));
         }
@@ -784,6 +789,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some("--parseopt") => return parseopt::parseopt_mode(&args[1..]),
         Some("--sq-quote") => return parseopt::sq_quote_mode(&args[1..]),
         _ => {}
+    }
+    // As the first argument it is answered before the repository is
+    // looked for.
+    let mut args = args;
+    if args.first().map(String::as_str) == Some("--local-env-vars") {
+        let mut out = std::io::stdout().lock();
+        for v in rgit_transport::command::LOCAL_ENV_VARS {
+            let _ = writeln!(out, "{v}");
+        }
+        let _ = out.flush();
+        if args.len() == 1 {
+            return Ok(0);
+        }
+        args = &args[1..];
     }
     let setup = repo::setup(ctx, Mode::RequiredQuiet)?;
     let kind = setup.format.object_format;

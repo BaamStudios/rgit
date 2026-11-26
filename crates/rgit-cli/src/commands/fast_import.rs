@@ -412,6 +412,8 @@ impl<'c> Importer<'c> {
             self.flush_closed()?;
         }
         if !done && self.require_done {
+            // The marks are imported even then (and so exported again).
+            self.prepare_data()?;
             return Err(Die::Fatal(msg::STREAM_ENDS_EARLY.into()));
         }
         self.prepare_data()?;

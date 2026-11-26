@@ -27,6 +27,14 @@
 //! callers through [`Helper::list`], [`Helper::fetch`],
 //! [`Helper::import`], [`Helper::push`] and [`Helper::export`].
 //!
+//! A helper with `stateless-connect` serves protocol v2 fetches through
+//! [`Helper::stateless_connect`] (the callers try it when they speak v2,
+//! after the standard options): its standard input and output then carry
+//! the service's capability advertisement and one request after the
+//! other, each response ending with a response-end packet
+//! ([`StatelessHelperTransport`]). On `fallback` the same helper goes on
+//! with `list`.
+//!
 //! Commands and answers are lines; answers are read one byte at a time
 //! so that nothing past the answer is consumed (after `import` the
 //! helper's output is handed to `git fast-import` as it is).
@@ -314,6 +322,8 @@ pub struct Helper {
     base_env: Vec<(OsString, OsString)>,
     git_dir: Option<PathBuf>,
     debug: bool,
+    /// The options set so far, for another helper of the same session.
+    options: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for Helper {
@@ -346,6 +356,7 @@ impl Helper {
             base_env: base_env.to_vec(),
             git_dir: ctx.git_dir.clone(),
             debug,
+            options: Vec::new(),
         };
         helper.write_line("capabilities")?;
         loop {
@@ -436,6 +447,7 @@ impl Helper {
         if !self.caps.option {
             return Ok(OptionReply::Unsupported);
         }
+        self.options.push((name.to_owned(), value.to_owned()));
         self.write_line(&format!("option {name} {value}"))?;
         let line = self.read_line_required()?;
         Ok(if line == "ok" {
@@ -474,9 +486,22 @@ impl Helper {
                 continue;
             }
             let (value, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
-            // Attributes (`unchanged`) follow the name.
-            let name = rest.split(' ').next().unwrap_or("").to_owned();
+            // Attributes follow the name.
+            let mut words = rest.split(' ');
+            let name = words.next().unwrap_or("").to_owned();
             if name.is_empty() {
+                continue;
+            }
+            // `unchanged`: the value is the local ref of that name.
+            if words.any(|a| a == "unchanged") {
+                let value = self
+                    .local_ref(&name)
+                    .ok_or_else(|| Error::Other(messages::could_not_read_ref(&name)))?;
+                out.refs.push(ListedRef {
+                    name,
+                    value: Some(value),
+                    symref: None,
+                });
                 continue;
             }
             let entry = if let Some(target) = value.strip_prefix('@') {
@@ -542,6 +567,22 @@ impl Helper {
             cmd.base_env(&[("GIT_DIR".into(), git_dir_value(dir))]);
         }
         cmd
+    }
+
+    /// The value of the local ref `name` (`rev-parse --verify`).
+    fn local_ref(&self, name: &str) -> Option<String> {
+        let args = ["rev-parse", "--verify", "--quiet", name].map(str::to_owned);
+        let cmd = self.git_command(&args);
+        let mut c = cmd.to_std();
+        c.stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let out = c.output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let v = String::from_utf8(out.stdout).ok()?;
+        let v = v.trim();
+        (!v.is_empty()).then(|| v.to_owned())
     }
 
     /// `import <name>` for each name: the helper's output is read by
@@ -681,12 +722,61 @@ impl Helper {
         Err(Error::Other(messages::unknown_connect_response(&line)))
     }
 
+    /// `stateless-connect <service>`: on success a transport whose first
+    /// connection is this helper's (later ones run the helper anew).
+    /// `Ok(Err(helper))` when the helper asks to fall back to other
+    /// commands.
+    pub fn stateless_connect(
+        self,
+        service: crate::Service,
+        ctx: &HelperContext,
+    ) -> Result<std::result::Result<Box<dyn Transport>, Helper>> {
+        let spec = self.spec.clone();
+        let base_env = self.base_env.clone();
+        let options = self.options.clone();
+        match self.open_stateless(service)? {
+            Ok(conn) => Ok(Ok(Box::new(StatelessHelperTransport {
+                spec,
+                ctx: ctx.clone(),
+                base_env,
+                options,
+                first: Some(conn),
+            }))),
+            Err(h) => Ok(Err(h)),
+        }
+    }
+
+    fn open_stateless(
+        mut self,
+        service: crate::Service,
+    ) -> Result<std::result::Result<Box<dyn Connection>, Helper>> {
+        self.write_line(&format!("stateless-connect {}", service.name()))?;
+        let line = self.read_line_required()?;
+        if line.is_empty() {
+            if self.debug {
+                eprintln!("{}", messages::DEBUG_CONNECTED);
+            }
+            return Ok(Ok(Box::new(StatelessConnection {
+                reader: PacketReader::new(self.conn),
+                request: Vec::new(),
+            })));
+        }
+        if line == "fallback" {
+            if self.debug {
+                eprintln!("{}", messages::DEBUG_FALLBACK);
+            }
+            return Ok(Err(self));
+        }
+        Err(Error::Other(messages::unknown_connect_response(&line)))
+    }
+
     /// End the session: an empty line, then wait for the helper.
     pub fn disconnect(mut self) -> Result<()> {
         if self.debug {
             eprintln!("{}", messages::DEBUG_DISCONNECTING);
         }
-        let _ = self.write_line("");
+        // Not traced as a command (as git does).
+        let _ = self.conn.write_all(b"\n").and_then(|()| self.conn.flush());
         let conn: Box<dyn Connection> = Box::new(self.conn);
         // How the helper exits after the session does not matter.
         let _ = conn.close();
@@ -730,6 +820,174 @@ impl Transport for HelperTransport {
                 Err(Error::Other(messages::cannot_connect_to_subservice(&name)))
             }
         }
+    }
+}
+
+/// A [`Transport`] through a helper with `stateless-connect` (protocol
+/// v2 only). Every connection after the first runs the helper anew with
+/// the options of the first.
+pub struct StatelessHelperTransport {
+    spec: HelperSpec,
+    ctx: HelperContext,
+    base_env: Vec<(OsString, OsString)>,
+    options: Vec<(String, String)>,
+    first: Option<Box<dyn Connection>>,
+}
+
+impl Transport for StatelessHelperTransport {
+    fn connect(&mut self, options: &ConnectOptions) -> Result<Box<dyn Connection>> {
+        if let Some(c) = self.first.take() {
+            return Ok(c);
+        }
+        let mut helper = Helper::start(self.spec.clone(), &self.ctx, &self.base_env)?;
+        for (name, value) in &self.options {
+            helper.set_option(name, value)?;
+        }
+        let name = helper.spec.name.clone();
+        match helper.open_stateless(options.service)? {
+            Ok(conn) => Ok(conn),
+            Err(h) => {
+                let _ = h.disconnect();
+                Err(Error::Other(messages::cannot_connect_to_subservice(&name)))
+            }
+        }
+    }
+}
+
+/// The helper's output as the responses of a stateless connection: the
+/// packets pass through, a response-end packet ends the response (end of
+/// file until the next request).
+struct PacketReader {
+    conn: ChildConnection,
+    /// The header of the current packet and how much of it was passed on.
+    head: [u8; 4],
+    head_done: usize,
+    /// Bytes of the current packet's payload still to pass through.
+    left: usize,
+    /// The response ended.
+    ended: bool,
+    /// A response to a request is being read (it ends with a
+    /// response-end packet; the capability advertisement does not).
+    in_response: bool,
+}
+
+impl PacketReader {
+    fn new(conn: ChildConnection) -> PacketReader {
+        PacketReader {
+            conn,
+            head: [0; 4],
+            head_done: 4,
+            left: 0,
+            ended: false,
+            in_response: false,
+        }
+    }
+
+    /// Ready for the response to the next request: the rest of the
+    /// current response (up to its response-end packet) is skipped.
+    fn restart(&mut self) -> io::Result<()> {
+        if self.in_response {
+            io::copy(self, &mut io::sink())?;
+        }
+        self.head_done = 4;
+        self.left = 0;
+        self.ended = false;
+        self.in_response = true;
+        Ok(())
+    }
+}
+
+impl Read for PacketReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.ended || buf.is_empty() {
+            return Ok(0);
+        }
+        if self.head_done < 4 {
+            let n = buf.len().min(4 - self.head_done);
+            buf[..n].copy_from_slice(&self.head[self.head_done..self.head_done + n]);
+            self.head_done += n;
+            return Ok(n);
+        }
+        if self.left > 0 {
+            let n = buf.len().min(self.left);
+            let got = self.conn.read(&mut buf[..n])?;
+            if got == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            self.left -= got;
+            return Ok(got);
+        }
+        let mut have = 0;
+        while have < 4 {
+            match self.conn.read(&mut self.head[have..]) {
+                Ok(0) if have == 0 => return Ok(0),
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => have += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        if self.in_response && &self.head == b"0002" {
+            self.ended = true;
+            return Ok(0);
+        }
+        // A malformed length passes through for the reader to reject.
+        let len = std::str::from_utf8(&self.head)
+            .ok()
+            .and_then(|h| usize::from_str_radix(h, 16).ok())
+            .unwrap_or(0);
+        self.left = len.saturating_sub(4);
+        self.head_done = 0;
+        self.read(buf)
+    }
+}
+
+/// A stateless connection through a helper's `stateless-connect`.
+struct StatelessConnection {
+    reader: PacketReader,
+    request: Vec<u8>,
+}
+
+impl Read for StatelessConnection {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.reader.read(buf)
+    }
+}
+
+impl Write for StatelessConnection {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.request.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Connection for StatelessConnection {
+    fn is_stateless(&self) -> bool {
+        true
+    }
+
+    fn end_request(&mut self) -> Result<()> {
+        let body = std::mem::take(&mut self.request);
+        self.reader.restart()?;
+        self.reader.conn.write_all(&body)?;
+        self.reader.conn.flush()?;
+        Ok(())
+    }
+
+    fn split(&mut self) -> (&mut (dyn Read + Send), &mut dyn crate::WriteHalf) {
+        (&mut self.reader, &mut self.request)
+    }
+
+    fn close(self: Box<Self>) -> Result<()> {
+        // The helper ends when its input does; how it exits does not
+        // matter (as after `connect`).
+        let conn: Box<dyn Connection> = Box::new(self.reader.conn);
+        let _ = conn.close();
+        Ok(())
     }
 }
 
