@@ -175,11 +175,6 @@ pub fn detached_advice(name: &str) -> String {
     )
 }
 
-/// rgit-only: an option that is accepted but not implemented yet.
-pub fn not_supported(what: &str) -> String {
-    format!("rgit: '{what}' is not implemented yet")
-}
-
 /// Leaving a detached `HEAD` whose commits no ref reaches: the warning up
 /// to the commit list. `n` is the number of commits.
 pub fn leaving_behind(n: usize) -> String {

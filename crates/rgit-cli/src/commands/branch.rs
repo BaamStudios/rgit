@@ -202,6 +202,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .noneg()
     };
     let track = Cell::new(Track::Unspecified);
+    let recurse = Cell::new(-1);
     let color: Cell<Option<ColorBool>> = Cell::new(None);
     // Generic options, then the branch actions (the order of `-h`).
     let mut opts = vec![
@@ -264,6 +265,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 Ok(())
             }),
             Opt::flag('i', "ignore-case", &ignore_case, msg::HELP_IGNORE_CASE),
+            Opt::bool(None, "recurse-submodules", &recurse, msg::HELP_RECURSE_SUBMODULES),
             Opt::string(None, "format", &format, "format", msg::HELP_FORMAT),
     ]);
     let mut parser = Parser::new(msg::USAGE, opts);
@@ -330,6 +332,28 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if filtering && (delete.get() > 0 || rename.get() > 0 || copy.get() > 0) {
         return Err(parser.usage_error().into());
     }
+    // `--recurse-submodules` (or `submodule.recurse`) only creates.
+    let creating = !modes.iter().any(|m| *m)
+        && !(list.get() || filtering || format.borrow().is_some() || !sorts.borrow().is_empty())
+        && !args.is_empty();
+    let recursing = match recurse.get() {
+        1 => true,
+        0 => false,
+        _ => creating && rgit_submodule::settings::recurse(c.config),
+    };
+    if recursing && !creating {
+        return Err(Die::Fatal(msg::RECURSE_ONLY_CREATE.to_owned()));
+    }
+    if recursing
+        && !c
+            .config
+            .bool("submodule.propagatebranches")
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    {
+        return Err(Die::Fatal(msg::PROPAGATE_BRANCHES_NEEDED.to_owned()));
+    }
     if delete.get() > 0 {
         if args.is_empty() {
             return Err(Die::Fatal(msg::BRANCH_NAME_REQUIRED.to_owned()));
@@ -374,6 +398,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         let mut args = args.clone();
         args[0] = interpret_name(&c, &args[0], false)?;
+        if recursing {
+            return create_recursive(ctx, &c, &args, &parser, track.get(), force.get(), create_reflog.get());
+        }
         return create(&c, &args, &parser, track.get(), force.get(), create_reflog.get());
     }
     // Without `--abbrev`, `core.abbrev=no` shows full ids.
@@ -533,6 +560,53 @@ fn create(
         plan.apply(&repo, name, &c.auto, c.quiet)?;
     }
     Ok(0)
+}
+
+/// `branch --recurse-submodules`: the branch in the superproject and in
+/// the active submodules of its start point, after checking all of them.
+fn create_recursive(
+    ctx: &Context,
+    c: &Ctx<'_>,
+    args: &[String],
+    parser: &Parser<'_>,
+    track: Track,
+    force: bool,
+    create_reflog: bool,
+) -> CmdResult {
+    if args.len() > 2 {
+        return Err(parser.usage_error().into());
+    }
+    let name = &args[0];
+    if !valid_name(name) {
+        return Err(not_valid_name(c, name));
+    }
+    if !force && c.branch_oid(name).is_some() {
+        return Err(Die::Fatal(msg::already_exists(name)));
+    }
+    let lookup = match args.get(1) {
+        Some(s) => s.clone(),
+        None => tracking::default_start_ref(&c.store),
+    };
+    let start = args.get(1).cloned().unwrap_or_else(|| lookup.clone());
+    let oid = c
+        .revs
+        .resolve(&lookup)
+        .and_then(|id| crate::switch_branch::peel_commit(c.objects, &id))
+        .ok_or_else(|| Die::Fatal(msg::not_valid_object_name(&start)))?;
+    let repo = crate::repository::Repo::open(ctx, Mode::Required)?;
+    let subs = crate::branch_submodules::submodules(&repo, &oid)?;
+    let start_name = crate::branch_submodules::full_start_name(&c.store, &lookup);
+    let sub = crate::branch_submodules::Create {
+        name,
+        start_name: &start_name,
+        track,
+        force,
+        quiet: c.quiet,
+    };
+    crate::branch_submodules::run(&subs, &sub, true)?;
+    let code = create(c, args, parser, track, force, create_reflog)?;
+    crate::branch_submodules::run(&subs, &sub, false)?;
+    Ok(code)
 }
 
 /// `<a>...<b>` as a start point: the single merge base of the two (a

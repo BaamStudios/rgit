@@ -70,6 +70,14 @@ pub const DIRS_WITH_UNTRACKED: (&str, &str) = (
     "",
 );
 
+/// Porcelain: submodules that cannot be moved (no trailer).
+pub const CANNOT_UPDATE_SUBMODULE: (&str, &str) = ("Cannot update submodule:\n", "");
+
+/// Plumbing, and failures while updating: a submodule could not be moved.
+pub fn submodule_new_head(path: &str) -> String {
+    format!("Submodule '{path}' cannot checkout new HEAD.")
+}
+
 /// Porcelain `checkout`: untracked files in the way.
 pub const CHECKOUT_UNTRACKED_OVERWRITTEN: (&str, &str) = (
     "The following untracked working tree files would be overwritten by checkout:\n",

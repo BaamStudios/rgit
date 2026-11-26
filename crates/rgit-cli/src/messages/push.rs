@@ -276,3 +276,37 @@ pub fn cannot_parse_expected(expect: &str) -> String {
 pub const PROGRESS_ENUMERATING: &str = "Enumerating objects";
 /// git: progress meter while looking up the objects to send.
 pub const PROGRESS_COUNTING: &str = "Counting objects";
+
+// --recurse-submodules
+pub fn bad_recurse_submodules(value: &str) -> String {
+    format!("bad recurse-submodules argument: {value}")
+}
+pub fn bad_push_recurse_submodules(value: &str) -> String {
+    format!("bad push.recursesubmodules argument: {value}")
+}
+pub const ONLY_IS_ON_DEMAND: &str =
+    "recursing into submodule with push.recurseSubmodules=only; using on-demand instead";
+pub const UNPUSHED_HEAD: &str =
+    "The following submodule paths contain changes that can\nnot be found on any remote:\n";
+pub const UNPUSHED_TAIL: &str = "\nPlease try\n\n\tgit push --recurse-submodules=on-demand\n\nor cd to the path and use\n\n\tgit push\n\nto push them to a remote.\n\n";
+pub const ABORTING: &str = "Aborting.";
+pub fn pushing_submodule(path: &str) -> String {
+    format!("Pushing submodule '{path}'")
+}
+pub fn unable_to_push_submodule(path: &str) -> String {
+    format!("Unable to push submodule '{path}'")
+}
+pub const FAILED_SUBMODULES: &str = "failed to push all needed submodules";
+pub fn submodule_entry_is_tag(path: &str, id: &str) -> String {
+    format!("submodule entry '{path}' ({id}) is a tag, not a commit")
+}
+pub fn process_failed(path: &str) -> String {
+    format!("process for submodule '{path}' failed")
+}
+pub fn remote_not_configured(remote: &str) -> String {
+    format!("remote '{remote}' not configured")
+}
+pub const HEAD_MISMATCH: &str = "HEAD does not match the named branch in the superproject";
+pub fn src_must_name_ref(src: &str) -> String {
+    format!("src refspec '{src}' must name a ref")
+}

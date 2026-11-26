@@ -125,8 +125,8 @@ pub fn upstream_detached(branch: &str, remote: &str) -> String {
     )
 }
 pub const HELP_RECURSE_SUBMODULES: &str = "control recursive fetching of submodules";
-pub fn recurse_submodules_unsupported(value: &str) -> String {
-    format!("rgit: fetch --recurse-submodules={value} is not supported yet")
+pub fn bad_recurse_submodules(value: &str) -> String {
+    format!("bad recurse-submodules argument: {value}")
 }
 
 /// `--set-upstream` with a tag as the merge candidate.
@@ -145,3 +145,15 @@ pub const NEGOTIATE_ONLY_NEEDS_TIPS: &str =
     "--negotiate-only needs one or more --negotiation-restrict=*";
 pub const NEGOTIATE_ONLY_NEEDS_V2: &str = "--negotiate-only requires protocol v2";
 pub const HELP_PREFETCH: &str = "modify the refspec to place all refs within refs/prefetch/";
+
+/// Before the fetch of a submodule (on standard error).
+pub fn fetching_submodule(path: &str, at_commit: Option<&str>) -> String {
+    match at_commit {
+        Some(c) => format!("Fetching submodule {path} at commit {c}"),
+        None => format!("Fetching submodule {path}"),
+    }
+}
+
+/// After submodule fetches that failed; each path follows on its own line
+/// after a tab.
+pub const SUBMODULE_ERRORS: &str = "Errors during submodule fetch:";

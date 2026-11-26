@@ -452,7 +452,8 @@ fn update_one(sup: &mut Super, gm: &Gitmodules, t: &Todo, opts: &Opts) -> Result
         return Ok(());
     }
     let hex = target.to_hex();
-    if !just_cloned && !opts.no_fetch && !has_commit(sup, &dir, &hex)? {
+    // Also after a clone: a reused git directory may lack the commit.
+    if !opts.no_fetch && !has_commit(sup, &dir, &hex)? {
         let mut cmd = sup.sub_git(&dir, if opts.quiet { &["fetch", "--quiet"][..] } else { &["fetch"] })?;
         if common::run_status(&mut cmd)? != 0 {
             return Err(Die::Fatal(msg::unable_to_fetch(display)));

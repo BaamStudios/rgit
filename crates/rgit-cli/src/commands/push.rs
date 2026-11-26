@@ -41,6 +41,7 @@ use crate::prelude::*;
 use crate::push::matching::{self, Local};
 use crate::push::output::{self, Style, prettify};
 use crate::push::send::{self, Outgoing};
+use crate::push::submodules::Mode as SubMode;
 use crate::push::{Objects, PushRef, Status, check_refs};
 use crate::refs_support;
 use crate::repo::{self, Mode};
@@ -79,6 +80,12 @@ struct Flags {
     if_includes: bool,
     /// `--signed` / `push.gpgSign`.
     signed: Signed,
+    /// `--recurse-submodules` / `push.recurseSubmodules`.
+    recurse: SubMode,
+    /// The configured remote pushed to (for the submodules' pushes).
+    sub_remote: Option<String>,
+    /// The refspecs of the command line (for the submodules' pushes).
+    sub_refspecs: Vec<String>,
 }
 
 /// Whether to send a push certificate.
@@ -169,18 +176,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let leases: RefCell<LeaseArgs> = RefCell::new(LeaseArgs::default());
     let if_includes = Cell::new(-1);
     let signed_arg: RefCell<Option<Option<String>>> = RefCell::new(None);
-    let unsupported: RefCell<Option<String>> = RefCell::new(None);
-    let reject = |name: &'static str| {
-        let unsupported = &unsupported;
-        move |_: Option<&str>, unset: bool| -> Result<(), CallbackError> {
-            if !unset {
-                unsupported
-                    .borrow_mut()
-                    .get_or_insert_with(|| format!("--{name}"));
-            }
-            Ok(())
-        }
-    };
+    let recurse: Cell<Option<SubMode>> = Cell::new(None);
     let mut parser = Parser::new(
         msg::USAGE,
         vec![
@@ -221,7 +217,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "recurse-submodules",
                 Some("(check|on-demand|no)"),
                 msg::H_RECURSE_SUBMODULES,
-                reject("recurse-submodules"),
+                |v, unset| {
+                    let m = if unset {
+                        SubMode::No
+                    } else {
+                        crate::push::submodules::parse_cli(v.unwrap_or_default())
+                            .map_err(CallbackError::Fatal)?
+                    };
+                    recurse.set(Some(m));
+                    Ok(())
+                },
             )
             .literal_argh(),
             Opt::flag(None, "thin", &thin, msg::H_THIN),
@@ -266,9 +271,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ],
     );
     let args = parser.parse(argv)?.args;
-    if let Some(opt) = unsupported.borrow().clone() {
-        return Err(Die::Fatal(msg::not_supported(&opt)));
-    }
     if tags.get() && all.get() {
         return Err(Die::Fatal(msg::TAGS_WITH_ALL.into()));
     }
@@ -502,6 +504,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             v => v > 0,
         },
         signed: Signed::resolve(signed_arg.take(), &config, true)?,
+        recurse: crate::push::submodules::effective(recurse.get(), &config)?,
+        sub_remote: remote.is_configured().then(|| remote_name.clone()),
+        sub_refspecs: cli_specs.to_vec(),
     };
     let push = Push {
         ctx,
@@ -944,6 +949,50 @@ impl Push<'_> {
                 for r in list.iter_mut().filter(|r| r.status == Status::None) {
                     r.status = Status::AtomicFailed;
                 }
+            }
+        }
+
+        // Submodules first (`--recurse-submodules`).
+        if f.recurse != SubMode::No {
+            // Like git: every pushed value (up to date or not) against the
+            // remote-tracking refs of a configured remote.
+            let new: Vec<ObjectId> = list.iter().filter_map(|r| r.new).collect();
+            let remote_has: Vec<ObjectId> = match &f.sub_remote {
+                Some(name) => self
+                    .refs
+                    .list(&format!("refs/remotes/{name}/"))
+                    .into_iter()
+                    .map(|(_, id)| id)
+                    .collect(),
+                None => Vec::new(),
+            };
+            let repo = crate::repository::Repo::open(self.ctx, Mode::Required)?;
+            let req = crate::push::submodules::Request {
+                mode: f.recurse,
+                dry_run: f.dry_run,
+                remote: f.sub_remote.as_deref(),
+                refspecs: &f.sub_refspecs,
+                head: self.head,
+                push_options: &f.push_options,
+            };
+            match crate::push::submodules::run(&repo, &req, &new, &remote_has) {
+                Ok(true) => {}
+                // `only`: the superproject is left as it is.
+                Ok(false) => {
+                    send::finish_empty(session);
+                    if !f.quiet && !f.porcelain {
+                        eprintln!("{}", msg::EVERYTHING_UP_TO_DATE);
+                    }
+                    return Ok(0);
+                }
+                // Dropped without a request after the message: the server
+                // reports the hang-up, like git.
+                Err(Die::Fatal(m)) => {
+                    eprintln!("fatal: {m}");
+                    drop(session);
+                    return Err(Die::Exit(rgit_options::EXIT_FATAL));
+                }
+                Err(e) => return Err(e),
             }
         }
 
@@ -1493,6 +1542,9 @@ pub fn run_send_pack(ctx: &mut Context, argv: &[String]) -> CmdResult {
         lease_all: lease_args.all,
         if_includes: if_includes.get() > 0,
         signed: Signed::resolve(signed_arg.take(), &config, false)?,
+        recurse: SubMode::No,
+        sub_remote: None,
+        sub_refspecs: Vec::new(),
     };
     let push = Push {
         ctx,

@@ -306,6 +306,11 @@ fn move_index_inner(
     } else {
         Merge::TwoWay { old, new }
     };
+    let updater = if crate::recurse_submodules::enabled(repo) {
+        crate::recurse_submodules::Updater::new(repo, None)
+    } else {
+        None
+    };
     let mut opts = Options {
         reset: force,
         update: true,
@@ -313,6 +318,7 @@ fn move_index_inner(
         initial_checkout: index.is_empty() && mtime.is_none(),
         paths: path_options(repo),
         excludes: Some(&mut excludes),
+        submodules: updater.as_ref().map(|u| u as &dyn rgit_unpack::Submodules),
         ..Options::default()
     };
     let plan = match rgit_unpack::plan(repo.odb(), &index, &merge, Some(&wt), &mut opts) {
@@ -320,6 +326,13 @@ fn move_index_inner(
         Err(rgit_unpack::Error::Rejected(r)) => {
             if !report {
                 return Ok(None);
+            }
+            if force {
+                // A forced move only fails for submodules (plumbing wording).
+                for m in r.plumbing_messages() {
+                    eprintln!("error: {m}");
+                }
+                return Err(Die::Exit(1));
             }
             for m in r.porcelain_messages(cmd) {
                 eprintln!("error: {m}");
@@ -331,7 +344,10 @@ fn move_index_inner(
     };
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
     let progress = PROGRESS.load(std::sync::atomic::Ordering::Relaxed);
-    let applied = plan.apply_with_progress(repo.odb(), &wt, &conv, progress);
+    let applied = match &updater {
+        Some(u) => plan.apply_submodules(repo.odb(), &wt, &conv, progress, u, force),
+        None => plan.apply_with_progress(repo.odb(), &wt, &conv, progress),
+    };
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if let Some(reference) = mtime {
@@ -353,6 +369,37 @@ fn move_index_inner(
     Ok(Some(Moved { changes }))
 }
 
+/// Whether the checked-out submodule at `path` differs from `recorded`
+/// (other commit, or content as far as its `ignore` setting counts it).
+fn submodule_changed(
+    repo: &Repo,
+    index: &Index,
+    rules: &mut Option<crate::submodules::IgnoreRules>,
+    path: &[u8],
+    recorded: &ObjectId,
+) -> Result<bool, Die> {
+    let Some(wt) = repo.setup.work_tree.as_ref() else {
+        return Ok(false);
+    };
+    let dir = crate::diff::collect::os_path(&repo.setup.cwd.join(wt), path);
+    if !rgit_submodule::gitdir::is_populated(&dir) {
+        return Ok(false);
+    }
+    if rules.is_none() {
+        *rules = Some(crate::submodules::IgnoreRules::load(
+            repo,
+            Some(index),
+            None,
+            true,
+            rgit_submodule::Ignore::None,
+        )?);
+    }
+    let ignore = rules
+        .as_ref()
+        .map_or(rgit_submodule::Ignore::None, |r| r.for_path(path));
+    Ok(crate::submodules::worktree_state(&dir, recorded, repo.hash, ignore, true).changed())
+}
+
 /// `git diff-index --name-status <tree>` of the index and work tree: the
 /// local changes `checkout` lists after switching.
 fn local_changes(
@@ -363,6 +410,7 @@ fn local_changes(
 ) -> Result<Vec<u8>, Die> {
     let tree = rgit_unpack::tree_entries(repo.odb(), &tree).map_err(unpack_failed)?;
     let quote = repo.quote_path();
+    let mut rules = None;
     let mut out = Vec::new();
     let mut line = |letter: u8, path: &[u8]| {
         out.push(letter);
@@ -409,7 +457,8 @@ fn local_changes(
                 }
                 let e = &g[0];
                 if e.mode.is_gitlink() {
-                    if e.id != t.id {
+                    if e.id != t.id || submodule_changed(repo, index, &mut rules, e.path(), &t.id)?
+                    {
                         line(b'M', e.path());
                     }
                     continue;
@@ -813,7 +862,7 @@ fn lost_commits(
 }
 
 /// Commits for the walk, read from the object database.
-struct CommitReader<'a>(&'a Objects);
+pub(crate) struct CommitReader<'a>(pub(crate) &'a Objects);
 
 impl CommitSource for CommitReader<'_> {
     type Error = ();

@@ -114,12 +114,20 @@
 //! case and its NTFS/HFS+ equivalents, `..`, symbolic `.gitmodules`);
 //! a bad path ends the merge with [`Error::InvalidPath`]
 //! (`error: invalid path '<path>'`).
+//!
+//! # Submodules
+//!
+//! With [`Options::submodules`] (`--recurse-submodules`) the work trees of
+//! active submodules follow their gitlinks: see [`Submodules`]. Without it
+//! a gitlink is only an empty directory that is created or removed when
+//! empty.
 
 mod cache_tree;
 mod checkout;
 pub mod messages;
 mod objects;
 mod path;
+mod submodule;
 mod unpack;
 
 pub use cache_tree::repair_cache_tree;
@@ -129,6 +137,7 @@ pub use checkout::{
 };
 pub use objects::{Objects, read_blob, tree_entries};
 pub use path::{PathOptions, verify_checkout_path};
+pub use submodule::Submodules;
 pub use unpack::{Applied, Merge, Options, Plan, Porcelain, Problem, Rejection, Worktree, plan};
 
 use rgit_hash::ObjectId;

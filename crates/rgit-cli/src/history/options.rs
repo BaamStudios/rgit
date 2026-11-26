@@ -591,6 +591,10 @@ impl Options {
                 "--timestamp" if cmd == Command::RevList => o.timestamp = true,
                 "--header" if cmd == Command::RevList => o.header = true,
                 "--quiet" if cmd == Command::RevList => o.quiet = true,
+                // `log -q`/`show -q`: `--quiet`, no diff output.
+                "-q" if cmd != Command::RevList => {
+                    o.diff.parse_arg("--quiet")?;
+                }
                 "--count" if cmd == Command::RevList => o.count = true,
                 "--objects" if cmd == Command::RevList => o.set_objects(false),
                 "--objects-edge" | "--objects-edge-aggressive" if cmd == Command::RevList => {

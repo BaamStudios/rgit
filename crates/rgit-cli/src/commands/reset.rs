@@ -376,7 +376,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let quiet = Cell::new(0);
     let no_refresh = Cell::new(false);
     let mode = Cell::new(0);
-    let recurse = RefCell::new(None);
+    let recurse = Cell::new(None::<bool>);
     let patch = Cell::new(false);
     let auto_advance = Cell::new(-1);
     let unified = Cell::new(crate::interactive::patch::UNSET);
@@ -394,14 +394,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::set_int(None, "hard", &mode, msg::HELP_HARD, HARD).noneg(),
             Opt::set_int(None, "merge", &mode, msg::HELP_MERGE, MERGE).noneg(),
             Opt::set_int(None, "keep", &mode, msg::HELP_KEEP, KEEP).noneg(),
-            Opt::string(
-                None,
-                "recurse-submodules",
-                &recurse,
-                "reset",
-                msg::HELP_RECURSE_SUBMODULES,
-            )
-            .optional(Some("")),
+            crate::recurse_submodules::option_named(&recurse, "reset", msg::HELP_RECURSE_SUBMODULES),
             Opt::flag('p', "patch", &patch, msg::HELP_PATCH),
             Opt::bool(None, "auto-advance", &auto_advance, msg::HELP_AUTO_ADVANCE),
             Opt::integer('U', "unified", &unified, msg::HELP_UNIFIED).noneg(),
@@ -445,9 +438,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if file_nul.get() && from_file.is_none() {
         return Err(Die::Fatal(msg::FILE_NUL_WITHOUT_FROM_FILE.to_owned()));
     }
-    if recurse.borrow().is_some() {
-        return Err(Die::Fatal(msg::not_supported("--recurse-submodules")));
-    }
+    crate::recurse_submodules::declare(recurse.get());
 
     let repo = Repo::open(ctx, Mode::Required)?;
     let revs = Revs::new(ctx, &repo.setup)?;
@@ -675,6 +666,11 @@ fn reset_worktree(
         },
         _ => Merge::OneWay(target),
     };
+    let updater = if crate::recurse_submodules::enabled(repo) {
+        crate::recurse_submodules::Updater::new(repo, None)
+    } else {
+        None
+    };
     let mut opts = Options {
         reset: mode == HARD,
         // git-reset(1): unmerged entries take the target's version.
@@ -682,6 +678,7 @@ fn reset_worktree(
         update: true,
         paths: path_options(repo),
         excludes: Some(&mut excludes),
+        submodules: updater.as_ref().map(|u| u as &dyn rgit_unpack::Submodules),
         ..Options::default()
     };
     let plan = match rgit_unpack::plan(repo.odb(), &index, &merge, Some(&wt), &mut opts) {
@@ -698,7 +695,10 @@ fn reset_worktree(
         Err(e) => return Err(unpack_failed(e)),
     };
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
-    let applied = plan.apply(repo.odb(), &wt, &conv);
+    let applied = match &updater {
+        Some(u) => plan.apply_submodules(repo.odb(), &wt, &conv, false, u, mode == HARD),
+        None => plan.apply(repo.odb(), &wt, &conv),
+    };
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if mode == KEEP {

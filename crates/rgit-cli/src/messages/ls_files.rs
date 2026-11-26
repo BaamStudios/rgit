@@ -41,6 +41,8 @@ pub const IGNORED_NEEDS_EXCLUDES: &str = "ls-files --ignored needs some exclude 
 pub const WITH_TREE_AND_STAGE: &str =
     "options 'ls-files --with-tree' and '-s/-u' cannot be used together";
 pub const RECURSE_UNSUPPORTED: &str = "ls-files --recurse-submodules unsupported mode";
+pub const RECURSE_ERROR_UNMATCH: &str =
+    "ls-files --recurse-submodules does not support --error-unmatch";
 pub const FORGOT_ADD: &str = "Did you forget to 'git add'?";
 
 pub fn bad_exclude_file(file: &str) -> String {
@@ -53,11 +55,6 @@ pub fn tree_ish_not_found(name: &str) -> String {
 
 pub fn pathspec_unmatched(spec: &str) -> String {
     format!("pathspec '{spec}' did not match any file(s) known to git")
-}
-
-/// rgit wording: an option that is not implemented yet.
-pub fn not_supported(what: &str) -> String {
-    format!("rgit ls-files: {what} is not supported yet")
 }
 
 pub fn no_object_info(id: &str) -> String {

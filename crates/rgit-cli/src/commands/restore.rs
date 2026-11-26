@@ -158,6 +158,14 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
     let mut actions: Vec<(Vec<u8>, Action)> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
     let mut index_changed = false;
+    // `--recurse-submodules`: active submodules are restored too.
+    let updater = (how.worktree && crate::recurse_submodules::enabled(repo))
+        .then(|| crate::recurse_submodules::Updater::new(repo, None))
+        .flatten();
+    let restore_submodule = |e: &Entry| {
+        use rgit_unpack::Submodules as _;
+        e.mode.is_gitlink() && updater.as_ref().is_some_and(|u| u.active(e.path()))
+    };
     // An unmerged path left alone or failing.
     let unmerged = |path: &[u8], errors: &mut Vec<String>| {
         let p = String::from_utf8_lossy(path);
@@ -227,7 +235,7 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
                         .map_err(|err| Die::Fatal(err.to_string()))?;
                     index_changed = true;
                 }
-                if !clean {
+                if !clean || restore_submodule(&e) {
                     actions.push((e.path().to_vec(), Action::Write(e)));
                 }
             }
@@ -318,7 +326,7 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
                 } else {
                     !matches!(checker.check(e), Ok(Status::Unchanged))
                 };
-                if changed {
+                if changed || restore_submodule(e) {
                     actions.push((e.path().to_vec(), Action::Write(e.clone())));
                 }
             }
@@ -455,6 +463,21 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
             }
         };
         failed |= !write(&mut index, path, entry, &data);
+    }
+    // `--recurse-submodules`: restored submodules are checked out at the
+    // recorded commit (local changes in them are lost).
+    if let Some(u) = &updater {
+        use rgit_unpack::Submodules as _;
+        for (path, action) in &actions {
+            if let Action::Write(entry) = action {
+                if restore_submodule(entry) {
+                    if let Err(e) = u.update(path, None, Some(&entry.id), true) {
+                        eprintln!("error: {e}");
+                        failed = true;
+                    }
+                }
+            }
+        }
     }
     if !delayed.is_empty() {
         let mut filtering = crate::switch_branch::progress().then(|| {
@@ -679,7 +702,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let ignore_unmerged = Cell::new(false);
     let overlay = Cell::new(false);
     let quiet = Cell::new(0);
-    let recurse = RefCell::new(None::<String>);
+    let recurse = Cell::new(None::<bool>);
     let progress = Cell::new(-1);
     let merge = Cell::new(false);
     let conflict = RefCell::new(None);
@@ -699,8 +722,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag(None, "ignore-unmerged", &ignore_unmerged, msg::HELP_IGNORE_UNMERGED),
             Opt::flag(None, "overlay", &overlay, msg::HELP_OVERLAY),
             Opt::quiet(&quiet, smsg::HELP_QUIET),
-            Opt::string(None, "recurse-submodules", &recurse, "checkout", smsg::HELP_RECURSE)
-                .optional(Some("")),
+            crate::recurse_submodules::option(&recurse, smsg::HELP_RECURSE),
             Opt::bool(None, "progress", &progress, smsg::HELP_PROGRESS),
             // `--conflict` implies `--merge`; `--no-merge` undoes both,
             // `--no-conflict` only the implied merge (t7201 41-44).
@@ -759,9 +781,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         false,
         "--patch",
     )?;
-    if recurse.borrow().is_some() {
-        return Err(Die::Fatal(smsg::not_supported("git restore --recurse-submodules")));
-    }
+    crate::recurse_submodules::declare(recurse.get());
 
     let repo = Repo::open(ctx, Mode::Required)?;
     let objects = Objects::open(&repo.setup);

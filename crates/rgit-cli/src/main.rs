@@ -37,6 +37,7 @@ mod alias;
 mod argv;
 mod attributes;
 mod autocorrect;
+mod branch_submodules;
 mod cmdlist;
 mod color;
 mod column;
@@ -47,6 +48,7 @@ mod context;
 mod convert;
 mod diff;
 mod external;
+mod fetch_submodules;
 mod format;
 mod global;
 mod grep;
@@ -64,6 +66,7 @@ mod patch_id;
 mod push;
 mod quote;
 mod rebase;
+mod recurse_submodules;
 mod ref_filter;
 mod reflog_expire;
 mod refs;
@@ -372,7 +375,10 @@ fn run(args: Vec<String>) -> CmdResult {
             print_main_help();
             Ok(1)
         }
-        global::Action::Run(argv) => dispatch(&mut ctx, argv),
+        global::Action::Run(argv) => {
+            submodules::set_child_config(ctx.config_parameters_env());
+            dispatch(&mut ctx, argv)
+        }
     }
 }
 

@@ -9,6 +9,7 @@
 pub mod matching;
 pub mod output;
 pub mod send;
+pub mod submodules;
 
 use std::collections::HashSet;
 

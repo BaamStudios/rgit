@@ -717,14 +717,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             || deleted.get()
             || modified.get()
             || ignored.get()
+            || unmerged.get()
             || with_tree.borrow().is_some())
     {
         return Err(Die::Fatal(msg::RECURSE_UNSUPPORTED.to_string()));
     }
-    if recurse_submodules.get() && index.entries().iter().any(|e| e.mode.is_gitlink()) {
-        return Err(Die::Fatal(msg::not_supported("--recurse-submodules")));
+    if recurse_submodules.get() && error_unmatch.get() {
+        return Err(Die::Fatal(msg::RECURSE_ERROR_UNMATCH.to_string()));
     }
     let mut entries: Vec<Entry> = index.entries().to_vec();
+    if recurse_submodules.get() {
+        entries = with_submodules(ctx, &repo, entries)?;
+    }
     if let Some(spec) = with_tree.borrow().as_deref() {
         overlay_tree(&mut repo, &index, &mut entries, spec)?;
     }
@@ -902,6 +906,49 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
     Ok(0)
+}
+
+/// `--recurse-submodules`: every gitlink of an active submodule whose
+/// repository exists is replaced by the entries of the submodule's index
+/// (recursively), their paths below the gitlink's.
+fn with_submodules(ctx: &Context, repo: &Repo, entries: Vec<Entry>) -> Result<Vec<Entry>, Die> {
+    if !entries.iter().any(|e| e.mode.is_gitlink()) {
+        return Ok(entries);
+    }
+    let gitmodules = crate::submodules::load_gitmodules(repo, None)?;
+    let mut out = Vec::with_capacity(entries.len());
+    for e in entries {
+        if !e.mode.is_gitlink() || e.stage() != Stage::MERGED {
+            out.push(e);
+            continue;
+        }
+        let name = gitmodules
+            .by_path(e.path())
+            .map_or_else(|| e.path().to_vec(), |s| s.name.to_vec());
+        if !rgit_submodule::is_active(&repo.config, &name, e.path()) {
+            out.push(e);
+            continue;
+        }
+        let Some(sub) = crate::commands::grep::open_submodule(ctx, repo, e.path(), None) else {
+            continue;
+        };
+        // The submodule's configuration is read for real (as git does).
+        sub.config
+            .bool("index.sparse")
+            .map_err(|err| Die::Fatal(err.to_string()))?;
+        let (sub_index, _) = sub.read_index()?;
+        let nested = with_submodules(ctx, &sub, sub_index.entries().to_vec())?;
+        for n in nested {
+            let mut path = e.path().to_vec();
+            path.push(b'/');
+            path.extend_from_slice(n.path());
+            let mut moved = Entry::new(path, n.stage(), n.mode, n.id);
+            moved.flags = n.flags;
+            moved.stat = n.stat;
+            out.push(moved);
+        }
+    }
+    Ok(out)
 }
 
 /// Where the work tree walk starts: the longest leading directory every
