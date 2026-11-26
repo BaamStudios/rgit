@@ -11,7 +11,8 @@
 //! "Reaches a commit the client has" is checked as git does it: the
 //! common commits and their parents count as had, and the walk from a
 //! wanted commit does not go behind commits older than the oldest common
-//! one.
+//! one. A `have` for something that counts as had already (a repeated
+//! line, the parent of an earlier `have`) is not acknowledged again.
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Write};
@@ -240,21 +241,54 @@ fn check_filter(repo: &Repository<'_>, filter: &ObjectFilter) -> std::result::Re
     Ok(())
 }
 
+/// What the `have` lines of a request say about the client.
+struct Common {
+    /// The `have`s this repository has too, in the client's order,
+    /// without those that counted as had already.
+    objects: Vec<ObjectId>,
+    /// What the client is known to have: every common object and the
+    /// parents of the common commits.
+    they_have: HashSet<ObjectId>,
+    /// The time of the oldest common commit.
+    oldest: Option<i64>,
+}
+
+impl Common {
+    /// Go through the `have` lines as git does: an object this repository
+    /// has is common unless it counts as had already (an earlier `have`,
+    /// or the parent of an earlier common commit); the parents of a
+    /// common commit count as had from then on. Objects of any type can
+    /// be common; only commits tell about history.
+    fn find(repo: &Repository<'_>, graph: &mut Graph<'_>, haves: &[ObjectId]) -> Common {
+        let mut common = Common {
+            objects: Vec::new(),
+            they_have: HashSet::new(),
+            oldest: None,
+        };
+        for id in haves {
+            if !repo.odb.contains(id) {
+                continue;
+            }
+            let known = !common.they_have.insert(*id);
+            if let Some(c) = graph.commit(id) {
+                common.oldest = Some(common.oldest.map_or(c.time, |t| t.min(c.time)));
+                common.they_have.extend(c.parents.iter().copied());
+            }
+            if !known {
+                common.objects.push(*id);
+            }
+        }
+        common
+    }
+}
+
 /// Whether the pack can be made: at least one common object, and every
-/// wanted commit reaches a commit the client is known to have (a common
-/// commit or one of its parents).
-fn ready_to_send(graph: &mut Graph<'_>, wants: &[ObjectId], common: &[ObjectId]) -> bool {
-    if common.is_empty() {
+/// wanted commit reaches a commit the client is known to have.
+fn ready_to_send(graph: &mut Graph<'_>, wants: &[ObjectId], common: &Common) -> bool {
+    if common.objects.is_empty() {
         return false;
     }
-    let mut they_have: HashSet<ObjectId> = HashSet::new();
-    let mut oldest: Option<i64> = None;
-    for id in common {
-        let Some(c) = graph.commit(id) else { continue };
-        oldest = Some(oldest.map_or(c.time, |t| t.min(c.time)));
-        they_have.insert(*id);
-        they_have.extend(c.parents.iter().copied());
-    }
+    let (they_have, oldest) = (&common.they_have, common.oldest);
     'wants: for want in wants {
         // Only commits take part: other objects have no history.
         if graph.commit(want).is_none() {
@@ -285,11 +319,11 @@ fn ready_to_send(graph: &mut Graph<'_>, wants: &[ObjectId], common: &[ObjectId])
 
 /// The trace2 event that tells what a request asked for (`data_json`,
 /// category `upload-pack`, key `fetch-info`), as git writes it.
-fn trace_request(repo: &Repository<'_>, req: &Request) {
+fn trace_request(req: &Request, common: &[ObjectId]) {
     if !rgit_trace::trace2::enabled() {
         return;
     }
-    let haves = req.haves.iter().filter(|id| repo.odb.contains(id)).count();
+    let haves = common.len();
     // The kind of filter, not its arguments.
     let filter = match &req.filter {
         Some(f) => format!("\"{}\"", f.config_name()),
@@ -312,7 +346,9 @@ fn trace_request(repo: &Repository<'_>, req: &Request) {
 pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]) -> Result<()> {
     let repo = s.repo;
     let req = Request::parse(s, lines)?;
-    trace_request(repo, &req);
+    let mut graph = Graph::new(repo.odb, repo.hash, &repo.shallow);
+    let common = Common::find(repo, &mut graph, &req.haves);
+    trace_request(&req, &common.objects);
     // Nothing wanted, nothing to say.
     if req.wants.is_empty() {
         return Ok(());
@@ -324,27 +360,24 @@ pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]
         }
     }
     s.out.sideband_all = req.sideband_all;
-    let result = respond(s, &req);
+    let result = respond(s, &req, &mut graph, common);
     s.out.sideband_all = false;
     result
 }
 
-fn respond<R: Read, W: Write>(s: &mut Session<'_, R, W>, req: &Request) -> Result<()> {
+fn respond<R: Read, W: Write>(
+    s: &mut Session<'_, R, W>,
+    req: &Request,
+    graph: &mut Graph<'_>,
+    common: Common,
+) -> Result<()> {
     let repo = s.repo;
-    let mut graph = Graph::new(repo.odb, repo.hash, &repo.shallow);
-    // Objects of any type can be common; only commits tell about history.
-    let common: Vec<ObjectId> = req
-        .haves
-        .iter()
-        .filter(|id| repo.odb.contains(id))
-        .copied()
-        .collect();
     if !req.done {
         s.out.line("acknowledgments")?;
-        if common.is_empty() {
+        if common.objects.is_empty() {
             s.out.line("NAK")?;
         }
-        for id in &common {
+        for id in &common.objects {
             s.out.line(&format!("ACK {id}"))?;
         }
         let wanted_commits: Vec<ObjectId> = req
@@ -359,7 +392,7 @@ fn respond<R: Read, W: Write>(s: &mut Session<'_, R, W>, req: &Request) -> Resul
             })
             .copied()
             .collect();
-        if req.wait_for_done || !ready_to_send(&mut graph, &wanted_commits, &common) {
+        if req.wait_for_done || !ready_to_send(graph, &wanted_commits, &common) {
             return s.out.flush();
         }
         s.out.line("ready")?;
@@ -379,7 +412,7 @@ fn respond<R: Read, W: Write>(s: &mut Session<'_, R, W>, req: &Request) -> Resul
         if req.shallow.depth.is_some() && (req.shallow.since.is_some() || req.shallow.has_not) {
             return Err(Error::fatal(msg::DEEPEN_CONFLICT));
         }
-        plan = shallow::plan(&mut graph, &repo.shallow, &req.shallow, &req.wants)?;
+        plan = shallow::plan(graph, &repo.shallow, &req.shallow, &req.wants)?;
         // These two lines carry no LF.
         for id in &plan.shallow {
             s.out.data(format!("shallow {id}").as_bytes())?;
@@ -406,7 +439,7 @@ fn respond<R: Read, W: Write>(s: &mut Session<'_, R, W>, req: &Request) -> Resul
     tips.extend(plan.extra_wants.iter().filter(|id| seen.insert(**id)));
     // The client has the commits that become complete (and their trees),
     // only not what is behind them.
-    let mut exclude = common;
+    let mut exclude = common.objects;
     let mut seen: HashSet<ObjectId> = exclude.iter().copied().collect();
     exclude.extend(plan.unshallow.iter().filter(|id| seen.insert(**id)));
     let pack = PackRequest {

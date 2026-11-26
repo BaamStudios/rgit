@@ -12,6 +12,8 @@
 //! git, `<directory>/.git`, `<directory>`, `<directory>.git/.git` and
 //! `<directory>.git` are tried in this order, and `~` and `~user` expand
 //! to home directories. With `--strict` only `<directory>` itself counts.
+//! A candidate may also be a `.git` file naming the git directory (a
+//! linked work tree, a submodule).
 //!
 //! Protocol v0 and v1 are not served yet (rgit #174). A client that does
 //! not ask for v2 is handed to another `git-upload-pack` program on the
@@ -19,12 +21,12 @@
 //! have; else it is told that only protocol v2 is served.
 
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rgit_config::SystemEnv;
 use rgit_protocol::ProtocolVersion;
 use rgit_refs::files::FilesStore;
-use rgit_repo::layout::{LayoutOverrides, is_git_directory};
+use rgit_repo::layout::{LayoutOverrides, is_git_directory, read_gitfile};
 use rgit_server::upload_pack as service;
 
 use crate::messages::upload_pack as msg;
@@ -35,10 +37,17 @@ use crate::repo::{self, Mode};
 fn enter_repo(dir: &str, strict: bool) -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     let overrides = LayoutOverrides::default();
-    let is_repo = |p: &Path| is_git_directory(p, &cwd, &overrides);
+    // The git directory at `p`: `p` itself, or what the `.git` file `p`
+    // points to.
+    let repository = |p: PathBuf| -> Option<PathBuf> {
+        if p.is_file() {
+            read_gitfile(&p, &cwd, &overrides).ok()
+        } else {
+            is_git_directory(&p, &cwd, &overrides).then_some(p)
+        }
+    };
     if strict {
-        let path = PathBuf::from(dir);
-        return is_repo(&path).then_some(path);
+        return repository(PathBuf::from(dir));
     }
     let base = if dir.starts_with('~') {
         let env = SystemEnv::default();
@@ -57,7 +66,7 @@ fn enter_repo(dir: &str, strict: bool) -> Option<PathBuf> {
     ["/.git", "", ".git/.git", ".git"]
         .iter()
         .map(|suffix| PathBuf::from(format!("{trimmed}{suffix}")))
-        .find(|p| is_repo(p))
+        .find_map(repository)
 }
 
 /// The protocol version a client asks for in `GIT_PROTOCOL`
