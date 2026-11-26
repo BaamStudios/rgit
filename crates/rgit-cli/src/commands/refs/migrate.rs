@@ -77,7 +77,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let config = refs_support::load_config(ctx, &setup)?;
     let shared = refs_support::shared_repository(&config);
     let kind = setup.format.object_format;
-    let git_dir = setup.git_dir.clone();
+    // The references may be kept outside the git directory
+    // (`extensions.refStorage = <format>://<dir>`): migrated there.
+    let git_dir = rgit_refs::location::resolve(&setup.git_dir);
 
     // What the repository has now.
     let store = refs_support::ref_store(&setup, &config);
@@ -140,7 +142,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         std::fs::rename(entry.path(), &dest).map_err(failed)?;
     }
     let _ = std::fs::remove_dir_all(&tmp);
-    update_config(&setup.common_dir.join("config"), target)?;
+    let payload = setup
+        .format
+        .ref_storage_payload
+        .as_ref()
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string());
+    update_config(&setup.common_dir.join("config"), target, payload.as_deref())?;
     Ok(0)
 }
 
@@ -240,7 +248,7 @@ fn remove_old(git_dir: &Path, old: RefStorage, refs: &[(String, Target)]) {
 }
 
 /// Records the new format in the repository configuration.
-fn update_config(path: &Path, target: RefStorage) -> Result<(), Die> {
+fn update_config(path: &Path, target: RefStorage, payload: Option<&str>) -> Result<(), Die> {
     let lock = rgit_fs::LockOptions::new();
     let set = |key: &str, value: Option<&str>| -> Result<(), Die> {
         let req = SetRequest {
@@ -252,6 +260,13 @@ fn update_config(path: &Path, target: RefStorage) -> Result<(), Die> {
         };
         rgit_config::write::set_in_file(path, &lock, &req).map_err(failed)
     };
+    if let Some(p) = payload {
+        set("core.repositoryformatversion", Some("1"))?;
+        return set(
+            "extensions.refstorage",
+            Some(&format!("{}://{p}", format_name(target))),
+        );
+    }
     match target {
         RefStorage::Reftable => {
             set("core.repositoryformatversion", Some("1"))?;

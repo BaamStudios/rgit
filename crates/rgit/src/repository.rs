@@ -199,6 +199,9 @@ impl OpenOptions {
             implicit_work_tree: true,
             owner: Owner::current(env),
             support: Support::default(),
+            // Like the other repository variables, `GIT_REFERENCE_BACKEND`
+            // is not read here.
+            ref_backend: None,
         };
         let mut protected = StandardProtectedConfig::new(env, self.command_line());
         let setup = match rgit_repo::discover(&options, &mut protected) {

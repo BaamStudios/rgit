@@ -141,6 +141,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let git_dir = found.git_dir;
     std::env::set_current_dir(&git_dir).map_err(|_| Die::Fatal(m::not_a_repository(&dir)))?;
     ctx.git_dir = Some(".".to_string());
+    repo::ignore_ref_backend_env();
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = refs_support::load_config(ctx, &setup)?;
     if let Some(e) = config

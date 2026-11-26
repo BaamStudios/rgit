@@ -189,6 +189,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     std::env::set_current_dir(&git_dir)
         .map_err(|_| Die::Fatal(msg::not_a_repository(dir)))?;
     ctx.git_dir = Some(".".into());
+    repo::ignore_ref_backend_env();
 
     let setup = repo::setup(ctx, Mode::RequiredQuiet)?;
     let hash = setup.format.object_format;
