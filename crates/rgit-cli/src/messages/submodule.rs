@@ -70,6 +70,14 @@ pub fn migrating(path: &str, from: &str, to: &str) -> String {
     format!("Migrating git directory of '{path}' from\n'{from}' to\n'{to}'")
 }
 
+pub fn not_a_git_repository(path: &str) -> String {
+    format!("'{path}' not recognized as a git repository")
+}
+
+pub fn could_not_access(path: &str) -> String {
+    format!("Could not access submodule '{path}'")
+}
+
 pub fn gitfile_not_repo(path: &str) -> String {
     format!("gitfile does not point to a valid repository: {path}")
 }

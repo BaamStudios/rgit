@@ -687,7 +687,29 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             a
         });
     let children = Children::new(ctx, &repo, &action)?;
+    // `--recurse-submodules` (or `submodule.recurse`): the submodules
+    // follow the merge or rebase (`submodule update --recursive`).
+    let update_submodules = match args.recurse_submodules.as_deref() {
+        None => rgit_submodule::settings::recurse(&repo.config),
+        Some(a) => !matches!(
+            a,
+            "--no-recurse-submodules"
+                | "--recurse-submodules=no"
+                | "--recurse-submodules=false"
+                | "--recurse-submodules=off"
+                | "--recurse-submodules=0"
+        ),
+    };
     drop(repo);
+    let finish = |code: i32, how: &str| -> Result<i32, Die> {
+        if code != 0 || !update_submodules {
+            return Ok(code);
+        }
+        let argv: Vec<String> = ["submodule", "update", "--recursive", how]
+            .map(String::from)
+            .into();
+        children.run(&argv)
+    };
 
     // A failed fetch ends `pull` with status 1, whatever fetch's own was.
     if children.run(&args.fetch_argv())? != 0 {
@@ -758,7 +780,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if rebasing {
         if can_ff {
             drop(repo);
-            return children.run(&args.merge_argv(Some("--ff-only"), Some(rebase_autostash)));
+            let code = children.run(&args.merge_argv(Some("--ff-only"), Some(rebase_autostash)))?;
+            return finish(code, "--rebase");
         }
         let onto = merge_heads[0];
         // A fork point the fetched history already contains gives the
@@ -767,16 +790,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             (Some(f), Some(c)) if !is_ancestor(&repo, &f, c)? => f,
             _ => onto,
         };
+        if update_submodules && crate::fetch_submodules::touches_submodules(&repo, &upstream, &head) {
+            return Err(fatal(msg::LOCAL_SUBMODULE_CHANGES));
+        }
         drop(repo);
         let mode = match rebase {
             Some(Rebase::Merges) => Some("--rebase-merges"),
             Some(Rebase::Interactive) => Some("--interactive"),
             _ => None,
         };
-        return children.run(&args.rebase_argv(rebase_autostash, mode, &onto, &upstream));
+        let code = children.run(&args.rebase_argv(rebase_autostash, mode, &onto, &upstream))?;
+        return finish(code, "--rebase");
     }
     drop(repo);
-    children.run(&args.merge_argv(ff.as_deref(), stash))
+    let code = children.run(&args.merge_argv(ff.as_deref(), stash))?;
+    finish(code, "--checkout")
 }
 
 /// The fork point of `head` in the reflog of the remote-tracking branch

@@ -125,7 +125,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let overlay = Cell::new(-1);
     let auto_advance = Cell::new(-1);
     let quiet = Cell::new(0);
-    let recurse = RefCell::new(None::<String>);
+    let recurse = Cell::new(None::<bool>);
     let progress = Cell::new(-1);
     let merge = Cell::new(false);
     let conflict = RefCell::new(None);
@@ -152,8 +152,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::bool(None, "overlay", &overlay, msg::HELP_OVERLAY),
             Opt::bool(None, "auto-advance", &auto_advance, rmsg::HELP_AUTO_ADVANCE),
             Opt::quiet(&quiet, msg::HELP_QUIET),
-            Opt::string(None, "recurse-submodules", &recurse, "checkout", msg::HELP_RECURSE)
-                .optional(Some("")),
+            crate::recurse_submodules::option(&recurse, msg::HELP_RECURSE),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
             // `--conflict` implies `--merge`; `--no-merge` undoes both,
             // `--no-conflict` only the implied merge (t7201 41-44).
@@ -205,7 +204,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if creating.iter().filter(|&&c| c).count() > 1 {
         return Err(Die::Fatal(msg::CREATE_OPTIONS_CHECKOUT.to_owned()));
     }
-    let unsupported = |what: &str| Err(Die::Fatal(msg::not_supported(what)));
     if file_nul.get() && from_file.is_none() {
         return Err(Die::Fatal(rmsg::FILE_NUL_WITHOUT_FROM_FILE.to_owned()));
     }
@@ -224,9 +222,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         auto_advance.get() == 0,
         "--patch",
     )?;
-    if recurse.borrow().is_some() {
-        return unsupported("git checkout --recurse-submodules");
-    }
+    crate::recurse_submodules::declare(recurse.get());
     if from_file.is_some() && detach.get() {
         return Err(Die::Fatal(rsmsg::FROM_FILE_WITH_DETACH.to_owned()));
     }

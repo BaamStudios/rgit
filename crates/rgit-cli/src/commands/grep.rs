@@ -1173,7 +1173,7 @@ fn grep_tree(
 /// Open the submodule at `path` (relative to the top of `repo`'s work
 /// tree) when its repository exists. `root`: the work tree of `repo` is
 /// searched, so the submodule must be checked out there.
-fn open_submodule(ctx: &Context, repo: &Repo, path: &[u8], root: Option<&Path>) -> Option<Repo> {
+pub(crate) fn open_submodule(ctx: &Context, repo: &Repo, path: &[u8], root: Option<&Path>) -> Option<Repo> {
     let git_dir = crate::submodules::sub_git_dir(repo, path)?;
     let work_tree = repo
         .setup

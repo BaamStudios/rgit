@@ -24,6 +24,7 @@ use bstr::ByteSlice;
 use rgit_config::SystemEnv;
 use rgit_fetch::{ConnectSettings, FetchOptions, LocalRepo, display};
 use rgit_remote::{BranchConfig, Remotes, TagOpt};
+use rgit_submodule::FetchRecurse;
 use rgit_transport::IpVersion;
 
 use crate::messages::fetch as msg;
@@ -81,6 +82,12 @@ struct Args {
     unshallow: bool,
     update_shallow: bool,
     show_forced_updates: i32,
+    /// `--[no-]recurse-submodules[=<mode>]`.
+    recurse: Option<FetchRecurse>,
+    /// `--recurse-submodules-default=<mode>` (internal).
+    recurse_default: Option<FetchRecurse>,
+    /// `--submodule-prefix=<path>/` (internal).
+    submodule_prefix: Option<String>,
 }
 
 impl Args {
@@ -157,6 +164,43 @@ impl Args {
         if self.update_shallow {
             o.push("--update-shallow".into());
         }
+        if let Some(m) = self.recurse {
+            o.push(crate::fetch_submodules::option_value(m));
+        }
+        o
+    }
+
+    /// The options a submodule's fetch gets.
+    fn submodule_options(&self) -> Vec<String> {
+        let mut o: Vec<String> = Vec::new();
+        for _ in 0..self.verbose {
+            o.push("-v".into());
+        }
+        for _ in 0..self.quiet {
+            o.push("-q".into());
+        }
+        o.push(if self.prune == 1 { "--prune" } else { "--no-prune" }.into());
+        o.push(if self.prune_tags == 1 { "--prune-tags" } else { "--no-prune-tags" }.into());
+        match self.progress {
+            1 => o.push("--progress".into()),
+            0 => o.push("--no-progress".into()),
+            _ => {}
+        }
+        if self.dry_run {
+            o.push("--dry-run".into());
+        }
+        if !self.write_fetch_head {
+            o.push("--no-write-fetch-head".into());
+        }
+        if self.force {
+            o.push("--force".into());
+        }
+        if self.update_head_ok {
+            o.push("--update-head-ok".into());
+        }
+        if let Some(j) = self.jobs {
+            o.push(format!("--jobs={j}"));
+        }
         o
     }
 }
@@ -188,7 +232,9 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     let ignored_i = Cell::new(0);
     let show_forced = Cell::new(-1);
     let upload_pack: RefCell<Option<String>> = RefCell::new(None);
-    let recurse_submodules: RefCell<Option<String>> = RefCell::new(None);
+    let recurse_submodules: Cell<Option<FetchRecurse>> = Cell::new(None);
+    let recurse_default: RefCell<Option<String>> = RefCell::new(None);
+    let submodule_prefix: RefCell<Option<String>> = RefCell::new(None);
     let server_options: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let refmap: RefCell<Option<Vec<String>>> = RefCell::new(None);
     let negotiation_restrict: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -221,6 +267,25 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::flag(None, "prefetch", &prefetch, msg::HELP_PREFETCH),
             Opt::bool('p', "prune", &prune, msg::HELP_PRUNE),
             Opt::bool('P', "prune-tags", &prune_tags, msg::HELP_PRUNE_TAGS),
+            Opt::callback(
+                None,
+                "recurse-submodules",
+                Some("on-demand"),
+                msg::HELP_RECURSE_SUBMODULES,
+                |v, unset| {
+                    let m = if unset {
+                        FetchRecurse::No
+                    } else {
+                        let v = v.unwrap_or("yes");
+                        crate::fetch_submodules::parse_mode(v).ok_or_else(|| {
+                            CallbackError::Fatal(msg::bad_recurse_submodules(v))
+                        })?
+                    };
+                    recurse_submodules.set(Some(m));
+                    Ok(())
+                },
+            )
+            .optional(None),
             Opt::bool(None, "dry-run", &dry_run, msg::HELP_DRY_RUN),
             Opt::flag(None, "porcelain", &porcelain, msg::HELP_PORCELAIN),
             Opt::flag(None, "write-fetch-head", &write_fetch_head, msg::HELP_WRITE_FETCH_HEAD),
@@ -284,31 +349,27 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::bool(None, "show-forced-updates", &show_forced, msg::HELP_SHOW_FORCED),
             Opt::bool(None, "write-commit-graph", &ignored_i, msg::HELP_WRITE_COMMIT_GRAPH),
             Opt::flag(None, "stdin", &stdin, msg::HELP_STDIN),
-            Opt::string(
-                None,
-                "recurse-submodules",
-                &recurse_submodules,
-                "on-demand",
-                msg::HELP_RECURSE_SUBMODULES,
-            )
-            .optional(Some("yes")),
+            Opt::string(None, "recurse-submodules-default", &recurse_default, "on-demand", "")
+                .hidden(),
+            Opt::string(None, "submodule-prefix", &submodule_prefix, "dir", "").hidden(),
     ]);
     let mut parser = Parser::new(msg::USAGE, table);
     let rest = parser.parse(argv)?.args;
     drop(parser);
-    // Fetching inside submodules is not implemented (rgit #121); turning it
-    // off is accepted.
-    if let Some(v) = recurse_submodules.borrow().as_deref() {
-        if !matches!(v, "no" | "false" | "off" | "0") && negotiate_only.get() {
-            return Err(Die::Fatal(msg::options_together(
-                "--negotiate-only",
-                "--recurse-submodules",
-            )));
-        }
-        if !matches!(v, "no" | "false" | "off" | "0") {
-            return Err(Die::Fatal(msg::recurse_submodules_unsupported(v)));
-        }
+    let recurse = recurse_submodules.get();
+    if recurse.is_some_and(|m| m != FetchRecurse::No) && negotiate_only.get() {
+        return Err(Die::Fatal(msg::options_together(
+            "--negotiate-only",
+            "--recurse-submodules",
+        )));
     }
+    let recurse_default = match recurse_default.borrow().as_deref() {
+        None => None,
+        Some(v) => Some(
+            crate::fetch_submodules::parse_mode(v)
+                .ok_or_else(|| Die::Fatal(msg::bad_recurse_submodules(v)))?,
+        ),
+    };
     let args = Args {
         verbose: verbose.get(),
         quiet: quiet.get(),
@@ -347,6 +408,9 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
         unshallow: unshallow.get(),
         update_shallow: update_shallow.get(),
         show_forced_updates: show_forced.get(),
+        recurse,
+        recurse_default,
+        submodule_prefix: submodule_prefix.into_inner(),
     };
     Ok((args, rest))
 }
@@ -682,8 +746,29 @@ pub fn run_with_reflog_action(
     {
         eprintln!("warning: {}", msg::FORCED_UPDATES_CHECK_DISABLED);
     }
+    let sub_opts = crate::fetch_submodules::Options {
+        cli: args.recurse,
+        default: args.recurse_default,
+        prefix: args.submodule_prefix.clone().unwrap_or_default(),
+        jobs: args.jobs,
+        child_args: args.submodule_options(),
+        quiet: quiet_mode,
+    };
+    let recursing = args.recurse != Some(FetchRecurse::No);
+    let old_tips = if recursing {
+        let before = crate::repository::Repo::open(ctx, Mode::RequiredQuiet)?;
+        crate::fetch_submodules::ref_tips(&before)
+    } else {
+        Vec::new()
+    };
     let mut result =
         rgit_fetch::fetch(&repo, &remote, &opts, &connect).map_err(|e| Die::Fatal(e.to_string()))?;
+    let new_tips: Vec<rgit_hash::ObjectId> = result
+        .lines
+        .iter()
+        .filter(|l| l.remote.is_some() && !l.status.is_error())
+        .map(|l| l.new)
+        .collect();
     // Without FETCH_HEAD, refs stored nowhere are not listed.
     if !args.write_fetch_head && !args.dry_run {
         result.lines.retain(|l| l.local.is_some());
@@ -740,6 +825,11 @@ pub fn run_with_reflog_action(
     // Also when a ref could not be updated (t5510 "even with conflicts").
     if args.set_upstream {
         code = code.max(set_upstream(&repo, &remote, &result)?);
+    }
+    if recursing && !args.negotiate_only {
+        // The objects just fetched must be visible.
+        let fresh = crate::repository::Repo::open(ctx, Mode::RequiredQuiet)?;
+        code = code.max(crate::fetch_submodules::fetch(&fresh, &sub_opts, &old_tips, &new_tips));
     }
     drop(cli_repo);
     if code == 0 && args.auto_maintenance {

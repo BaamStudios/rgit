@@ -54,11 +54,16 @@ impl Track {
     /// The `-t, --[no-]track[=(direct|inherit)]` option storing into
     /// `slot`; the last of `--track`/`--no-track` wins.
     pub fn option(slot: &Cell<Track>) -> Opt<'_> {
+        Self::option_with_help(slot, msg::HELP_TRACK)
+    }
+
+    /// [`Track::option`] with another help text.
+    pub fn option_with_help<'a>(slot: &'a Cell<Track>, help: &'a str) -> Opt<'a> {
         Opt::callback(
             't',
             "track",
             Some(msg::TRACK_ARGH),
-            msg::HELP_TRACK,
+            help,
             move |arg, neg| {
                 let t = match (neg, arg) {
                     (true, _) => Track::Never,

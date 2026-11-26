@@ -803,7 +803,7 @@ fn revert(
         remove_stashed_untracked(repo, created)
     };
     if ps.is_empty() {
-        run(vec!["reset".into(), "--hard".into(), "-q".into()])?;
+        run(vec!["reset".into(), "--hard".into(), "-q".into(), "--no-recurse-submodules".into()])?;
         clean()?;
         if keep_index {
             run(vec![

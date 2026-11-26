@@ -40,6 +40,14 @@ pub const USAGE_SYNC: &[&str] = &["git submodule sync [--quiet] [--recursive] [<
 pub const USAGE_ABSORB: &[&str] = &["git submodule absorbgitdirs [<options>] [<path>...]"];
 pub const USAGE_HELPER: &[&str] = &["git submodule--helper <command>"];
 pub const USAGE_DEFAULT_REMOTE: &[&str] = &["git submodule--helper get-default-remote <path>"];
+pub const USAGE_CREATE_BRANCH: &[&str] = &[
+    "git submodule--helper create-branch [-f|--force] [--create-reflog] [-q|--quiet] [-t|--track] [-n|--dry-run] <name> <start-oid> <start-name>",
+];
+pub const HELP_CB_QUIET: &str = "print only error messages";
+pub const HELP_CB_FORCE: &str = "force creation";
+pub const HELP_CB_CREATE_REFLOG: &str = "create the branch's reflog";
+pub const HELP_CB_TRACK: &str = "set branch tracking configuration";
+pub const HELP_CB_DRY_RUN: &str = "show whether the branch would be created";
 
 pub const HELP_ADD_BRANCH: &str = "branch of repository to add as submodule";
 pub const HELP_ADD_FORCE: &str = "allow adding an otherwise ignored submodule path";

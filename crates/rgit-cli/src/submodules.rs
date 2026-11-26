@@ -276,6 +276,15 @@ pub fn worktree_state(
         let shown = dot_git.strip_prefix(&cwd).unwrap_or(&dot_git);
         crate::convert::die_now(&msg::gitfile_not_repo(&shown.display().to_string()));
     }
+    // An embedded `.git` directory that is broken is fatal too.
+    if std::fs::symlink_metadata(dir.join(".git")).is_ok_and(|m| m.is_dir())
+        && !is_git_dir(&dir.join(".git"))
+    {
+        let dot_git = dir.join(".git");
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let shown = dot_git.strip_prefix(&cwd).unwrap_or(&dot_git);
+        crate::convert::die_now(&msg::not_a_git_repository(&shown.display().to_string()));
+    }
     let Some(head) = crate::repository::submodule_head(dir, hash) else {
         return st;
     };
@@ -289,6 +298,11 @@ pub fn worktree_state(
     st.modified = modified;
     st.untracked = has_untracked && untracked;
     st
+}
+
+/// Whether `dir` looks like a git directory (`HEAD`, `objects/`, `refs/`).
+pub fn is_git_dir(dir: &Path) -> bool {
+    dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir()
 }
 
 /// Run `status --porcelain=2` in the submodule and classify its lines.
@@ -339,7 +353,19 @@ pub fn prepare_env(cmd: &mut Command) {
             cmd.env_remove(v);
         }
     }
+    if let Some(Some(c)) = CHILD_CONFIG.get() {
+        cmd.env("GIT_CONFIG_PARAMETERS", c);
+    }
     cmd.env("GIT_DIR", ".git");
+}
+
+/// `GIT_CONFIG_PARAMETERS` for commands run in submodules (the `-c`
+/// options of this command included).
+static CHILD_CONFIG: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Remember the configuration children get (once, from `main`).
+pub fn set_child_config(value: Option<String>) {
+    let _ = CHILD_CONFIG.set(value);
 }
 
 /// The git directory of the submodule at `path` (relative to the top of
@@ -358,7 +384,7 @@ pub fn sub_git_dir(repo: &Repo, path: &[u8]) -> Option<std::path::PathBuf> {
     let name = gm
         .by_path(path)
         .map_or_else(|| path.to_vec(), |s| s.name.to_vec());
-    let dir = rgit_submodule::gitdir::modules_dir(&repo.setup.absolute_common_dir(), &name);
+    let dir = rgit_submodule::gitdir::modules_dir(&repo.setup.absolute_git_dir(), &name);
     dir.join("HEAD").exists().then_some(dir)
 }
 
@@ -743,7 +769,7 @@ pub fn absorb_git_dir(
     name: &[u8],
     shown: Option<&[u8]>,
 ) -> Result<(), Die> {
-    let target = rgit_submodule::gitdir::modules_dir(&repo.setup.absolute_common_dir(), name);
+    let target = rgit_submodule::gitdir::modules_dir(&repo.setup.absolute_git_dir(), name);
     move_git_dir(dir, &target, shown)?;
     if let Some(p) = shown {
         if let Some(git_dir) = rgit_submodule::gitdir::git_dir_of(dir) {

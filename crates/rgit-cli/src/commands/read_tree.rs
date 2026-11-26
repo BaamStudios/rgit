@@ -80,6 +80,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let sparse = Cell::new(false);
     let no_sparse = Cell::new(false);
     let debug_unpack = Cell::new(false);
+    let recurse = Cell::new(None::<bool>);
+    let super_prefix = RefCell::new(None::<String>);
     let quiet = Cell::new(0);
     let index_output = RefCell::new(None);
     let mode = Cell::new(MODE_NONE);
@@ -135,10 +137,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag(None, "no-sparse-checkout", &no_sparse, msg::HELP_NO_SPARSE).noneg(),
             Opt::flag(None, "sparse-checkout", &sparse, msg::HELP_SPARSE).noneg(),
             Opt::flag(None, "debug-unpack", &debug_unpack, msg::HELP_DEBUG_UNPACK),
-            Opt::callback(None, "recurse-submodules", Some("checkout"), msg::HELP_RECURSE, |_, _| {
-                Ok(())
-            })
-            .optional(None),
+            crate::recurse_submodules::option(&recurse, msg::HELP_RECURSE),
+            Opt::string(None, "super-prefix", &super_prefix, "path", "").hidden(),
             Opt::quiet(&quiet, msg::HELP_QUIET),
         ],
     );
@@ -147,6 +147,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let _ = (trivial.get(), verbose.get());
 
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    let recurse = crate::recurse_submodules::set(&repo, recurse.get());
+    let super_prefix = super_prefix.borrow().clone();
     let mut trees = Vec::new();
     for spec in &args {
         if trees.len() >= 8 {
@@ -252,7 +254,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             aggressive: aggressive.get(),
             paths,
             excludes: excludes.as_mut(),
+            submodules: None,
         };
+        let updater = if recurse {
+            crate::recurse_submodules::Updater::new(&repo, super_prefix.as_deref())
+        } else {
+            None
+        };
+        if let Some(u) = &updater {
+            opts.submodules = Some(u);
+        }
         let wt = match (&root, &checker) {
             (Some(root), Some(checker)) => Some(Worktree { root, checker }),
             _ => None,
@@ -261,6 +272,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .map_err(|e| match e {
                 // --quiet: the refusal without its messages.
                 rgit_unpack::Error::Rejected(_) if quiet.get() > 0 => Die::Exit(128),
+                // Inside a submodule: paths as the superproject shows them.
+                rgit_unpack::Error::Rejected(r) if super_prefix.is_some() => {
+                    let prefix = super_prefix.as_deref().unwrap_or("").as_bytes();
+                    unpack_failed(rgit_unpack::Error::Rejected(r.with_prefix(prefix)))
+                }
                 e => unpack_failed(e),
             })?;
         if let Merge::OneWay(t) = &merge {
@@ -278,7 +294,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         match (&wt, update) {
             (Some(wt), true) => {
                 let conv = crate::convert::Converter::checkout(&repo, plan.index())?;
-                let applied = plan.apply(repo.odb(), wt, &conv);
+                let applied = match &updater {
+                    Some(u) => plan.apply_submodules(repo.odb(), wt, &conv, false, u, opts.reset),
+                    None => plan.apply(repo.odb(), wt, &conv),
+                };
                 let mut index = applied.index;
                 repo.converter()?.use_index(&index);
                 if let (Some(reference), Some(checker)) = (old_mtime, &checker) {

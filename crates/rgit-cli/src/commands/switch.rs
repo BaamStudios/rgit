@@ -279,7 +279,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let guess = Cell::new(-1);
     let discard = Cell::new(false);
     let quiet = Cell::new(0);
-    let recurse = RefCell::new(None::<String>);
+    let recurse = Cell::new(None::<bool>);
     let progress = Cell::new(-1);
     let merge = Cell::new(false);
     let conflict = RefCell::new(None);
@@ -297,8 +297,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::bool(None, "guess", &guess, msg::HELP_GUESS_SWITCH),
             Opt::flag(None, "discard-changes", &discard, msg::HELP_DISCARD),
             Opt::quiet(&quiet, msg::HELP_QUIET),
-            Opt::string(None, "recurse-submodules", &recurse, "checkout", msg::HELP_RECURSE)
-                .optional(Some("")),
+            crate::recurse_submodules::option(&recurse, msg::HELP_RECURSE),
             Opt::bool(None, "progress", &progress, msg::HELP_PROGRESS),
             Opt::flag('m', "merge", &merge, msg::HELP_MERGE),
             Opt::string(None, "conflict", &conflict, "style", msg::HELP_CONFLICT),
@@ -331,11 +330,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             style: conflict.borrow().clone(),
         }));
     }
-    if recurse.borrow().is_some() {
-        return Err(Die::Fatal(msg::not_supported(
-            "git switch --recurse-submodules",
-        )));
-    }
+    crate::recurse_submodules::declare(recurse.get());
     if track.is_given() && orphan_name.is_some() {
         return Err(Die::Fatal(msg::ORPHAN_WITH_TRACK.to_owned()));
     }

@@ -43,6 +43,8 @@ pub const MERGE_IN_PROGRESS: &str = "You have not concluded your merge (MERGE_HE
 pub const MERGE_IN_PROGRESS_HINT: &str = "Please, commit your changes before merging.";
 /// `fatal:` after [`MERGE_IN_PROGRESS`].
 pub const UNFINISHED_MERGE: &str = "Exiting because of unfinished merge.";
+pub const LOCAL_SUBMODULE_CHANGES: &str =
+    "cannot rebase with locally recorded submodule modifications";
 
 /// `warning:` when the fetch moved the checked-out branch.
 pub fn fetch_updated_head(old: &str) -> String {

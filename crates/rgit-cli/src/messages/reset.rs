@@ -42,10 +42,6 @@ pub const FROM_FILE_WITH_ARGS: &str =
 pub const FILE_NUL_WITHOUT_FROM_FILE: &str =
     "the option '--pathspec-file-nul' requires '--pathspec-from-file'";
 
-pub fn not_supported(what: &str) -> String {
-    format!("rgit: 'git reset {what}' is not implemented yet")
-}
-
 pub fn ambiguous(arg: &str) -> String {
     format!(
         "ambiguous argument '{arg}': unknown revision or path not in the working tree.\n\

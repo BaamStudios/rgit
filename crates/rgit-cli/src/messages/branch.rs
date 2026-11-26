@@ -226,3 +226,21 @@ pub fn hint_set_upstream_slip(upstream: &str) -> String {
 pub fn renamed_head_not_updated(new: &str) -> String {
     format!("branch renamed to {new}, but HEAD is not updated")
 }
+
+// --recurse-submodules
+pub const PROPAGATE_BRANCHES_NEEDED: &str =
+    "branch with --recurse-submodules can only be used if submodule.propagateBranches is enabled";
+pub const RECURSE_ONLY_CREATE: &str = "--recurse-submodules can only be used to create branches";
+pub const HELP_RECURSE_SUBMODULES: &str = "recurse through submodules";
+pub fn unable_to_find_submodule(path: &str) -> String {
+    format!("submodule '{path}': unable to find submodule")
+}
+pub fn submodule_prefix(path: &str) -> String {
+    format!("submodule '{path}': ")
+}
+pub fn cannot_create_in_submodule(path: &str, name: &str) -> String {
+    format!("submodule '{path}': cannot create branch '{name}'")
+}
+pub fn creating_branch(name: &str) -> String {
+    format!("creating branch '{name}'")
+}

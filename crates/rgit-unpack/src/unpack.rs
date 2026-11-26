@@ -18,6 +18,7 @@ use crate::checkout::{self, Filter, join, lossy};
 use crate::messages as msg;
 use crate::objects::{Objects, read_blob, tree_entries};
 use crate::path::{PathOptions, verify_checkout_path};
+use crate::submodule::{Move, Submodules};
 
 /// The trees to merge into the index.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +87,9 @@ pub struct Options<'a> {
     /// Ignored files that may be overwritten or removed (git uses the
     /// standard excludes whenever the work tree is updated).
     pub excludes: Option<&'a mut Excludes>,
+    /// `--recurse-submodules`: active submodules are checked and moved
+    /// along with their gitlinks (with `update`).
+    pub submodules: Option<&'a dyn Submodules>,
 }
 
 /// Why the merge would lose local work. Ordered as git groups them.
@@ -99,6 +103,8 @@ pub enum Problem {
     NotUptodateDir,
     /// An untracked file is in the way of a new entry.
     UntrackedOverwritten,
+    /// An active submodule cannot be moved (`--recurse-submodules`).
+    SubmoduleUpdate,
 }
 
 /// Which porcelain command's wording to use for [`Rejection::porcelain_messages`].
@@ -122,6 +128,22 @@ impl Rejection {
         &self.problems
     }
 
+    /// The same problems with `prefix` in front of every path (a merge
+    /// run inside a submodule reports paths as the superproject sees them).
+    #[must_use]
+    pub fn with_prefix(&self, prefix: &[u8]) -> Rejection {
+        let problems = self
+            .problems
+            .iter()
+            .map(|(p, path)| {
+                let mut full = prefix.to_vec();
+                full.extend_from_slice(path);
+                (*p, full)
+            })
+            .collect();
+        Rejection { problems }
+    }
+
     /// `read-tree` style: one message per problem (print each after
     /// `error: `; read-tree stops at the first, exit code 128).
     pub fn plumbing_messages(&self) -> Vec<String> {
@@ -134,6 +156,7 @@ impl Rejection {
                     Problem::NotUptodateFile => msg::not_uptodate_file(&path),
                     Problem::NotUptodateDir => msg::not_uptodate_dir(&path),
                     Problem::UntrackedOverwritten => msg::untracked_overwritten(&path),
+                    Problem::SubmoduleUpdate => msg::submodule_new_head(&path),
                 }
             })
             .collect()
@@ -162,6 +185,7 @@ impl Rejection {
                     (Problem::UntrackedOverwritten, Porcelain::Merge) => {
                         msg::MERGE_UNTRACKED_OVERWRITTEN
                     }
+                    (Problem::SubmoduleUpdate, _) => msg::CANNOT_UPDATE_SUBMODULE,
                 };
                 let mut s = head.to_string();
                 for (p, path) in &self.problems {
@@ -185,6 +209,8 @@ pub struct Plan {
     index: Index,
     remove: Vec<(Vec<u8>, bool)>,
     update: Vec<Vec<u8>>,
+    /// Submodules to move ([`Options::submodules`]).
+    moves: Vec<Move>,
 }
 
 /// What [`Plan::apply`] did.
@@ -226,6 +252,60 @@ impl Plan {
         self.apply_with_progress(odb, wt, filter, false)
     }
 
+    /// Whether the plan moves submodules (then [`Plan::apply_submodules`]
+    /// carries it out).
+    pub fn moves_submodules(&self) -> bool {
+        !self.moves.is_empty()
+    }
+
+    /// [`Plan::apply_with_progress`] that also moves the submodules found
+    /// while planning with [`Options::submodules`]: removed ones after the
+    /// files are removed and before any file is written, added and changed
+    /// ones after all files are written. `force` is the merge's `reset`.
+    pub fn apply_submodules(
+        mut self,
+        odb: &dyn Objects,
+        wt: &Worktree<'_>,
+        filter: &dyn Filter,
+        progress: bool,
+        submodules: &dyn Submodules,
+        force: bool,
+    ) -> Applied {
+        let moves = std::mem::take(&mut self.moves);
+        let mut errors = Vec::new();
+        let (gone, stay): (Vec<Move>, Vec<Move>) = moves.into_iter().partition(|m| m.new.is_none());
+        let remove = std::mem::take(&mut self.remove);
+        for (path, gitlink) in &remove {
+            if let Err(e) = checkout::remove_entry(wt.root, path, *gitlink) {
+                errors.push(msg::unable_to_unlink(&lossy(path), &checkout::strerror(&e)));
+            }
+        }
+        for m in &gone {
+            match submodules.update(&m.path, m.old.as_ref(), None, force) {
+                // The emptied directory goes, unless a file takes its place.
+                Ok(()) if !self.update.contains(&m.path) => {
+                    if let Err(e) = checkout::remove_entry(wt.root, &m.path, true) {
+                        errors.push(msg::unable_to_unlink(
+                            &lossy(&m.path),
+                            &checkout::strerror(&e),
+                        ));
+                    }
+                }
+                Ok(()) => {}
+                Err(e) => errors.push(e),
+            }
+        }
+        let mut applied = self.apply_with_progress(odb, wt, filter, progress);
+        errors.append(&mut applied.errors);
+        for m in &stay {
+            if let Err(e) = submodules.update(&m.path, m.old.as_ref(), m.new.as_ref(), force) {
+                errors.push(e);
+            }
+        }
+        applied.errors = errors;
+        applied
+    }
+
     /// [`Plan::apply`] with git's delayed `Updating files` meter when
     /// `progress`.
     pub fn apply_with_progress(
@@ -239,6 +319,7 @@ impl Plan {
             mut index,
             remove,
             update,
+            moves: _,
         } = self;
         let mut meter = progress.then(|| {
             rgit_progress::Progress::start_delayed(
@@ -397,6 +478,7 @@ pub fn plan(
         removed: HashSet::new(),
         consumed: HashSet::new(),
         rejection: Rejection::default(),
+        moves: Vec::new(),
     };
     let groups: Vec<&[Entry]> = index
         .entries()
@@ -465,6 +547,7 @@ pub fn plan(
         index: out,
         remove: u.remove,
         update: u.update,
+        moves: u.moves,
     })
 }
 
@@ -521,6 +604,7 @@ fn three_way(
         removed: HashSet::new(),
         consumed: HashSet::new(),
         rejection: Rejection::default(),
+        moves: Vec::new(),
     };
     let groups: Vec<&[Entry]> = index
         .entries()
@@ -658,6 +742,7 @@ fn three_way(
         index: out,
         remove: u.remove,
         update: u.update,
+        moves: u.moves,
     })
 }
 
@@ -689,9 +774,11 @@ struct Unpacker<'u, 'o, 'w> {
     /// Index paths already handled while clearing a directory.
     consumed: HashSet<Vec<u8>>,
     rejection: Rejection,
+    /// Submodules to move.
+    moves: Vec<Move>,
 }
 
-impl Unpacker<'_, '_, '_> {
+impl<'o> Unpacker<'_, 'o, '_> {
     /// Records a problem; returns false.
     fn problem(&mut self, p: Problem, path: &[u8]) -> bool {
         if !self
@@ -707,6 +794,36 @@ impl Unpacker<'_, '_, '_> {
 
     fn checks_worktree(&self) -> bool {
         self.wt.is_some() && !self.opts.reset
+    }
+
+    /// The submodule hooks when the gitlink at `path` is an active
+    /// submodule whose work tree is updated.
+    fn submodule(&self, path: &[u8]) -> Option<&'o dyn Submodules> {
+        let s = self.opts.submodules?;
+        (self.opts.update && self.wt.is_some() && s.active(path)).then_some(s)
+    }
+
+    /// Checks moving the active submodule at `path` from `old` to `new`
+    /// (unless `check` is false) and records the move; false (and a
+    /// problem) when it cannot move.
+    fn move_submodule(
+        &mut self,
+        s: &dyn Submodules,
+        path: &[u8],
+        old: Option<&ObjectId>,
+        new: Option<&ObjectId>,
+        check: bool,
+    ) -> bool {
+        // Nothing to check for a submodule that appears or stays.
+        if check && old.is_some() && old != new && !s.check(path, old, new, self.opts.reset) {
+            return self.problem(Problem::SubmoduleUpdate, path);
+        }
+        self.moves.push(Move {
+            path: path.to_vec(),
+            old: old.copied(),
+            new: new.copied(),
+        });
+        true
     }
 
     fn one_way(
@@ -738,6 +855,12 @@ impl Unpacker<'_, '_, '_> {
                 self.keep(i);
                 if update {
                     self.update.push(path.to_vec());
+                }
+                if self.opts.reset && i.mode.is_gitlink() {
+                    if let Some(s) = self.submodule(path) {
+                        // A forced checkout also resets the submodule.
+                        return Ok(self.move_submodule(s, path, Some(&i.id), Some(&i.id), false));
+                    }
                 }
                 Ok(true)
             }
@@ -822,6 +945,11 @@ impl Unpacker<'_, '_, '_> {
             return false;
         }
         self.removed.insert(i.path().to_vec());
+        if i.mode.is_gitlink() {
+            if let Some(s) = self.submodule(i.path()) {
+                return self.move_submodule(s, i.path(), Some(&i.id), None, true);
+            }
+        }
         if self.opts.update && self.wt.is_some() {
             self.remove.push((i.path().to_vec(), i.mode.is_gitlink()));
         }
@@ -830,15 +958,38 @@ impl Unpacker<'_, '_, '_> {
 
     /// The tree entry `t` replaces `old` (or is new).
     fn merged(&mut self, t: &Entry, old: Option<&Entry>) -> Result<bool, Error> {
-        let ok = match old {
+        let mut ok = match old {
             Some(old) => self.verify_uptodate(old),
             None => self.verify_absent(t.path(), t.mode.is_gitlink())?,
         };
+        // A submodule that moves to another commit: its staged changes
+        // count as local changes (and the move is checked all the same).
+        if let Some(old) = old.filter(|o| o.mode.is_gitlink() && t.mode.is_gitlink()) {
+            if self.checks_worktree() {
+                if let Some(s) = self.submodule(old.path()) {
+                    if !s.index_clean(old.path()) {
+                        ok = self.problem(Problem::NotUptodateFile, old.path());
+                        let _ = self.move_submodule(s, t.path(), Some(&old.id), Some(&t.id), true);
+                    }
+                }
+            }
+        }
         if !ok {
             return Ok(false);
         }
         if !verify_checkout_path(t.path(), t.mode, self.opts.paths) {
             return Err(Error::InvalidPath(t.path().to_vec()));
+        }
+        let old_sub = old.filter(|o| o.mode.is_gitlink()).map(|o| o.id);
+        let new_sub = t.mode.is_gitlink().then_some(t.id);
+        if old_sub.is_some() || new_sub.is_some() {
+            if let Some(s) = self.submodule(t.path()) {
+                // Like git, a submodule replaced by a file is not checked.
+                let check = new_sub.is_some();
+                if !self.move_submodule(s, t.path(), old_sub.as_ref(), new_sub.as_ref(), check) {
+                    return Ok(false);
+                }
+            }
         }
         self.result.push(t.clone());
         if self.opts.update && self.wt.is_some() {
@@ -947,6 +1098,13 @@ impl Unpacker<'_, '_, '_> {
             if e.stage() == Stage::MERGED {
                 ok &= self.verify_uptodate(e);
                 self.removed.insert(e.path().to_vec());
+                if e.mode.is_gitlink() {
+                    if let Some(s) = self.submodule(e.path()) {
+                        ok &= self.move_submodule(s, e.path(), Some(&e.id), None, true);
+                        self.consumed.insert(e.path().to_vec());
+                        continue;
+                    }
+                }
                 if self.opts.update {
                     self.remove.push((e.path().to_vec(), e.mode.is_gitlink()));
                 }
@@ -1019,6 +1177,32 @@ mod tests {
         assert_eq!(
             r.plumbing_messages()[0],
             "Entry 'b' not uptodate. Cannot merge."
+        );
+    }
+
+    #[test]
+    fn submodule_problems() {
+        let r = Rejection {
+            problems: vec![
+                (Problem::SubmoduleUpdate, b"sub".to_vec()),
+                (Problem::NotUptodateFile, b"sub".to_vec()),
+            ],
+        };
+        // As `git checkout --recurse-submodules` prints them.
+        assert_eq!(
+            r.porcelain_messages(Porcelain::Checkout),
+            [
+                "Your local changes to the following files would be overwritten by checkout:\n\tsub\nPlease commit your changes or stash them before you switch branches.",
+                "Cannot update submodule:\n\tsub\n",
+            ]
+        );
+        // Inside a submodule, paths as the superproject sees them.
+        assert_eq!(
+            r.with_prefix(b"top/").plumbing_messages(),
+            [
+                "Submodule 'top/sub' cannot checkout new HEAD.",
+                "Entry 'top/sub' not uptodate. Cannot merge.",
+            ]
         );
     }
 }
