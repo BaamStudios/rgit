@@ -554,19 +554,21 @@ pub fn show_main(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
 }
 
 /// `git whatchanged` (Documentation/git-whatchanged.adoc): `log` that
-/// skips merges and shows the raw diff unless another format (or none) is
-/// asked for; both defaults can be overridden. `-h` shows `log`'s usage.
+/// shows the raw diff unless another format (or none) is asked for, and
+/// only the commits that change something: an empty commit is left out,
+/// and so is a merge unless `-m`, `-c` or `--cc` asks for its diff
+/// (`--first-parent` alone does not). `-h` shows `log`'s usage.
 pub fn whatchanged_main(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
     if matches!(argv.first().map(String::as_str), Some("-h" | "--help-all")) {
         return run_main(ctx, Command::Log, argv, false);
     }
-    let args: Vec<String> = std::iter::once("--no-merges".to_owned())
-        .chain(argv.iter().cloned())
-        .collect();
-    let mut opts = Options::parse(Command::Log, &args)?;
-    if !opts.diff.no_output && !any_format(&opts.diff) {
+    let mut opts = Options::parse(Command::Log, argv)?;
+    // `-c`, `--cc` and `--remerge-diff` bring their patch format.
+    if !opts.diff.no_output && !any_format(&opts.diff) && opts.merges_patch == MergesPatch::None {
         opts.diff.raw = true;
     }
+    opts.changed_only = true;
+    opts.merges.get_or_insert(MergeDiff::Off);
     run_parsed(ctx, Command::Log, opts)
 }
 
@@ -2970,11 +2972,15 @@ fn log_diff(ctx: &Context, opts: &Options, cmd: Command) -> Result<Option<LogDif
 }
 
 /// `-S`, `-G`, `--find-object` or `--diff-filter` limit the commits of
-/// `log` and `show` to those whose diff keeps a change.
+/// `log` and `show` to those whose diff keeps a change; `whatchanged`
+/// always does.
 fn limits_commits(opts: &Options) -> bool {
     let d = &opts.diff;
     !opts.plumbing
-        && (d.pickaxe.is_some() || !d.find_object.is_empty() || d.diff_filter.is_active())
+        && (opts.changed_only
+            || d.pickaxe.is_some()
+            || !d.find_object.is_empty()
+            || d.diff_filter.is_active())
 }
 
 /// `-S`, `-G`, `--find-object`, `--diff-filter` of `log` and `show`: the

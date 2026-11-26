@@ -391,6 +391,16 @@ fn expand_alias(
             return Err(Die::Fatal(messages::help::recursive_alias(&name)));
         }
         argv.splice(0..1, words);
+        if ctx.config_parameters.len() != before {
+            early = alias::EarlyConfig::load(ctx)?;
+        }
+        // An alias shadows a deprecated built-in here as well: the
+        // expansion goes on with it.
+        if cmdlist::DEPRECATED.contains(&argv[0].as_str())
+            && alias::lookup(&early.config, &argv[0])?.is_some()
+        {
+            continue;
+        }
         if commands::find(&argv[0]).is_some() {
             // git runs the expanded built-in as a child `git`; rgit runs it
             // in this process but traces the same steps.
@@ -403,9 +413,6 @@ fn expand_alias(
         }
         if let Some(result) = run_command(ctx, &argv) {
             return result;
-        }
-        if ctx.config_parameters.len() != before {
-            early = alias::EarlyConfig::load(ctx)?;
         }
     }
 }
