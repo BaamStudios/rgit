@@ -535,6 +535,11 @@ fn write_midx_after(
         return Ok(());
     };
     let kind = setup.format.object_format;
+    // Without packs there is nothing to index: git's repack says nothing
+    // then (`multi-pack-index write` itself reports an error).
+    if rgit_pack::PackSet::open(pack_dir, kind).packs().is_empty() {
+        return Ok(());
+    }
     let opts = rgit_pack::midx::write::WriteOptions {
         version: match config.int("midx.version").ok().flatten() {
             Some(2) => 2,
