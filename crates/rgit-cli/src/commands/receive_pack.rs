@@ -447,7 +447,7 @@ impl CliBackend {
                 return Ok(dir);
             }
         }
-        Err("unable to create temporary object directory".to_string())
+        Err(m::CANNOT_CREATE_QUARANTINE.to_string())
     }
 
     fn remove_keep(&mut self) {
@@ -890,7 +890,7 @@ impl Backend for CliBackend {
         let result = migrate(&q, &self.objects_dir());
         let _ = std::fs::remove_dir_all(&q);
         self.objects = None;
-        result.map_err(|_| "unable to migrate objects to permanent storage".to_string())
+        result.map_err(|_| m::CANNOT_MIGRATE.to_string())
     }
 
     fn discard_quarantine(&mut self) {

@@ -206,8 +206,9 @@ fn advertisement() {
     assert_eq!(
         text(&out),
         format!(
-            "00b7{Z} capabilities^{{}}\0report-status report-status-v2 delete-refs \
-             side-band-64k quiet atomic ofs-delta object-format=sha1 agent=git/2.56.0-Linux\n0000"
+            "00b7{Z} capabilities^{{}}\0{} atomic ofs-delta object-format=sha1 \
+             agent=git/2.56.0-Linux\n0000",
+            m::BASE_CAPABILITIES
         )
     );
     let mut r = repo();
@@ -223,8 +224,9 @@ fn advertisement() {
     };
     let out = run(&mut r, &s, &o, b"").unwrap();
     let expect = format!(
-        "{A} refs/heads/main\0report-status report-status-v2 delete-refs side-band-64k \
-         quiet ofs-delta push-cert=1-abc push-options object-format=sha1 agent=git/2.56.0-Linux\n"
+        "{A} refs/heads/main\0{} ofs-delta push-cert=1-abc push-options \
+         object-format=sha1 agent=git/2.56.0-Linux\n",
+        m::BASE_CAPABILITIES
     );
     assert_eq!(text(&out), format!("{:04x}{expect}0000", expect.len() + 4));
 }
@@ -416,6 +418,6 @@ fn bad_input() {
     );
     input.extend_from_slice(b"PAC");
     let out = text(&run(&mut r, &settings(), &opts(), &input).unwrap());
-    assert!(out.contains("unpack eof before pack header was fully read\n"));
+    assert!(out.contains(&format!("unpack {}\n", m::EOF_BEFORE_HEADER)));
     assert!(out.contains("ng refs/heads/main unpacker error\n"));
 }

@@ -471,7 +471,7 @@ pub fn serve<B: Backend, R: Read, W: Write + Send>(
 
 /// The capability list of the first advertised line.
 fn capabilities(settings: &Settings, opts: &Options, hash: HashKind) -> String {
-    let mut caps = String::from("report-status report-status-v2 delete-refs side-band-64k quiet");
+    let mut caps = String::from(m::BASE_CAPABILITIES);
     if settings.advertise_atomic {
         caps.push_str(" atomic");
     }

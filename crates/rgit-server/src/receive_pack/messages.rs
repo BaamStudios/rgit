@@ -179,3 +179,10 @@ pub fn proc_receive_incomplete(line: &str) -> String {
 pub fn proc_receive_bad_status(status: &str, name: &str) -> String {
     format!("proc-receive reported bad status \"{status}\" on ref \"{name}\"")
 }
+
+/// The capabilities every advertisement starts with (wire protocol, not a
+/// message; kept here with the other fixed strings).
+pub const BASE_CAPABILITIES: &str =
+    "report-status report-status-v2 delete-refs side-band-64k quiet";
+pub const CANNOT_CREATE_QUARANTINE: &str = "unable to create temporary object directory";
+pub const CANNOT_MIGRATE: &str = "unable to migrate objects to permanent storage";
