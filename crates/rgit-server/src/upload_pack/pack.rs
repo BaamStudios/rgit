@@ -52,6 +52,10 @@ pub(crate) struct PackRequest {
     pub progress: bool,
     /// `filter`, as an expanded spec.
     pub filter: Option<String>,
+    /// How the pack travels: on sideband 1 with progress on sideband 2,
+    /// or (protocol v0 without `side-band`) as it is, with the progress
+    /// on our standard error.
+    pub band: Option<SidebandMode>,
 }
 
 impl PackRequest {
@@ -192,7 +196,9 @@ pub(crate) fn send<R: Read, W: Write>(
         0 => None,
         n => Some(Duration::from_secs(n)),
     };
-    let mode = SidebandMode::Large;
+    let mode = request.band;
+    // Only the sideband has room for a packet without data.
+    let keep_alive = keep_alive.filter(|_| mode.is_some());
     let mut held: Option<u8> = None;
     let mut open = 2;
     let mut write_error: Option<Error> = None;
@@ -230,9 +236,9 @@ pub(crate) fn send<R: Read, W: Write>(
                 chunk.extend(held.take());
                 chunk.extend_from_slice(&data);
                 held = last;
-                sideband::send(w, mode, BAND_DATA, &chunk)
+                relay(w, mode, BAND_DATA, &chunk)
             }
-            Some(Event::Progress(data)) => sideband::send(w, mode, BAND_PROGRESS, &data),
+            Some(Event::Progress(data)) => relay(w, mode, BAND_PROGRESS, &data),
             // Quiet for a while: an empty data packet.
             None => w.write_data(&[BAND_DATA]),
         }
@@ -252,14 +258,37 @@ pub(crate) fn send<R: Read, W: Write>(
     if !status.success() {
         eprintln!("error: {}", msg::PACK_OBJECTS_DIED);
         let w = &mut s.out.writer;
-        let _ = sideband::send(w, mode, BAND_ERROR, msg::ABORTING_PACKET.as_bytes());
+        let _ = relay(w, mode, BAND_ERROR, msg::ABORTING_PACKET.as_bytes());
         let _ = w.flush_io();
         return Err(Error::fatal(msg::ABORTING));
     }
     if let Some(last) = held {
-        sideband::send(&mut s.out.writer, mode, BAND_DATA, &[last])?;
+        relay(&mut s.out.writer, mode, BAND_DATA, &[last])?;
     }
     Ok(())
+}
+
+/// Send `data` on `band`; without a sideband the pack goes out as it is
+/// and everything else to our standard error.
+fn relay<W: Write>(
+    w: &mut rgit_protocol::Writer<W>,
+    mode: Option<SidebandMode>,
+    band: u8,
+    data: &[u8],
+) -> rgit_protocol::Result<()> {
+    match mode {
+        Some(mode) => sideband::send(w, mode, band, data),
+        None if band == BAND_DATA => {
+            // Raw bytes after the packets written so far.
+            w.flush_io()?;
+            w.get_mut().write_all(data)?;
+            Ok(())
+        }
+        None => {
+            let _ = std::io::stderr().write_all(data);
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +318,7 @@ mod tests {
             include_tag: false,
             progress: false,
             filter: None,
+            band: Some(SidebandMode::Large),
         };
         assert_eq!(
             strings(&req.arguments()),
@@ -318,6 +348,7 @@ mod tests {
             include_tag: true,
             progress: true,
             filter: Some("blob:limit=1024".into()),
+            band: Some(SidebandMode::Large),
         };
         assert_eq!(
             strings(&req.arguments()),

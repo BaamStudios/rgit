@@ -3,19 +3,19 @@
 //!
 //! Protocol v2 (`Documentation/gitprotocol-v2.adoc`): the capability
 //! advertisement and the commands `ls-refs`, `fetch` and `object-info`
-//! (and `bundle-uri`, which answers with an empty list), with namespaces
-//! and hidden references (`transfer.hideRefs`). The behaviour
-//! not written down there (messages, the order of sections, when `ready`
-//! is sent, what `pack-objects` is given) follows observations of the git
-//! 2.56 binary.
+//! (and `bundle-uri`, which answers with an empty list). Protocol v0 and
+//! v1 (`Documentation/gitprotocol-pack.adoc`): the reference
+//! advertisement, `want`/`have` negotiation in all three acknowledgment
+//! modes, shallow and filtered requests. Both with namespaces and hidden
+//! references (`transfer.hideRefs`). The behaviour not written down in
+//! the documentation (messages, the order of sections and capabilities,
+//! when `ready` is sent, what `pack-objects` is given) follows
+//! observations of the git 2.56 binary.
 //!
 //! The pack itself is made by a `pack-objects` child process (or by the
 //! command in `uploadpack.packObjectsHook`), as git does: its standard
 //! output goes to the client on sideband 1, its standard error (progress)
 //! on sideband 2. See [`PackObjectsCommand`].
-//!
-//! Protocol v0 and v1 are not served yet (rgit #174): [`upload_pack`]
-//! tells such a client so and fails.
 //!
 //! ```no_run
 //! # fn demo(repo: &rgit_server::upload_pack::Repository<'_>) {
@@ -36,6 +36,7 @@ mod pack;
 mod refs;
 mod serve;
 mod shallow;
+mod v0;
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -130,29 +131,18 @@ impl Options {
 /// Serve one connection: read requests from `input` and write the
 /// responses to `output` until the client is done.
 ///
-/// On [`Error::Fatal`] the caller prints `fatal: <message>` and exits
-/// with 128; the client has been told already where the protocol allows
-/// it.
+/// On [`Error::Fatal`] the caller prints `fatal: <message>`, on
+/// [`Error::Refused`] `error: <message>`, and exits with 128; the client
+/// has been told already where the protocol allows it.
 pub fn upload_pack<R: Read, W: Write>(
     repo: &Repository<'_>,
     opts: &Options,
     input: R,
-    mut output: W,
+    output: W,
 ) -> Result<()> {
     match opts.protocol {
         ProtocolVersion::V2 => serve::serve(repo, opts, input, output),
-        other => {
-            let version = match other {
-                ProtocolVersion::V1 => 1,
-                _ => 0,
-            };
-            let msg = messages::protocol_not_supported(version);
-            // The client waits for the reference advertisement.
-            let mut writer = rgit_protocol::Writer::new(&mut output, "upload-pack");
-            let _ = writer.write_err(&msg);
-            let _ = writer.flush_io();
-            Err(Error::Fatal(msg))
-        }
+        _ => v0::serve(repo, opts, input, output),
     }
 }
 
@@ -161,6 +151,12 @@ pub fn upload_pack<R: Read, W: Write>(
 pub(crate) struct Settings {
     /// `uploadpack.allowFilter`.
     pub allow_filter: bool,
+    /// `uploadpack.allowTipSHA1InWant` (or `allowAnySHA1InWant`).
+    pub allow_tip: bool,
+    /// `uploadpack.allowReachableSHA1InWant` (or `allowAnySHA1InWant`).
+    pub allow_reachable: bool,
+    /// `uploadpack.allowAnySHA1InWant`.
+    pub allow_any: bool,
     /// `uploadpack.allowRefInWant`.
     pub allow_ref_in_want: bool,
     /// `uploadpack.allowSidebandAll`.
@@ -225,8 +221,12 @@ impl Settings {
             .and_then(|e| e.value.as_ref())
             .map(|v| v.to_string())
             .filter(|v| !v.is_empty());
+        let allow_any = flag("uploadpack.allowanysha1inwant")?;
         Ok(Settings {
             allow_filter: flag("uploadpack.allowfilter")?,
+            allow_tip: allow_any || flag("uploadpack.allowtipsha1inwant")?,
+            allow_reachable: allow_any || flag("uploadpack.allowreachablesha1inwant")?,
+            allow_any,
             allow_ref_in_want: flag("uploadpack.allowrefinwant")?,
             allow_sideband_all: match opts.sideband_all {
                 Some(v) => v,

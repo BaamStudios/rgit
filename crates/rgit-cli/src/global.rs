@@ -185,7 +185,12 @@ fn list_cmds(ctx: &Context, groups: &str) -> Result<(), Die> {
     for g in groups.split(',').filter(|g| !g.is_empty()) {
         match g {
             "builtins" | "parseopt" => {
-                names.extend(commands::COMMANDS.iter().map(|c| c.name.to_string()));
+                names.extend(
+                    commands::COMMANDS
+                        .iter()
+                        .filter(|c| !cmdlist::NOT_BUILTIN.contains(&c.name))
+                        .map(|c| c.name.to_string()),
+                );
             }
             "main" => names.extend(cmdlist::main_commands(ctx)),
             "others" => {

@@ -78,6 +78,9 @@ flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
+# Listening sockets of `rgit daemon` (SO_REUSEADDR only on request,
+# IPV6_V6ONLY) and the peer of an inherited socket (`--inetd`).
+socket2 = "0.6"
 
 [dev-dependencies]
 rgit-difftest = { path = "../rgit-difftest" }
