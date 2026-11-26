@@ -146,13 +146,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let pathspec = Pathspec::parse(&args, &opts).map_err(|e| Die::Fatal(e.to_string()))?;
     let (mut index, index_mtime) = repo.read_index()?;
     let checker = repo.checker(index_mtime)?;
+    // A sparse index: pathspecs reaching into sparse directories need
+    // their files, others see (and remove) the sparse directory entries.
+    crate::sparse_index::expand_for_pathspec(&pathspec);
+    let view = crate::sparse_index::sparse_view(&index);
 
     let mut seen = vec![false; pathspec.items().len()];
     // Paths outside the sparse checkout stay without --sparse.
     let outside = crate::sparse::Outside::new(&repo, sparse.get());
     let mut sparse_seen = vec![false; seen.len()];
     let mut chosen: Vec<Vec<u8>> = Vec::new();
-    for e in index.entries() {
+    for e in view.as_ref().unwrap_or(&index).entries() {
         let mut one = vec![false; seen.len()];
         let mut kind = pathspec.match_path_seen(e.path(), &mut one);
         if kind.is_none() && e.mode.is_gitlink() {
@@ -362,6 +366,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(code);
     }
     for p in &chosen {
+        if p.ends_with(b"/") {
+            // A sparse directory entry: all files below it.
+            let range = index.dir_range(p);
+            for pos in range.rev() {
+                index.remove_at(pos);
+            }
+            continue;
+        }
         // Removing a conflict keeps its stages for `restore --merge` (the
         // index records them in the resolve undo extension).
         index.remove_path(p);

@@ -336,8 +336,15 @@ fn checkout_result(
         checker: &checker,
     };
     let sparse_patterns = crate::sparse::load(repo);
+    // Files the merge changes are written even outside the sparse
+    // checkout (and stay visible), as git's merge does.
+    let visible = match &sparse_patterns {
+        Some(_) => changed_paths(repo, c_tree, result.tree)?,
+        None => Vec::new(),
+    };
     let mut opts = UnpackOptions {
         sparse: sparse_patterns.as_ref(),
+        visible: &visible,
         update: true,
         show_all_errors: true,
         paths: path_options(repo),
@@ -472,6 +479,19 @@ fn reset_index_keep_new(repo: &Repo, c_tree: ObjectId) -> Result<(), Die> {
         let _ = smudge_racy_entries(&mut index, reference, &checker);
     }
     crate::switch_branch::write_index(repo, &index, lock)
+}
+
+/// The paths whose entries differ between trees `a` and `b`, sorted.
+fn changed_paths(repo: &Repo, a: ObjectId, b: ObjectId) -> Result<Vec<Vec<u8>>, Die> {
+    let a = rgit_unpack::tree_entries(repo.odb(), &a).map_err(unpack_failed)?;
+    let b = rgit_unpack::tree_entries(repo.odb(), &b).map_err(unpack_failed)?;
+    let key = |e: &rgit_index::Entry| (e.path().to_vec(), e.mode, e.id);
+    let a: std::collections::HashSet<_> = a.iter().map(key).collect();
+    let b: std::collections::HashSet<_> = b.iter().map(key).collect();
+    let mut out: Vec<Vec<u8>> = a.symmetric_difference(&b).map(|k| k.0.clone()).collect();
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 /// With `--index`: the index becomes `tree` (stat data kept where the

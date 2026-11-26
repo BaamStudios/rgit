@@ -210,6 +210,9 @@ pub(crate) fn write(index: &Index, opts: &WriteOptions, content: Content<'_>) ->
         uc.write(&mut data);
         push_extension(&mut out, &mut written, b"UNTR", &data);
     }
+    if index.sparse || entries.iter().any(|(e, _)| e.mode.is_dir()) {
+        push_extension(&mut out, &mut written, b"sdir", &[]);
+    }
     if opts.end_of_entries {
         let mut hasher = Hasher::new(kind);
         for (sig, size) in &written {

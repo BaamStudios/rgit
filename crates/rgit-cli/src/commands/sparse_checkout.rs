@@ -13,8 +13,8 @@
 //! else is reported as a warning. In cone mode, directories outside the
 //! cone that only hold ignored files are removed as well.
 //!
-//! `--sparse-index` only sets `index.sparse`; rgit always writes a full
-//! index (the sparse index is #119).
+//! `--[no-]sparse-index` sets `index.sparse`; the index is then written as
+//! a sparse index (crate::sparse_index) or in full.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -152,8 +152,9 @@ fn tri(v: i32) -> Option<bool> {
 // ----- work tree update ------------------------------------------------
 
 /// Brings the index and work tree in line with `sparse`. Nothing happens
-/// without an index file (an unborn checkout). Returns the exit code.
-fn update_worktree(repo: &Repo, sparse: &Sparse) -> Result<(), Die> {
+/// without an index file (an unborn checkout). `sparse_index`: the new
+/// `index.sparse` when it changes. Returns the exit code.
+fn update_worktree(repo: &Repo, sparse: &Sparse, sparse_index: Option<bool>) -> Result<(), Die> {
     let index_path = repo.setup.cwd.join(repo.index_path());
     if !index_path.exists() {
         return Ok(());
@@ -186,6 +187,14 @@ fn update_worktree(repo: &Repo, sparse: &Sparse) -> Result<(), Die> {
     if let Some(reference) = mtime {
         let _ = smudge_racy_entries(&mut index, reference, &checker);
     }
+    // The index is written for the new patterns and setting.
+    let si = crate::sparse_index::test_env()
+        .or(sparse_index)
+        .unwrap_or_else(|| crate::sparse_index::configured(&repo.config));
+    crate::sparse_index::set_patterns(
+        repo,
+        (si && sparse.is_cone()).then(|| sparse.clone()),
+    );
     crate::switch_branch::write_index(repo, &index, lock)?;
     for e in &applied.errors {
         eprintln!("error: {e}");
@@ -300,11 +309,16 @@ fn lock_file(repo: &Repo) -> Result<LockFile, Die> {
 }
 
 /// Updates the work tree for `data` and writes it as the new
-/// sparse-checkout file.
-fn write_patterns(repo: &Repo, data: &[u8], cone: bool) -> Result<(), Die> {
+/// sparse-checkout file (`sparse_index`: the new `index.sparse`, if set).
+fn write_patterns(
+    repo: &Repo,
+    data: &[u8],
+    cone: bool,
+    sparse_index: Option<bool>,
+) -> Result<(), Die> {
     let mut lock = lock_file(repo)?;
     let sparse = shared::parse(data, cone, shared::ignore_case(&repo.config));
-    update_worktree(repo, &sparse)?;
+    update_worktree(repo, &sparse, sparse_index)?;
     lock.write_all(data).map_err(|e| Die::Fatal(e.to_string()))?;
     lock.commit().map_err(|e| Die::Fatal(e.to_string()))?;
     Ok(())
@@ -346,7 +360,7 @@ fn init(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(d) => d,
         None => b"/*\n!/*/\n".to_vec(),
     };
-    write_patterns(&repo, &data, cone)?;
+    write_patterns(&repo, &data, cone, tri(sparse_index.get()))?;
     Ok(0)
 }
 
@@ -580,7 +594,7 @@ fn set_or_add(ctx: &mut Context, argv: &[String], add: bool) -> CmdResult {
     if !add {
         write_config(&repo, true, cone, tri(sparse_index.get()))?;
     }
-    write_patterns(&repo, &data, cone)?;
+    write_patterns(&repo, &data, cone, tri(sparse_index.get()))?;
     Ok(0)
 }
 
@@ -609,7 +623,7 @@ fn reapply(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let data = read_file(&repo).unwrap_or_default();
     let sparse = shared::parse(&data, cone_mode, shared::ignore_case(&repo.config));
-    update_worktree(&repo, &sparse)?;
+    update_worktree(&repo, &sparse, tri(sparse_index.get()))?;
     Ok(0)
 }
 
@@ -624,7 +638,9 @@ fn disable(ctx: &mut Context, argv: &[String]) -> CmdResult {
     repo.work_tree()?;
     let (all, _) = Sparse::parse(b"/*\n", false, false);
     let _lock = lock_file(&repo)?;
-    update_worktree(&repo, &all)?;
+    // The index is read without the sparse index already.
+    crate::sparse_index::set_patterns(&repo, None);
+    update_worktree(&repo, &all, Some(false))?;
     write_config(&repo, false, false, Some(false))?;
     Ok(0)
 }

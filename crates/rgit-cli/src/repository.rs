@@ -98,13 +98,15 @@ impl Repo {
         let setup = repo::setup(ctx, mode)?;
         let inner = repo_objects::Repo::open(ctx, setup)?;
         crate::index_config::apply_max_path_len(&inner.config)?;
-        Ok(Repo {
+        let repo = Repo {
             inner,
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
             untracked_toggled: std::cell::Cell::new(false),
-        })
+        };
+        crate::sparse_index::install(&repo);
+        Ok(repo)
     }
 
     /// Open the repository of an existing `setup` (e.g. one a command
@@ -112,13 +114,15 @@ impl Repo {
     pub fn from_setup(ctx: &Context, setup: rgit_repo::Setup) -> Result<Repo, Die> {
         let inner = repo_objects::Repo::open(ctx, setup)?;
         crate::index_config::apply_max_path_len(&inner.config)?;
-        Ok(Repo {
+        let repo = Repo {
             inner,
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
             untracked_toggled: std::cell::Cell::new(false),
-        })
+        };
+        crate::sparse_index::install(&repo);
+        Ok(repo)
     }
 
     /// Like [`Repo::open`], `None` outside a repository (`RUN_SETUP_GENTLY`).
@@ -126,13 +130,15 @@ impl Repo {
         let Some(setup) = repo::setup_gently(ctx)? else {
             return Ok(None);
         };
-        Ok(Some(Repo {
+        let repo = Repo {
             inner: repo_objects::Repo::open(ctx, setup)?,
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
             untracked_toggled: std::cell::Cell::new(false),
-        }))
+        };
+        crate::sparse_index::install(&repo);
+        Ok(Some(repo))
     }
 
     /// The content of tree `id` (the empty tree even when it is not
@@ -323,6 +329,7 @@ impl Repo {
         ) {
             self.untracked_toggled.set(true);
         }
+        crate::sparse_index::after_read(&mut index);
         // Skip-worktree entries whose files are present after all
         // (config/sparse.adoc, sparse.expectFilesOutsideOfPatterns).
         if let Some(wt) = &self.setup.work_tree {

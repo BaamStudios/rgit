@@ -1562,7 +1562,7 @@ struct LongContext<'a> {
     summary: (Vec<u8>, Vec<u8>),
     /// In a sparse checkout: the share of index entries present in the
     /// work tree, in percent.
-    sparse_percent: Option<usize>,
+    sparse_percent: Option<String>,
 }
 
 fn label_of(letter: u8) -> &'static str {
@@ -1590,14 +1590,18 @@ fn conflict_label(code: &str) -> &'static str {
 
 /// The long format (Documentation/git-status.adoc, "OUTPUT"). Returns
 /// where the closing summary line ("nothing to commit", ...) starts.
-/// `core.sparseCheckout`: 100 minus the share of skip-worktree entries
-/// (rounded down), as `status` shows it.
-fn sparse_percent(repo: &Repo, index: &rgit_index::Index) -> Option<usize> {
+/// `core.sparseCheckout`: the line about the sparse checkout, with 100
+/// minus the share of skip-worktree entries (rounded down), or without a
+/// number for a sparse index.
+fn sparse_percent(repo: &Repo, index: &rgit_index::Index) -> Option<String> {
     if !crate::sparse::enabled(&repo.config) || index.is_empty() {
         return None;
     }
+    if crate::sparse_index::is_sparse() {
+        return Some(msg::SPARSE_INDEX.to_owned());
+    }
     let skipped = index.entries().iter().filter(|e| e.flags.skip_worktree).count();
-    Some(100 - skipped * 100 / index.len())
+    Some(msg::sparse_checkout_percent(100 - skipped * 100 / index.len()))
 }
 
 fn long(
@@ -1714,8 +1718,8 @@ fn long(
         }
         p.text("\n");
     }
-    if let Some(pct) = ctx.sparse_percent {
-        p.text(&msg::sparse_checkout_percent(pct));
+    if let Some(line) = &ctx.sparse_percent {
+        p.text(line);
         p.text("\n\n");
     }
     if unborn {

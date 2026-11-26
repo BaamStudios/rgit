@@ -38,3 +38,15 @@ pub fn unable_to_read(path: &str, oid: &str) -> String {
 pub fn temporary_submodule(path: &str) -> String {
     format!("cannot create temporary submodule {path}")
 }
+
+/// A path whose entry is marked skip-worktree.
+pub fn skip_worktree_enabled(path: &str) -> String {
+    format!(
+        "git checkout-index: {path} has skip-worktree enabled; use '--ignore-skip-worktree-bits' to checkout"
+    )
+}
+
+/// A sparse directory entry of a sparse index.
+pub fn sparse_directory(path: &str) -> String {
+    format!("git checkout-index: {path} is a sparse directory")
+}

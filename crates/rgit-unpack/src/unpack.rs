@@ -1298,7 +1298,11 @@ impl<'o> Unpacker<'_, 'o, '_> {
                                 .push(SparseWarning::AlreadyPresent, path.clone());
                         }
                     } else {
-                        r.flags.skip_worktree = want_skip;
+                        // An entry the merge takes without writing it (a
+                        // three-way merge keeping "head", which is not in
+                        // the index) stays visible, missing from the work
+                        // tree, as git leaves it.
+                        r.flags.skip_worktree = want_skip && writes.contains(&path);
                         if want_skip {
                             writes.remove(&path);
                         }

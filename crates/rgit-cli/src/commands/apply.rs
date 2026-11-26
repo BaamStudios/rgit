@@ -285,7 +285,11 @@ impl State<'_> {
     }
 
     fn index_entry(&self, path: &[u8]) -> Option<&Entry> {
-        self.index.as_ref()?.get(path, Stage::MERGED)
+        let index = self.index.as_ref()?;
+        if self.s.cached || self.s.index {
+            crate::sparse_index::expand_for_path(path);
+        }
+        index.get(path, Stage::MERGED)
     }
 
     fn read_blob(&self, entry: &Entry) -> Result<Vec<u8>, String> {

@@ -725,7 +725,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if recurse_submodules.get() && error_unmatch.get() {
         return Err(Die::Fatal(msg::RECURSE_ERROR_UNMATCH.to_string()));
     }
-    let mut entries: Vec<Entry> = index.entries().to_vec();
+    let mut entries: Vec<Entry> = match sparse
+        .get()
+        .then(|| crate::sparse_index::sparse_view(&index))
+        .flatten()
+    {
+        Some(view) => view.entries().to_vec(),
+        None => index.entries().to_vec(),
+    };
     if recurse_submodules.get() {
         entries = with_submodules(ctx, &repo, entries)?;
     }
@@ -779,6 +786,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         || resolve_undo.get())
     {
         show.cached = true;
+    }
+    // Listing index entries needs the files of sparse directories.
+    if !sparse.get() && (show.cached || show.stage || show.deleted || show.modified) {
+        crate::sparse_index::expand_for_pathspec(&pathspec);
     }
 
     let mut ex = if excludes.is_empty() {

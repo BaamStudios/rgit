@@ -42,6 +42,11 @@ pub struct Index {
     pub(crate) ignored: Vec<[u8; 4]>,
     pub(crate) dropped: Vec<[u8; 4]>,
     pub(crate) checksum: Option<ObjectId>,
+    /// The sparse directory entries the file held before expansion.
+    pub(crate) sparse_origin: Option<Box<crate::sparse::SparseOrigin>>,
+    /// A sparse index (`sdir` extension), possibly without sparse
+    /// directory entries.
+    pub(crate) sparse: bool,
 }
 
 impl Index {
@@ -59,6 +64,8 @@ impl Index {
             ignored: Vec::new(),
             dropped: Vec::new(),
             checksum: None,
+            sparse_origin: None,
+            sparse: false,
         }
     }
 

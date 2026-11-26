@@ -302,6 +302,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Some(name) => Some(rs::resolve_source(&repo, &revs, &objects, name)?),
             None => None,
         };
+        if let Some(t) = tree {
+            // The sparse index is compared with the tree.
+            let (index, _) = repo.read_index()?;
+            crate::sparse_index::expand_if_differs(&repo, &index, Some(t));
+        }
         let mut opts = rs::patch_options(&repo, &revs, tree, tree.is_some(), true, paths)?;
         opts.set_context(unified.get(), inter_hunk.get());
         opts.auto_advance = auto_advance.get() != 0;

@@ -84,10 +84,6 @@ pub fn os_error(e: &std::io::Error) -> String {
 pub const SPLIT_INDEX_UNSUPPORTED: &str =
     "index uses the split index (link extension), which rgit does not support yet";
 
-/// rgit: a sparse index (`sdir` extension) cannot be read yet (#119).
-pub const SPARSE_INDEX_UNSUPPORTED: &str =
-    "index is a sparse index (sdir extension), which rgit does not support yet";
-
 /// rgit: generic structural corruption that git does not name separately.
 pub fn corrupt_detail(detail: &str) -> String {
     format!("index file corrupt: {detail}")
