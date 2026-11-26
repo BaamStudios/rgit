@@ -19,6 +19,7 @@ use rgit_hash::ObjectId;
 use rgit_object::ObjectKind;
 use rgit_pack::bitmap::write::{BuildError, Graph};
 use rgit_pack::bitmap::{Bitmap, BitmapIndex};
+use rgit_pack::write::ObjectFilter;
 
 use super::options::Options;
 use super::tips::Resolved;
@@ -63,6 +64,7 @@ pub fn eligible(opts: &Options, resolved: &Resolved) -> bool {
         && w.no_walk.is_none()
         && !w.cherry_pick
         && !w.cherry_mark
+        && filters_eligible(opts)
         && resolved
             .commits
             .iter()
@@ -161,6 +163,37 @@ pub fn run(
         result.and_not(&h);
     }
     rgit_trace::trace2::data_int("bitmap", "bitmap/hits", 1, true);
+    let reached = result.clone();
+    if let Some(rules) = filter_rules(opts)? {
+        // The objects named on the command line stay unless
+        // `--filter-provided-objects` is given.
+        let tips = if opts.filter_provided {
+            Bitmap::new()
+        } else {
+            provided(&mut graph, &mut pos, &result, &wants, &rules)
+        };
+        let n = index.num_objects();
+        let mut drop = Bitmap::new();
+        for bit in result.ones() {
+            if tips.get(bit) {
+                continue;
+            }
+            let (id, kind) = if bit < n {
+                let Some(kind) = index.kind_at(bit) else {
+                    continue;
+                };
+                (index.id_at(bit), kind)
+            } else {
+                pos.ext[bit - n]
+            };
+            if rules.drops(kind, || {
+                store.odb.header(&id).ok().flatten().map_or(0, |h| h.size)
+            }) {
+                drop.set(bit);
+            }
+        }
+        result.and_not(&drop);
+    }
     if opts.unpacked {
         // Everything in the bitmapped pack (MIDX) is packed; of the rest,
         // only loose objects stay.
@@ -237,8 +270,25 @@ pub fn run(
             buf.push(b'\n');
         }
     }
-    for (id, kind) in &pos.ext {
-        if ext_wanted(*kind) && result.get(pos.ext_pos[id]) {
+    let pending: Vec<(ObjectId, ObjectKind)> = resolved
+        .pending
+        .iter()
+        .filter(|p| with_objects || p.kind == ObjectKind::Commit)
+        .map(|p| (p.id, p.kind))
+        .collect();
+    let commits: Vec<ObjectId> = wants
+        .iter()
+        .filter(|w| w.1 == ObjectKind::Commit)
+        .map(|w| w.0)
+        .collect();
+    let order = ext_order(&mut graph, &pos, &reached, &commits, &pending);
+    let mut listed = vec![false; pos.ext.len()];
+    for i in order.into_iter().chain(0..pos.ext.len()) {
+        if std::mem::replace(&mut listed[i], true) {
+            continue;
+        }
+        let (id, kind) = pos.ext[i];
+        if ext_wanted(kind) && result.get(n + i) {
             buf.extend_from_slice(id.to_hex().as_bytes());
             buf.push(b'\n');
         }
@@ -336,6 +386,229 @@ pub fn test_bitmap(
     }
     eprintln!("OK!");
     Ok(0)
+}
+
+/// The objects named on the command line that a filter keeps. Of the
+/// trees and blobs outside the bitmap, as with git's walk of them, the
+/// ones already found before their turn are not: the root trees of the
+/// commits when the filter leaves out trees, and what an earlier named
+/// tree holds (also one found before, when blobs are kept).
+fn provided(
+    graph: &mut Graph<'_, rgit_odb::ObjectDatabase>,
+    pos: &mut Positions<'_>,
+    reached: &Bitmap,
+    wants: &[(ObjectId, ObjectKind)],
+    rules: &FilterRules,
+) -> Bitmap {
+    let n = pos.index.num_objects();
+    let mut tips = Bitmap::new();
+    let mut seen = Bitmap::new();
+    if rules.omits_trees() {
+        for (i, (id, kind)) in pos.ext.clone().into_iter().enumerate() {
+            if kind == ObjectKind::Commit
+                && reached.get(n + i)
+                && let Ok(t) = graph.commit_tree(&id)
+            {
+                seen.set(pos.bit(&t, ObjectKind::Tree));
+            }
+        }
+    }
+    for (id, kind) in wants {
+        let bit = pos.bit(id, *kind);
+        if *kind == ObjectKind::Commit || bit < n {
+            tips.set(bit);
+            continue;
+        }
+        if seen.get(bit) {
+            if rules.keeps_blobs() {
+                for link in graph.links(id, *kind).unwrap_or_default() {
+                    mark(graph, pos, reached, &mut seen, link);
+                }
+            }
+            continue;
+        }
+        tips.set(bit);
+        mark(graph, pos, reached, &mut seen, (*id, *kind));
+    }
+    tips
+}
+
+/// Mark in `seen` what is reachable from `start` outside the bitmap.
+fn mark(
+    graph: &mut Graph<'_, rgit_odb::ObjectDatabase>,
+    pos: &mut Positions<'_>,
+    reached: &Bitmap,
+    seen: &mut Bitmap,
+    start: (ObjectId, ObjectKind),
+) {
+    let n = pos.index.num_objects();
+    let mut stack = vec![start];
+    while let Some((id, kind)) = stack.pop() {
+        let b = pos.bit(&id, kind);
+        if b < n || seen.get(b) || !reached.get(b) {
+            continue;
+        }
+        seen.set(b);
+        stack.extend(graph.links(&id, kind).unwrap_or_default());
+    }
+}
+
+/// The objects outside the bitmap in the order git's walk finds them:
+/// the commits by date, then the trees and blobs named on the command
+/// line, then the trees of the commits, each tree before what it holds.
+/// Indexes into `pos.ext`; objects that cannot be read are left to the
+/// caller.
+fn ext_order(
+    graph: &mut Graph<'_, rgit_odb::ObjectDatabase>,
+    pos: &Positions<'_>,
+    reached: &Bitmap,
+    commits: &[ObjectId],
+    pending: &[(ObjectId, ObjectKind)],
+) -> Vec<usize> {
+    let n = pos.index.num_objects();
+    let ext = |id: &ObjectId| pos.ext_pos.get(id).map(|b| *b - n);
+    let mut done = vec![false; pos.ext.len()];
+    let mut order = Vec::new();
+    let mut queue = std::collections::BinaryHeap::new();
+    let mut seq = 0u64;
+    let mut push = |queue: &mut std::collections::BinaryHeap<_>,
+                    graph: &Graph<'_, rgit_odb::ObjectDatabase>,
+                    id: ObjectId| {
+        let date = graph_date(&id, pos, graph);
+        queue.push((date, std::cmp::Reverse(seq), id));
+        seq += 1;
+    };
+    for c in commits {
+        push(&mut queue, graph, *c);
+    }
+    let mut walked = Vec::new();
+    while let Some((_, _, id)) = queue.pop() {
+        let Some(i) = ext(&id) else { continue };
+        if !reached.get(n + i) || std::mem::replace(&mut done[i], true) {
+            continue;
+        }
+        order.push(i);
+        walked.push(id);
+        for p in graph.parents(&id).unwrap_or_default() {
+            if ext(&p).is_some_and(|j| !done[j]) {
+                push(&mut queue, graph, p);
+            }
+        }
+    }
+    let mut roots: Vec<(ObjectId, ObjectKind)> = pending.to_vec();
+    for c in &walked {
+        if let Ok(t) = graph.commit_tree(c) {
+            roots.push((t, ObjectKind::Tree));
+        }
+    }
+    for root in roots {
+        let mut stack = vec![root];
+        while let Some((id, kind)) = stack.pop() {
+            let Some(i) = ext(&id) else { continue };
+            if !reached.get(n + i) || std::mem::replace(&mut done[i], true) {
+                continue;
+            }
+            order.push(i);
+            let links = graph.links(&id, kind).unwrap_or_default();
+            stack.extend(links.into_iter().rev());
+        }
+    }
+    order
+}
+
+/// The committer date of an object outside the bitmap (0 if unknown).
+fn graph_date(
+    id: &ObjectId,
+    pos: &Positions<'_>,
+    graph: &Graph<'_, rgit_odb::ObjectDatabase>,
+) -> i64 {
+    if pos.index.position(id).is_some() {
+        return 0;
+    }
+    graph.commit_date(id).unwrap_or(0)
+}
+
+/// What `--filter` leaves out of a bitmap result, combined.
+#[derive(Default)]
+struct FilterRules {
+    /// Blobs of at least this size are left out (0: all blobs).
+    blob_limit: Option<u64>,
+    /// No trees and no blobs (`tree:0`).
+    no_trees: bool,
+    /// Only objects of these types (every `object:type` filter).
+    kinds: Vec<ObjectKind>,
+}
+
+impl FilterRules {
+    fn add(&mut self, f: &ObjectFilter) -> bool {
+        match f {
+            ObjectFilter::BlobNone => self.blob_limit = Some(0),
+            ObjectFilter::BlobLimit(n) => {
+                self.blob_limit = Some(self.blob_limit.map_or(*n, |m| m.min(*n)));
+            }
+            ObjectFilter::TreeDepth(0) => self.no_trees = true,
+            ObjectFilter::ObjectType(k) => self.kinds.push(*k),
+            ObjectFilter::Combine(subs) => return subs.iter().all(|s| self.add(s)),
+            ObjectFilter::TreeDepth(_) | ObjectFilter::SparseOid(_) => return false,
+        }
+        true
+    }
+
+    /// Whether objects of `kind` are kept at all.
+    fn allows(&self, kind: ObjectKind) -> bool {
+        self.kinds.iter().all(|k| *k == kind)
+    }
+
+    /// Whether some blobs are kept.
+    fn keeps_blobs(&self) -> bool {
+        !self.no_trees && self.allows(ObjectKind::Blob) && self.blob_limit != Some(0)
+    }
+
+    /// Whether no tree is kept.
+    fn omits_trees(&self) -> bool {
+        self.no_trees || !self.allows(ObjectKind::Tree)
+    }
+
+    /// Whether an object of `kind` is left out; `size` is asked for blobs
+    /// only.
+    fn drops(&self, kind: ObjectKind, size: impl FnOnce() -> u64) -> bool {
+        if self.kinds.iter().any(|k| *k != kind) {
+            return true;
+        }
+        match kind {
+            ObjectKind::Tree => self.no_trees,
+            ObjectKind::Blob => {
+                self.no_trees
+                    || self
+                        .blob_limit
+                        .is_some_and(|limit| limit == 0 || size() >= limit)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// The filter of `--filter` as rules on bitmaps; `None` without a filter.
+fn filter_rules(opts: &Options) -> Result<Option<FilterRules>, Die> {
+    let Some((filter, _)) = crate::promisor::parse_filters(&opts.filters)? else {
+        return Ok(None);
+    };
+    let mut rules = FilterRules::default();
+    // `eligible` let only filters through that bitmaps can answer.
+    let _ = rules.add(&filter);
+    Ok(Some(rules))
+}
+
+/// Whether every `--filter` can be answered with bitmaps: `blob:none`,
+/// `blob:limit`, `tree:0` and `object:type`, also combined. Others
+/// (`tree:<n>` deeper than 0, `sparse:oid`) walk as usual.
+fn filters_eligible(opts: &Options) -> bool {
+    match crate::promisor::parse_filters(&opts.filters) {
+        Ok(None) => true,
+        Ok(Some((f, _))) => FilterRules::default().add(&f),
+        // The walk reports the error.
+        Err(_) => false,
+    }
 }
 
 /// `pack.useBitmapBoundaryTraversal` (default: `feature.experimental`),
