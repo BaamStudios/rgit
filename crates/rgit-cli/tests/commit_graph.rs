@@ -269,3 +269,44 @@ fn usage_and_option_errors() {
         fx.compare(args).output_only().run();
     }
 }
+
+#[test]
+fn sha256_repository() {
+    let mut fx = fixture().git(["init", "-q", "--object-format=sha256"]);
+    for (i, path) in ["a/x", "a/b/y", "z", "a/b/y"].iter().enumerate() {
+        fx = fx
+            .write(path, format!("{i}\n"))
+            .git(["add", "."])
+            .git(["commit", "-q", "-m", &format!("c{i}")])
+            .tick();
+    }
+    fx = fx
+        .git(["checkout", "-q", "-b", "side", "HEAD~2"])
+        .write("s", "1\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "side"])
+        .tick()
+        .git(["checkout", "-q", "main"])
+        .git(["merge", "-q", "-m", "merge", "side"]);
+    same_graph(
+        &mut fx,
+        &["commit-graph", "write", "--reachable", "--changed-paths"],
+    );
+    same_graph(&mut fx, &["commit-graph", "verify"]);
+    for args in [
+        &["log", "--oneline"][..],
+        &["log", "--format=%s", "--", "a/b"],
+        &["rev-parse", "main~2", "main^2"],
+    ] {
+        fx.compare(args).output_only().run();
+    }
+    fx = fx
+        .write("n", "n\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "n"]);
+    same_graph(
+        &mut fx,
+        &["commit-graph", "write", "--reachable", "--split=no-merge"],
+    );
+    same_graph(&mut fx, &["commit-graph", "verify"]);
+}
