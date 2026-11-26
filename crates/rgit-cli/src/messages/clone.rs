@@ -198,3 +198,9 @@ pub fn option_requires(option: &str, needed: &str) -> String {
 
 /// `fatal:` for a clone from a bundle with an object filter.
 pub const CLONE_FILTERED_BUNDLE: &str = "cannot clone from filtered bundle";
+
+/// The initial checkout wrote several paths to the same file (`warning: `),
+/// followed by the paths as `  '<path>'`.
+pub const PATHS_COLLIDED: &str = "the following paths have collided (e.g. case-sensitive paths\n\
+on a case-insensitive filesystem) and only one from the same\n\
+colliding group is in the working tree:\n";
