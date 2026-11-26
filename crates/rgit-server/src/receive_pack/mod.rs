@@ -1061,14 +1061,17 @@ impl<B: Backend, W: Write + Send> Push<'_, B, W> {
             self.out.error(&m::funny_ref(name));
             return Err(m::REASON_FUNNY.to_string());
         }
-        let checkout = self.backend.checked_out(&full);
+        // With a namespace, the name the client sent (without the
+        // namespace) is compared with the branches checked out, and the
+        // messages show it (git 2.56, observed; t5509).
+        let checkout = self.backend.checked_out(name);
         let is_current = checkout.is_some();
         if is_current {
             match self.settings.deny_current_branch {
                 Deny::Ignore | Deny::UpdateInstead => {}
                 Deny::Warn => self.out.warning(m::UPDATING_CURRENT),
                 Deny::Refuse | Deny::Unconfigured => {
-                    self.out.error(&m::checked_out(&full));
+                    self.out.error(&m::checked_out(name));
                     if self.settings.deny_current_branch == Deny::Unconfigured {
                         self.out.error(m::REFUSE_CURRENT_BRANCH);
                     }
@@ -1094,7 +1097,7 @@ impl<B: Backend, W: Write + Send> Push<'_, B, W> {
                         if d == Deny::Unconfigured {
                             self.out.error(m::REFUSE_DELETE_CURRENT);
                         }
-                        self.out.error(&m::delete_current(&full));
+                        self.out.error(&m::delete_current(name));
                         return Err(m::REASON_DELETE_CURRENT.to_string());
                     }
                 }

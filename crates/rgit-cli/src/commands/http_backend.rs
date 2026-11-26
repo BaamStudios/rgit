@@ -11,7 +11,7 @@
 use std::io::Write;
 
 use rgit_refs::files::FilesStore;
-use rgit_server::http_backend::{self as service, Host, Repository};
+use rgit_server::http_backend::{self as service, Host, Opened, Repository};
 
 use crate::prelude::*;
 use crate::repo::{self, Mode};
@@ -21,9 +21,21 @@ struct CliHost<'a> {
 }
 
 impl Host for CliHost<'_> {
-    fn open(&mut self, dir: &str) -> Option<Repository> {
-        let git_dir = super::upload_pack::enter_repo(dir, false)?;
-        std::env::set_current_dir(&git_dir).ok()?;
+    fn open(&mut self, dir: &str) -> Result<Option<Repository>, Opened> {
+        // A broken `.git` file or a repository owned by someone else ends
+        // the request (git answers 500 after its `fatal:` message).
+        let Some(found) = super::upload_pack::find_repo(dir, false).map_err(|_| Opened::Died)?
+        else {
+            return Ok(None);
+        };
+        super::upload_pack::check_ownership(self.ctx, &found).map_err(|_| Opened::Died)?;
+        Ok(self.load(&found.git_dir))
+    }
+}
+
+impl CliHost<'_> {
+    fn load(&mut self, git_dir: &std::path::Path) -> Option<Repository> {
+        std::env::set_current_dir(git_dir).ok()?;
         let git_dir = std::env::current_dir().ok()?;
         self.ctx.git_dir = Some(".".into());
         let setup = repo::setup(self.ctx, Mode::RequiredQuiet).ok()?;

@@ -6,9 +6,10 @@
 //!
 //! A thread per socket accepts; a thread per child waits for it, so its
 //! end is logged at once and `--max-connections` counts right. When the
-//! limit is reached, a client that has two connections open loses the
-//! newer one; if that does not help within a second, the new connection
-//! is dropped (as git 2.56 does).
+//! limit is reached, a client that has two connections open loses its
+//! newest one (the client that came first, if several have); if that
+//! does not help within a second, the new connection is dropped (as git
+//! 2.56 does).
 
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -42,7 +43,27 @@ fn listener(addr: SocketAddr, reuseaddr: bool) -> std::io::Result<TcpListener> {
 }
 
 /// Bind the sockets of `--listen` (or all addresses) on `port`.
-pub fn bind(opts: &Options, log: &Logger, port: u16) -> Result<Vec<TcpListener>, Die> {
+///
+/// `port` is `--port` as git keeps it: a number that is negative as a C
+/// `int` is no port the address lookup takes (it fails for every host);
+/// otherwise its low 16 bits are the port, 0 meaning one the system
+/// picks (observed with git 2.56).
+pub fn bind(opts: &Options, log: &Logger, port: u32) -> Result<Vec<TcpListener>, Die> {
+    if (port as i32) < 0 {
+        if opts.listen.is_empty() {
+            log.error(&msg::getaddrinfo_failed(
+                msg::ANY_HOST,
+                msg::SERVNAME_NOT_SUPPORTED,
+            ));
+        }
+        for host in &opts.listen {
+            log.error(&msg::getaddrinfo_failed(host, msg::SERVNAME_NOT_SUPPORTED));
+            log.error(&msg::no_sockets_for_host(host, port));
+        }
+        return Err(log.fatal(msg::no_listen_sockets(port)));
+    }
+    let shown = port;
+    let port = (port & 0xffff) as u16;
     let mut listeners = Vec::new();
     if opts.listen.is_empty() {
         let any: [IpAddr; 2] = [Ipv6Addr::UNSPECIFIED.into(), Ipv4Addr::UNSPECIFIED.into()];
@@ -80,11 +101,11 @@ pub fn bind(opts: &Options, log: &Logger, port: u16) -> Result<Vec<TcpListener>,
             }
         }
         if listeners.len() == before {
-            log.error(&msg::no_sockets_for_host(host, port));
+            log.error(&msg::no_sockets_for_host(host, shown));
         }
     }
     if listeners.is_empty() {
-        return Err(log.fatal(msg::no_listen_sockets(port)));
+        return Err(log.fatal(msg::no_listen_sockets(shown)));
     }
     Ok(listeners)
 }
@@ -112,17 +133,30 @@ impl Daemon {
         self.children.lock().map_or(0, |c| c.len())
     }
 
-    /// End the newer connection of a client that has more than one.
+    /// End one connection of a client that has more than one: the
+    /// first child in the list whose successor has the same address (see
+    /// [`Daemon::add_child`]), which is the newest connection of the
+    /// client that came first.
     fn kill_some_child(&self) {
         let Ok(children) = self.children.lock() else {
             return;
         };
-        let duplicate = children
-            .iter()
-            .enumerate()
-            .find(|(i, child)| children[..*i].iter().any(|c| c.addr == child.addr));
-        if let Some((_, child)) = duplicate {
-            sys::terminate(child.pid);
+        if let Some(pair) = children.windows(2).find(|w| w[0].addr == w[1].addr) {
+            sys::terminate(pair[0].pid);
+        }
+    }
+
+    /// Keep the connections of one client together, newest first: a new
+    /// child goes before the first one with its address, else at the end
+    /// (observed with git 2.56: with clients A, B, A, A, B connected in
+    /// that order, the limit ends the last connection of A).
+    fn add_child(&self, child: Child) {
+        if let Ok(mut children) = self.children.lock() {
+            let at = children
+                .iter()
+                .position(|c| c.addr == child.addr)
+                .unwrap_or(children.len());
+            children.insert(at, child);
         }
     }
 
@@ -161,12 +195,10 @@ impl Daemon {
         // Our copies of the connection go with the command.
         drop(command);
         let pid = child.id();
-        if let Ok(mut children) = self.children.lock() {
-            children.push(Child {
-                pid,
-                addr: peer.ip(),
-            });
-        }
+        self.add_child(Child {
+            pid,
+            addr: peer.ip(),
+        });
         let daemon = Arc::clone(self);
         std::thread::spawn(move || {
             let failed = !child.wait().is_ok_and(|status| status.success());

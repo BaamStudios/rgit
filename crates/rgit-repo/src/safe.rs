@@ -30,7 +30,7 @@ impl Owner {
         let uid = effective_uid();
         let sudo_uid = if uid == 0 {
             env.var("SUDO_UID")
-                .and_then(|v| v.to_str().and_then(|s| s.parse().ok()))
+                .and_then(|v| v.to_str().and_then(parse_sudo_uid))
         } else {
             None
         };
@@ -51,6 +51,29 @@ impl Owner {
             None => false,
         }
     }
+}
+
+/// `SUDO_UID` as git reads it (observed with git 2.56): a decimal number
+/// with leading white space and a sign allowed, nothing after it, at most
+/// 64 bits (a negative number wraps around); the user id is its low 32
+/// bits.
+fn parse_sudo_uid(s: &str) -> Option<u32> {
+    let s = s.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+    let (negative, digits) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let value: u64 = digits.parse().ok()?;
+    let value = if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    };
+    Some(value as u32)
 }
 
 #[cfg(unix)]
@@ -172,4 +195,53 @@ pub fn bare_repository_setting(protected: &ConfigSet) -> Result<BareRepository, 
 /// git directory) is not subject to `safe.bareRepository=explicit`.
 pub(crate) fn is_embedded_git_dir(dir: &Path) -> bool {
     dir.components().any(|c| c.as_os_str() == ".git") || dir.join("commondir").is_file()
+}
+
+/// The ownership check of a server entering a repository it was asked
+/// for (`receive-pack`, `upload-archive`, `http-backend`, `daemon`;
+/// `upload-pack` does not check). `found` is where the request led (a
+/// git directory or a `.git` file naming one), `git_dir` the git
+/// directory. Both must belong to `owner`, or `found` (with links
+/// resolved) must be listed in `safe.directory`, with `.` standing for
+/// `cwd`. The error names `git_dir` as given (observed with git 2.56).
+/// Returns the warnings to print (without `warning: `).
+pub fn check_server_ownership(
+    owner: &Owner,
+    protected: &mut dyn crate::ProtectedConfig,
+    found: &Path,
+    git_dir: &Path,
+    cwd: &Path,
+) -> Result<Vec<String>, Error> {
+    if owner.owns(found) && owner.owns(git_dir) {
+        return Ok(Vec::new());
+    }
+    let checked = path::real_path_lossy(found, cwd);
+    let set = protected.load()?;
+    let (safe, warnings) = is_safe_directory(&set, protected.env(), &checked, cwd);
+    if safe {
+        Ok(warnings)
+    } else {
+        Err(Error::DubiousOwnership {
+            path: git_dir.to_path_buf(),
+            warnings,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_sudo_uid;
+
+    #[test]
+    fn sudo_uid() {
+        assert_eq!(parse_sudo_uid("1000"), Some(1000));
+        assert_eq!(parse_sudo_uid(" \t+1000"), Some(1000));
+        assert_eq!(parse_sudo_uid("01000"), Some(1000));
+        assert_eq!(parse_sudo_uid("4294968296"), Some(1000));
+        assert_eq!(parse_sudo_uid("-4294966296"), Some(1000));
+        assert_eq!(parse_sudo_uid("-1"), Some(u32::MAX));
+        for bad in ["", "-", "1000 ", "0x3e8", "1000.0", "18446744073709552616"] {
+            assert_eq!(parse_sudo_uid(bad), None, "{bad:?}");
+        }
+    }
 }
