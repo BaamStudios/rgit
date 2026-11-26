@@ -712,3 +712,99 @@ fn local_option() {
     // Same number of objects in the pack header.
     assert_eq!(out.git.stdout[8..12], out.rgit.stdout[8..12]);
 }
+
+/// `<a>..<b>` lines of `--revs` input.
+#[test]
+fn revs_dot_ranges() {
+    let fx = repo();
+    let fx = same_objects(fx, &["--revs", "--stdout"], "v1..main\n");
+    same_objects(fx, &["--revs", "--stdout"], "side..\n");
+}
+
+/// A repository with one pack per commit range (`A`, `A..B`, `B..C`) and
+/// the last commit loose; returns the pack file names.
+fn packs_repo() -> (Fixture, Vec<String>) {
+    let mut fx = fixture();
+    if fx.is_skipped() {
+        return (fx, Vec::new());
+    }
+    fx = fx.git(["init", "-q"]);
+    for c in ["A", "B", "C", "D"] {
+        fx = fx
+            .write(format!("{c}.t"), format!("{c}\n"))
+            .git(["add", "-A"])
+            .git(["commit", "-q", "-m", c])
+            .git(["tag", c])
+            .tick();
+    }
+    let mut names = Vec::new();
+    for range in ["A", "A..B", "B..C"] {
+        let out = git_with_input(
+            &fx,
+            ".",
+            &["pack-objects", "-q", "--revs", ".git/objects/pack/pack"],
+            format!("{range}\n").as_bytes(),
+        );
+        names.push(format!(
+            "pack-{}.pack",
+            String::from_utf8(out).unwrap().trim()
+        ));
+    }
+    (fx.git(["prune-packed"]), names)
+}
+
+#[test]
+fn stdin_packs() {
+    let (fx, p) = packs_repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx;
+    for (args, input) in [
+        (
+            &["--stdin-packs"][..],
+            format!("{}\n^{}\n{}\n", p[0], p[1], p[2]),
+        ),
+        (&["--stdin-packs", "--unpacked"][..], format!("{}\n", p[0])),
+        (&["--stdin-packs", "--unpacked"][..], format!("^{}\n", p[0])),
+        (&["--stdin-packs=follow"][..], format!("{}\n", p[2])),
+        (
+            &["--stdin-packs=follow"][..],
+            format!("{}\n^{}\n", p[2], p[1]),
+        ),
+        (
+            &["--stdin-packs=follow"][..],
+            format!("{}\n!{}\n", p[2], p[1]),
+        ),
+        (
+            &["--stdin-packs=follow", "--unpacked"][..],
+            format!("^{}\n^{}\n", p[1], p[2]),
+        ),
+        (&["--stdin-packs"][..], format!("{}\n{}\n", p[0], p[0])),
+    ] {
+        fx = same_objects(fx, &[args, &["--stdout"][..]].concat(), &input);
+    }
+    for (args, input) in [
+        (&["--stdin-packs", "--stdout"][..], "zzz\naaa\n".to_string()),
+        (&["--stdin-packs", "--stdout"][..], format!("!{}\n", p[0])),
+        (&["--stdin-packs=bogus", "--stdout"][..], String::new()),
+        (&["--stdin-packs", "--revs", "--stdout"][..], String::new()),
+        (&["--stdin-packs", "--thin", "--stdout"][..], String::new()),
+        (&["--stdin-packs", "--cruft", "base"][..], String::new()),
+        (
+            &["--cruft", "--stdin-packs", "--revs", "base"][..],
+            String::new(),
+        ),
+        (
+            &["--stdin-packs", "--stdout", "--filter=blob:none"][..],
+            String::new(),
+        ),
+    ] {
+        let mut argv = vec!["pack-objects"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv)
+            .stdin(input)
+            .checks([Check::ExitCode, Check::Stderr])
+            .run();
+    }
+}

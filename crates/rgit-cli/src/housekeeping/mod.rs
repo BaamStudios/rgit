@@ -8,6 +8,7 @@
 pub mod cruft;
 pub mod reach;
 pub mod server_info;
+pub mod stdin_packs;
 pub mod store;
 
 use std::time::{SystemTime, UNIX_EPOCH};
