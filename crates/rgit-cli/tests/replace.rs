@@ -110,8 +110,14 @@ fn edit() {
         return;
     }
     let mut fx = fx
-        .write_executable("ed", "#!/bin/sh\nsed -e 's/c3/edited/' \"$1\" >\"$1.new\" && mv \"$1.new\" \"$1\"\n")
-        .write_executable("addentry", "#!/bin/sh\nprintf '100644 blob %s\\tg\\n' $(git rev-parse c1:f) >>\"$1\"\n")
+        .write_executable(
+            "ed",
+            "#!/bin/sh\nsed -e 's/c3/edited/' \"$1\" >\"$1.new\" && mv \"$1.new\" \"$1\"\n",
+        )
+        .write_executable(
+            "addentry",
+            "#!/bin/sh\nprintf '100644 blob %s\\tg\\n' $(git rev-parse c1:f) >>\"$1\"\n",
+        )
         .write_executable("garbage", "#!/bin/sh\necho garbage >\"$1\"\n");
     let dir = fx.work_dir();
     let ed = dir.join("ed");
@@ -154,14 +160,19 @@ fn convert_graft_file() {
         format!("{c4} {c1}\n\n# comment\n{c2}\n"),
     );
     fx.compare(["status", "--short"]).in_dir("r").run();
-    fx.compare(["rev-list", "--count", "HEAD"]).in_dir("r").run();
-    fx.compare(["replace", "--convert-graft-file"]).in_dir("r").run();
-    fx.compare(["rev-list", "--count", "HEAD"]).in_dir("r").run();
-    let mut fx = fx.write(
-        "r/.git/info/grafts",
-        format!("{c4} {c1}\njunk\n{c2} zz\n"),
-    );
-    fx.compare(["replace", "--convert-graft-file"]).in_dir("r").run();
+    fx.compare(["rev-list", "--count", "HEAD"])
+        .in_dir("r")
+        .run();
+    fx.compare(["replace", "--convert-graft-file"])
+        .in_dir("r")
+        .run();
+    fx.compare(["rev-list", "--count", "HEAD"])
+        .in_dir("r")
+        .run();
+    let mut fx = fx.write("r/.git/info/grafts", format!("{c4} {c1}\njunk\n{c2} zz\n"));
+    fx.compare(["replace", "--convert-graft-file"])
+        .in_dir("r")
+        .run();
 }
 
 #[test]
@@ -179,7 +190,13 @@ fn graft_file_changes_parents() {
         &["rev-parse", "c3^"],
         &["--no-replace-objects", "rev-list", "--count", "HEAD"],
         &["cat-file", "-p", "c3"],
-        &["-c", "advice.graftFileDeprecated=false", "show", "-s", "HEAD"],
+        &[
+            "-c",
+            "advice.graftFileDeprecated=false",
+            "show",
+            "-s",
+            "HEAD",
+        ],
     ] {
         fx.compare(args.iter().copied()).in_dir("r").run();
     }
@@ -197,11 +214,25 @@ fn replace_depth() {
     }
     let c: Vec<String> = (1..=5).map(|i| rev(&fx, &format!("c{i}"))).collect();
     let fx = fx
-        .git(["-C", "r", "update-ref", &format!("refs/replace/{}", c[0]), &c[1]])
-        .git(["-C", "r", "update-ref", &format!("refs/replace/{}", c[1]), &c[0]]);
+        .git([
+            "-C",
+            "r",
+            "update-ref",
+            &format!("refs/replace/{}", c[0]),
+            &c[1],
+        ])
+        .git([
+            "-C",
+            "r",
+            "update-ref",
+            &format!("refs/replace/{}", c[1]),
+            &c[0],
+        ]);
     let mut fx = fx;
     fx.compare(["cat-file", "-t", "c1"]).in_dir("r").run();
-    fx.compare(["log", "--oneline", "-1", "c2"]).in_dir("r").run();
+    fx.compare(["log", "--oneline", "-1", "c2"])
+        .in_dir("r")
+        .run();
     fx.compare(["--no-replace-objects", "log", "--oneline", "-1", "c2"])
         .in_dir("r")
         .run();

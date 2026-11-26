@@ -151,7 +151,10 @@ fn reads_follow_replacements() {
     assert!(odb.has_replacements());
     assert_eq!(odb.replaced(&a).unwrap(), b);
     assert_eq!(odb.read(&a).unwrap().unwrap().data, b"replacement\n");
-    assert_eq!(odb.read_unreplaced(&a).unwrap().unwrap().data, b"original\n");
+    assert_eq!(
+        odb.read_unreplaced(&a).unwrap().unwrap().data,
+        b"original\n"
+    );
     assert_eq!(odb.header(&a).unwrap().unwrap().size, 12);
     assert_eq!(odb.header_unreplaced(&a).unwrap().unwrap().size, 9);
 
@@ -160,7 +163,10 @@ fn reads_follow_replacements() {
     assert!(matches!(odb.read(&a), Err(rgit_odb::Error::ReplaceDepth(id)) if id == a));
     // Chains are followed up to four times.
     let ids: Vec<_> = (0..6)
-        .map(|i| odb.write(ObjectKind::Blob, format!("{i}\n").as_bytes()).unwrap())
+        .map(|i| {
+            odb.write(ObjectKind::Blob, format!("{i}\n").as_bytes())
+                .unwrap()
+        })
         .collect();
     let chain = ids.clone();
     odb.set_replacements(move || chain.windows(2).map(|w| (w[0], w[1])).collect());
