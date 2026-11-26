@@ -22,6 +22,10 @@ pub struct PathFilter {
     /// `--simplify-by-decoration`: decorated commits are never TREESAME.
     pub decorations: Option<Decorations>,
     trees: HashMap<ObjectId, Option<ObjectId>>,
+    /// Changed-path Bloom filters of the commit-graph; set up on first use.
+    bloom: Option<Option<crate::commit_graph::BloomFilter>>,
+    /// Off for `--walk-reflogs`.
+    pub use_bloom: bool,
 }
 
 /// One tree entry.
@@ -71,6 +75,8 @@ impl PathFilter {
             pathspec,
             decorations,
             trees: HashMap::new(),
+            bloom: None,
+            use_bloom: true,
         }
     }
 
@@ -78,7 +84,10 @@ impl PathFilter {
         if let Some(t) = self.trees.get(commit) {
             return *t;
         }
-        let t = repo.tree_of(commit);
+        let t = match repo.objects.graph_commit(commit) {
+            Ok(Some(c)) => Some(c.tree),
+            _ => repo.tree_of(commit),
+        };
         self.trees.insert(*commit, t);
         t
     }
@@ -94,6 +103,30 @@ impl PathFilter {
         // A root commit is compared with the empty tree only.
         if parent.is_some() && self.decorations.as_ref().is_some_and(|d| d.contains(id)) {
             return Ok(false);
+        }
+        if self.bloom.is_none() {
+            self.bloom = Some(if self.use_bloom {
+                repo.objects
+                    .commit_graph()
+                    .and_then(|g| crate::commit_graph::BloomFilter::new(g, &self.pathspec))
+            } else {
+                None
+            });
+        }
+        if let Some(Some(b)) = &mut self.bloom {
+            match b.check(repo.objects.commit_graph(), id, parent) {
+                crate::commit_graph::BloomAnswer::DefinitelyNot => return Ok(true),
+                crate::commit_graph::BloomAnswer::Maybe => {
+                    let same = self.paths_same(repo, id, parent)?;
+                    if same {
+                        if let Some(Some(b)) = &mut self.bloom {
+                            b.false_positive(id);
+                        }
+                    }
+                    return Ok(same);
+                }
+                crate::commit_graph::BloomAnswer::Unknown => {}
+            }
         }
         self.paths_same(repo, id, parent)
     }

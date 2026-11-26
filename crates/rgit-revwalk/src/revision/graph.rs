@@ -105,7 +105,29 @@ impl Resolver<'_> {
         }
     }
 
+    /// Committer time and parents of `oid` for a walk (from the
+    /// commit-graph when the repository has one); `Ok(None)` if it is
+    /// missing or not a commit.
+    pub(crate) fn walk_info(&self, oid: &ObjectId) -> Result<Option<(u64, Vec<ObjectId>)>, Error> {
+        if !self.repo.objects.is_shallow(oid) {
+            if let Some(c) = self.repo.objects.commit_summary(oid)? {
+                return Ok(Some((c.time, c.parents)));
+            }
+        }
+        Ok(self.commit_info(oid)?.map(|c| (c.time, c.parents)))
+    }
+
+    /// The generation number of `oid`, if a commit-graph knows it.
+    fn generation_of(&self, oid: &ObjectId) -> Result<Option<u64>, Error> {
+        Ok(self.repo.objects.commit_summary(oid)?.map(|c| c.generation))
+    }
+
     pub(crate) fn parents_of(&self, commit: &ObjectId) -> Result<Vec<ObjectId>, Error> {
+        if !self.repo.objects.is_shallow(commit) {
+            if let Some(c) = self.repo.objects.commit_summary(commit)? {
+                return Ok(c.parents);
+            }
+        }
         Ok(self
             .commit_info(commit)?
             .map(|c| c.parents)
@@ -161,10 +183,7 @@ impl Resolver<'_> {
                         active: &mut usize|
          -> Result<(), Error> {
             if let std::collections::hash_map::Entry::Vacant(e) = nodes.entry(oid) {
-                let (time, parents) = match r.commit_info(&oid)? {
-                    Some(c) => (c.time, c.parents),
-                    None => (0, Vec::new()),
-                };
+                let (time, parents) = r.walk_info(&oid)?.unwrap_or((0, Vec::new()));
                 e.insert(Node {
                     flags: 0,
                     time,
@@ -255,6 +274,20 @@ impl Resolver<'_> {
         }
         if descs.contains(anc) {
             return Ok(true);
+        }
+        // Generation numbers: a commit cannot reach one with a higher
+        // generation (commits without one count as infinitely high).
+        if let Some(g) = self.generation_of(anc)? {
+            let mut candidates = Vec::with_capacity(descs.len());
+            for d in descs {
+                if self.generation_of(d)?.is_none_or(|dg| dg >= g) {
+                    candidates.push(*d);
+                }
+            }
+            if candidates.is_empty() {
+                return Ok(false);
+            }
+            return Ok(self.paint_down(anc, &candidates)?.contains(anc));
         }
         Ok(self.paint_down(anc, descs)?.contains(anc))
     }

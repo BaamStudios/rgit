@@ -103,10 +103,7 @@ impl Resolver<'_> {
         impl State {
             fn mark(&mut self, r: &Resolver<'_>, oid: ObjectId, f: u8) -> Result<(), Error> {
                 if let std::collections::hash_map::Entry::Vacant(e) = self.nodes.entry(oid) {
-                    let (time, parents) = match r.commit_info(&oid)? {
-                        Some(c) => (c.time, c.parents),
-                        None => (0, Vec::new()),
-                    };
+                    let (time, parents) = r.walk_info(&oid)?.unwrap_or((0, Vec::new()));
                     e.insert(Node {
                         flags: 0,
                         time,

@@ -52,6 +52,8 @@ pub struct Follow {
     /// The path the commit [`Follow::show`] looked at last renamed or
     /// copied its tracked file from (commits with one parent).
     pub source: Option<Vec<u8>>,
+    /// Changed-path filters of the commit-graph (set up on first use).
+    bloom: Option<Option<crate::commit_graph::BloomFilter>>,
 }
 
 impl Follow {
@@ -64,6 +66,7 @@ impl Follow {
             pattern,
             tracked: HashMap::new(),
             source: None,
+            bloom: None,
         }
     }
 
@@ -106,6 +109,23 @@ impl Follow {
             return Ok(changed);
         }
         let path = self.path_of(id).to_vec();
+        if parents.len() <= 1 {
+            // The filter of a commit with at most one parent tells whether
+            // the tracked path changed at all.
+            let bloom = self.bloom.get_or_insert_with(|| {
+                repo.objects
+                    .commit_graph()
+                    .and_then(|g| crate::commit_graph::BloomFilter::for_path(g, &self.path))
+            });
+            if let Some(b) = bloom {
+                b.set_path(&path);
+                if b.check(repo.objects.commit_graph(), id, parents.first())
+                    == crate::commit_graph::BloomAnswer::DefinitelyNot
+                {
+                    return Ok(false);
+                }
+            }
+        }
         let mine = entry_at(repo, &tree, &path)?;
         if parents.is_empty() {
             return Ok(mine.is_some());

@@ -792,7 +792,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let shallow = std::env::var_os("GIT_SHALLOW_FILE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| setup.common_dir.join("shallow"));
-    let objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
+    objects.use_commit_graph(&config, &setup);
     let refs = Refs::new(&setup, kind);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);

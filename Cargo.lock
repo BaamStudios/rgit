@@ -494,6 +494,7 @@ dependencies = [
  "rgit-apply",
  "rgit-attr",
  "rgit-commit",
+ "rgit-commitgraph",
  "rgit-config",
  "rgit-convert",
  "rgit-date",
@@ -544,6 +545,18 @@ dependencies = [
  "rgit-index",
  "rgit-object",
  "rgit-odb",
+]
+
+[[package]]
+name = "rgit-commitgraph"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
+ "rgit-hash",
+ "rgit-object",
+ "rgit-progress",
+ "rgit-trace",
+ "tempfile",
 ]
 
 [[package]]
@@ -906,12 +919,15 @@ name = "rgit-test-tool"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "rgit-commitgraph",
  "rgit-config",
  "rgit-date",
  "rgit-difftest",
  "rgit-hash",
  "rgit-ident",
  "rgit-messages",
+ "rgit-object",
+ "rgit-odb",
  "rgit-options",
  "rgit-pathspec",
  "rgit-progress",

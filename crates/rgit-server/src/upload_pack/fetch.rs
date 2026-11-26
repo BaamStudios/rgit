@@ -340,7 +340,7 @@ fn trace_request(req: &Request, common: &[ObjectId]) {
         req.shallow.not.len(),
         req.shallow.relative,
     );
-    rgit_trace::trace2::data_json("upload-pack", "fetch-info", &json);
+    rgit_trace::trace2::data_json("upload-pack", "fetch-info", &json, Some(0));
 }
 
 pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]) -> Result<()> {
