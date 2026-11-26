@@ -456,3 +456,51 @@ fn duplicate_tree_entries_fail_the_merge() {
         "tree has duplicate entries for 'docs'"
     );
 }
+
+fn seq(from: u32, to: u32) -> &'static str {
+    leak((from..=to).map(|i| format!("{i}\n")).collect())
+}
+
+/// A commit and its revert picked across a rename (t6429): the second
+/// pick reuses the rename of the first, although the shrunk file alone
+/// would not be found as renamed.
+#[test]
+fn sequence_remembers_our_renames() {
+    use crate::{RenameCache, merge_trees_cached};
+    let m = Mem::default();
+    let e = m.tree(&[("numbers", F::File(seq(11, 30)))]);
+    let g = m.tree(&[("sequence", F::File(seq(1, 30)))]);
+    let a = m.tree(&[("numbers", F::File(seq(11, 13)))]);
+    let b = m.tree(&[("numbers", F::File(seq(11, 30)))]);
+    let mut cache = RenameCache::default();
+    let r1 = merge_trees_cached(&m, &e, &g, &a, &opts(), &mut cache).unwrap();
+    assert!(r1.clean);
+    assert_eq!(paths(&m, &r1), ["sequence"]);
+    assert_eq!(m.content(&r1, "sequence"), seq(1, 13));
+    let pairs = cache.usable(&a, &r1.tree).expect("continues the sequence");
+    assert_eq!(
+        pairs.get(b"numbers".as_slice()),
+        Some(&Some(b"sequence".to_vec()))
+    );
+    assert!(cache.usable(&e, &r1.tree).is_none());
+
+    let r2 = merge_trees_cached(&m, &a, &r1.tree, &b, &opts(), &mut cache).unwrap();
+    assert!(r2.clean);
+    assert_eq!(paths(&m, &r2), ["sequence"]);
+    assert_eq!(m.content(&r2, "sequence"), seq(1, 30));
+}
+
+/// Both sides renaming a file the same way is not remembered: the next
+/// merge's base has the file at the new path.
+#[test]
+fn sequence_forgets_identical_renames() {
+    use crate::{RenameCache, merge_trees_cached};
+    let m = Mem::default();
+    let e = m.tree(&[("sequence", F::File(seq(3, 8)))]);
+    let g = m.tree(&[("values", F::File(seq(1, 8)))]);
+    let a = m.tree(&[("values", F::File(seq(3, 10)))]);
+    let mut cache = RenameCache::default();
+    let r = merge_trees_cached(&m, &e, &g, &a, &opts(), &mut cache).unwrap();
+    assert!(r.clean);
+    assert!(cache.usable(&a, &r.tree).is_some_and(|p| p.is_empty()));
+}

@@ -22,7 +22,7 @@ mod renames;
 
 use crate::{
     CollectCause, ConflictedPath, Driver, DriverInput, Error, MergeResult, Message, MessageKind,
-    Objects, Options, Version, messages,
+    Objects, Options, RenameCache, Version, messages,
 };
 
 const MODE_TREE: u32 = 0o040000;
@@ -69,7 +69,9 @@ enum Case {
     Both(Kind),
 }
 
-/// Merges `ours` and `theirs` against `base` (all trees).
+/// Merges `ours` and `theirs` against `base` (all trees), with the
+/// renames of our side remembered in `cache` (a sequence of picks).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn merge(
     objects: &dyn Objects,
     opts: &Options,
@@ -78,7 +80,9 @@ pub(crate) fn merge(
     base: &ObjectId,
     ours: &ObjectId,
     theirs: &ObjectId,
+    cache: Option<&mut RenameCache>,
 ) -> Result<MergeResult, Error> {
+    let remembered = cache.as_deref().and_then(|c| c.usable(base, ours)).cloned();
     let mut e = Engine {
         objects,
         opts,
@@ -95,6 +99,9 @@ pub(crate) fn merge(
         binary_conflict: false,
         dir_renames_found: false,
         rename_limit_needed: None,
+        remembered,
+        cacheable: Vec::new(),
+        new_pairs: None,
     };
     // git reads the three trees before anything else.
     for t in [base, ours, theirs] {
@@ -147,6 +154,16 @@ pub(crate) fn merge(
             None => e.write(ObjectKind::Tree, &[])?,
         }
     };
+    if let Some(cache) = cache {
+        // Without a rename pass our side's renames are those of the last
+        // merge (or there are none).
+        let pairs = match e.new_pairs.take() {
+            Some(p) => p,
+            None => e.remembered.take().unwrap_or_default(),
+        };
+        let keep = e.clean && e.rename_limit_needed.is_none();
+        cache.store(keep, theirs, &tree, pairs);
+    }
     let mut conflicts = e.conflicts;
     conflicts.sort_by(|a, b| a.path.cmp(&b.path));
     let mut messages = e.messages;
@@ -189,6 +206,14 @@ struct Engine<'a> {
     /// The rename detection found directory renames.
     dir_renames_found: bool,
     rename_limit_needed: Option<usize>,
+    /// Our side's renames remembered from the previous merge of a
+    /// sequence, when they apply to this one (see [`RenameCache`]).
+    remembered: Option<HashMap<Vec<u8>, Option<Vec<u8>>>>,
+    /// Our side's sources whose rename (or its absence) is worth
+    /// remembering: the relevant ones and the remembered ones.
+    cacheable: Vec<Vec<u8>>,
+    /// What to remember for the next merge, once the rename pass ran.
+    new_pairs: Option<HashMap<Vec<u8>, Option<Vec<u8>>>>,
 }
 
 /// One directory being merged: its path (with a trailing slash unless it

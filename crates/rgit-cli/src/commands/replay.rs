@@ -254,6 +254,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let hash = repo.hash;
     let empty_tree = hash.empty_tree();
     let mut mapped: HashMap<ObjectId, ObjectId> = HashMap::new();
+    // Our side's renames carry over from one pick to the next.
+    let mut renames = rgit_merge::RenameCache::default();
     let mut last = base;
     for (id, parents) in &walked {
         let orig = read_commit(&repo, id)?;
@@ -280,8 +282,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             (parent_tree, orig_tree)
         };
         let result =
-            rgit_merge::merge_trees(repo.odb(), &merge_base, &onto_tree, &theirs, &merge_opts)
-                .map_err(|e| {
+            rgit_merge::merge_trees_cached(
+                repo.odb(),
+                &merge_base,
+                &onto_tree,
+                &theirs,
+                &merge_opts,
+                &mut renames,
+            )
+            .map_err(|e| {
                     for line in e.collect_errors().into_iter().flatten() {
                         eprintln!("error: {line}");
                     }
