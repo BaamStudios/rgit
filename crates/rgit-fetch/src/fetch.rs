@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use bstr::{BString, ByteSlice};
-use rgit_hash::ObjectId;
+use rgit_hash::{HashKind, ObjectId};
 use rgit_protocol::ProtocolVersion;
 use rgit_protocol::v2::RemoteRef;
 use rgit_refs::{RefStore, RefUpdate};
@@ -133,8 +133,11 @@ impl FetchResult {
     }
 }
 
-fn parse_spec(s: &str) -> Result<Refspec> {
-    Refspec::parse(s.as_bytes(), Direction::Fetch).map_err(|e| Error::fatal(e.to_string()))
+/// Parse a fetch refspec; `hash` decides what a full object name looks
+/// like.
+fn parse_spec(s: &str, hash: HashKind) -> Result<Refspec> {
+    Refspec::parse_with_hash(s.as_bytes(), Direction::Fetch, hash)
+        .map_err(|e| Error::fatal(e.to_string()))
 }
 
 /// `remote.<name>.followRemoteHEAD` (or `fetch.followRemoteHEAD`).
@@ -175,10 +178,12 @@ pub fn fetch(
                 let Some(t) = it.next() else {
                     return Err(Error::fatal(messages::NEED_TAG_NAME));
                 };
-                s.items
-                    .push(parse_spec(&format!("refs/tags/{t}:refs/tags/{t}"))?);
+                s.items.push(parse_spec(
+                    &format!("refs/tags/{t}:refs/tags/{t}"),
+                    repo.hash,
+                )?);
             } else {
-                s.items.push(parse_spec(r)?);
+                s.items.push(parse_spec(r, repo.hash)?);
             }
         }
         s
@@ -186,7 +191,7 @@ pub fn fetch(
         remote.fetch.clone()
     };
     if opts.prefetch {
-        specs = prefetch_specs(&specs)?;
+        specs = prefetch_specs(&specs, repo.hash)?;
     }
     // Whether anything is configured to fetch, not counting the tag
     // refspec of `--tags` / `--prune-tags`.
@@ -209,7 +214,7 @@ pub fn fetch(
                 .flatten()
                 .unwrap_or(false)
         });
-    let tag_spec = || parse_spec("refs/tags/*:refs/tags/*");
+    let tag_spec = || parse_spec("refs/tags/*:refs/tags/*", repo.hash);
     if prune_tags {
         specs.items.push(tag_spec()?);
     }
@@ -235,7 +240,7 @@ pub fn fetch(
     // Nothing to fetch configured: the merge refs of the current branch,
     // else the remote's HEAD.
     if nothing_configured && merge_refs.is_empty() {
-        specs.items.insert(0, parse_spec("HEAD")?);
+        specs.items.insert(0, parse_spec("HEAD", repo.hash)?);
     }
     let head_mode = follow_remote_head(repo, &remote.name);
     let follow_head = !cmdline && !opts.prefetch && remote.is_configured() && head_mode != "never";
@@ -473,7 +478,7 @@ pub fn fetch(
             Some(specs) => {
                 let mut set = RefspecSet::default();
                 for s in specs.iter().filter(|s| !s.is_empty()) {
-                    set.items.push(parse_spec(s)?);
+                    set.items.push(parse_spec(s, repo.hash)?);
                 }
                 Some(set)
             }
@@ -757,7 +762,7 @@ pub fn fetch(
 /// `refs/prefetch/<x>` (other destinations get the prefix as they are);
 /// refspecs for tags and without a destination are dropped, negative ones
 /// stay.
-fn prefetch_specs(specs: &RefspecSet) -> Result<RefspecSet> {
+fn prefetch_specs(specs: &RefspecSet, hash: HashKind) -> Result<RefspecSet> {
     let mut out = RefspecSet::default();
     for r in &specs.items {
         if r.negative {
@@ -776,7 +781,7 @@ fn prefetch_specs(specs: &RefspecSet) -> Result<RefspecSet> {
                 r.src.to_str_lossy(),
                 rest.to_str_lossy()
             );
-            out.items.push(parse_spec(&spec)?);
+            out.items.push(parse_spec(&spec, hash)?);
         }
     }
     Ok(out)

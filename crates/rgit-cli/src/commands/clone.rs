@@ -598,7 +598,9 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             }
         }),
         shared: None,
-        object_format: None,
+        // A clone starts out as SHA-1 whatever `GIT_DEFAULT_HASH` says and
+        // takes over the remote's object format once that is known.
+        object_format: Some(rgit_hash::HashKind::Sha1),
         ref_format: opts.ref_format,
         initial_branch: None,
     };
@@ -718,7 +720,6 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let config = refs_support::load_config(ctx, &setup)?;
     rgit_protocol::sideband::set_remote_colors(crate::color::remote_colors(&config));
     crate::color::set_sideband_controls(&config, Some(&source.url));
-    let hash = setup.format.object_format;
     let fatal = |e: &dyn std::fmt::Display| Die::Fatal(e.to_string());
     let repo = LocalRepo::open(&setup, config).map_err(|e| fatal(&e))?;
     for w in &repo.warnings {
@@ -874,12 +875,9 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         }
     }
     let empty = refs.iter().all(|r| r.oid.is_none());
-    // An empty repository still passes on its object format.
-    let remote_format = session.object_format();
-    if empty && remote_format != hash {
-        config_set(&config_path, "core.repositoryformatversion", "1")?;
-        config_set(&config_path, "extensions.objectformat", remote_format.name())?;
-    }
+    // The new repository uses the remote's object format (an empty
+    // repository passes it on too); it is switched below.
+    let hash = session.object_format();
 
     // The branch to check out: --branch, else the remote's HEAD.
     let mut our: Option<Our> = None;
@@ -957,6 +955,18 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             config_set(&config_path, k, v)?;
         }
     }
+    // Take over the remote's object format: record it, and open the
+    // repository again so that objects and references use it.
+    let (setup, repo) = if hash == setup.format.object_format {
+        (setup, repo)
+    } else {
+        switch_object_format(&setup, &repo.config, &config_path, hash)?;
+        drop(repo);
+        let setup = open_new_repository(ctx, &git_dir, work_tree.as_deref())?;
+        let config = refs_support::load_config(ctx, &setup)?;
+        let repo = LocalRepo::open(&setup, config).map_err(|e| fatal(&e))?;
+        (setup, repo)
+    };
 
     let reflog_msg = msg::reflog_clone(&anonymize(&source.url));
     let mut packs: Vec<ReceivedPack> = Vec::new();
@@ -972,7 +982,8 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     } else {
         let default_spec = (!detached_single).then_some(spec.fetch.as_str());
         let all_specs = extra_fetch.iter().map(String::as_str).chain(default_spec);
-        let specs = RefspecSet::parse(all_specs, Direction::Fetch).map_err(|e| fatal(&e))?;
+        let specs = RefspecSet::parse_with_hash(all_specs, Direction::Fetch, hash)
+            .map_err(|e| fatal(&e))?;
         let follow_tags = opts.tags && !opts.mirror && opts.revision.is_none();
         let mut errors = Vec::new();
         let mut mapped: Vec<(String, ObjectId)> = refmap::map_refspecs(&specs, &refs, hash, &mut errors)
@@ -1466,6 +1477,35 @@ enum Our {
     Tag(String, ObjectId),
     /// The remote's HEAD is detached.
     Detached(ObjectId),
+}
+
+/// Turn the freshly initialised (SHA-1, still empty) repository into one
+/// with the object format `hash` of the remote.
+fn switch_object_format(
+    setup: &Setup,
+    config: &rgit_config::ConfigSet,
+    config_path: &Path,
+    hash: rgit_hash::HashKind,
+) -> Result<(), Die> {
+    config_set(config_path, "core.repositoryformatversion", "1")?;
+    config_set(config_path, "extensions.objectformat", hash.name())?;
+    if setup.format.ref_storage == rgit_repo::RefStorage::Reftable {
+        // The tables name their hash function: start the stack again.
+        let store = refs_support::ref_store(setup, config);
+        let head = match rgit_refs::RefStore::read_raw(&store, "HEAD") {
+            Ok(Some(rgit_refs::Target::Symbolic(t))) => t.to_string(),
+            _ => "refs/heads/master".to_owned(),
+        };
+        drop(store);
+        repo_init::restart_reftable(
+            &setup.common_dir,
+            hash,
+            refs_support::shared_repository(config),
+            &head,
+        )
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    }
+    Ok(())
 }
 
 fn open_new_repository(

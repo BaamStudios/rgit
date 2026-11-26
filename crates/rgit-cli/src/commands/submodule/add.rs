@@ -84,11 +84,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let display = sup.display_path(&path);
     let existing = match std::fs::symlink_metadata(&dir) {
         Ok(meta) if meta.is_dir() && dir.join(".git").exists() => {
-            let Some(head) = common::sub_head(&dir, sup.hash()) else {
+            // A repository with another object format is refused by the
+            // `add` below, with its message.
+            if common::sub_head(&dir, sup.hash()).is_none()
+                && !crate::repository::submodule_of_other_hash(&dir, sup.hash())
+            {
                 return Err(Die::Fatal(msg::no_commit_checked_out(&path)));
-            };
-            if head.kind() != sup.hash() {
-                return Err(Die::Fatal(msg::DIFFERENT_HASH.into()));
             }
             true
         }

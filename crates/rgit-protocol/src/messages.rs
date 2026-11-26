@@ -90,6 +90,16 @@ pub fn mismatched_algorithms(client: &str, server: &str) -> String {
     format!("mismatched algorithms: client {client}; server {server}")
 }
 
+/// Protocol v0/v1 fetch: the server's `object-format` capability names
+/// another hash algorithm than the local repository's.
+pub const OBJECT_FORMAT_NOT_SUPPORTED: &str =
+    "Server does not support this repository's object format";
+
+/// Push: `receive-pack` advertises another hash algorithm than the local
+/// repository's.
+pub const RECEIVER_HASH_NOT_SUPPORTED: &str =
+    "the receiving end does not support this repository's hash algorithm";
+
 /// Shallow or deepen arguments for a server without the `shallow` feature
 /// of `fetch`.
 pub const SHALLOW_NOT_SUPPORTED: &str = "Server does not support shallow requests";

@@ -279,19 +279,67 @@ fn formats() {
         .run();
 }
 
-/// Creating SHA-256 repositories is refused until rgit supports them
-/// (#12); git creates them.
+/// SHA-256 repositories: `--object-format`, `GIT_DEFAULT_HASH` and
+/// `init.defaultObjectFormat`, their precedence, and reinitialising.
 #[test]
-fn unsupported_formats_are_refused() {
+fn sha256_repositories() {
     let mut fx = fixture();
-    let out = fx
-        .compare(["init", "--object-format=sha256", "a"])
-        .checks([])
+    fx.compare(["init", "--object-format=sha256", "a"])
+        .repo("a")
         .run();
-    if let Some(out) = out {
-        assert_eq!(out.rgit.code, Some(128));
-        let err = String::from_utf8_lossy(&out.rgit.stderr);
-        assert!(err.contains("extensions.objectFormat=sha256"), "{err}");
+    fx.compare(["init", "--object-format=sha256", "--bare", "b.git"])
+        .run();
+    fx.compare(["init", "c"])
+        .env("GIT_DEFAULT_HASH", "sha256")
+        .repo("c")
+        .run();
+    fx.compare(["-c", "init.defaultObjectFormat=sha256", "init", "d"])
+        .repo("d")
+        .run();
+    // The option wins over the environment, which wins over the
+    // configuration.
+    fx.compare(["init", "--object-format=sha1", "e"])
+        .env("GIT_DEFAULT_HASH", "sha256")
+        .repo("e")
+        .run();
+    fx.compare(["-c", "init.defaultObjectFormat=sha256", "init", "f"])
+        .env("GIT_DEFAULT_HASH", "sha1")
+        .repo("f")
+        .run();
+    fx.compare([
+        "init",
+        "--object-format=sha256",
+        "--ref-format=reftable",
+        "g",
+    ])
+    .output_only()
+    .run();
+    fx.compare([
+        "-C",
+        "g",
+        "rev-parse",
+        "--show-object-format",
+        "--show-ref-format",
+    ])
+    .output_only()
+    .run();
+    // Reinitialising keeps the format, whatever the defaults say, and
+    // refuses to change it.
+    fx.compare(["init", "a"]).repo("a").run();
+    fx.compare(["init", "a"])
+        .env("GIT_DEFAULT_HASH", "sha1")
+        .repo("a")
+        .run();
+    fx.compare(["init", "--object-format=sha1", "a"])
+        .output_only()
+        .run();
+    fx.compare(["init", "--object-format=sha256", "e"])
+        .output_only()
+        .run();
+    for repo in ["a", "c", "d", "e", "f"] {
+        fx.compare(["-C", repo, "rev-parse", "--show-object-format"])
+            .output_only()
+            .run();
     }
 }
 

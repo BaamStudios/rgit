@@ -356,10 +356,7 @@ impl<C: Duplex> Client<C> {
         let mut outcome = FetchOutcome::default();
         if let Some(local) = args.local_format {
             if local != self.format {
-                return Err(Error::MismatchedAlgorithms {
-                    client: local.name(),
-                    server: self.format.name(),
-                });
+                return Err(Error::ObjectFormatNotSupported);
             }
         }
         if args.wants.is_empty() {

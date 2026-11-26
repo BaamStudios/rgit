@@ -9,7 +9,7 @@ them it fails or warns instead of doing something else silently.
 | Area | M2 behaviour | Notes |
 |---|---|---|
 | Wire protocol | Protocol v2 only, for local paths, `git://`, SSH and smart HTTP(S). A server that answers with v0/v1 is refused with a `protocol error`. | Dumb HTTP is not supported. GitHub, GitLab, Gitea and git ≥ 2.18 servers speak v2. |
-| Object format | SHA-1 only. | Repositories with `extensions.objectFormat = sha256` are refused. |
+| Object format | SHA-1 only: repositories with `extensions.objectFormat = sha256` were refused in M2. | Since #12 SHA-256 repositories work like SHA-1 ones (`init --object-format`, `GIT_DEFAULT_HASH`, `init.defaultObjectFormat`; `clone` takes over the remote's format). `extensions.compatObjectFormat` is still refused. |
 | Diff | No rename or copy detection (`-M`, `-C`, `diff.renames`): a rename shows as a deletion plus an addition. | Applies to `diff`, `status` and `log`. |
 | Hooks | Hooks were not run in M2; when a hook would have run rgit printed a warning naming it. | Since #76 the commit hooks, `post-checkout` and `pre-push` run; see [hooks.md](hooks.md) for the rest. |
 | Content filters | No CRLF conversion (`core.autocrlf`, `text`/`eol` attributes), no `filter.<driver>` clean/smudge, no `ident`, no working-tree encoding. | Files are stored and checked out byte for byte. |

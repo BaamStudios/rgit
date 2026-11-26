@@ -70,6 +70,12 @@ pub enum Error {
         /// Server algorithm name.
         server: &'static str,
     },
+    /// v0/v1 fetch: the server's `object-format` is not the local
+    /// repository's.
+    ObjectFormatNotSupported,
+    /// Push: the receiving end's `object-format` is not the local
+    /// repository's.
+    ReceiverHashNotSupported,
     /// Shallow/deepen arguments, but the server lacks `fetch=shallow`.
     ShallowNotSupported,
     /// A request line given by the caller contains LF or is too long.
@@ -112,6 +118,8 @@ impl fmt::Display for Error {
             Error::MismatchedAlgorithms { client, server } => {
                 f.write_str(&messages::mismatched_algorithms(client, server))
             }
+            Error::ObjectFormatNotSupported => f.write_str(messages::OBJECT_FORMAT_NOT_SUPPORTED),
+            Error::ReceiverHashNotSupported => f.write_str(messages::RECEIVER_HASH_NOT_SUPPORTED),
             Error::ShallowNotSupported => f.write_str(messages::SHALLOW_NOT_SUPPORTED),
             Error::BadRequestLine(l) => f.write_str(&messages::bad_request_line(l)),
             Error::ExpectedAckNak(l) => f.write_str(&messages::expected_ack_nak(l)),

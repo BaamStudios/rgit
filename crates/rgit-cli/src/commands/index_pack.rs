@@ -230,7 +230,6 @@ fn discover(ctx: &Context) -> Result<Option<Repo>, Die> {
     if ctx.bare {
         opts.implicit_work_tree = false;
     }
-    opts.support.sha256 = true;
     let mut protected =
         rgit_repo::StandardProtectedConfig::new(&env, crate::repo::command_line(ctx));
     match rgit_repo::discover(&opts, &mut protected) {

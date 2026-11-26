@@ -298,25 +298,16 @@ pub fn init(
     // Object and reference formats.
     let hash = choose_hash(opts, env, &config, notify)?;
     let refs = choose_ref_format(opts, env, &config, notify)?;
-    match &existing {
-        Some(f) => {
-            if opts.object_format.is_some_and(|h| h != f.object_format) {
-                return Err(InitError::Fatal(messages::REINIT_DIFFERENT_HASH.into()));
-            }
-            if opts.ref_format.is_some_and(|r| r != f.ref_storage) {
-                return Err(InitError::Fatal(
-                    messages::REINIT_DIFFERENT_REF_FORMAT.into(),
-                ));
-            }
-            f.check_support(&Support::default())?;
+    if let Some(f) = &existing {
+        if opts.object_format.is_some_and(|h| h != f.object_format) {
+            return Err(InitError::Fatal(messages::REINIT_DIFFERENT_HASH.into()));
         }
-        None => {
-            if hash == HashKind::Sha256 {
-                return Err(InitError::Fatal(messages::init_unsupported(
-                    "extensions.objectFormat=sha256",
-                )));
-            }
+        if opts.ref_format.is_some_and(|r| r != f.ref_storage) {
+            return Err(InitError::Fatal(
+                messages::REINIT_DIFFERENT_REF_FORMAT.into(),
+            ));
         }
+        f.check_support(&Support::default())?;
     }
 
     // --separate-git-dir: move an existing repository, write the link later.
@@ -404,6 +395,7 @@ pub fn init(
         &ConfigValues {
             existing_version: existing.as_ref().map(|f| f.version),
             reftable: !reinitialized && refs == RefStorage::Reftable,
+            sha256: !reinitialized && hash == HashKind::Sha256,
             git_dir: &git_dir,
             link: &link,
             bare: opts.bare,
@@ -583,6 +575,34 @@ fn reftable_head(
     shared: SharedRepository,
     branch: &str,
 ) -> Result<(), InitError> {
+    reftable_head_ref(git_dir, hash, shared, &format!("refs/heads/{branch}"))
+}
+
+/// Start the reftable stack of the still empty repository `git_dir` again
+/// with object format `hash`; `HEAD` points to the reference `head`.
+/// `clone` uses this when the remote turns out to use another object
+/// format than the repository was initialised with.
+pub fn restart_reftable(
+    git_dir: &Path,
+    hash: HashKind,
+    shared: SharedRepository,
+    head: &str,
+) -> Result<(), InitError> {
+    let dir = git_dir.join("reftable");
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    reftable_head_ref(git_dir, hash, shared, head)
+}
+
+fn reftable_head_ref(
+    git_dir: &Path,
+    hash: HashKind,
+    shared: SharedRepository,
+    head: &str,
+) -> Result<(), InitError> {
     use rgit_refs::{NoHooks, RefUpdate, Transaction};
     let fail = |e: String| InitError::Fatal(messages::cannot_write(git_dir.display(), e));
     rgit_refs::reftable::backend::create(git_dir, hash, shared).map_err(|e| fail(io_text(&e)))?;
@@ -592,7 +612,7 @@ fn reftable_head(
     };
     let store = rgit_refs::files::FilesStore::with_options(git_dir, hash, options);
     let mut tx = Transaction::new(&store);
-    let update = RefUpdate::symref_update("HEAD", format!("refs/heads/{branch}"), None)
+    let update = RefUpdate::symref_update("HEAD", head.to_owned(), None)
         .no_deref(true)
         .skip_name_check(true);
     tx.push(update)
@@ -604,6 +624,8 @@ struct ConfigValues<'a> {
     existing_version: Option<i64>,
     /// A new repository in the reftable format.
     reftable: bool,
+    /// A new repository with SHA-256 object ids.
+    sha256: bool,
     git_dir: &'a Path,
     link: &'a Path,
     bare: bool,
@@ -632,8 +654,12 @@ fn write_config(path: &Path, config: &ConfigSet, v: &ConfigValues<'_>) -> Result
         template::write_new(path, b"", false, v.shared)?;
     }
     let mut version = v.existing_version.unwrap_or(0).max(0);
+    // The extensions need format version 1; git writes them first.
+    if v.sha256 {
+        set("extensions.objectformat", "sha256")?;
+        version = version.max(1);
+    }
     if v.reftable {
-        // The extension needs format version 1; git writes it first.
         set("extensions.refstorage", "reftable")?;
         version = version.max(1);
     }

@@ -769,13 +769,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some("--sq-quote") => return parseopt::sq_quote_mode(&args[1..]),
         _ => {}
     }
-    // Objects, refs and index are read hash-generically; only the files
-    // ref backend is supported.
-    let support = rgit_repo::format::Support {
-        sha256: true,
-        ..Default::default()
-    };
-    let setup = repo::setup_with(ctx, Mode::RequiredQuiet, support)?;
+    let setup = repo::setup(ctx, Mode::RequiredQuiet)?;
     let kind = setup.format.object_format;
     let config = revisions::load_config(ctx, &setup)?;
     let opts = revisions::options(ctx, &config, kind)?;

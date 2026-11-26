@@ -284,6 +284,9 @@ impl State<'_> {
         let (mode, id) = if meta.is_dir() {
             let gitlink = existing.iter().any(|e| e.mode.is_gitlink());
             let head = repository::submodule_head(&full, self.repo.hash);
+            if head.is_none() && repository::submodule_of_other_hash(&full, self.repo.hash) {
+                return Err(Some(crate::messages::add::DIFFERENT_HASH.into()));
+            }
             match head {
                 Some(h) if gitlink || self.flag(Flag::Add) || !existing.is_empty() => {
                     (IndexMode::GITLINK, h)

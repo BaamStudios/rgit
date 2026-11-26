@@ -55,6 +55,17 @@ pub fn submodule_head(dir: &std::path::Path, hash: HashKind) -> Option<rgit_hash
         .flatten()
 }
 
+/// Whether the nested repository at `dir` has a commit checked out but
+/// uses another object format than `hash`: its commit cannot be recorded
+/// in a gitlink.
+pub fn submodule_of_other_hash(dir: &std::path::Path, hash: HashKind) -> bool {
+    let other = match hash {
+        HashKind::Sha1 => HashKind::Sha256,
+        HashKind::Sha256 => HashKind::Sha1,
+    };
+    submodule_head(dir, other).is_some()
+}
+
 /// A repository opened by a command.
 pub struct Repo {
     inner: repo_objects::Repo,

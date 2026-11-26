@@ -33,11 +33,11 @@ pub struct Support {
 }
 
 impl Default for Support {
-    /// What every command can work with: SHA-1 object ids, references as
-    /// files or reftable.
+    /// What every command can work with: SHA-1 and SHA-256 object ids,
+    /// references as files or reftable.
     fn default() -> Self {
         Support {
-            sha256: false,
+            sha256: true,
             compat_object_format: false,
             reftable: true,
         }
