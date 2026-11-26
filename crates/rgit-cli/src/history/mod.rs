@@ -821,6 +821,15 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     for (id, negative, side) in &resolved.commits {
         walk.push_side(id, *negative, *side).map_err(walk_error)?;
     }
+    // `--ancestry-path=<commit>`, as in `run`.
+    for arg in &opts.ancestry {
+        let id = repo
+            .resolver
+            .resolve(arg)
+            .and_then(|id| repo.resolver.peel_to_commit(&id))
+            .map_err(|_| Die::Fatal(msg::bad_revision(arg)))?;
+        walk.ancestry_target(&id).map_err(walk_error)?;
+    }
     let mut commits = Vec::new();
     let mut parents = Vec::new();
     let mut same = Vec::new();

@@ -39,7 +39,13 @@ fn help_outside_a_repository() {
                 "show" => "log",
                 _ => cmd,
             };
-            let usage = format!("usage: git {shown}");
+            // `format-rev` and `replay` are marked `(EXPERIMENTAL!)` in
+            // their usage, like git (a known breakage in t1517).
+            let usage = if matches!(cmd, "format-rev" | "replay") {
+                format!("usage: (experimental!) git {shown}")
+            } else {
+                format!("usage: git {shown}")
+            };
             if out.status.code() != Some(0)
                 || !stdout
                     .lines()
