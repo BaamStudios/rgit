@@ -70,8 +70,8 @@ pub fn missing_ref(cmd: &str) -> String {
     format!("{cmd}: missing <ref>")
 }
 
-pub fn invalid_ref_format(cmd: &str, name: &str) -> String {
-    format!("{cmd}: invalid ref format: {name}")
+pub fn invalid_ref_format(name: &str) -> String {
+    format!("invalid ref format: {name}")
 }
 
 pub fn missing_field(cmd: &str, name: &str, field: &str) -> String {

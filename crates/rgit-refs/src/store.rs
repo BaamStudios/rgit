@@ -398,7 +398,16 @@ pub trait RefStore {
                     }));
                 }
                 Some(Target::Symbolic(next)) => {
+                    // A target that is no valid name does not resolve: the
+                    // symbolic reference dangles.
+                    let valid = crate::name::is_valid_refname(
+                        &rgit_bstr::to_bytes(&next),
+                        crate::name::RefNameFlags::ONELEVEL,
+                    );
                     chain.push(next.clone());
+                    if !valid {
+                        return Ok(Some(Resolved { chain, oid: None }));
+                    }
                     current = next;
                 }
             }

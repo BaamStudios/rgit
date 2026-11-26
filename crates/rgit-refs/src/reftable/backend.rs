@@ -99,10 +99,11 @@ fn target_of(rec: &RefRecord) -> Option<Target> {
     }
 }
 
-/// Whether a symbolic record names something that cannot be a reference;
-/// such a record counts as broken, like a loose file with that content.
+/// Whether a symbolic record has no target; such a record counts as broken,
+/// like a loose file holding just `ref:`.
 fn broken_symref(rec: &RefRecord) -> bool {
-    matches!(&rec.value, RefValue::Symbolic(t) if !is_valid_refname(t, RefNameFlags::ONELEVEL))
+    // A target that is no valid name makes a dangling symbolic reference.
+    matches!(&rec.value, RefValue::Symbolic(t) if t.is_empty())
 }
 
 /// The log record data of a reflog entry. git stores the message with a

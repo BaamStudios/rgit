@@ -237,9 +237,16 @@ pub fn run_with_usage(ctx: &mut Context, argv: &[String], usage: &[&str]) -> Cmd
     for entry in listed {
         let r = match entry {
             IterItem::Ref(r) => r,
-            IterItem::Broken(n) | IterItem::BadName(n) => {
+            IterItem::Broken(n) => {
                 if patterns.is_empty() || matches_any(&patterns, &n, icase) {
                     crate::argv::errln(&format!("warning: {}", msg::ignoring_broken_ref(&n)));
+                }
+                continue;
+            }
+            IterItem::BadName(n) => {
+                if patterns.is_empty() || matches_any(&patterns, &n, icase) {
+                    let w = rgit_refs::messages::ignoring_broken_name(&n);
+                    crate::argv::errln(&format!("warning: {w}"));
                 }
                 continue;
             }
