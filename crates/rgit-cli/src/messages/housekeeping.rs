@@ -124,6 +124,15 @@ pub const PRUNE_PACKED_H_DRY_RUN: &str = "dry run";
 pub const PRUNE_PACKED_H_QUIET: &str = "be quiet";
 pub const TOO_MANY_ARGUMENTS: &str = "too many arguments";
 
+// ------------------------------------------------ update-server-info
+
+pub const UPDATE_SERVER_INFO_USAGE: &[&str] = &["git update-server-info [-f | --force]"];
+pub const UPDATE_SERVER_INFO_H_FORCE: &str = "update the info files from scratch";
+
+pub fn unable_to_update(path: &str, err: &str) -> String {
+    format!("unable to update {path}: {err}")
+}
+
 // ------------------------------------------------------------ repack
 
 pub const REPACK_USAGE: &[&str] = &[

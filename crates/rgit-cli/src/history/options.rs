@@ -284,8 +284,16 @@ pub enum Missing {
     PrintInfo,
 }
 
+/// `strtol` in base 10 with nothing after the number: leading white space
+/// and a sign are accepted (Gitea's commit graph passes `-n 100` as one
+/// argument, so the value is ` 100`).
+fn strtol(s: &str) -> Result<i64, std::num::ParseIntError> {
+    s.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r'])
+        .parse::<i64>()
+}
+
 fn parse_count(s: &str) -> Result<usize, Die> {
-    match s.parse::<i64>() {
+    match strtol(s) {
         Ok(n) => Ok(usize::try_from(n).unwrap_or(usize::MAX)),
         Err(_) => Err(Die::Fatal(msg::not_an_integer(s))),
     }
@@ -293,8 +301,7 @@ fn parse_count(s: &str) -> Result<usize, Die> {
 
 /// A whole number for `--min-parents=` and `--max-parents=`.
 fn parse_int(s: &str) -> Result<i64, Die> {
-    s.parse::<i64>()
-        .map_err(|_| Die::Fatal(msg::not_an_integer(s)))
+    strtol(s).map_err(|_| Die::Fatal(msg::not_an_integer(s)))
 }
 
 /// Seconds since the epoch for `--max-age=` and `--min-age=`.
