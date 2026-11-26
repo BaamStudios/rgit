@@ -32,7 +32,7 @@ use rgit_revwalk::bisect;
 use rgit_revwalk::revision::{self, ObjectLookup, RefLookup, Resolver};
 use rgit_revwalk::walk::grep::CommitGrep;
 use rgit_revwalk::walk::objects::{ItemKind, ObjectLister, TreeItem, TreeSource};
-use rgit_revwalk::walk::{CommitInfo, CommitSource, Shown, Side, Walk};
+use rgit_revwalk::walk::{CommitInfo, CommitSource, Shown, Side, TraverseFailure, Walk};
 
 use crate::messages::rev_list as msg;
 use crate::repo::{self, Mode};
@@ -824,7 +824,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     let mut commits = Vec::new();
     let mut parents = Vec::new();
     let mut same = Vec::new();
-    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+    while let Some(s) = walk.next_shown().map_err(|id| walk_die(&walk, id))? {
         commits.push(s.id);
         same.push(s.same);
         parents.push(
@@ -986,7 +986,7 @@ pub fn walk_formatted(
         signature_cache: std::cell::RefCell::new(None),
     };
     let mut items = Vec::new();
-    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+    while let Some(s) = walk.next_shown().map_err(|id| walk_die(&walk, id))? {
         let (commit, _) = p.read_shown(&s.id).ok_or_else(|| walk_error(s.id))?;
         let mut expanded = Vec::with_capacity(formats.len());
         if let Some(settings) = &p.user {
@@ -2509,7 +2509,7 @@ fn show_commit(
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
-    let shown = walk.next_shown().map_err(walk_error);
+    let shown = walk.next_shown().map_err(|id| walk_die(&walk, id));
     *paths = walk.source_mut().paths.take();
     if let Some(s) = shown? {
         p.commit(&walk, &s)?;
@@ -3270,10 +3270,33 @@ fn next_shown(
 ) -> Result<Option<Shown>, Die> {
     match kept {
         Some(list) => Ok(list.pop_front()),
-        None => walk
-            .next_shown()
-            .map_err(|id| Die::Fatal(msg::bad_object(&id.to_hex()))),
+        None => walk.next_shown().map_err(|id| walk_die(walk, id)),
     }
+}
+
+/// The error for a walk that stopped at the unreadable commit `id`: a
+/// missing parent fails the traversal of its child, anything else is a
+/// bad object.
+pub(crate) fn walk_die<S: CommitSource>(walk: &Walk<S>, id: ObjectId) -> Die {
+    walk_failed(walk, id, false)
+}
+
+/// [`walk_die`]; `setup` reports every missing parent as a failed setup.
+fn walk_failed<S: CommitSource>(walk: &Walk<S>, id: ObjectId, setup: bool) -> Die {
+    let Some(failure) = walk.traverse_failure().filter(|f| f.parent() == id) else {
+        return Die::Fatal(msg::bad_object(&id.to_hex()));
+    };
+    eprintln!("error: {}", msg::could_not_read(&id.to_hex()));
+    Die::Fatal(match failure {
+        _ if setup => msg::walk_setup_failed().to_string(),
+        TraverseFailure::Parents { commit, .. } => {
+            msg::failed_to_traverse_parents(&commit.to_hex())
+        }
+        TraverseFailure::Simplify { commit, parent } => {
+            msg::cannot_simplify(&commit.to_hex(), &parent.to_hex())
+        }
+        TraverseFailure::Setup { .. } => msg::walk_setup_failed().to_string(),
+    })
 }
 
 /// `--max-count-oldest=<n>`: the last `n` commits of the walk (boundary
@@ -3284,10 +3307,7 @@ fn keep_oldest(
     reverse: bool,
 ) -> Result<std::collections::VecDeque<Shown>, Die> {
     let mut all = Vec::new();
-    while let Some(s) = walk
-        .next_shown()
-        .map_err(|id| Die::Fatal(msg::bad_object(&id.to_hex())))?
-    {
+    while let Some(s) = walk.next_shown().map_err(|id| walk_die(walk, id))? {
         all.push(s);
     }
     let shown = all.iter().filter(|s| !s.boundary).count();
@@ -3355,10 +3375,14 @@ fn human_size(n: u64) -> String {
 /// `rev-list --bisect`, `--bisect-vars` and `--bisect-all`: the commit
 /// halfway between the included and the excluded ones (rgit_revwalk::bisect).
 fn run_bisect(p: &mut Printer<'_, '_>, walk: &mut Walk<Commits<'_, '_>>) -> Result<i32, Die> {
-    let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
     let opts = p.opts;
     let mut list = Vec::new();
-    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+    // The reference walks the whole list before choosing, so a missing
+    // parent fails the setup of the walk.
+    while let Some(s) = walk.next_shown().map_err(|id| {
+        let setup = walk.traverse_failure().is_some();
+        walk_failed(walk, id, setup)
+    })? {
         if !s.boundary {
             list.push(s.id);
         }
@@ -3457,7 +3481,7 @@ fn run_objects(
     let repo = p.repo;
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
     let mut shown = Vec::new();
-    while let Some(s) = walk.next_shown().map_err(walk_error)? {
+    while let Some(s) = walk.next_shown().map_err(|id| walk_die(walk, id))? {
         shown.push(s);
     }
     let mut lister = ObjectLister::new(Trees(repo));
