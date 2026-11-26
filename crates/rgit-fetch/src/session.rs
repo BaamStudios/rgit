@@ -30,6 +30,7 @@ use rgit_protocol::v2::{
     ShallowInfo, SkippingNegotiator,
 };
 use rgit_protocol::{Capabilities, Packet, Progress, ProgressStyle, ProtocolVersion, Reader};
+use rgit_transport::helper::{Helper, HelperContext, Target};
 use rgit_transport::{ConnectOptions, Connection, IpVersion, Service, Settings, Transport};
 
 use crate::repo::LocalRepo;
@@ -54,6 +55,9 @@ pub struct ConnectSettings<'a> {
 
 /// The protocol name `protocol.<name>.allow` uses for `url`.
 pub fn protocol_name(url: &str) -> String {
+    if let Some(name) = rgit_transport::helper::protocol_name(url) {
+        return name;
+    }
     let exists = |p: &str| Path::new(p).exists();
     match rgit_transport::url::parse_remote(url, &exists) {
         Ok(rgit_transport::Remote::Local { .. }) => "file".into(),
@@ -105,6 +109,26 @@ enum Proto {
         adv: Advertisement,
         client: Option<v0::Client<Box<dyn Connection>>>,
     },
+    /// A remote helper without `connect` (`list`, `fetch`, `import`).
+    Helper(HelperSession),
+}
+
+/// A session with a remote helper driven command by command.
+struct HelperSession {
+    helper: Helper,
+    refs: Vec<RemoteRef>,
+    format: HashKind,
+    /// Nothing is advertised (no pack protocol).
+    caps: Capabilities,
+}
+
+/// The transport of a helper session: there is nothing to connect to.
+struct NoTransport;
+
+impl Transport for NoTransport {
+    fn connect(&mut self, _: &ConnectOptions) -> rgit_transport::Result<Box<dyn Connection>> {
+        Err(rgit_transport::Error::Other("no pack protocol".into()))
+    }
 }
 
 /// An open connection to `upload-pack`.
@@ -196,7 +220,19 @@ impl Session {
         settings: &ConnectSettings<'_>,
         program: &'static str,
     ) -> Result<Session> {
-        let protocol = protocol_name(url);
+        Session::connect_with(url, settings, program, &HelperContext::default())
+    }
+
+    /// [`Session::connect`] for the remote `ctx` describes: its name,
+    /// `remote.<name>.vcs` and the local repository matter for remote
+    /// helpers ([`rgit_transport::helper`]).
+    pub fn connect_with(
+        url: &str,
+        settings: &ConnectSettings<'_>,
+        program: &'static str,
+        ctx: &HelperContext,
+    ) -> Result<Session> {
+        let protocol = ctx.vcs.clone().unwrap_or_else(|| protocol_name(url));
         rgit_remote::check_allowed(protocol.as_bytes(), settings.config, settings.env)
             .map_err(|e| Error::fatal(e.to_string()))?;
         let version = protocol_version(settings.config, settings.env)?;
@@ -206,9 +242,15 @@ impl Session {
             ip: settings.ip,
             base_env: settings.base_env.clone(),
         };
-        let Some(mut transport) = rgit_http::transport_for(url, &tsettings)? else {
-            let scheme = url.split("://").next().unwrap_or(url);
-            return Err(Error::fatal(messages::no_remote_helper(scheme)));
+        let mut transport = match rgit_http::target_for(url, &tsettings, ctx)? {
+            Some(Target::Transport(t)) => t,
+            Some(Target::Helper(helper)) => {
+                return Session::with_helper(url, *helper, settings, program);
+            }
+            None => {
+                let scheme = url.split("://").next().unwrap_or(url);
+                return Err(Error::fatal(messages::no_remote_helper(scheme)));
+            }
         };
         let mut options = ConnectOptions::new(Service::UploadPack);
         options.program = settings.upload_pack.clone();
@@ -276,6 +318,7 @@ impl Session {
         match &self.proto {
             Proto::V2(_) => ProtocolVersion::V2,
             Proto::V0 { adv, .. } => adv.version,
+            Proto::Helper(_) => ProtocolVersion::V0,
         }
     }
 
@@ -284,6 +327,7 @@ impl Session {
         match &self.proto {
             Proto::V2(c) => c.object_format(),
             Proto::V0 { adv, .. } => adv.format,
+            Proto::Helper(h) => h.format,
         }
     }
 
@@ -300,6 +344,7 @@ impl Session {
         match &self.proto {
             Proto::V2(c) => c.capabilities(),
             Proto::V0 { adv, .. } => &adv.caps,
+            Proto::Helper(h) => &h.caps,
         }
     }
 
@@ -333,6 +378,7 @@ impl Session {
         match &mut self.proto {
             Proto::V2(c) => Ok(c.ls_refs(args)?),
             Proto::V0 { adv, .. } => Ok(adv.refs.clone()),
+            Proto::Helper(h) => Ok(h.refs.clone()),
         }
     }
 
@@ -355,6 +401,9 @@ impl Session {
         if wants.is_empty() && opts.want_refs.is_empty() {
             return Ok(None);
         }
+        if let Proto::Helper(h) = &mut self.proto {
+            return helper_fetch(h, repo, wants);
+        }
         let mut args = FetchArgs {
             wants: wants.to_vec(),
             want_refs: opts.want_refs.clone(),
@@ -375,6 +424,7 @@ impl Session {
             let supported = match &self.proto {
                 Proto::V2(client) => client.supports_filter(),
                 Proto::V0 { adv, .. } => adv.caps.contains("filter"),
+                Proto::Helper(_) => unreachable!("helpers fetch above"),
             };
             if supported {
                 args.filter = Some(spec.clone());
@@ -522,6 +572,7 @@ impl Session {
                     let c = client.as_mut().expect("connected above");
                     c.fetch(&args, negotiator, &mut progress, sink)
                 }
+                Proto::Helper(_) => unreachable!("helpers fetch above"),
             };
             drop(tx);
             let indexed = match worker.join() {
@@ -694,9 +745,197 @@ impl Session {
                 let _ = client.into_inner().close();
             }
             Proto::V0 { client: None, .. } => {}
+            Proto::Helper(h) => h.helper.disconnect()?,
         }
         Ok(())
     }
+
+    /// A session with a remote helper that has no `connect`: set the
+    /// usual options and read its `list`.
+    fn with_helper(
+        url: &str,
+        mut helper: Helper,
+        settings: &ConnectSettings<'_>,
+        program: &'static str,
+    ) -> Result<Session> {
+        let caps = helper.capabilities().clone();
+        if caps.import && caps.refspecs.is_empty() {
+            eprintln!("warning: {}", messages::HELPER_NEEDS_REFSPEC);
+        }
+        helper.standard_options(false, if settings.verbose { 2 } else { 1 })?;
+        let list = helper.list(false)?;
+        let format = list
+            .object_format
+            .as_deref()
+            .and_then(HashKind::from_name)
+            .unwrap_or(HashKind::Sha1);
+        let refs = listed_refs(&list, format);
+        let mut options = ConnectOptions::new(Service::UploadPack);
+        options.trace_name = Some(program.to_owned());
+        Ok(Session {
+            proto: Proto::Helper(HelperSession {
+                helper,
+                refs,
+                format,
+                caps: Capabilities::default(),
+            }),
+            url: url.to_owned(),
+            transport: Box::new(NoTransport),
+            options,
+            program,
+            shallow_info: None,
+        })
+    }
+
+    /// Whether the remote is a helper that can only `import`: its refs
+    /// are listed without values, [`Session::import_refs`] brings them in.
+    pub fn needs_import(&self) -> bool {
+        match &self.proto {
+            Proto::Helper(h) => {
+                let caps = h.helper.capabilities();
+                caps.import && !caps.fetch
+            }
+            _ => false,
+        }
+    }
+
+    /// `option <name> <value>` for a remote helper (an unsupported option
+    /// is ignored); nothing for other remotes.
+    pub fn helper_option(&mut self, name: &str, value: &str) -> Result<()> {
+        if let Proto::Helper(h) = &mut self.proto {
+            h.helper.set_option(name, value)?;
+        }
+        Ok(())
+    }
+
+    /// Import the remote refs `names` (a symbolic ref stands for its
+    /// target) through `git fast-import` and fill in their values in
+    /// `refs` from the helper's private refs. Nothing for other remotes.
+    pub fn import_refs(
+        &mut self,
+        repo: &LocalRepo,
+        refs: &mut [RemoteRef],
+        names: &[Vec<u8>],
+    ) -> Result<()> {
+        let Proto::Helper(h) = &mut self.proto else {
+            return Ok(());
+        };
+        let target = |name: &[u8]| -> Vec<u8> {
+            h.refs
+                .iter()
+                .find(|r| r.name == name)
+                .and_then(|r| r.symref_target.clone())
+                .unwrap_or_else(|| name.to_vec())
+        };
+        let list: Vec<String> = names
+            .iter()
+            .map(|n| String::from_utf8_lossy(&target(n)).into_owned())
+            .collect();
+        if list.is_empty() {
+            return Ok(());
+        }
+        let stats = if std::env::var_os("GIT_TRANSPORT_HELPER_DEBUG").is_some() {
+            "--stats"
+        } else {
+            "--quiet"
+        };
+        h.helper
+            .import(&list, &["--allow-unsafe-features".into(), stats.into()])
+            .map_err(|e| Error::fatal(e.to_string()))?;
+        repo.rescan_packs();
+        let caps = h.helper.capabilities().clone();
+        for name in &list {
+            let Some(private) = caps.private_ref(name) else {
+                continue;
+            };
+            let oid = repo
+                .resolve(&private)
+                .ok_or_else(|| Error::fatal(messages::could_not_read_ref(&private)))?;
+            for r in refs.iter_mut().chain(h.refs.iter_mut()) {
+                let symref_to = r.symref_target.as_deref() == Some(name.as_bytes());
+                if r.name == name.as_bytes() || symref_to {
+                    r.oid = Some(oid);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The refs of a helper's `list` in the object format it names (SHA-1
+/// when it names none); see [`listed_refs`].
+pub fn helper_refs(list: &rgit_transport::helper::RefList) -> Vec<RemoteRef> {
+    let format = list
+        .object_format
+        .as_deref()
+        .and_then(HashKind::from_name)
+        .unwrap_or(HashKind::Sha1);
+    listed_refs(list, format)
+}
+
+/// The refs of a helper's `list`: unknown values (`?`) are the null id,
+/// a symbolic ref has the value of its target (as `ls-remote` shows).
+fn listed_refs(list: &rgit_transport::helper::RefList, format: HashKind) -> Vec<RemoteRef> {
+    let value = |v: Option<&String>| {
+        v.and_then(|v| ObjectId::from_hex(format, v.as_bytes()).ok())
+            .unwrap_or_else(|| ObjectId::null(format))
+    };
+    list.refs
+        .iter()
+        .map(|r| {
+            let oid = match &r.symref {
+                Some(t) => value(
+                    list.refs
+                        .iter()
+                        .find(|x| &x.name == t)
+                        .and_then(|x| x.value.as_ref()),
+                ),
+                None => value(r.value.as_ref()),
+            };
+            RemoteRef {
+                name: r.name.clone().into_bytes(),
+                oid: Some(oid),
+                symref_target: r.symref.clone().map(String::into_bytes),
+                peeled: None,
+            }
+        })
+        .collect()
+}
+
+/// `fetch` through a helper: the helper stores the objects itself.
+fn helper_fetch(
+    h: &mut HelperSession,
+    repo: &LocalRepo,
+    wants: &[ObjectId],
+) -> Result<Option<ReceivedPack>> {
+    if !h.helper.capabilities().fetch {
+        return Ok(None);
+    }
+    let pairs: Vec<(String, String)> = wants
+        .iter()
+        .map(|w| {
+            let name = h
+                .refs
+                .iter()
+                .find(|r| r.oid == Some(*w) && r.symref_target.is_none())
+                .map(|r| String::from_utf8_lossy(&r.name).into_owned())
+                .unwrap_or_else(|| w.to_hex());
+            (w.to_hex(), name)
+        })
+        .collect();
+    let reply = h.helper.fetch(&pairs)?;
+    repo.rescan_packs();
+    let mut locks = reply.locks.into_iter();
+    let keep = locks.next();
+    for extra in locks {
+        let _ = std::fs::remove_file(extra);
+    }
+    Ok(Some(ReceivedPack {
+        pack: None,
+        keep,
+        objects: HashSet::new(),
+        rounds: 0,
+    }))
 }
 
 /// Settings for [`Session::fetch_pack`].

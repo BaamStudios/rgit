@@ -45,6 +45,7 @@ pub mod command;
 pub mod credential;
 pub mod daemon;
 mod error;
+pub mod helper;
 pub mod local;
 pub mod messages;
 mod os;

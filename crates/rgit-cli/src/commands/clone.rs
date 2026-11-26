@@ -805,7 +805,18 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     } else {
         opts.server_options.clone()
     };
-    let mut session = Session::connect(&source.connect_url, &connect, "clone").map_err(|e| fatal(&e))?;
+    let helper_ctx = rgit_transport::helper::HelperContext {
+        remote: Some(origin.clone()),
+        vcs: repo
+            .config
+            .string(format!("remote.{origin}.vcs"))
+            .ok()
+            .flatten()
+            .map(|v| v.to_str_lossy().into_owned()),
+        git_dir: Some(repo.git_dir.clone()),
+    };
+    let mut session = Session::connect_with(&source.connect_url, &connect, "clone", &helper_ctx)
+        .map_err(|e| fatal(&e))?;
     session
         .check_server_options(&opts.server_options)
         .map_err(|e| fatal(&e))?;
@@ -876,6 +887,22 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                     .iter()
                     .any(|p| r.name.starts_with(p.as_bytes()))
         });
+    }
+    // A remote helper that imports lists no values: import everything
+    // (`HEAD` first) and take the values from its private refs.
+    if session.needs_import() {
+        session.helper_option("cloning", "true").map_err(|e| fatal(&e))?;
+        let mut names: Vec<Vec<u8>> = refs
+            .iter()
+            .filter(|r| r.name == b"HEAD")
+            .map(|r| r.name.clone())
+            .collect();
+        names.extend(refs.iter().filter(|r| r.name != b"HEAD").map(|r| r.name.clone()));
+        session
+            .import_refs(&repo, &mut refs, &names)
+            .map_err(|e| fatal(&e))?;
+        let null = ObjectId::null(session.object_format());
+        refs.retain(|r| r.oid != Some(null));
     }
 
     let remote_head = refs.iter().find(|r| r.name == b"HEAD");

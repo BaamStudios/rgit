@@ -10,6 +10,7 @@ use rgit_protocol::ProtocolVersion;
 use rgit_protocol::v2::RemoteRef;
 use rgit_refs::{RefStore, RefUpdate};
 use rgit_remote::{BranchConfig, Direction, Refspec, RefspecSet, Remote, TagOpt};
+use rgit_transport::helper::HelperContext;
 
 use crate::display::{self, display_url};
 use crate::refmap::{self, Entry, Origin};
@@ -166,10 +167,13 @@ pub fn fetch(
     opts: &FetchOptions,
     connect: &ConnectSettings<'_>,
 ) -> Result<FetchResult> {
-    let Some(url) = remote.fetch_url() else {
-        return Err(Error::fatal(messages::NO_URL));
+    let vcs = remote.vcs.as_ref().map(|v| v.to_str_lossy().into_owned());
+    // A remote helper named by `remote.<name>.vcs` needs no URL.
+    let url = match (remote.fetch_url(), &vcs) {
+        (Some(url), _) => url.to_str_lossy().into_owned(),
+        (None, Some(_)) => String::new(),
+        (None, None) => return Err(Error::fatal(messages::NO_URL)),
     };
-    let url = url.to_str_lossy().into_owned();
     let shown_url = display_url(&url);
     let cmdline = !opts.refspecs.is_empty();
     let tag_opt = opts.tags.unwrap_or(remote.tag_opt);
@@ -288,7 +292,14 @@ pub fn fetch(
         })?;
     }
 
-    let mut session = Session::connect(&url, connect, "fetch")?;
+    let helper_ctx = HelperContext {
+        remote: remote
+            .is_configured()
+            .then(|| remote.name.to_str_lossy().into_owned()),
+        vcs,
+        git_dir: Some(repo.git_dir.clone()),
+    };
+    let mut session = Session::connect_with(&url, connect, "fetch", &helper_ctx)?;
     session.check_server_options(&opts.server_options)?;
     // `-o` replaces `remote.<name>.serverOption`.
     let server_options: Vec<String> = if opts.server_options.is_empty() {
@@ -307,6 +318,14 @@ pub fn fetch(
         Vec::new()
     } else {
         session.ls_refs(&prefixes, &server_options)?
+    };
+
+    // A remote helper that imports lists refs without values: import
+    // what is to be fetched (and the tags that could be followed) first.
+    let refs = if session.needs_import() {
+        import_wanted(&mut session, repo, refs, &specs, tag_opt)?
+    } else {
+        refs
     };
 
     let mut result = FetchResult {
@@ -770,6 +789,42 @@ pub fn fetch(
 /// `refs/prefetch/<x>` (other destinations get the prefix as they are);
 /// refspecs for tags and without a destination are dropped, negative ones
 /// stay.
+/// Import the refs `specs` select (and, unless tags are off, the remote's
+/// tags that do not exist here) through the remote helper, and return
+/// `refs` with their values; refs whose value is still unknown are
+/// dropped.
+fn import_wanted(
+    session: &mut Session,
+    repo: &LocalRepo,
+    mut refs: Vec<RemoteRef>,
+    specs: &RefspecSet,
+    tag_opt: TagOpt,
+) -> Result<Vec<RemoteRef>> {
+    let mut ignored = Vec::new();
+    let mut names: Vec<Vec<u8>> = refmap::map_refspecs(specs, &refs, repo.hash, &mut ignored)?
+        .into_iter()
+        .map(|e| e.remote.to_vec())
+        .collect();
+    if tag_opt != TagOpt::NoTags {
+        for r in &refs {
+            let name = r.name.as_slice();
+            if name.starts_with(b"refs/tags/")
+                && !names.iter().any(|n| n == name)
+                && repo.resolve(&name.to_str_lossy()).is_none()
+            {
+                names.push(name.to_vec());
+            }
+        }
+    }
+    if tag_opt == TagOpt::Auto {
+        session.helper_option("followtags", "true")?;
+    }
+    session.import_refs(repo, &mut refs, &names)?;
+    let null = ObjectId::null(session.object_format());
+    refs.retain(|r| r.oid != Some(null));
+    Ok(refs)
+}
+
 fn prefetch_specs(specs: &RefspecSet, hash: HashKind) -> Result<RefspecSet> {
     let mut out = RefspecSet::default();
     for r in &specs.items {
