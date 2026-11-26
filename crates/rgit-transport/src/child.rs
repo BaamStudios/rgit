@@ -110,6 +110,25 @@ pub(crate) fn spawn_error(cmd: &Command, e: io::Error) -> Error {
     }
 }
 
+impl ChildConnection {
+    /// Close the child's input, read what it still writes and wait for
+    /// it. A child that finishes its output after the last answer was
+    /// read (a remote helper ending a response) then does not write into
+    /// a closed pipe. How the child exits does not matter.
+    pub(crate) fn finish_reading(self) {
+        let ChildConnection {
+            mut child,
+            stdin,
+            mut stdout,
+            _sigpipe,
+        } = self;
+        drop(stdin);
+        let _ = io::copy(&mut stdout, &mut io::sink());
+        drop(stdout);
+        let _ = child.wait();
+    }
+}
+
 impl Read for ChildConnection {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.stdout.read(buf)

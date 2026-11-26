@@ -984,9 +984,10 @@ impl Connection for StatelessConnection {
 
     fn close(self: Box<Self>) -> Result<()> {
         // The helper ends when its input does; how it exits does not
-        // matter (as after `connect`).
-        let conn: Box<dyn Connection> = Box::new(self.reader.conn);
-        let _ = conn.close();
+        // matter (as after `connect`). It may still be writing the
+        // response-end packet of the last response: its output stays
+        // open until it is done.
+        self.reader.conn.finish_reading();
         Ok(())
     }
 }

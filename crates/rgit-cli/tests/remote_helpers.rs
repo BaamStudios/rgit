@@ -233,7 +233,7 @@ fn unchanged_list_attribute_same_as_git() {
 /// response followed by a response-end packet. `SC_FALLBACK` makes it
 /// answer `fallback` (and list no refs).
 const STATELESS: &str = r#"#!/usr/bin/env python3
-import os, subprocess, sys
+import os, subprocess, sys, time
 path = sys.argv[2]
 inp, out = sys.stdin.buffer, sys.stdout.buffer
 env = dict(os.environ, GIT_PROTOCOL="version=2")
@@ -276,6 +276,8 @@ while True:
                 sys.exit(0)
             w(subprocess.run(["git", "upload-pack", "--stateless-rpc", path],
                              env=env, input=req, stdout=subprocess.PIPE).stdout)
+            if os.environ.get("SC_SLOW"):
+                time.sleep(0.2)
             w(b"0002")
     elif line == "":
         break
@@ -310,6 +312,9 @@ fn stateless_connect_same_as_git() {
     let path = path_with(&fx.work_dir().join("bin"));
     let debug = ("GIT_TRANSPORT_HELPER_DEBUG", "1");
     let fallback = ("SC_FALLBACK", "1");
+    // The response-end packet arrives late: the helper must still be
+    // able to write it when the last answer has been read.
+    let slow = ("SC_SLOW", "1");
     type Case<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)]);
     let outside: &[Case] = &[
         (&["ls-remote", "sc::src"], &[]),
@@ -318,6 +323,7 @@ fn stateless_connect_same_as_git() {
         (&["ls-remote", "sc::src"], &[fallback]),
         (&["ls-remote", "sc::src"], &[debug]),
         (&["ls-remote", "sc::src"], &[debug, fallback]),
+        (&["ls-remote", "sc::src"], &[slow]),
     ];
     for (args, envs) in outside {
         let mut c = fx.compare(*args).env("PATH", &path);
