@@ -202,7 +202,7 @@ impl FilesStore {
     /// Path of the loose file for `name`.
     pub fn ref_path(&self, name: &str) -> PathBuf {
         let (dir, rel) = self.locate(name);
-        dir.join(rel)
+        dir.join(rgit_bstr::to_os(rel))
     }
 
     /// Path of `packed-refs`.
@@ -332,7 +332,7 @@ impl FilesStore {
         dir_rel: &str,
         out: &mut BTreeMap<String, LooseRead>,
     ) -> Result<(), Error> {
-        let dir = base.join(dir_rel.trim_end_matches('/'));
+        let dir = base.join(rgit_bstr::to_os(dir_rel.trim_end_matches('/')));
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e)
@@ -348,9 +348,7 @@ impl FilesStore {
                 path: dir.clone(),
                 source,
             })?;
-            let Ok(file_name) = entry.file_name().into_string() else {
-                continue;
-            };
+            let file_name = rgit_bstr::from_os_string(entry.file_name());
             let rel = format!("{}/{}", dir_rel.trim_end_matches('/'), file_name);
             let file_type = entry.file_type().map_err(|source| Error::Io {
                 path: entry.path(),
@@ -526,7 +524,7 @@ impl RefStore for FilesStore {
             } else {
                 IterItem::BadName(entry.name.clone())
             };
-            items.insert(entry.name.as_bytes().to_vec(), item);
+            items.insert(rgit_bstr::to_bytes(&entry.name).into_owned(), item);
         }
         for (name, value) in loose {
             if !name.starts_with(prefix) {
@@ -542,7 +540,7 @@ impl RefStore for FilesStore {
                     _ => IterItem::Broken(name.clone()),
                 }
             };
-            items.insert(name.into_bytes(), item);
+            items.insert(rgit_bstr::to_bytes(&name).into_owned(), item);
         }
         if options.include_root_refs {
             let root = self.worktree_dir.as_ref().unwrap_or(&self.git_dir);

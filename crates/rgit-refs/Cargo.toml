@@ -14,11 +14,13 @@ workspace = true
 crc32fast = "1.5.0"
 # zlib-rs: pure Rust zlib (Zlib license), as in rgit-odb and rgit-pack.
 flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
+rgit-bstr = { path = "../rgit-bstr" }
 rgit-date = { path = "../rgit-date" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
 thiserror = "2"
 
 [dev-dependencies]
+rgit-bstr = { path = "../rgit-bstr" }
 rgit-difftest = { path = "../rgit-difftest" }
 tempfile = "3"

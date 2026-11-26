@@ -305,7 +305,7 @@ impl<'a> Env<'a> {
     pub(crate) fn value(&self, atom: &Atom, it: &RefItem, cache: &ItemCache) -> Result<Value, Die> {
         let deref = atom.deref;
         let name_value = |name: &str, m: NameMod| {
-            let mut v = self.shorten(name, m).into_bytes();
+            let mut v = rgit_bstr::to_bytes(&self.shorten(name, m)).into_owned();
             if deref {
                 v.extend_from_slice(b"^{}");
             }

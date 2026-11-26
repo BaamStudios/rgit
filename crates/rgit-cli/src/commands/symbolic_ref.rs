@@ -4,6 +4,7 @@
 //! entry (with the `-m` reason) from what the reference resolved to
 //! before to what its new target resolves to.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use rgit_refs::RefStore as _;
@@ -77,7 +78,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             } else {
                 t
             };
-            println!("{t}");
+            let _ = writeln!(crate::argv::stdout(), "{t}");
             Ok(0)
         }
         None if quiet.get() => Ok(1),
@@ -189,7 +190,7 @@ fn read_symref(setup: &rgit_repo::Setup, name: &str) -> Option<String> {
     } else {
         &setup.common_dir
     };
-    let file: PathBuf = base.join(name);
+    let file: PathBuf = base.join(rgit_bstr::to_os(name));
     let meta = std::fs::symlink_metadata(&file).ok()?;
     if meta.file_type().is_symlink() {
         let t = std::fs::read_link(&file).ok()?;
@@ -198,7 +199,8 @@ fn read_symref(setup: &rgit_repo::Setup, name: &str) -> Option<String> {
     }
     let data = std::fs::read(&file).ok()?;
     let rest = data.strip_prefix(b"ref:")?;
-    let text = std::str::from_utf8(rest).ok()?.trim();
+    let text = rgit_bstr::from_bytes(rest);
+    let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
 }
 

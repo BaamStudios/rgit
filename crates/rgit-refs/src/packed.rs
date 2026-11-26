@@ -105,8 +105,8 @@ impl PackedRefs {
             let parsed = ok
                 .then(|| {
                     let oid = ObjectId::from_hex(kind, &line[..hex_len]).ok()?;
-                    let name = std::str::from_utf8(&line[hex_len + 1..]).ok()?;
-                    Some((oid, name.to_owned()))
+                    let name = rgit_bstr::from_bytes(&line[hex_len + 1..]);
+                    Some((oid, name.into_owned()))
                 })
                 .flatten();
             let Some((oid, name)) = parsed else {
@@ -118,9 +118,12 @@ impl PackedRefs {
                 peeled: None,
             });
         }
-        let is_sorted = traits.sorted || refs.windows(2).all(|w| w[0].name <= w[1].name);
+        let is_sorted = traits.sorted
+            || refs
+                .windows(2)
+                .all(|w| rgit_bstr::cmp(&w[0].name, &w[1].name).is_le());
         if !is_sorted {
-            refs.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+            refs.sort_by(|a, b| rgit_bstr::cmp(&a.name, &b.name));
         }
         // Duplicate names are kept: the reference git lists every one.
         Ok(Self { traits, refs })
@@ -128,7 +131,7 @@ impl PackedRefs {
 
     /// Builds a file from entries (sorted here).
     pub fn from_refs(mut refs: Vec<PackedRef>) -> Self {
-        refs.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+        refs.sort_by(|a, b| rgit_bstr::cmp(&a.name, &b.name));
         refs.dedup_by(|later, earlier| later.name == earlier.name);
         Self {
             traits: Traits {
@@ -157,7 +160,7 @@ impl PackedRefs {
 
     fn position(&self, name: &str) -> Result<usize, usize> {
         self.refs
-            .binary_search_by(|r| r.name.as_bytes().cmp(name.as_bytes()))
+            .binary_search_by(|r| rgit_bstr::cmp(&r.name, name))
     }
 
     /// Looks up one reference.
@@ -168,9 +171,10 @@ impl PackedRefs {
     /// Entries whose name starts with `prefix`.
     pub fn with_prefix<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a PackedRef> + 'a {
         let start = self.position(prefix).unwrap_or_else(|i| i);
+        let raw = rgit_bstr::to_bytes(prefix);
         self.refs[start..]
             .iter()
-            .take_while(move |r| r.name.starts_with(prefix))
+            .take_while(move |r| rgit_bstr::to_bytes(&r.name).starts_with(&raw))
     }
 
     /// What is known about the peeled value of `entry` given the traits.
@@ -210,7 +214,7 @@ impl PackedRefs {
         for r in &self.refs {
             out.extend_from_slice(r.oid.to_hex().as_bytes());
             out.push(b' ');
-            out.extend_from_slice(r.name.as_bytes());
+            out.extend_from_slice(&rgit_bstr::to_bytes(&r.name));
             out.push(b'\n');
             if let Some(p) = r.peeled {
                 out.push(b'^');
