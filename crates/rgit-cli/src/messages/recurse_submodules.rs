@@ -16,3 +16,17 @@ pub fn could_not_update(path: &str) -> String {
 pub fn bad_recurse_value(value: &str) -> String {
     format!("bad recurse-submodules argument: {value}")
 }
+
+/// The git directory of a submodule lies within the git directory of
+/// another one (`error: `).
+pub fn git_dir_inside(sub: &str, outer: &str) -> String {
+    format!("submodule git dir '{sub}' is inside git dir '{outer}'")
+}
+
+/// `hint: ` between that error and the fatal one.
+pub const HINT_PATH_CONFIG: &str = "enabling extensions.submodulePathConfig might fix the following error, if it's not already enabled.";
+
+/// `fatal: ` after [`git_dir_inside`] (two blanks as in git).
+pub fn refusing_git_dir(sub: &str) -> String {
+    format!("refusing to create/use '{sub}' in another submodule's  git dir.")
+}

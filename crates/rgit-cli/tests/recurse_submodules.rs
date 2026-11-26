@@ -401,3 +401,29 @@ fn branch_recurses() {
         ],
     );
 }
+
+/// A submodule path that is a symbolic link (here to another repository)
+/// is never followed: git names it and ends before anything is written.
+#[test]
+fn symlinked_submodule_path() {
+    let linked = || {
+        fixture()
+            .remove("super/sub")
+            .git(["init", "-q", "super/target"])
+            .git(["-C", "super/target", "fetch", "-q", "../../sub"])
+            .symlink("target", "super/sub")
+    };
+    for args in [
+        &["restore", "--recurse-submodules", "sub"][..],
+        &["checkout", "-f", "--recurse-submodules", "none"],
+        &["checkout", "-f", "--recurse-submodules", "two"],
+        &["read-tree", "-u", "--reset", "--recurse-submodules", "none"],
+    ] {
+        let mut fx = linked();
+        fx.compare(args)
+            .in_dir("super")
+            .repo("super")
+            .checks(Check::OUTPUT)
+            .run();
+    }
+}
