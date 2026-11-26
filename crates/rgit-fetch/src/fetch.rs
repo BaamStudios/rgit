@@ -335,6 +335,11 @@ pub fn fetch(
     let refs = if session.needs_import() {
         import_wanted(&mut session, repo, refs, &specs, tag_opt)?
     } else {
+        // A fetching helper learns that tags are followed (also when
+        // there is nothing to fetch).
+        if tag_opt == TagOpt::Auto {
+            session.helper_option("followtags", "true")?;
+        }
         refs
     };
 

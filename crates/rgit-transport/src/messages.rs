@@ -285,6 +285,11 @@ pub fn unknown_mandatory_capability(cap: &str) -> String {
     )
 }
 
+/// `fatal:` for a ref listed as `unchanged` that is missing locally.
+pub fn could_not_read_ref(name: &str) -> String {
+    format!("could not read ref {name}")
+}
+
 /// `fatal:` for an answer to `connect` other than an empty line or
 /// `fallback`.
 pub fn unknown_connect_response(line: &str) -> String {
@@ -340,6 +345,9 @@ pub const DEBUG_READ_LISTING: &str = "Debug: Read ref listing.";
 
 /// After a successful `connect`.
 pub const DEBUG_CONNECTED: &str = "Debug: Smart transport connection ready.";
+
+/// After `fallback` to `stateless-connect`.
+pub const DEBUG_FALLBACK: &str = "Debug: Falling back to dumb transport.";
 
 /// When the session ends.
 pub const DEBUG_DISCONNECTING: &str = "Debug: Disconnecting.";

@@ -179,3 +179,169 @@ fn builtin_helpers_same_as_git() {
             .run();
     }
 }
+
+/// A helper whose `list` marks refs `unchanged` (their value is the local
+/// ref of the same name); `nolocal` has none.
+const UNCHANGED: &str = "#!/bin/sh
+while read line
+do
+	case \"$line\" in
+	capabilities) printf 'fetch\\n\\n' ;;
+	list) printf '? refs/heads/main unchanged\\n? refs/heads/side unchanged\\n' ;
+		test -n \"$NOLOCAL\" && printf '? refs/heads/nolocal unchanged\\n' ;
+		printf '@refs/heads/main HEAD\\n\\n' ;;
+	fetch*) while read l; do test -z \"$l\" && break; done; echo ;;
+	'') exit 0 ;;
+	esac
+done
+";
+
+#[test]
+fn unchanged_list_attribute_same_as_git() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .write_executable("bin/git-remote-uc", UNCHANGED)
+        .git(["init", "-q", "-b", "main", "r"])
+        .git(["-C", "r", "commit", "-q", "--allow-empty", "-m", "one"])
+        .git(["-C", "r", "branch", "side"])
+        .git(["-C", "r", "commit", "-q", "--allow-empty", "-m", "two"])
+        .git(["-C", "r", "remote", "add", "origin", "uc::x"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let path = path_with(&fx.work_dir().join("bin"));
+    let checks = [Check::ExitCode, Check::Stdout, Check::Stderr, Check::Refs];
+    for args in [&["ls-remote", "origin"][..], &["fetch", "origin"]] {
+        fx.compare(args)
+            .in_dir("r")
+            .repo("r")
+            .env("PATH", &path)
+            .env("NOLOCAL", "1")
+            .checks(checks)
+            .run();
+        fx.compare(args)
+            .in_dir("r")
+            .repo("r")
+            .env("PATH", &path)
+            .checks(checks)
+            .run();
+    }
+}
+
+/// A helper with `stateless-connect` serving the repository named by its
+/// address through `upload-pack --stateless-rpc` (protocol v2), each
+/// response followed by a response-end packet. `SC_FALLBACK` makes it
+/// answer `fallback` (and list no refs).
+const STATELESS: &str = r#"#!/usr/bin/env python3
+import os, subprocess, sys
+path = sys.argv[2]
+inp, out = sys.stdin.buffer, sys.stdout.buffer
+env = dict(os.environ, GIT_PROTOCOL="version=2")
+for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"):
+    env.pop(k, None)
+def w(b):
+    out.write(b)
+    out.flush()
+def request():
+    data = b""
+    while True:
+        h = inp.read(4)
+        if len(h) < 4:
+            return None
+        data += h
+        n = int(h, 16)
+        if n == 0:
+            return data
+        if n > 2:
+            data += inp.read(n - 4)
+while True:
+    line = inp.readline()
+    if not line:
+        break
+    line = line.decode().rstrip("\n")
+    if line == "capabilities":
+        w(b"stateless-connect\n\n")
+    elif line.startswith("list"):
+        w(b"\n")
+    elif line.startswith("stateless-connect "):
+        if os.environ.get("SC_FALLBACK"):
+            w(b"fallback\n")
+            continue
+        w(b"\n")
+        w(subprocess.run(["git", "upload-pack", "--stateless-rpc", "--advertise-refs", path],
+                         env=env, stdout=subprocess.PIPE, check=True).stdout)
+        while True:
+            req = request()
+            if req is None:
+                sys.exit(0)
+            w(subprocess.run(["git", "upload-pack", "--stateless-rpc", path],
+                             env=env, input=req, stdout=subprocess.PIPE).stdout)
+            w(b"0002")
+    elif line == "":
+        break
+"#;
+
+fn have_python() -> bool {
+    std::process::Command::new("python3")
+        .arg("-c")
+        .arg("pass")
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[test]
+fn stateless_connect_same_as_git() {
+    if !have_python() {
+        return;
+    }
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .write_executable("bin/git-remote-sc", STATELESS)
+        .git(["init", "-q", "-b", "main", "src"])
+        .git(["-C", "src", "commit", "-q", "--allow-empty", "-m", "one"])
+        .git(["-C", "src", "tag", "v1"])
+        .git(["-C", "src", "commit", "-q", "--allow-empty", "-m", "two"])
+        .git(["clone", "-q", "src", "d"])
+        .git(["-C", "d", "remote", "set-url", "origin", "sc::../src"])
+        .git(["-C", "src", "commit", "-q", "--allow-empty", "-m", "three"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let path = path_with(&fx.work_dir().join("bin"));
+    let debug = ("GIT_TRANSPORT_HELPER_DEBUG", "1");
+    let fallback = ("SC_FALLBACK", "1");
+    type Case<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)]);
+    let outside: &[Case] = &[
+        (&["ls-remote", "sc::src"], &[]),
+        (&["ls-remote", "--symref", "sc::src"], &[]),
+        (&["-c", "protocol.version=0", "ls-remote", "sc::src"], &[]),
+        (&["ls-remote", "sc::src"], &[fallback]),
+        (&["ls-remote", "sc::src"], &[debug]),
+        (&["ls-remote", "sc::src"], &[debug, fallback]),
+    ];
+    for (args, envs) in outside {
+        let mut c = fx.compare(*args).env("PATH", &path);
+        for (k, v) in *envs {
+            c = c.env(k, v);
+        }
+        c.checks(Check::OUTPUT).run();
+    }
+    let state = [
+        Check::ExitCode,
+        Check::Stdout,
+        Check::Stderr,
+        Check::Refs,
+        Check::Objects,
+    ];
+    fx.compare(["clone", "-q", "sc::src", "c"])
+        .env("PATH", &path)
+        .repo("c")
+        .checks(state)
+        .run();
+    fx.compare(["fetch"])
+        .in_dir("d")
+        .repo("d")
+        .env("PATH", &path)
+        .checks(state)
+        .run();
+}
