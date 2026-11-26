@@ -312,8 +312,10 @@ fn move_index_inner(
         None
     };
     let sparse = crate::sparse::load(repo);
+    let sparse_dirs = crate::sparse_index::sparse_dirs();
     let mut opts = Options {
         sparse: sparse.as_ref(),
+        sparse_dirs: &sparse_dirs,
         reset: force,
         update: true,
         show_all_errors: true,
