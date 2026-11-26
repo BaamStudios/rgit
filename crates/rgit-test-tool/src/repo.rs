@@ -53,7 +53,7 @@ pub struct Repo {
 impl Repo {
     /// The checked-out branch (for `includeIf.onbranch`).
     pub fn current_branch(&self) -> Option<BString> {
-        let head = std::fs::read(self.abs_git_dir.join("HEAD")).ok()?;
+        let head = rgit_refs::read_head_file(&self.abs_git_dir).ok()?;
         let target = head
             .trim_end_with(|c| c.is_ascii_whitespace())
             .strip_prefix(b"ref: ")?;

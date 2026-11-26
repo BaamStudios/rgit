@@ -1187,7 +1187,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             // Without the remote's HEAD (protocol v0/v1), the branch the
             // new repository was created with.
             let branch = branch.or_else(|| {
-                let head = std::fs::read(git_dir.join("HEAD")).ok()?;
+                let head = rgit_refs::read_head_file(&git_dir).ok()?;
                 let target = head.strip_prefix(b"ref: ")?.trim_ascii_end();
                 Some(String::from_utf8_lossy(target).into_owned())
             });

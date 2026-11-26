@@ -128,6 +128,8 @@ struct Opts {
     require_init: bool,
     reference: Vec<String>,
     dissociate: bool,
+    /// `--ref-format` for submodules that are cloned.
+    ref_format: Option<String>,
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
@@ -202,10 +204,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         single_branch: tri(&single_branch),
         progress: tri(&progress),
         require_init: require_init.get(),
+        ref_format: ref_format.borrow().clone(),
         reference: reference.into_inner(),
         dissociate: dissociate.get(),
     };
-    let _ = ref_format.borrow().is_some();
     let mut sup = Super::open(ctx, super_prefix.borrow().as_deref())?;
     // The submodules are updated one after the other; the number of
     // parallel jobs is only reported.
@@ -387,6 +389,7 @@ fn clone_module(sup: &Super, gm: &Gitmodules, t: &Todo, opts: &Opts) -> Result<(
             require_init: opts.require_init,
             reference: &opts.reference,
             dissociate: opts.dissociate,
+            ref_format: opts.ref_format.as_deref(),
         },
     )
 }
@@ -684,6 +687,8 @@ pub struct CloneArgs<'a> {
     pub require_init: bool,
     pub reference: &'a [String],
     pub dissociate: bool,
+    /// The reference storage format of the new repository.
+    pub ref_format: Option<&'a str>,
 }
 
 /// Clone a submodule into its path, its git directory below
@@ -730,6 +735,9 @@ pub fn clone_into(sup: &Super, a: CloneArgs<'_>) -> Result<(), Die> {
     }
     if a.dissociate {
         args.push("--dissociate".into());
+    }
+    if let Some(f) = a.ref_format {
+        args.push(format!("--ref-format={f}"));
     }
     args.push("--".into());
     args.push(a.url.to_owned());

@@ -80,7 +80,7 @@ fn config_outside_repository(ctx: &Context) -> ConfigSet {
 
 /// The short name of the checked-out branch, if `HEAD` is a symref.
 fn current_branch(git_dir: &Path) -> Option<Vec<u8>> {
-    let head = std::fs::read(git_dir.join("HEAD")).ok()?;
+    let head = rgit_refs::read_head_file(git_dir).ok()?;
     head.strip_prefix(b"ref: refs/heads/")
         .map(|r| r.trim_ascii_end().to_vec())
 }

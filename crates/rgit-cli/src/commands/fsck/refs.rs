@@ -136,6 +136,32 @@ fn loose_refs(dir: &Path) -> Vec<(String, PathBuf)> {
 
 /// `--references`: check the ref files.
 pub(crate) fn verify(repo: &Repo, f: &Fsck) -> i32 {
+    if repo.setup.format.ref_storage == rgit_repo::RefStorage::Reftable {
+        let failed = crate::commands::refs::verify::reftable(
+            &repo.setup,
+            &repo.config,
+            f.opts.verbose,
+            f.opts.strict,
+        );
+        let mut errors = if failed.unwrap_or(true) { ERROR_REFS } else { 0 };
+        // `HEAD` of every worktree has to point to a branch.
+        for wt in worktrees(repo) {
+            let name = match wt.prefix.as_str() {
+                "main-worktree/" => "HEAD".to_owned(),
+                prefix => format!("{prefix}HEAD"),
+            };
+            let Ok(data) = rgit_refs::read_head_file(&wt.git_dir) else {
+                continue;
+            };
+            if let Some(target) = data.strip_prefix(b"ref:") {
+                let target = String::from_utf8_lossy(target).trim().to_string();
+                if !target.starts_with("refs/heads/") {
+                    errors |= report(f, &name, MsgId::BadHeadTarget, msg::bad_head_target(&target));
+                }
+            }
+        }
+        return errors;
+    }
     let mut errors = 0;
     if f.opts.verbose {
         eprintln!("{}", msg::CHECKING_REFS_CONSISTENCY);
@@ -166,7 +192,7 @@ pub(crate) fn verify(repo: &Repo, f: &Fsck) -> i32 {
 
 /// The value of a ref file (following symbolic refs through `repo`).
 fn read_head(repo: &Repo, git_dir: &Path) -> Option<ObjectId> {
-    let data = std::fs::read(git_dir.join("HEAD")).ok()?;
+    let data = rgit_refs::read_head_file(git_dir).ok()?;
     if let Some(target) = data.strip_prefix(b"ref:") {
         let target = String::from_utf8_lossy(target).trim().to_string();
         return repo.refs.resolve(&target);
@@ -220,7 +246,7 @@ pub(crate) fn default_heads(f: &mut Fsck, repo: &Repo, heads: &mut Vec<(ObjectId
         if let Some(oid) = read_head(repo, &wt.git_dir) {
             count += 1;
             head(f, heads, oid, &name);
-        } else if let Ok(data) = std::fs::read(wt.git_dir.join("HEAD")) {
+        } else if let Ok(data) = rgit_refs::read_head_file(&wt.git_dir) {
             // A detached HEAD whose object is missing.
             let hex = repo.hash.hex_len();
             if let Some(oid) = data.get(..hex).and_then(|h| ObjectId::from_hex(repo.hash, h).ok()) {
@@ -236,10 +262,31 @@ pub(crate) fn default_heads(f: &mut Fsck, repo: &Repo, heads: &mut Vec<(ObjectId
             if wt.prefix == "main-worktree/" {
                 continue;
             }
-            reflog_heads(f, repo, &wt.git_dir.join("logs").join("HEAD"), &format!("{}HEAD", wt.prefix), heads);
+            let logs = rgit_refs::reflog::FilesReflog::new(&wt.git_dir, &repo.setup.common_dir, repo.hash);
+            if let Ok(Some(data)) = logs.read_raw("HEAD") {
+                reflog_heads(f, repo, &data, &format!("{}HEAD", wt.prefix), heads);
+            }
         }
-        for (name, path) in reflog_files(&repo.setup.common_dir) {
-            reflog_heads(f, repo, &path, &name, heads);
+        let logs = rgit_refs::reflog::FilesReflog::new(
+            &repo.setup.common_dir,
+            &repo.setup.common_dir,
+            repo.hash,
+        );
+        if logs.is_reftable() {
+            for name in logs.list().unwrap_or_default() {
+                if !name.starts_with("refs/") {
+                    continue;
+                }
+                if let Ok(Some(data)) = logs.read_raw(&name) {
+                    reflog_heads(f, repo, &data, &name, heads);
+                }
+            }
+        } else {
+            for (name, path) in reflog_files(&repo.setup.common_dir) {
+                if let Ok(data) = std::fs::read(&path) {
+                    reflog_heads(f, repo, &data, &name, heads);
+                }
+            }
         }
     }
     count
@@ -250,11 +297,8 @@ fn reflog_files(dir: &Path) -> Vec<(String, PathBuf)> {
     loose_refs(&dir.join("logs"))
 }
 
-fn reflog_heads(f: &mut Fsck, repo: &Repo, path: &Path, name: &str, heads: &mut Vec<(ObjectId, String)>) {
-    let Ok(data) = std::fs::read(path) else {
-        return;
-    };
-    for e in rgit_refs::reflog::Entry::parse_all(&data, repo.hash) {
+fn reflog_heads(f: &mut Fsck, repo: &Repo, data: &[u8], name: &str, heads: &mut Vec<(ObjectId, String)>) {
+    for e in rgit_refs::reflog::Entry::parse_all(data, repo.hash) {
         if f.opts.verbose {
             eprintln!("{}", msg::checking(&format!("reflog {}->{}", e.old, e.new)));
         }

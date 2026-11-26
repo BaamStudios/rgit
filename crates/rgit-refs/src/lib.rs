@@ -5,7 +5,10 @@
 //! * [`name`]: the `check-ref-format` rules.
 //! * [`RefStore`]: the backend interface (read, resolve, iterate,
 //!   transactions). [`files::FilesStore`] implements it for loose files and
-//!   `packed-refs`; reftable (#31) is a second implementation.
+//!   `packed-refs`, and forwards to the reftable backend in a repository
+//!   whose git directory has a `reftable/` directory.
+//! * [`reftable`]: the reftable format (tables, the stack of tables,
+//!   compaction) and the backend on top of it.
 //! * [`Transaction`]: queue [`RefUpdate`]s, prepare (lock and check), commit
 //!   or abort. Either every update is applied or none.
 //! * [`reflog`]: reflog files, `@{n}` / `@{date}` / `@{-n}` lookup, and
@@ -39,6 +42,7 @@ pub mod messages;
 pub mod name;
 pub mod packed;
 pub mod reflog;
+pub mod reftable;
 mod store;
 mod target;
 
@@ -49,3 +53,90 @@ pub use store::{
     TransactionState, check_duplicates, check_update_name,
 };
 pub use target::{Peeled, Reference, Resolved, Source, Target};
+
+/// The content of `HEAD` of the git directory `git_dir` in the files
+/// format (`ref: <name>` or an object id, with a line feed): the file
+/// itself, or in a reftable repository the value stored in the stack.
+pub fn read_head_file(git_dir: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    if !reftable::backend::uses_reftable(git_dir) {
+        return std::fs::read(git_dir.join("HEAD"));
+    }
+    reftable::backend::root_ref_content(git_dir, "HEAD")
+}
+
+/// The content of the root reference `name` (`ORIG_HEAD`, ...) of the git
+/// directory `git_dir` in the files format: the file of that name, or in
+/// a reftable repository the value stored in the stack (and the file only
+/// when the stack has none).
+pub fn read_root_ref_file(git_dir: &std::path::Path, name: &str) -> std::io::Result<Vec<u8>> {
+    if reftable::backend::uses_reftable(git_dir) {
+        match reftable::backend::root_ref_content(git_dir, name) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            other => return other,
+        }
+    }
+    std::fs::read(git_dir.join(name))
+}
+
+/// Stores `content` (`ref: <name>` or an object id in hex, as the files
+/// format writes it) as the root reference `name` of `git_dir`, without a
+/// reflog entry: as a file, or in a reftable repository in the stack.
+pub fn write_root_ref_file(
+    git_dir: &std::path::Path,
+    name: &str,
+    content: &[u8],
+) -> std::io::Result<()> {
+    if !reftable::backend::uses_reftable(git_dir) {
+        return std::fs::write(git_dir.join(name), content);
+    }
+    let text = String::from_utf8_lossy(content);
+    let text = text.trim();
+    let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidData);
+    let update = match text.strip_prefix("ref:") {
+        Some(target) => RefUpdate::symref_update(name, target.trim(), None),
+        None => {
+            let id = rgit_hash::ObjectId::from_hex_any(text.as_bytes()).map_err(|_| invalid())?;
+            RefUpdate::update(name, id, None)
+        }
+    };
+    root_ref_transaction(git_dir, update)
+}
+
+/// Removes the root reference `name` of `git_dir` (the file, and in a
+/// reftable repository the value in the stack).
+pub fn remove_root_ref_file(git_dir: &std::path::Path, name: &str) -> std::io::Result<()> {
+    if reftable::backend::uses_reftable(git_dir) {
+        let kind = reftable::backend::stack_hash(git_dir).unwrap_or(rgit_hash::HashKind::Sha1);
+        root_ref_transaction(git_dir, RefUpdate::delete(name, kind, None))?;
+    }
+    match std::fs::remove_file(git_dir.join(name)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+fn root_ref_transaction(git_dir: &std::path::Path, update: RefUpdate) -> std::io::Result<()> {
+    let kind = reftable::backend::stack_hash(git_dir).unwrap_or(rgit_hash::HashKind::Sha1);
+    let store = files::FilesStore::new(git_dir, kind);
+    let mut tx = Transaction::new(&store);
+    tx.push(update.no_deref(true).skip_name_check(true))
+        .and_then(|()| tx.commit(&mut NoHooks))
+        .map_err(std::io::Error::other)
+}
+
+/// [`read_head_file`] as text.
+pub fn read_head_text(git_dir: &std::path::Path) -> std::io::Result<String> {
+    String::from_utf8(read_head_file(git_dir)?).map_err(std::io::Error::other)
+}
+
+/// Points `HEAD` of the reftable repository or worktree in `git_dir` at
+/// the reference `target`, without a reflog entry. Returns `false`, and
+/// does nothing, when the directory uses the files format (the caller
+/// writes the file).
+pub fn write_head_symref(git_dir: &std::path::Path, target: &str) -> std::io::Result<bool> {
+    if !reftable::backend::uses_reftable(git_dir) {
+        return Ok(false);
+    }
+    root_ref_transaction(git_dir, RefUpdate::symref_update("HEAD", target, None))?;
+    Ok(true)
+}

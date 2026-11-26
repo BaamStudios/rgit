@@ -42,6 +42,11 @@ impl FilesStore {
         prune: bool,
         peel: &dyn Fn(&ObjectId) -> Option<ObjectId>,
     ) -> Result<(), TransactionError> {
+        if self.reftable {
+            return self
+                .compact(false)
+                .map_err(|e| TransactionError::Rejected(e.to_string()));
+        }
         let opts = LockOptions::new()
             .timeout(self.options.packed_refs_timeout)
             .shared(self.options.shared)

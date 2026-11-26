@@ -30,8 +30,6 @@ const NOT_YET: &[&str] = &[
     "--local-env-vars",
     "--show-superproject-working-tree",
     "--shared-index-path",
-    "--show-object-format",
-    "--show-ref-format",
     "--exclude-hidden",
     "--output-object-format",
 ];
@@ -478,6 +476,24 @@ impl State<'_, '_> {
                 None => return Some(Ok(())),
             },
             "--is-bare-repository" => setup.is_bare().to_string(),
+            "--show-ref-format" => match setup.format.ref_storage {
+                rgit_repo::RefStorage::Files => "files".to_owned(),
+                rgit_repo::RefStorage::Reftable => "reftable".to_owned(),
+            },
+            "--show-object-format"
+            | "--show-object-format=storage"
+            | "--show-object-format=input"
+            | "--show-object-format=output" => setup.format.object_format.name().to_owned(),
+            // An empty line without a compatibility format.
+            "--show-object-format=compat" => setup
+                .format
+                .compat_object_format
+                .map(|k| k.name().to_owned())
+                .unwrap_or_default(),
+            _ if arg.starts_with("--show-object-format=") => {
+                let mode = &arg["--show-object-format=".len()..];
+                return Some(Err(self.die(messages::unknown_object_format_mode(mode))));
+            }
             "--is-inside-work-tree" => setup.is_inside_work_tree().to_string(),
             "--is-inside-git-dir" => setup.is_inside_git_dir().to_string(),
             "--is-shallow-repository" => {

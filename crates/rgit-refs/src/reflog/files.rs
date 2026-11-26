@@ -12,6 +12,7 @@ use rgit_hash::{HashKind, ObjectId};
 use super::ReflogError as Error;
 use super::entry::{Committer, Entry};
 use crate::name::{RefNameFlags, is_per_worktree, is_valid_refname};
+use crate::reftable::backend::Logs;
 
 /// The reflogs of one worktree's view of a repository.
 #[derive(Clone, Debug)]
@@ -20,6 +21,9 @@ pub struct FilesReflog {
     common_dir: PathBuf,
     kind: HashKind,
     shared: SharedRepository,
+    /// The repository keeps its reflogs in reftable stacks
+    /// ([`crate::reftable::backend`]); the methods forward to them.
+    reftable: bool,
 }
 
 /// `strerror`-style text of an I/O error (without Rust's `(os error N)`).
@@ -39,9 +43,11 @@ impl FilesReflog {
         common_dir: impl Into<PathBuf>,
         kind: HashKind,
     ) -> Self {
+        let common_dir = common_dir.into();
         FilesReflog {
+            reftable: crate::reftable::backend::uses_reftable(&common_dir),
             git_dir: git_dir.into(),
-            common_dir: common_dir.into(),
+            common_dir,
             kind,
             shared: SharedRepository::default(),
         }
@@ -58,20 +64,16 @@ impl FilesReflog {
         self.kind
     }
 
-    /// The file holding the log of `name`. `main-worktree/<ref>` and
-    /// `worktrees/<id>/<ref>` address other worktrees' per-worktree logs.
-    pub fn path(&self, name: &str) -> PathBuf {
+    /// The git directory that holds the log of `name` and the name inside
+    /// it. `main-worktree/<ref>` and `worktrees/<id>/<ref>` address other
+    /// worktrees' per-worktree logs.
+    fn locate(&self, name: &str) -> (PathBuf, String) {
         if let Some(rest) = name.strip_prefix("main-worktree/") {
-            return self.common_dir.join("logs").join(rest);
+            return (self.common_dir.clone(), rest.to_owned());
         }
         if let Some(rest) = name.strip_prefix("worktrees/") {
             if let Some((id, r)) = rest.split_once('/') {
-                return self
-                    .common_dir
-                    .join("worktrees")
-                    .join(id)
-                    .join("logs")
-                    .join(r);
+                return (self.common_dir.join("worktrees").join(id), r.to_owned());
             }
         }
         let base = if is_per_worktree(name) {
@@ -79,16 +81,51 @@ impl FilesReflog {
         } else {
             &self.common_dir
         };
-        base.join("logs").join(name)
+        (base.clone(), name.to_owned())
     }
 
-    /// Whether `name` has a reflog (a regular file, possibly empty).
+    /// The file holding the log of `name` in the files format (a reftable
+    /// repository has no such file).
+    pub fn path(&self, name: &str) -> PathBuf {
+        let (dir, rel) = self.locate(name);
+        dir.join("logs").join(rel)
+    }
+
+    /// Whether the logs are kept in the reftable format.
+    pub fn is_reftable(&self) -> bool {
+        self.reftable
+    }
+
+    /// Runs `f` on the reftable view of these logs.
+    fn reftable<T>(&self, f: impl FnOnce(&Logs<'_>) -> T) -> T {
+        let locate = |name: &str| self.locate(name);
+        f(&Logs {
+            locate: &locate,
+            kind: self.kind,
+            shared: self.shared,
+        })
+    }
+
+    /// Whether `name` has a reflog (possibly empty).
     pub fn exists(&self, name: &str) -> bool {
+        if self.reftable {
+            return self.reftable(|l| l.exists(name));
+        }
         fs::metadata(self.path(name)).is_ok_and(|m| m.is_file())
     }
 
-    /// The raw content of the log of `name`, `None` if there is none.
+    /// The raw content of the log of `name` in the files format (one line
+    /// per entry, oldest first), `None` if there is none.
     pub fn read_raw(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+        if self.reftable {
+            return Ok(self.reftable(|l| l.read(name))?.map(|entries| {
+                let mut data = Vec::new();
+                for e in &entries {
+                    data.extend_from_slice(&e.to_line());
+                }
+                data
+            }));
+        }
         let path = self.path(name);
         match fs::read(&path) {
             Ok(d) => Ok(Some(d)),
@@ -101,6 +138,9 @@ impl FilesReflog {
     /// The entries of the log of `name`, oldest first; `None` if there is
     /// no log.
     pub fn read(&self, name: &str) -> io::Result<Option<Vec<Entry>>> {
+        if self.reftable {
+            return self.reftable(|l| l.read(name));
+        }
         Ok(self
             .read_raw(name)?
             .map(|d| Entry::parse_all(&d, self.kind)))
@@ -139,6 +179,14 @@ impl FilesReflog {
     /// `create`, nothing happens unless the log exists. Returns whether the
     /// line was written.
     pub fn append_line(&self, name: &str, line: &[u8], create: bool) -> Result<bool, Error> {
+        if self.reftable {
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
+            return match Entry::parse(line, self.kind) {
+                Some(e) => self.append(name, &e, create),
+                None if create => self.create(name).map(|()| true),
+                None => Ok(false),
+            };
+        }
         let path = self.path(name);
         if create {
             self.prepare(&path)?;
@@ -169,12 +217,22 @@ impl FilesReflog {
 
     /// Appends `entry` to the log of `name` (see [`append_line`](Self::append_line)).
     pub fn append(&self, name: &str, entry: &Entry, create: bool) -> Result<bool, Error> {
+        if self.reftable {
+            return self
+                .reftable(|l| l.append(name, entry, create))
+                .map_err(|e| Error::Append(self.path(name), strerror(&e)));
+        }
         self.append_line(name, &entry.to_line(), create)
     }
 
     /// Creates an empty log for `name` unless one exists
     /// (`--create-reflog` without an entry).
     pub fn create(&self, name: &str) -> Result<(), Error> {
+        if self.reftable {
+            return self
+                .reftable(|l| l.create(name))
+                .map_err(|e| Error::Append(self.path(name), strerror(&e)));
+        }
         self.append_line(name, b"", true).map(|_| ())
     }
 
@@ -198,6 +256,9 @@ impl FilesReflog {
 
     /// Removes the log of `name` and the directories left empty by that.
     pub fn delete(&self, name: &str) -> io::Result<()> {
+        if self.reftable {
+            return self.reftable(|l| l.delete(name));
+        }
         let path = self.path(name);
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -236,6 +297,11 @@ impl FilesReflog {
     /// Moves the log of `from` to `to` (branch rename). Nothing happens if
     /// `from` has no log.
     pub fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
+        if self.reftable {
+            return self
+                .reftable(|l| l.transfer(from, to, true))
+                .map_err(|e| Error::Rename(self.path(from), self.path(to), strerror(&e)));
+        }
         let src = self.path(from);
         if !fs::metadata(&src).is_ok_and(|m| m.is_file()) {
             return Ok(());
@@ -258,6 +324,45 @@ impl FilesReflog {
         })
     }
 
+    /// Copies the log of `from` to `to` (branch copy). Nothing happens if
+    /// `from` has no log.
+    pub fn copy(&self, from: &str, to: &str) -> Result<(), Error> {
+        if self.reftable {
+            return self
+                .reftable(|l| l.transfer(from, to, false))
+                .map_err(|e| Error::Rename(self.path(from), self.path(to), strerror(&e)));
+        }
+        let Ok(Some(data)) = self.read_raw(from) else {
+            return Ok(());
+        };
+        let path = self.path(to);
+        self.prepare(&path)?;
+        fs::write(&path, data).map_err(|e| Error::Append(path.clone(), strerror(&e)))?;
+        self.adjust_perm(&path);
+        Ok(())
+    }
+
+    /// Replaces the log of `name` by `entries`, oldest first (expiring
+    /// entries, dropping a stash). The log keeps existing when no entry
+    /// is left.
+    pub fn write_entries(&self, name: &str, entries: &[Entry]) -> io::Result<()> {
+        if self.reftable {
+            return self.reftable(|l| l.write_entries(name, entries));
+        }
+        let path = self.path(name);
+        let opts = rgit_fs::LockOptions::default().shared(self.shared);
+        let mut lock = rgit_fs::LockFile::acquire(&path, &opts).map_err(io::Error::other)?;
+        let mut content = Vec::new();
+        for e in entries {
+            content.extend_from_slice(&e.to_line());
+        }
+        if let Err(e) = lock.write_all(&content) {
+            lock.rollback();
+            return Err(e);
+        }
+        lock.commit()
+    }
+
     /// Every reference with a reflog in this worktree's view, sorted:
     /// shared logs from the common directory plus this worktree's own.
     /// Files whose names are not valid reference names (lock files, ...)
@@ -265,6 +370,24 @@ impl FilesReflog {
     pub fn list(&self) -> io::Result<Vec<String>> {
         let mut out = Vec::new();
         let same = same_dir(&self.git_dir, &self.common_dir);
+        if self.reftable {
+            let valid = |n: &String| is_valid_refname(n.as_bytes(), RefNameFlags::ONELEVEL);
+            for name in self.reftable(|l| l.names_in(&self.common_dir))? {
+                if (same || !is_per_worktree(&name)) && valid(&name) {
+                    out.push(name);
+                }
+            }
+            if !same {
+                for name in self.reftable(|l| l.names_in(&self.git_dir))? {
+                    if is_per_worktree(&name) && valid(&name) {
+                        out.push(name);
+                    }
+                }
+            }
+            out.sort();
+            out.dedup();
+            return Ok(out);
+        }
         walk(&self.common_dir.join("logs"), "", &mut |name| {
             if same || !is_per_worktree(name) {
                 out.push(name.to_string());

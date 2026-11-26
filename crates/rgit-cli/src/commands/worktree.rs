@@ -722,11 +722,26 @@ fn add_worktree(
     write_links(&admin, &path, relative)?;
     write_file(&admin.join("commondir"), b"../..\n")?;
     let null = ObjectId::null(repo.hash).to_hex();
-    match (&head, opts.orphan) {
-        (Head::NewBranch { name, .. }, true) => {
-            write_file(&admin.join("HEAD"), format!("ref: refs/heads/{name}\n").as_bytes())?;
+    if repo.setup.format.ref_storage == rgit_repo::RefStorage::Reftable {
+        // The worktree gets a stack of its own for its per-worktree
+        // references; `HEAD` lives there, not in the file.
+        let shared = crate::refs_support::shared_repository(&repo.config);
+        let made = rgit_refs::reftable::backend::create(&admin, repo.hash, shared).and_then(|()| {
+            match (&head, opts.orphan) {
+                (Head::NewBranch { name, .. }, true) => {
+                    rgit_refs::write_head_symref(&admin, &format!("refs/heads/{name}")).map(|_| ())
+                }
+                _ => Ok(()),
+            }
+        });
+        made.map_err(|e| fatal(msg::could_not_create_dir(&display(&admin), &strerror(&e))))?;
+    } else {
+        match (&head, opts.orphan) {
+            (Head::NewBranch { name, .. }, true) => {
+                write_file(&admin.join("HEAD"), format!("ref: refs/heads/{name}\n").as_bytes())?;
+            }
+            _ => write_file(&admin.join("HEAD"), format!("{null}\n").as_bytes())?,
         }
-        _ => write_file(&admin.join("HEAD"), format!("{null}\n").as_bytes())?,
     }
     if relative {
         enable_relative_extension(ctx, repo)?;
@@ -742,9 +757,12 @@ fn add_worktree(
         }
         let commit = commit.expect("commit for non-orphan worktree");
         let hex = commit.to_hex();
-        child.run(&["update-ref", "--no-deref", "HEAD", &hex], true)?;
-        if let Head::Branch(name) | Head::NewBranch { name, .. } = &head {
-            child.run(&["symbolic-ref", "HEAD", &format!("refs/heads/{name}")], true)?;
+        // One update, so that `HEAD` gets one reflog entry.
+        match &head {
+            Head::Branch(name) | Head::NewBranch { name, .. } => {
+                child.run(&["symbolic-ref", "HEAD", &format!("refs/heads/{name}")], true)?;
+            }
+            _ => child.run(&["update-ref", "--no-deref", "HEAD", &hex], true)?,
         }
         if opts.checkout {
             let mut args = vec!["reset", "--hard"];

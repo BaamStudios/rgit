@@ -192,7 +192,7 @@ pub fn load_config(
 
 /// The branch `HEAD` in `git_dir` points to (without `refs/heads/`).
 fn head_branch(git_dir: &Path) -> Option<BString> {
-    let data = fs::read(git_dir.join("HEAD")).ok()?;
+    let data = rgit_refs::read_head_file(git_dir).ok()?;
     let rest = data.strip_prefix(b"ref:")?.trim_ascii();
     rest.strip_prefix(b"refs/heads/").map(BString::from)
 }
@@ -316,11 +316,6 @@ pub fn init(
                     "extensions.objectFormat=sha256",
                 )));
             }
-            if refs == RefStorage::Reftable {
-                return Err(InitError::Fatal(messages::init_unsupported(
-                    "extensions.refStorage=reftable",
-                )));
-            }
         }
     }
 
@@ -408,6 +403,7 @@ pub fn init(
         &config,
         &ConfigValues {
             existing_version: existing.as_ref().map(|f| f.version),
+            reftable: !reinitialized && refs == RefStorage::Reftable,
             git_dir: &git_dir,
             link: &link,
             bare: opts.bare,
@@ -419,13 +415,22 @@ pub fn init(
 
     let refs_dir = common_dir.join("refs");
     template::make_dir(&refs_dir, shared)?;
-    template::make_dir(&refs_dir.join("heads"), shared)?;
-    template::make_dir(&refs_dir.join("tags"), shared)?;
+    let reftable = match (&existing, reinitialized) {
+        (Some(f), true) => f.ref_storage == RefStorage::Reftable,
+        _ => refs == RefStorage::Reftable,
+    };
+    if !reftable {
+        template::make_dir(&refs_dir.join("heads"), shared)?;
+        template::make_dir(&refs_dir.join("tags"), shared)?;
+    }
 
     if reinitialized {
         if let Some(b) = &opts.initial_branch {
             notify(Notice::Warning(messages::reinit_ignored_branch(b)));
         }
+    } else if reftable {
+        let branch = initial_branch(opts, env, &config, notify)?;
+        reftable_head(&git_dir, hash, shared, &branch)?;
     } else {
         let branch = initial_branch(opts, env, &config, notify)?;
         let head = format!("ref: refs/heads/{branch}\n");
@@ -570,8 +575,35 @@ fn initial_branch(
     }
 }
 
+/// Sets up the reftable stack of a new repository and stores `HEAD`,
+/// pointing to `branch`, as its first table.
+fn reftable_head(
+    git_dir: &Path,
+    hash: HashKind,
+    shared: SharedRepository,
+    branch: &str,
+) -> Result<(), InitError> {
+    use rgit_refs::{NoHooks, RefUpdate, Transaction};
+    let fail = |e: String| InitError::Fatal(messages::cannot_write(git_dir.display(), e));
+    rgit_refs::reftable::backend::create(git_dir, hash, shared).map_err(|e| fail(io_text(&e)))?;
+    let options = rgit_refs::files::FilesOptions {
+        shared,
+        ..Default::default()
+    };
+    let store = rgit_refs::files::FilesStore::with_options(git_dir, hash, options);
+    let mut tx = Transaction::new(&store);
+    let update = RefUpdate::symref_update("HEAD", format!("refs/heads/{branch}"), None)
+        .no_deref(true)
+        .skip_name_check(true);
+    tx.push(update)
+        .and_then(|()| tx.commit(&mut NoHooks))
+        .map_err(|e| fail(e.to_string()))
+}
+
 struct ConfigValues<'a> {
     existing_version: Option<i64>,
+    /// A new repository in the reftable format.
+    reftable: bool,
     git_dir: &'a Path,
     link: &'a Path,
     bare: bool,
@@ -599,7 +631,12 @@ fn write_config(path: &Path, config: &ConfigSet, v: &ConfigValues<'_>) -> Result
     if !path.exists() {
         template::write_new(path, b"", false, v.shared)?;
     }
-    let version = v.existing_version.unwrap_or(0).max(0);
+    let mut version = v.existing_version.unwrap_or(0).max(0);
+    if v.reftable {
+        // The extension needs format version 1; git writes it first.
+        set("extensions.refstorage", "reftable")?;
+        version = version.max(1);
+    }
     set("core.repositoryformatversion", &version.to_string())?;
     set("core.filemode", bool_str(probe_filemode(path)))?;
     set("core.bare", bool_str(v.bare))?;

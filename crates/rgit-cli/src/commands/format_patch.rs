@@ -658,7 +658,7 @@ fn description_branch(repo: &mut Repo, o: &Options) -> Option<String> {
                 .map(|_| one.clone());
         }
     }
-    let head = std::fs::read(repo.setup.git_dir.join("HEAD")).ok()?;
+    let head = rgit_refs::read_head_file(&repo.setup.git_dir).ok()?;
     head.strip_prefix(b"ref: refs/heads/")
         .map(|r| String::from_utf8_lossy(r.trim_ascii_end()).into_owned())
 }

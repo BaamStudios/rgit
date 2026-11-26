@@ -60,12 +60,55 @@ pub fn ref_store(setup: &Setup, config: &ConfigSet) -> FilesStore {
     if let Ok(Some(ms)) = config.int("core.filesreflocktimeout") {
         options.ref_lock_timeout = rgit_fs::Timeout::from_millis(ms);
     }
+    if setup.format.ref_storage == rgit_repo::RefStorage::Reftable {
+        reftable_options(config);
+    }
     FilesStore::with_options(
         setup.common_dir.clone(),
         setup.format.object_format,
         options,
     )
     .with_worktree(setup.git_dir.clone())
+}
+
+/// Applies the `reftable.*` settings to the reftable stacks of this
+/// process. Values outside of the format's limits end the command, as in
+/// git, which checks them when it opens the reference store.
+fn reftable_options(config: &ConfigSet) {
+    use crate::messages::refs as msg;
+    let mut o = rgit_refs::reftable::stack::options();
+    let die = |text: &str| -> ! {
+        eprintln!("fatal: {text}");
+        std::process::exit(128);
+    };
+    if let Ok(Some(n)) = config.int("reftable.blocksize") {
+        if n > i64::from(rgit_refs::reftable::writer::MAX_BLOCK_SIZE) {
+            die(msg::REFTABLE_BLOCK_SIZE_TOO_LARGE);
+        }
+        if n > 0 {
+            o.block_size = n as u32;
+        }
+    }
+    if let Ok(Some(n)) = config.int("reftable.restartinterval") {
+        if n > i64::from(u16::MAX) {
+            die(msg::REFTABLE_RESTART_INTERVAL_TOO_LARGE);
+        }
+        if n > 0 {
+            o.restart_interval = n as u16;
+        }
+    }
+    if let Ok(Some(b)) = config.bool("reftable.indexobjects") {
+        o.index_objects = b;
+    }
+    if let Ok(Some(n)) = config.int("reftable.geometricfactor") {
+        if n > 0 {
+            o.geometric_factor = n.min(255) as u8;
+        }
+    }
+    if let Ok(Some(ms)) = config.int("reftable.locktimeout") {
+        o.lock_timeout = rgit_fs::Timeout::from_millis(ms);
+    }
+    rgit_refs::reftable::stack::set_options(o);
 }
 
 /// The packs and loose objects of one object directory.
@@ -155,6 +198,29 @@ impl Objects {
                 .ok()?
                 .object()
                 .ok()?;
+        }
+        None
+    }
+
+    /// The object the annotated tag `id` finally points to. `None` when
+    /// `id` is not a tag, and for a tag (or a tag in its chain) whose
+    /// target is missing or not of the type the tag claims.
+    pub fn peel_tag(&self, id: &ObjectId) -> Option<ObjectId> {
+        if self.kind(id) != Some(ObjectKind::Tag) {
+            return None;
+        }
+        let mut cur = *id;
+        for _ in 0..64 {
+            let (kind, data) = self.read(&cur)?;
+            if kind != ObjectKind::Tag {
+                return Some(cur);
+            }
+            let tag = rgit_object::Tag::parse(self.hash, &data).ok()?;
+            let next = tag.object().ok()?;
+            if self.kind(&next)? != tag.target_kind().ok()? {
+                return None;
+            }
+            cur = next;
         }
         None
     }
@@ -413,6 +479,11 @@ impl<'a> UpdateHooks<'a> {
         self
     }
 
+    /// Who makes the updates (for reflog entries written elsewhere).
+    pub fn committer(&self) -> Option<&Committer> {
+        self.writer.as_ref().map(|w| &w.committer)
+    }
+
     /// The reflog files.
     pub fn reflogs(&self) -> Option<&FilesReflog> {
         self.writer.as_ref().map(|w| &w.store)
@@ -468,6 +539,10 @@ impl rgit_refs::RefHooks for UpdateHooks<'_> {
         if let Some(w) = &mut self.writer {
             w.reflog_delete(name);
         }
+    }
+
+    fn peel(&mut self, oid: &ObjectId) -> Option<ObjectId> {
+        self.objects.peel_tag(oid)
     }
 
     fn reference_transaction(

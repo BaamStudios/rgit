@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 //! `git pack-refs` (Documentation/git-pack-refs.adoc) for the files
 //! backend: `--all`, `--[no-]prune`, `--include`, `--exclude` and `--auto`
-//! (see [`needs_packing`]).
+//! (see [`needs_packing`]). In a reftable repository the command compacts
+//! the stack of tables, with `--auto` as far as the geometric heuristic
+//! asks for.
 
-use rgit_object::ObjectKind;
 use rgit_pathspec::wildmatch::{WildmatchFlags, wildmatch};
 
 use crate::messages::pack_refs as msg;
@@ -57,25 +58,18 @@ pub fn run_with_usage(ctx: &mut Context, argv: &[String], usage: &[&str]) -> Cmd
     };
     // A tag whose target is not of the type it claims gets no peeled
     // value.
-    let peel = |id: &rgit_hash::ObjectId| {
-        if objects.kind(id) != Some(ObjectKind::Tag) {
-            return None;
-        }
-        let mut cur = *id;
-        for _ in 0..64 {
-            let (kind, data) = objects.read(&cur)?;
-            if kind != ObjectKind::Tag {
-                return Some(cur);
+    let peel = |id: &rgit_hash::ObjectId| objects.peel_tag(id);
+    if store.is_reftable() {
+        // Nothing is loose in a reftable repository: the tables of the
+        // stack are merged instead.
+        return match store.compact(auto.get()) {
+            Ok(()) => Ok(0),
+            Err(e) => {
+                eprintln!("error: {}", msg::unable_to_compact(&e.to_string()));
+                Err(Die::Exit(255))
             }
-            let tag = rgit_object::Tag::parse(setup.format.object_format, &data).ok()?;
-            let next = tag.object().ok()?;
-            if objects.kind(&next)? != tag.target_kind().ok()? {
-                return None;
-            }
-            cur = next;
-        }
-        None
-    };
+        };
+    }
     if auto.get() && !needs_packing(&setup) {
         return Ok(0);
     }

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! The backend-independent reference store interface.
 //!
-//! [`RefStore`] is implemented by the files backend
-//! ([`crate::files::FilesStore`]); the reftable backend (#31) implements the
-//! same trait. Updates go through [`Transaction`]: queue [`RefUpdate`]s,
+//! [`RefStore`] is implemented by [`crate::files::FilesStore`], for loose
+//! files with `packed-refs` and, in a repository that uses it, for the
+//! reftable format ([`crate::reftable`]). Updates go through [`Transaction`]: queue [`RefUpdate`]s,
 //! [`prepare`](Transaction::prepare) (lock and check every reference), then
 //! [`commit`](Transaction::commit) or [`abort`](Transaction::abort).
 
@@ -274,6 +274,15 @@ pub trait RefHooks {
     fn reflog_append(&mut self, update: &ReflogUpdate) -> Result<(), String> {
         let _ = update;
         Ok(())
+    }
+
+    /// The object an annotated tag `oid` finally points to, `None` for
+    /// anything that is not a tag (or cannot be read). Backends that
+    /// store peeled values (reftable) ask for it when a reference is
+    /// written.
+    fn peel(&mut self, oid: &ObjectId) -> Option<ObjectId> {
+        let _ = oid;
+        None
     }
 
     /// Removes the reflog of a deleted reference (#30).

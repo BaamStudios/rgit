@@ -640,7 +640,7 @@ pub fn sub_config(git_dir: &Path) -> ConfigSet {
 /// else `origin`.
 pub fn sub_default_remote(git_dir: &Path) -> String {
     let config = sub_config(git_dir);
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).unwrap_or_default();
+    let head = rgit_refs::read_head_text(git_dir).unwrap_or_default();
     let target = head.trim().strip_prefix("ref: ").map(str::to_owned);
     default_remote(&config, target.as_deref())
 }

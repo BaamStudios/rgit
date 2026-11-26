@@ -9,11 +9,17 @@
 //! `worktrees/<id>/<ref>` name another worktree's per-worktree references
 //! (`git-worktree(1)`, REFS). Case-insensitive file systems (#183) are not
 //! handled yet.
+//!
+//! A repository in the reftable format (`extensions.refStorage`,
+//! recognised by its `reftable/` directory) keeps no reference files:
+//! [`FilesStore`] then forwards to [`crate::reftable::backend`], so that
+//! callers work with either format through the same type.
 
 mod pack;
 mod transaction;
 
 pub use pack::PackFilter;
+pub(crate) use transaction::check_old;
 
 use std::collections::BTreeMap;
 use std::io;
@@ -71,6 +77,9 @@ pub struct FilesStore {
     options: FilesOptions,
     /// The last `packed-refs` read for lookups, shared by clones.
     packed_cache: Arc<Mutex<PackedCache>>,
+    /// The repository keeps its references in a reftable stack
+    /// ([`crate::reftable::backend`]); the methods forward to it.
+    pub(crate) reftable: bool,
 }
 
 /// The parsed `packed-refs` with the stamp of the file it came from.
@@ -125,8 +134,10 @@ impl FilesStore {
         kind: HashKind,
         options: FilesOptions,
     ) -> Self {
+        let git_dir = git_dir.into();
         Self {
-            git_dir: git_dir.into(),
+            reftable: crate::reftable::backend::uses_reftable(&git_dir),
+            git_dir,
             worktree_dir: None,
             kind,
             options,
@@ -154,7 +165,7 @@ impl FilesStore {
     }
 
     /// Whether the store belongs to a linked worktree.
-    fn linked(&self) -> bool {
+    pub(crate) fn linked(&self) -> bool {
         self.worktree_dir.is_some()
     }
 
@@ -201,6 +212,9 @@ impl FilesStore {
 
     /// Reads and parses `packed-refs`; an absent file is empty.
     pub fn packed_refs(&self) -> Result<PackedRefs, Error> {
+        if self.reftable {
+            return Ok(PackedRefs::default());
+        }
         let path = self.packed_refs_path();
         match std::fs::read(&path) {
             Ok(data) => {
@@ -251,8 +265,20 @@ impl FilesStore {
         read_loose_path(&self.ref_path(name), self.kind)
     }
 
+    /// The value of the loose file of `name`, `None` when there is no
+    /// such file or it holds no reference.
+    pub(crate) fn loose_value(&self, name: &str) -> Option<Target> {
+        match self.read_loose(name) {
+            Ok(LooseRead::Value(t)) => Some(t),
+            _ => None,
+        }
+    }
+
     /// Reads only the loose file of `name` (no packed fallback).
     pub fn read_loose_ref(&self, name: &str) -> Result<Option<Target>, Error> {
+        if self.reftable && !crate::name::is_pseudo_ref(name) {
+            return self.rt_read_raw(name);
+        }
         match self.read_loose(name)? {
             LooseRead::Value(t) => Ok(Some(t)),
             LooseRead::Broken => Err(Error::Broken(name.to_owned())),
@@ -430,6 +456,10 @@ impl RefStore for FilesStore {
     }
 
     fn read_raw(&self, name: &str) -> Result<Option<Target>, Error> {
+        // `FETCH_HEAD` and `MERGE_HEAD` are files in every format.
+        if self.reftable && !crate::name::is_pseudo_ref(name) {
+            return self.rt_read_raw(name);
+        }
         match self.read_loose(name)? {
             LooseRead::Value(t) => Ok(Some(t)),
             LooseRead::Broken => Err(Error::Broken(name.to_owned())),
@@ -446,6 +476,9 @@ impl RefStore for FilesStore {
     }
 
     fn iter(&self, options: &IterOptions) -> Result<Vec<IterItem>, Error> {
+        if self.reftable {
+            return self.rt_iter(options);
+        }
         let packed = self.packed_snapshot()?;
         let prefix = options.prefix.as_str();
         let mut loose = BTreeMap::new();
@@ -544,6 +577,10 @@ impl RefStore for FilesStore {
         updates: Vec<RefUpdate>,
         hooks: &mut dyn RefHooks,
     ) -> Result<Box<dyn PreparedTransaction + 's>, TransactionError> {
+        if self.reftable {
+            let prepared = crate::reftable::backend::prepare(self, updates, hooks)?;
+            return Ok(Box::new(prepared));
+        }
         let prepared = transaction::prepare(self, updates, hooks)?;
         Ok(Box::new(prepared))
     }

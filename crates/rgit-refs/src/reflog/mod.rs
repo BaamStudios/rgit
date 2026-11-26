@@ -6,7 +6,8 @@
 //!   [`normalize_message`] folds a message onto one line.
 //! * [`FilesReflog`]: the files below `logs/`: read, append (creating the
 //!   file and its directories when asked), create empty, delete with the
-//!   reference, rename with a branch, list.
+//!   reference, rename with a branch, list. In a reftable repository the
+//!   same operations work on the log records of the stack.
 //! * [`LogAllRefUpdates`](crate::LogAllRefUpdates) decides which updates
 //!   create a missing log; the transaction passes that on as
 //!   [`ReflogUpdate::create`].

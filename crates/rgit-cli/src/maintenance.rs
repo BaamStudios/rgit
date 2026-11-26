@@ -15,7 +15,9 @@
 //! `gc --auto`. Of the tasks of the default strategy (`geometric`: `commit-graph`,
 //! `geometric-repack`, `reflog-expire`) only `reflog-expire` is done:
 //! `reflog expire --all` once the `HEAD` reflog has
-//! `maintenance.reflog-expire.auto` (100) entries old enough to go.
+//! `maintenance.reflog-expire.auto` (100) entries old enough to go. In a
+//! reftable repository the `pack-refs` task compacts the stack of tables
+//! like `pack-refs --auto`.
 //! Writing commit-graphs and repacking are part of #97. The work happens in
 //! the foreground; a held `objects/maintenance.lock` skips it silently.
 
@@ -86,6 +88,18 @@ fn config_bool(config: &ConfigSet, key: &str) -> Result<Option<bool>, Die> {
     config.bool(key).map_err(|e| Die::Fatal(e.to_string()))
 }
 
+/// Whether the `pack-refs` task belongs to the configured strategy.
+fn pack_refs_enabled(config: &ConfigSet) -> Result<bool, Die> {
+    if let Some(on) = config_bool(config, "maintenance.pack-refs.enabled")? {
+        return Ok(on);
+    }
+    let strategy = config
+        .get("maintenance.strategy")
+        .and_then(|e| e.value.as_ref())
+        .map(|v| v.to_str_lossy().into_owned());
+    Ok(matches!(strategy.as_deref(), None | Some("geometric")))
+}
+
 /// Whether the `reflog-expire` task belongs to the configured strategy.
 fn reflog_expire_enabled(config: &ConfigSet) -> Result<bool, Die> {
     if let Some(on) = config_bool(config, "maintenance.reflog-expire.enabled")? {
@@ -120,6 +134,14 @@ fn auto(ctx: &Context, quiet: bool) -> Result<(), Die> {
     }
     if gc_enabled(&repo.config)? {
         run_gc_task(ctx, &repo.config, quiet)?;
+    }
+    if repo.setup.format.ref_storage == rgit_repo::RefStorage::Reftable
+        && pack_refs_enabled(&repo.config)?
+    {
+        // `pack-refs --auto`: keep the stack of tables geometric. A
+        // locked stack is left for the next run.
+        let store = crate::refs_support::ref_store(&repo.setup, &repo.config);
+        let _ = store.compact(true);
     }
     if !reflog_expire_enabled(&repo.config)? {
         return Ok(());

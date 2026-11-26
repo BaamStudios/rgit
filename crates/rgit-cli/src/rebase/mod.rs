@@ -388,8 +388,12 @@ pub(crate) fn fork_point(
     if let Some(cur) = repo.refs.resolve(refname) {
         candidates.push(cur);
     }
-    let log = repo.setup.common_dir.join("logs").join(refname);
-    let text = std::fs::read(&log).unwrap_or_default();
+    let text =
+        rgit_refs::reflog::FilesReflog::new(&repo.setup.git_dir, &repo.setup.common_dir, repo.hash)
+            .read_raw(refname)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
     let mut entries: Vec<ObjectId> = Vec::new();
     for line in text.split(|&b| b == b'\n') {
         let mut fields = line.split(|&b| b == b' ');

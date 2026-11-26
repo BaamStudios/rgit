@@ -502,21 +502,10 @@ pub fn prune(
     if !changed || o.dry_run {
         return Ok(());
     }
-    let path = logs.path(&log.name);
-    let opts = rgit_fs::LockOptions::default()
-        .shared(crate::refs_support::shared_repository(&repo.config));
-    let Ok(mut lock) = rgit_fs::LockFile::acquire(&path, &opts) else {
-        return Ok(());
-    };
-    let mut content = Vec::new();
-    for e in &kept {
-        content.extend_from_slice(&e.to_line());
-    }
-    if lock.file_mut().write_all(&content).is_err() {
-        lock.rollback();
+    let logs = logs.with_shared(crate::refs_support::shared_repository(&repo.config));
+    if logs.write_entries(&log.name, &kept).is_err() {
         return Ok(());
     }
-    let _ = lock.commit();
     if o.updateref && after_pruned {
         if let Some(top) = kept.last() {
             update_ref(repo, log, top.new);

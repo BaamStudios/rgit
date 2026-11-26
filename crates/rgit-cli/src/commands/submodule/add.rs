@@ -39,7 +39,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(super::usage_error());
     }
     drop(parser);
-    let _ = ref_format.borrow().is_some();
     let mut sup = Super::open(ctx, None)?;
     let repo_arg = args[0].clone();
     let relative = common::is_relative_url(&repo_arg);
@@ -163,6 +162,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 branch: branch.borrow().clone(),
                 reference: reference.borrow().iter().cloned().collect(),
                 dissociate: dissociate.get(),
+                ref_format: ref_format.borrow().clone(),
             },
         )?;
     }
@@ -209,6 +209,7 @@ struct CloneOpts {
     branch: Option<String>,
     reference: Vec<String>,
     dissociate: bool,
+    ref_format: Option<String>,
 }
 
 /// Clone the new submodule (or reuse its git directory from an earlier
@@ -246,6 +247,7 @@ fn clone_new(sup: &Super, path: &str, name: &str, url: &str, o: &CloneOpts) -> R
             require_init: false,
             reference: &o.reference,
             dissociate: o.dissociate,
+            ref_format: o.ref_format.as_deref(),
         },
     )?;
     let dir = sup.work_tree.join(path);
