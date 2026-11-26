@@ -42,6 +42,7 @@ pub fn no_indexed_bitmap(hex: &str) -> String {
 
 pub const MIDX_EMPTY: &str = "refusing to write multi-pack .bitmap without any objects";
 pub const MIDX_WRITE_FAILED: &str = "could not write multi-pack bitmap";
+pub const MIDX_BITMAP_NO_REVINDEX: &str = "multi-pack bitmap is missing required reverse index";
 
 pub fn could_not_open_pack(name: &str) -> String {
     format!("could not open pack {name}")

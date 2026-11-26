@@ -284,6 +284,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if stdout.get() != args.is_empty() || args.len() > 1 {
         return Err(parser.usage_error().into());
     }
+    // Negative versions mean version 1.
+    let name_hash_version = match name_hash_version.get() {
+        v if v < 0 => 1,
+        v @ (1 | 2) => v,
+        v => return Err(Die::Fatal(msg::invalid_name_hash_version(v))),
+    };
     if let Some(v) = bad_stdin_packs.borrow().as_deref() {
         return Err(Die::Fatal(msg::invalid_stdin_packs(v)));
     }
@@ -358,6 +364,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         opts.max_depth = pw::MAX_DEPTH;
     }
     opts.ofs_delta = ofs_delta.get();
+    // `--no-quiet` (as maintenance passes it) shows progress.
+    if argv
+        .iter()
+        .take_while(|a| a.as_str() != "--")
+        .filter(|a| matches!(a.as_str(), "-q" | "--quiet" | "--no-quiet" | "--progress"))
+        .last()
+        .is_some_and(|a| a == "--no-quiet")
+    {
+        progress.set(1);
+    }
     let mut level = match progress.get() {
         -1 => i32::from(std::io::stderr().is_terminal()),
         v => v,
@@ -516,6 +532,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else {
         write_bitmap.get()
     };
+    if bitmap > 0 && name_hash_version != 1 {
+        eprintln!("warning: {}", msg::BITMAP_NEEDS_NAME_HASH_V1);
+        bitmap = 0;
+    }
     // A cruft pack's contents are decided by its pack list alone.
     if skip.any() && !cruft.get() {
         let before = listed.len();

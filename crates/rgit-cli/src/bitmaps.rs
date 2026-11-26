@@ -179,6 +179,17 @@ pub fn open(set: &rgit_pack::PackSet) -> Option<BitmapIndex> {
             });
             let has_bitmap =
                 rgit_pack::bitmap::midx_bitmap_path(set.dir(), &midx.checksum()).exists();
+            // A RIDX chunk of the wrong size (and no `.rev` file): git
+            // reports it and uses no bitmap.
+            if has_bitmap
+                && read_ridx
+                && midx.reverse_index_wrong_size()
+                && !rgit_pack::bitmap::midx_rev_path(set.dir(), &midx.checksum()).exists()
+            {
+                eprintln!("error: {}", rgit_pack::midx::messages::RIDX_SIZE);
+                eprintln!("warning: {}", msg::MIDX_BITMAP_NO_REVINDEX);
+                return None;
+            }
             if let Some(name) = missing {
                 if has_bitmap {
                     eprintln!("warning: {}", msg::could_not_open_pack(name));

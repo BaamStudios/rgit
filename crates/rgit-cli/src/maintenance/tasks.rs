@@ -605,9 +605,7 @@ fn loose_objects(repo: &Repo, children: &Children, opts: &RunOptions) -> bool {
     let base = objects.join("pack").join("loose");
     let base = base.to_string_lossy().into_owned();
     let mut args = vec!["pack-objects"];
-    if opts.quiet {
-        args.push("--quiet");
-    }
+    args.push(if opts.quiet { "--quiet" } else { "--no-quiet" });
     args.push(&base);
     let mut cmd = children.command(&args);
     cmd.stdin(Stdio::piped()).stdout(Stdio::null());
