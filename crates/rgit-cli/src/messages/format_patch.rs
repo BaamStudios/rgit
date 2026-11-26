@@ -164,6 +164,19 @@ pub fn interdiff_header(previous: Option<u64>) -> String {
     }
 }
 
+/// The heading of a range-diff, against version `previous` when the
+/// reroll count says which one.
+pub fn range_diff_header(previous: Option<u64>) -> String {
+    match previous {
+        Some(v) => format!("Range-diff against v{v}:"),
+        None => "Range-diff:".to_string(),
+    }
+}
+
+pub fn requires_option(option: &str, needed: &str) -> String {
+    format!("the option '{option}' requires '{needed}'")
+}
+
 /// The headers of a `--attach`/`--inline` mail after the subject and
 /// the start of its first part (the message).
 pub fn multipart_head(boundary: &str) -> String {

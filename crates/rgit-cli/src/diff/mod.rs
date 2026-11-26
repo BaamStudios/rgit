@@ -17,7 +17,7 @@ pub mod options;
 mod order;
 pub mod output;
 pub mod remerge;
-mod stat;
+pub mod stat;
 mod textconv_cache;
 mod words;
 
