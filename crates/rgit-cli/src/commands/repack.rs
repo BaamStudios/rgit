@@ -44,7 +44,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let no_server_info = Cell::new(false);
     let quiet = Cell::new(false);
     let local = Cell::new(false);
-    let bitmap = Cell::new(false);
+    let bitmap = Cell::new(-1);
     let islands = Cell::new(false);
     let unpack_unreachable: RefCell<Option<String>> = RefCell::new(None);
     let keep_unreachable = Cell::new(false);
@@ -112,7 +112,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('n', None, &no_server_info, msg::REPACK_H_N),
             Opt::flag('q', "quiet", &quiet, msg::REPACK_H_QUIET),
             Opt::flag('l', "local", &local, msg::REPACK_H_LOCAL),
-            Opt::flag('b', "write-bitmap-index", &bitmap, msg::REPACK_H_BITMAP),
+            Opt::bool('b', "write-bitmap-index", &bitmap, msg::REPACK_H_BITMAP),
             Opt::flag('i', "delta-islands", &islands, msg::REPACK_H_ISLANDS),
             Opt::string(
                 None,
@@ -182,9 +182,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if cruft.get() {
         unsupported.borrow_mut().get_or_insert_with(|| "--cruft".into());
     }
-    // Bitmaps (#23) only speed up later reads: -b is accepted, but no
-    // bitmap is written.
-    let _ = bitmap.get();
     if let Some(opt) = unsupported.borrow().as_deref() {
         return Err(Die::Fatal(msg::not_supported(opt)));
     }
@@ -193,6 +190,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let config = repo::load_config(ctx, &setup)?;
     let all_loosen = all_loosen.get();
     let pack_everything = all.get() || all_loosen;
+    // `-b`, else `repack.writeBitmaps` (`pack.writeBitmaps`), else true in
+    // bare repositories.
+    let mut write_bitmaps = match bitmap.get() {
+        -1 => config
+            .bool("repack.writebitmaps")
+            .ok()
+            .flatten()
+            .or_else(|| config.bool("pack.writebitmaps").ok().flatten())
+            .unwrap_or_else(|| setup.is_bare() && write_midx.borrow().is_none()),
+        v => v > 0,
+    };
+    if write_bitmaps && !pack_everything {
+        if bitmap.get() == -1 && setup.is_bare() {
+            write_bitmaps = false;
+        } else {
+            return Err(Die::Fatal(msg::REPACK_INCREMENTAL_BITMAP.into()));
+        }
+    }
     let delete = delete.get();
     if delete && setup.format.precious_objects {
         return Err(Die::Fatal(msg::REPACK_PRECIOUS.into()));
@@ -269,6 +284,25 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let ordered = rgit_pack::write::pack_order(&chosen);
     let new_pack = store::write_pack(&odb, &pack_dir, &ordered, &opts)?;
+    if let Some(sum) = &new_pack
+        && write_bitmaps
+        && write_midx.borrow().is_none()
+    {
+        let walk_commits: Vec<ObjectId> = chosen
+            .iter()
+            .filter(|o| o.kind == rgit_object::ObjectKind::Commit)
+            .map(|o| o.id)
+            .collect();
+        let idx = pack_dir.join(format!("pack-{}.idx", sum.to_hex()));
+        crate::bitmaps::write_for_pack(
+            &setup,
+            &config,
+            &odb,
+            &idx,
+            &walk_commits,
+            !quiet.get() && rgit_progress::stderr_is_terminal(),
+        )?;
+    }
     if new_pack.is_none() && !quiet.get() {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{}", msg::REPACK_NOTHING_NEW);
@@ -334,7 +368,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 Some(2) => 2,
                 _ => 1,
             },
-            bitmap: bitmap.get(),
+            bitmap: write_bitmaps,
             incremental: mode == "incremental",
             progress: !quiet.get() && rgit_progress::stderr_is_terminal(),
             ..Default::default()

@@ -137,3 +137,6 @@ pub fn total(objects: usize, deltas: u32, reused: u32, reused_deltas: u32) -> St
          pack-reused 0 (from 0)"
     )
 }
+
+pub const BITMAP_DISABLED_NOT_PACKED: &str =
+    "disabling bitmap writing, as some objects are not being packed";

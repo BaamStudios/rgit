@@ -268,6 +268,11 @@ impl Repo {
         Ok(repo)
     }
 
+    /// The packs of the repository's own object directory.
+    pub fn local_packs(&self) -> &Arc<rgit_pack::PackSet> {
+        &self.dirs[0].packs.set
+    }
+
     /// The replacement of `oid` (following chains), or `oid` itself.
     pub fn replaced(&mut self, oid: &ObjectId) -> ObjectId {
         if !self.replace_enabled {

@@ -247,6 +247,10 @@ pub struct Options {
     pub disk_usage: Option<bool>,
     /// `--maximal-only`.
     pub maximal_only: bool,
+    /// `--use-bitmap-index`.
+    pub use_bitmap_index: bool,
+    /// `--test-bitmap`.
+    pub test_bitmap: bool,
 }
 
 fn parse_count(s: &str) -> Result<usize, Die> {
@@ -390,6 +394,8 @@ impl Options {
             ignore_missing: false,
             unpacked: false,
             disk_usage: None,
+            use_bitmap_index: false,
+            test_bitmap: false,
             maximal_only: false,
         }
     }
@@ -592,6 +598,8 @@ impl Options {
                 "--header" if cmd == Command::RevList => o.header = true,
                 "--quiet" if cmd == Command::RevList => o.quiet = true,
                 "--count" if cmd == Command::RevList => o.count = true,
+                "--use-bitmap-index" if cmd == Command::RevList => o.use_bitmap_index = true,
+                "--test-bitmap" if cmd == Command::RevList => o.test_bitmap = true,
                 "--objects" if cmd == Command::RevList => o.set_objects(false),
                 "--objects-edge" | "--objects-edge-aggressive" if cmd == Command::RevList => {
                     o.set_objects(true);

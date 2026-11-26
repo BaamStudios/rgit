@@ -15,6 +15,7 @@ mod alias;
 mod argv;
 mod attributes;
 mod autocorrect;
+mod bitmaps;
 mod cmdlist;
 mod color;
 mod column;

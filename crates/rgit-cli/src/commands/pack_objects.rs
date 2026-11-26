@@ -65,6 +65,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let local = Cell::new(false);
     let path_walk = Cell::new(false);
     let use_bitmap = Cell::new(false);
+    // 0: no bitmap, 1: `--write-bitmap-index`, 2: `--write-bitmap-index-quiet`.
+    let write_bitmap = Cell::new(0);
     let name_hash_version = Cell::new(1);
     let compression = Cell::new(i32::MIN);
     // Options that change what is packed or written, not implemented yet:
@@ -170,14 +172,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             // anyway.
             Opt::flag(None, "keep-true-parents", &keep_true_parents, msg::H_KEEP_TRUE_PARENTS),
             Opt::flag(None, "use-bitmap-index", &use_bitmap, msg::H_USE_BITMAP_INDEX),
-            Opt::callback(
+            Opt::set_int(
                 None,
                 "write-bitmap-index",
-                None,
+                &write_bitmap,
                 msg::H_WRITE_BITMAP_INDEX,
-                reject("write-bitmap-index"),
+                1,
+            ),
+            Opt::set_int(
+                None,
+                "write-bitmap-index-quiet",
+                &write_bitmap,
+                msg::H_WRITE_BITMAP_INDEX,
+                2,
             )
-            .noarg(),
+            .hidden(),
             Opt::callback(None, "filter", Some("args"), msg::H_FILTER, reject("filter")),
             Opt::callback(None, "missing", Some("action"), msg::H_MISSING, reject("missing"))
                 .noneg(),
@@ -342,9 +351,31 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         kept: honor_pack_keep.get(),
         keep_packs: keep_pack.borrow().clone(),
     };
+    // Bitmaps are written only for packs of everything reachable.
+    let mut bitmap = if stdout.get() || !all.get() {
+        0
+    } else {
+        write_bitmap.get()
+    };
     if skip.any() {
+        let before = listed.len();
         skip.apply(&odb, &setup, &mut listed);
+        if listed.len() != before && bitmap > 0 {
+            if bitmap == 1 {
+                eprintln!("warning: {}", msg::BITMAP_DISABLED_NOT_PACKED);
+            }
+            bitmap = 0;
+        }
     }
+    let walk_commits: Vec<ObjectId> = if bitmap > 0 {
+        listed
+            .iter()
+            .filter(|o| o.kind == ObjectKind::Commit)
+            .map(|o| o.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
     if include_tag.get() {
         add_tags(&repo, &mut listed);
     }
@@ -391,6 +422,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             max_pack_size: limit,
         };
         let summaries = files.write(&ordered, repo.source, &packs, &opts)?;
+        if bitmap > 0 && summaries.len() == 1 {
+            crate::bitmaps::write_for_pack(
+                &setup,
+                &config,
+                &odb,
+                &files.final_name(&summaries[0].checksum, "idx"),
+                &walk_commits,
+                show_progress,
+            )?;
+        }
         for s in &summaries {
             println!("{}", s.checksum);
         }

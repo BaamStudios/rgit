@@ -137,7 +137,7 @@ enum Node {
 pub struct Graph<'a, S: ObjectSource + ?Sized> {
     source: &'a S,
     hash: HashKind,
-    nodes: HashMap<ObjectId, std::rc::Rc<Node>>,
+    nodes: HashMap<ObjectId, std::sync::Arc<Node>>,
 }
 
 impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
@@ -150,12 +150,12 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
         }
     }
 
-    fn node(&mut self, id: &ObjectId, kind: ObjectKind) -> Result<std::rc::Rc<Node>, BuildError> {
+    fn node(&mut self, id: &ObjectId, kind: ObjectKind) -> Result<std::sync::Arc<Node>, BuildError> {
         if let Some(n) = self.nodes.get(id) {
             return Ok(n.clone());
         }
         if kind == ObjectKind::Blob {
-            return Ok(std::rc::Rc::new(Node::Blob));
+            return Ok(std::sync::Arc::new(Node::Blob));
         }
         let obj = self
             .source
@@ -189,7 +189,7 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
             }
             ObjectKind::Blob => Node::Blob,
         };
-        let node = std::rc::Rc::new(node);
+        let node = std::sync::Arc::new(node);
         if !matches!(*node, Node::Blob) {
             self.nodes.insert(*id, node.clone());
         }
@@ -217,14 +217,14 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
     }
 
     /// Set in `bm` the bits of everything reachable from `start` that is
-    /// not set yet. Commits with an entry in `done` contribute their
-    /// bitmap. `bit_of` maps ids to bits (a missing id is an error, or
+    /// not set yet. Commits for which `stored` has a bitmap contribute it
+    /// instead of being walked. `bit_of` maps ids to bits (a missing id is an error, or
     /// added through `extend` when given).
     pub fn fill(
         &mut self,
         start: &[(ObjectId, ObjectKind)],
         bm: &mut Bitmap,
-        done: &HashMap<ObjectId, std::rc::Rc<Bitmap>>,
+        stored: &mut dyn FnMut(&ObjectId) -> Option<std::sync::Arc<Bitmap>>,
         bit_of: &mut dyn FnMut(&ObjectId, ObjectKind) -> Option<usize>,
     ) -> Result<(), BuildError> {
         let mut stack: Vec<(ObjectId, ObjectKind)> = start.to_vec();
@@ -233,8 +233,10 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
             if bm.get(bit) {
                 continue;
             }
-            if let Some(b) = done.get(&id) {
-                bm.or(b);
+            if kind == ObjectKind::Commit
+                && let Some(b) = stored(&id)
+            {
+                bm.or(&b);
                 continue;
             }
             bm.set(bit);
@@ -290,7 +292,7 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
             }
             // Depth first: (tree, next entry, path of the tree).
             let root = self.node(&tree, ObjectKind::Tree)?;
-            let mut stack: Vec<(std::rc::Rc<Node>, usize, Vec<u8>)> = vec![(root, 0, Vec::new())];
+            let mut stack: Vec<(std::sync::Arc<Node>, usize, Vec<u8>)> = vec![(root, 0, Vec::new())];
             while let Some((node, pos, path)) = stack.last_mut() {
                 let Node::Tree(entries) = &**node else {
                     stack.pop();
@@ -328,7 +330,7 @@ pub struct Selected {
     /// The commit.
     pub id: ObjectId,
     /// Objects reachable from it.
-    pub bitmap: std::rc::Rc<Bitmap>,
+    pub bitmap: std::sync::Arc<Bitmap>,
 }
 
 /// Compute the bitmaps of `selected`, in that order (the order they are
@@ -340,15 +342,16 @@ pub fn build<S: ObjectSource + ?Sized>(
     num_objects: usize,
     bit_of: &dyn Fn(&ObjectId) -> Option<usize>,
 ) -> Result<Vec<Selected>, BuildError> {
-    let mut done: HashMap<ObjectId, std::rc::Rc<Bitmap>> = HashMap::new();
+    let mut done: HashMap<ObjectId, std::sync::Arc<Bitmap>> = HashMap::new();
     let mut out = Vec::with_capacity(selected.len());
     let _ = num_objects;
     for c in selected {
         let mut bm = Bitmap::new();
         let mut lookup = |id: &ObjectId, _k: ObjectKind| bit_of(id);
-        graph.fill(&[(*c, ObjectKind::Commit)], &mut bm, &done, &mut lookup)?;
+        let mut stored = |id: &ObjectId| done.get(id).cloned();
+        graph.fill(&[(*c, ObjectKind::Commit)], &mut bm, &mut stored, &mut lookup)?;
         bm.trim();
-        let bm = std::rc::Rc::new(bm);
+        let bm = std::sync::Arc::new(bm);
         done.insert(*c, bm.clone());
         out.push(Selected { id: *c, bitmap: bm });
     }

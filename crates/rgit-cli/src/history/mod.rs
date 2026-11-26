@@ -6,6 +6,7 @@
 //! The walk itself (orderings, limiting, boundary, sides, objects) lives in
 //! `rgit_revwalk::walk`; this module wires it to the repository and prints.
 
+mod bitmap;
 mod decorate;
 mod follow;
 pub mod graph;
@@ -2810,6 +2811,15 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         let _ = std::io::stderr().write_all(msg::REV_LIST_USAGE.as_bytes());
         return Err(Die::Exit(rgit_options::EXIT_USAGE));
     }
+    if cmd == Command::RevList && opts.test_bitmap {
+        return bitmap::test_bitmap(ctx, repo.setup, &resolved);
+    }
+    if cmd == Command::RevList
+        && bitmap::eligible(opts, &resolved)
+        && let Some(code) = bitmap::run(ctx, repo.setup, opts, &resolved)?
+    {
+        return Ok(code);
+    }
     let commit_color = match cmd {
         Command::Log => {
             let pager = if opts.show { "show" } else { "log" };
@@ -3312,7 +3322,7 @@ fn maximal<S: CommitSource>(walk: &Walk<S>, shown: Vec<Shown>) -> Vec<Shown> {
 
 /// A byte count in the largest binary unit it reaches, with two
 /// decimals (`--disk-usage=human`).
-fn human_size(n: u64) -> String {
+pub(super) fn human_size(n: u64) -> String {
     const UNITS: [(u32, &str); 3] = [(30, "GiB"), (20, "MiB"), (10, "KiB")];
     for (shift, unit) in UNITS {
         if n >= 1 << shift {
