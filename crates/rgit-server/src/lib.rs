@@ -8,5 +8,8 @@
 //!
 //! - [`upload_pack`]: serve fetches and clones (`git-upload-pack`),
 //!   protocol v2.
+//! - [`http_backend`]: the CGI program for smart and dumb HTTP
+//!   (`git-http-backend`).
 
+pub mod http_backend;
 pub mod upload_pack;

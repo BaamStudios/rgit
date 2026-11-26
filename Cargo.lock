@@ -487,6 +487,7 @@ version = "0.1.0"
 dependencies = [
  "bstr",
  "fancy-regex",
+ "flate2",
  "libc",
  "mimalloc",
  "regex",
@@ -852,9 +853,11 @@ dependencies = [
 name = "rgit-server"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "rgit-config",
  "rgit-difftest",
  "rgit-hash",
+ "rgit-messages",
  "rgit-object",
  "rgit-odb",
  "rgit-pack",

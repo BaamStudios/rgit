@@ -19,6 +19,12 @@ fn help_outside_a_repository() {
     let list = String::from_utf8(out.stdout).expect("utf-8");
     let mut failures = Vec::new();
     for cmd in list.split_whitespace() {
+        // `http-backend` is a CGI program and takes no options; like git it
+        // answers `-h` as a request without `REQUEST_METHOD` (a known
+        // breakage in t1517).
+        if cmd == "http-backend" {
+            continue;
+        }
         for opt in ["-h", "--help-all"] {
             let out = Command::new(rgit)
                 .args([cmd, opt])

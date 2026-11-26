@@ -1,6 +1,6 @@
 [package]
 name = "rgit-server"
-description = "Server side of the git wire protocol for rgit: upload-pack, receive-pack (clean-room, not affiliated with the Git project)"
+description = "Server side of the git wire protocol for rgit: upload-pack, receive-pack, http-backend (clean-room, not affiliated with the Git project)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,8 +11,10 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 rgit-config = { path = "../rgit-config" }
 rgit-hash = { path = "../rgit-hash" }
+rgit-messages = { path = "../rgit-messages" }
 rgit-object = { path = "../rgit-object" }
 rgit-odb = { path = "../rgit-odb" }
 rgit-pack = { path = "../rgit-pack" }

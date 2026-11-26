@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: MIT
+//! `git http-backend` (Documentation/git-http-backend.adoc): the CGI
+//! program that serves repositories over smart and dumb HTTP.
+//!
+//! The request is described by the CGI environment and answered by
+//! `rgit_server::http_backend`; this file only finds and opens the
+//! repository (like `upload-pack`: `<dir>/.git`, `<dir>`, `<dir>.git`)
+//! and connects the standard streams. Arguments are ignored, as git
+//! does: a CGI program gets none it could trust.
+
+use std::io::Write;
+
+use rgit_refs::files::FilesStore;
+use rgit_server::http_backend::{self as service, Host, Repository};
+
+use crate::prelude::*;
+use crate::repo::{self, Mode};
+
+struct CliHost<'a> {
+    ctx: &'a mut Context,
+}
+
+impl Host for CliHost<'_> {
+    fn open(&mut self, dir: &str) -> Option<Repository> {
+        let git_dir = super::upload_pack::enter_repo(dir, false)?;
+        std::env::set_current_dir(&git_dir).ok()?;
+        let git_dir = std::env::current_dir().ok()?;
+        self.ctx.git_dir = Some(".".into());
+        let setup = repo::setup(self.ctx, Mode::RequiredQuiet).ok()?;
+        let hash = setup.format.object_format;
+        let config = repo::load_config(self.ctx, &setup).ok()?;
+        let odb = repo::odb_with_config(&setup, &config).ok()?;
+        let refs = FilesStore::new(&setup.common_dir, hash).with_worktree(&setup.git_dir);
+        let objects_dir = git_dir.join(rgit_odb::objects_dir(&setup.common_dir));
+        Some(Repository {
+            git_dir,
+            objects_dir,
+            hash,
+            config,
+            refs: Box::new(refs),
+            odb,
+        })
+    }
+}
+
+pub fn run(ctx: &mut Context, _argv: &[String]) -> CmdResult {
+    let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
+    let opts = service::Options {
+        git: vec![exe.into_os_string()],
+        env: ctx.child_env(),
+        namespace: ctx
+            .namespace
+            .clone()
+            .or_else(|| std::env::var("GIT_NAMESPACE").ok())
+            .filter(|n| !n.is_empty()),
+    };
+    let var = |name: &str| std::env::var(name).ok();
+    let mut host = CliHost { ctx };
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut err = std::io::stderr();
+    let code = service::http_backend(&var, &mut host, &opts, std::io::stdin(), &mut out, &mut err);
+    let _ = out.flush();
+    Ok(code)
+}

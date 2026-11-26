@@ -73,6 +73,7 @@ unicode-width = { version = "0.2", default-features = false }
 libc = "0.2.186"
 
 [dev-dependencies]
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 rgit-difftest = { path = "../rgit-difftest" }
 tempfile = "3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
