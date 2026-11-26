@@ -271,14 +271,16 @@ impl<R: BufRead> Session<'_, R> {
                     let _ = out.flush();
                 }
                 "prepare" => {
-                    tx.prepare(hooks).map_err(|e| fatal(e.to_string()))?;
+                    tx.prepare(hooks)
+                        .map_err(|e| fatal(msg::step_failed("prepare", &e.to_string())))?;
                     phase = Phase::Prepared;
                     let _ = writeln!(out, "{}", msg::ok("prepare"));
                     let _ = out.flush();
                 }
                 "commit" => {
                     let t = std::mem::replace(&mut tx, Transaction::new(store));
-                    t.commit(hooks).map_err(|e| fatal(e.to_string()))?;
+                    t.commit(hooks)
+                        .map_err(|e| fatal(msg::step_failed("commit", &e.to_string())))?;
                     self.write_symlinks();
                     phase = Phase::Closed;
                     let _ = writeln!(out, "{}", msg::ok("commit"));

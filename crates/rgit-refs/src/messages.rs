@@ -167,3 +167,12 @@ pub fn cannot_delete_not_symref(name: &str) -> String {
 
 /// The transaction was used after commit or abort.
 pub const TRANSACTION_CLOSED: &str = "transaction is closed";
+
+/// A transaction prepared while `GIT_QUARANTINE_PATH` is set (inside a
+/// `pre-receive` hook; git-receive-pack(1), "Quarantine environment").
+pub const QUARANTINE: &str = "ref updates forbidden inside quarantine environment";
+
+/// `pack-refs` could not write the packed file.
+pub fn cannot_write_packed_refs(reason: &str) -> String {
+    format!("unable to write new packed-refs: {reason}")
+}
