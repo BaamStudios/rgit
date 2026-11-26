@@ -1,7 +1,7 @@
 # HTTP configuration: what rgit supports
 
-rgit's smart HTTP client (`crates/rgit-http`) is its own HTTP/1.1 stack on
-`std::net` with TLS from rustls; it does not use libcurl or OpenSSL (decision
+rgit's smart HTTP client (`crates/rgit-http`) is its own HTTP/1.1 and HTTP/2
+stack on `std::net` with TLS from rustls; it does not use libcurl or OpenSSL (decision
 on issue #162). This page lists every variable of git's
 `Documentation/config/http.adoc` and says whether rgit implements it, accepts
 it without an effect, or rejects it, and why. `http.<url>.<key>` works for
@@ -17,12 +17,12 @@ behaviour described.
 | `http.proxy` | yes | `http://`, `socks4://`, `socks4a://`, `socks5://`, `socks5h://` proxies, `user[:password]@` (a missing password is asked for through the credential helpers), `remote.<name>.proxy`, `http_proxy`, `https_proxy`, `all_proxy`, `no_proxy`. Invalid proxy URLs fail with git's messages (`Invalid proxy URL '...': unsupported proxy scheme '...'`). **no**: `https://` proxies (TLS to the proxy itself) and SOCKS proxies on Unix domain sockets (`socks5://localhost/path`) fail with an error naming the limitation. |
 | `http.proxyAuthMethod` | partly | Values are checked like git (`unsupported proxy authentication method ...: using anyauth`), `remote.<name>.proxyAuthMethod` and `GIT_HTTP_PROXY_AUTHMETHOD` are read. Proxy authentication is always Basic: Digest, Negotiate and NTLM are not implemented. |
 | `http.proxySSLCert`, `http.proxySSLKey`, `http.proxySSLCertPasswordProtected`, `http.proxySSLCAInfo` | no | Only apply to HTTPS proxies, which rgit does not support (see `http.proxy`). |
-| `http.emptyAuth` | checked | rgit implements no GSS-Negotiate (Kerberos), the only scheme that needs empty credentials, so every value behaves like `false`. |
+| `http.emptyAuth` | yes | GSS-Negotiate (SPNEGO, RFC 4559) through the system GSS-API library (`libgssapi_krb5.so.2` or Heimdal's `libgssapi.so.3`, loaded at run time; rgit runs without it). `auto` retries a `401` that offers `Negotiate` with empty credentials, `true` has them from the first request, `false` goes straight to the credential helpers. With empty credentials a `401` offering `Negotiate` is answered once with a token for `HTTP@<host>`; without a Kerberos ticket the request is resent without one and then the helpers are asked, which gives the same number of `401` responses as git with libcurl. A server that offers only `Negotiate` gets no Basic credentials. Not available on macOS and Windows (no SSPI). |
 | `http.proactiveAuth` | yes | `basic`, `auto`, `none`; the helper's `authtype`/`credential` are used when it announces `capability[]=authtype`. |
-| `http.delegation` | checked | Only meaningful for GSS-API, which rgit does not implement. Unknown values warn like git. |
+| `http.delegation` | yes | `none` (default), `policy` (`GSS_C_DELEG_POLICY_FLAG`), `always` (`GSS_C_DELEG_FLAG`) for Negotiate. Unknown values warn like git. |
 | `http.extraHeader` | yes | Multi-valued; an empty value resets the list. |
 | `http.cookieFile`, `http.saveCookies` | yes | Netscape/Mozilla format and plain `Set-Cookie:` header lines; an empty `http.cookieFile` keeps cookies for the session only. Cookie values are redacted in `GIT_TRACE_CURL` unless `GIT_TRACE_REDACT=0`. |
-| `http.version` | partly | `HTTP/1.1` only. `HTTP/2` is accepted and served over HTTP/1.1 (rgit has no HTTP/2 framing); other values warn like git. |
+| `http.version` | yes | As with libcurl: by default HTTPS offers `h2` and `http/1.1` via ALPN and uses HTTP/2 (RFC 9113) when the server picks it, plain HTTP uses HTTP/1.1. `HTTP/2` also asks plain HTTP servers to upgrade (`Upgrade: h2c`, not through proxies and not for streamed request bodies) and falls back to HTTP/1.1 when they do not; `HTTP/1.1` never uses HTTP/2. A `GOAWAY` or refused stream before the response resends a replayable request on a new connection. Other values warn like git. |
 | `http.curloptResolve` | yes | `[+]HOST:PORT:ADDRESS[,ADDRESS]`, `-HOST:PORT`, an empty value resets the list; malformed entries fail with libcurl's message. |
 | `http.sslVersion` | partly | `tlsv1.3` restricts to TLS 1.3; `tlsv1`, `tlsv1.0`, `tlsv1.1`, `tlsv1.2` mean "TLS 1.2 or later" (rustls implements nothing older than TLS 1.2); `sslv2`/`sslv3` fail. `GIT_SSL_VERSION` (empty = default) is read. |
 | `http.sslCipherList` | partly | OpenSSL or IANA names of the suites rustls implements (ECDHE with AES-GCM or ChaCha20-Poly1305, and the TLS 1.3 suites); a list without TLS 1.3 names leaves TLS 1.3 alone, as OpenSSL does; a list that selects nothing fails with `failed setting cipher list: ...`. `GIT_SSL_CIPHER_LIST` is read. |

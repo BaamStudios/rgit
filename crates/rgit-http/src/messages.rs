@@ -333,3 +333,15 @@ pub const SOCKS5_AUTH_FAILED: &str = "User was rejected by the SOCKS5 server.";
 pub fn socks4_no_ipv4(host: &str) -> String {
     format!("SOCKS4 connection to {host} not supported")
 }
+
+/// libcurl (CURLE_HTTP2): the HTTP/2 framing layer failed.
+pub const H2_FRAMING: &str = "Error in the HTTP2 framing layer";
+
+/// The server refused an HTTP/2 stream (`GOAWAY` or `REFUSED_STREAM`)
+/// and the request could not be sent again.
+pub const H2_REFUSED: &str = "HTTP/2 stream was refused by the server";
+
+/// libcurl (CURLE_HTTP2_STREAM): the server reset the stream.
+pub fn h2_stream_error(stream: u32, name: &str, code: u32) -> String {
+    format!("HTTP/2 stream {stream} was not closed cleanly: {name} (err {code})")
+}

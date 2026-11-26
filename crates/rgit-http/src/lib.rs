@@ -2,8 +2,11 @@
 //! Smart HTTP transport client for rgit.
 //!
 //! A pure Rust stack (decision on issue #162): a small blocking HTTP/1.1
-//! client on `std::net` with TLS from rustls (ring provider) and trust
-//! roots from the operating system (`rustls-native-certs`). No libcurl.
+//! and HTTP/2 client on `std::net` with TLS from rustls (ring provider)
+//! and trust roots from the operating system (`rustls-native-certs`). No
+//! libcurl. HTTP/2 (issue #509) is negotiated via ALPN or an `h2c`
+//! upgrade (`http.version`); GSS-Negotiate goes through the system GSS-API
+//! library loaded at run time ([`gss`], `http.emptyAuth`).
 //!
 //! - [`SmartHttp`]: discovery (`GET info/refs?service=...`) and stateless
 //!   POSTs to `git-upload-pack` / `git-receive-pack`, with `Git-Protocol`,
@@ -25,6 +28,10 @@ pub mod auth;
 mod client;
 mod cookies;
 mod error;
+pub mod gss;
+mod h2;
+mod hpack;
+mod hpack_huffman;
 pub mod messages;
 pub mod options;
 mod smart;
@@ -37,8 +44,8 @@ pub mod url;
 pub use auth::{Credential, CredentialProvider};
 pub use error::{Error, Result, Transport};
 pub use options::{
-    EmptyAuth, FollowRedirects, HttpOptions, HttpVersion, ProactiveAuth, Proxy, ProxyAuthMethod,
-    ProxyKind, SslVersion,
+    Delegation, EmptyAuth, FollowRedirects, HttpOptions, HttpVersion, ProactiveAuth, Proxy,
+    ProxyAuthMethod, ProxyKind, SslVersion,
 };
 pub use smart::{Advertisement, RpcBody, RpcResponse, Service, SmartHttp};
 pub use transport::{HttpTransport, transport_for};
