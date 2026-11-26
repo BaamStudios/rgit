@@ -82,6 +82,9 @@ enum Order {
         packs: Vec<Option<Arc<Pack>>>,
         by_bit: Vec<u32>,
         bit_of: Vec<u32>,
+        /// Where the order came from: `"midx"` (the `RIDX` chunk) or
+        /// `"rev"` (the `.rev` file).
+        source: &'static str,
     },
 }
 
@@ -214,10 +217,10 @@ impl BitmapIndex {
         let Ok(data) = FileData::open(&path) else {
             return Ok(None);
         };
-        let rev = match midx.reverse_index().filter(|_| read_ridx) {
-            Some(r) => r,
+        let (rev, source) = match midx.reverse_index().filter(|_| read_ridx) {
+            Some(r) => (r, "midx"),
             None => match read_midx_rev(&midx_rev_path(pack_dir, &sum), &midx) {
-                Some(r) => r,
+                Some(r) => (r, "rev"),
                 None => return Err(BitmapError::one(m::MIDX_NO_REVINDEX)),
             },
         };
@@ -243,6 +246,7 @@ impl BitmapIndex {
             packs: pack_list,
             by_bit: rev,
             bit_of,
+            source,
         };
         BitmapIndex::parse(data, path, kind, order).map(Some)
     }
@@ -581,6 +585,15 @@ impl BitmapIndex {
         match &self.order {
             Order::Pack { pack, .. } => Some(pack),
             Order::Midx { .. } => None,
+        }
+    }
+
+    /// Where the pseudo-pack order of a MIDX bitmap came from (`"midx"`
+    /// or `"rev"`).
+    pub fn revindex_source(&self) -> Option<&'static str> {
+        match &self.order {
+            Order::Midx { source, .. } => Some(source),
+            Order::Pack { .. } => None,
         }
     }
 

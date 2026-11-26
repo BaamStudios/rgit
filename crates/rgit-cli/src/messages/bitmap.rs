@@ -39,3 +39,7 @@ pub fn test_located_midx(name: &str) -> String {
 pub fn no_indexed_bitmap(hex: &str) -> String {
     format!("commit '{hex}' doesn't have an indexed bitmap")
 }
+
+pub fn midx_missing(hex: &str) -> String {
+    format!("could not find '{hex}' in the multi-pack-index")
+}

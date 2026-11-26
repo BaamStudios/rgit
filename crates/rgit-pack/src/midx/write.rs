@@ -25,7 +25,8 @@ use rgit_hash::{HashKind, ObjectId};
 
 use super::messages as m;
 use super::{
-    CHAIN_DIR, CHAIN_FILE, FILE_NAME, HEADER_LEN, ID_LOFF, ID_OIDF, ID_OIDL, ID_OOFF, ID_PNAM,
+    CHAIN_DIR, CHAIN_FILE, FILE_NAME, HEADER_LEN, ID_BTMP, ID_LOFF, ID_OIDF, ID_OIDL, ID_OOFF,
+    ID_PNAM, ID_RIDX,
     LARGE_FLAG, MidxChain, MultiPackIndex, SIGNATURE, hash_version, layer_path,
 };
 use crate::PackIndex;
@@ -100,6 +101,51 @@ pub fn select_entries(
 /// The bytes of a MIDX listing `names` (pack-int-id order) and `entries`
 /// (sorted by id), including the trailing checksum.
 pub fn build(kind: HashKind, version: u8, names: &[&str], entries: &[Entry]) -> Vec<u8> {
+    build_with(kind, version, names, entries, None)
+}
+
+/// The pseudo-pack order of `entries` (sorted by id) for a reachability
+/// bitmap: the objects of the preferred pack first, then those of the
+/// other packs by pack-int-id, each pack in offset order. Returns the
+/// positions (into `entries`) in that order and, per pack, the first bit
+/// and the number of bits (the `RIDX` and `BTMP` chunks).
+pub fn pseudo_pack_order(
+    entries: &[Entry],
+    num_packs: usize,
+    preferred: Option<usize>,
+) -> (Vec<u32>, Vec<(u32, u32)>) {
+    let rank = |p: u32| -> (bool, u32) { (preferred != Some(p as usize), p) };
+    let mut order: Vec<u32> = (0..entries.len() as u32).collect();
+    order.sort_by_key(|&i| {
+        let e = &entries[i as usize];
+        (rank(e.pack), e.offset)
+    });
+    let mut btmp = vec![(0u32, 0u32); num_packs];
+    let mut packs: Vec<u32> = (0..num_packs as u32).collect();
+    packs.sort_by_key(|&p| rank(p));
+    let mut counts = vec![0u32; num_packs];
+    for e in entries {
+        counts[e.pack as usize] += 1;
+    }
+    let mut at = 0u32;
+    for p in packs {
+        // A pack that contributes no object is recorded as (0, 0).
+        let n = counts[p as usize];
+        btmp[p as usize] = if n == 0 { (0, 0) } else { (at, n) };
+        at += n;
+    }
+    (order, btmp)
+}
+
+/// [`build`], with the `RIDX` and `BTMP` chunks of a bitmapped MIDX when
+/// `pseudo` (from [`pseudo_pack_order`]) is given.
+pub fn build_with(
+    kind: HashKind,
+    version: u8,
+    names: &[&str],
+    entries: &[Entry],
+    pseudo: Option<&(Vec<u32>, Vec<(u32, u32)>)>,
+) -> Vec<u8> {
     let h = kind.byte_len();
     let mut pnam: Vec<u8> = Vec::new();
     for n in names {
@@ -144,6 +190,19 @@ pub fn build(kind: HashKind, version: u8, names: &[&str], entries: &[Entry]) -> 
     ];
     if need_large {
         chunks.push((ID_LOFF, loff));
+    }
+    if let Some((ridx, btmp)) = pseudo {
+        let mut r = Vec::with_capacity(ridx.len() * 4);
+        for p in ridx {
+            r.extend_from_slice(&p.to_be_bytes());
+        }
+        chunks.push((ID_RIDX, r));
+        let mut b = Vec::with_capacity(btmp.len() * 8);
+        for (pos, nr) in btmp {
+            b.extend_from_slice(&pos.to_be_bytes());
+            b.extend_from_slice(&nr.to_be_bytes());
+        }
+        chunks.push((ID_BTMP, b));
     }
     let mut out = Vec::new();
     out.extend_from_slice(&SIGNATURE.to_be_bytes());
@@ -196,9 +255,12 @@ pub struct WriteOptions {
     pub preferred: Option<String>,
     /// `--stdin-packs`: only these `.idx` names.
     pub only: Option<BTreeSet<String>>,
-    /// `--bitmap` (bitmaps are not written yet, #23; this only disables
-    /// keeping an up-to-date MIDX without one).
+    /// `--bitmap`: write the `RIDX` and `BTMP` chunks (the caller writes
+    /// the `.bitmap`); the preferred pack defaults to the oldest one.
     pub bitmap: bool,
+    /// Also write the pseudo-pack order as a `.rev` file
+    /// (`GIT_TEST_MIDX_WRITE_REV`).
+    pub write_rev: bool,
     /// `--incremental`.
     pub incremental: bool,
     /// `--no-write-chain-file` (with `incremental`).
@@ -413,6 +475,26 @@ pub fn write(
         }
         return Err(WriteError::Error(m::NO_PACKS.into()));
     }
+    // With a bitmap the pack with the oldest `.pack` is preferred, unless
+    // one is given.
+    // Ties go to the pack listed first by the directory (git scans the
+    // directory in its own order).
+    if opts.bitmap && preferred.is_none() && !opts.incremental {
+        let scan: Vec<String> = std::fs::read_dir(pack_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".idx"))
+            .collect();
+        let rank = |name: &str| scan.iter().position(|n| n == name).unwrap_or(usize::MAX);
+        preferred = packs
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !f.index.is_empty())
+            .min_by_key(|(_, f)| (f.mtime, rank(&f.name)))
+            .map(|(i, _)| i);
+    }
     if let Some(i) = preferred
         && packs[i].index.is_empty()
     {
@@ -433,7 +515,9 @@ pub fn write(
     let skip = |id: &ObjectId| base_layers.iter().any(|l| l.lookup(id).is_some());
     let entries =
         select_entries(&inputs, preferred, &skip).map_err(|e| WriteError::Fatal(e.to_string()))?;
-    let bytes = build(kind, version, &names, &entries);
+    let pseudo = (opts.bitmap && !opts.incremental)
+        .then(|| pseudo_pack_order(&entries, names.len(), preferred));
+    let bytes = build_with(kind, version, &names, &entries, pseudo.as_ref());
     let sum =
         ObjectId::from_bytes(kind, &bytes[bytes.len() - kind.byte_len()..]).expect("hash length");
 
@@ -473,10 +557,35 @@ pub fn write(
     } else {
         write_file(&pack_dir.join(FILE_NAME), &bytes)?;
         clean_chain_dir(&pack_dir.join(CHAIN_DIR), None);
+        if opts.write_rev
+            && let Some((ridx, _)) = &pseudo
+        {
+            let rev = rev_file(kind, ridx, &sum);
+            write_file(
+                &pack_dir.join(format!("multi-pack-index-{}.rev", sum.to_hex())),
+                &rev,
+            )?;
+        }
     }
     clean_stale_files(pack_dir, &sum);
     outcome.written = Some(sum);
     Ok(outcome)
+}
+
+/// A MIDX `.rev` file: the pseudo-pack order in the layout of a pack
+/// `.rev`, with the MIDX checksum in the trailer.
+pub fn rev_file(kind: HashKind, order: &[u32], midx: &ObjectId) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + 4 * order.len() + 2 * kind.byte_len());
+    out.extend_from_slice(b"RIDX");
+    out.extend_from_slice(&1u32.to_be_bytes());
+    out.extend_from_slice(&u32::from(hash_version(kind)).to_be_bytes());
+    for p in order {
+        out.extend_from_slice(&p.to_be_bytes());
+    }
+    out.extend_from_slice(midx.as_bytes());
+    let sum = rgit_hash::hash(kind, &out).expect("no collision attack in own output");
+    out.extend_from_slice(sum.as_bytes());
+    out
 }
 
 /// Replace `path` with `bytes` through `path.lock`.

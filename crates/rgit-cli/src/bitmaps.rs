@@ -167,6 +167,9 @@ pub fn open(set: &rgit_pack::PackSet) -> Option<BitmapIndex> {
             let read_ridx = std::env::var("GIT_TEST_MIDX_READ_RIDX").map_or(true, |v| v != "0");
             match BitmapIndex::open_midx(set.dir(), midx, &packs, read_ridx) {
                 Ok(Some(b)) => {
+                    if let Some(src) = b.revindex_source() {
+                        rgit_trace::trace2::data("load_midx_revindex", "source", src, true);
+                    }
                     rgit_trace::trace2::data(
                         "bitmap",
                         "opened bitmap file",
@@ -220,4 +223,169 @@ pub fn open(set: &rgit_pack::PackSet) -> Option<BitmapIndex> {
         }
     }
     found
+}
+
+/// The name hashes stored in the bitmaps of `pack_dir` (pack bitmaps and
+/// the MIDX bitmap), by object. A MIDX bitmap reuses them, as git does.
+pub fn existing_name_hashes(
+    pack_dir: &Path,
+    hash: rgit_hash::HashKind,
+) -> std::collections::HashMap<ObjectId, u32> {
+    let mut out = std::collections::HashMap::new();
+    let set = rgit_pack::PackSet::open(pack_dir, hash);
+    let packs = set.packs();
+    let mut add = |b: &BitmapIndex| {
+        if !b.has_hash_cache() {
+            return;
+        }
+        for bit in 0..b.num_objects() {
+            if let Some(h) = b.name_hash(bit)
+                && h != 0
+            {
+                out.entry(b.id_at(bit)).or_insert(h);
+            }
+        }
+    };
+    for p in &packs {
+        if let Ok(Some(b)) = BitmapIndex::open_pack(p.clone()) {
+            add(&b);
+        }
+    }
+    let mut errors = Vec::new();
+    if let Ok(Some(m)) = rgit_pack::midx::MultiPackIndex::open(
+        pack_dir.join(rgit_pack::midx::FILE_NAME),
+        hash,
+        &mut errors,
+    ) && let Ok(Some(b)) = BitmapIndex::open_midx(pack_dir, m, &packs, true)
+    {
+        add(&b);
+    }
+    out
+}
+
+/// The tips of `--refs-snapshot=<path>`: object ids, a leading `+` marks
+/// a preferred tip.
+pub fn read_refs_snapshot(path: &Path, hash: rgit_hash::HashKind) -> Result<Vec<(ObjectId, bool)>, Die> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| Die::Fatal(format!("could not open '{}': {e}", path.display())))?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let (pref, hex) = match line.strip_prefix('+') {
+            Some(rest) => (true, rest),
+            None => (false, line),
+        };
+        let id = ObjectId::from_hex(hash, hex.trim().as_bytes())
+            .map_err(|_| Die::Fatal(format!("could not parse line: {line}")))?;
+        out.push((id, pref));
+    }
+    Ok(out)
+}
+
+/// Write the `.bitmap` of the MIDX just written to `pack_dir` (`write
+/// --bitmap`). The candidates are the commits reachable from the refs (or
+/// the snapshot), in walk order; name hashes come from `hashes`.
+pub fn write_for_midx(
+    ctx: &Context,
+    setup: &rgit_repo::Setup,
+    config: &ConfigSet,
+    pack_dir: &Path,
+    hashes: &std::collections::HashMap<ObjectId, u32>,
+    snapshot: Option<&[(ObjectId, bool)]>,
+) -> Result<(), Die> {
+    let hash = setup.format.object_format;
+    let mut errors = Vec::new();
+    let Some(midx) = rgit_pack::midx::MultiPackIndex::open(
+        pack_dir.join(rgit_pack::midx::FILE_NAME),
+        hash,
+        &mut errors,
+    )
+    .map_err(|e| Die::Fatal(e.0))?
+    else {
+        return Ok(());
+    };
+    let Some(order) = midx.reverse_index() else {
+        return Ok(());
+    };
+    let set = rgit_pack::PackSet::open(pack_dir, hash);
+    let all_packs = set.packs();
+    let packs: Vec<Option<Arc<Pack>>> = midx
+        .pack_names()
+        .iter()
+        .map(|n| {
+            let idx = pack_dir.join(n);
+            all_packs.iter().find(|p| p.index().path() == idx).cloned()
+        })
+        .collect();
+    let mut objects = Vec::with_capacity(order.len());
+    let mut commits_in: HashSet<ObjectId> = HashSet::new();
+    for &pos in &order {
+        let id = midx.id_at(pos);
+        let pid = midx.pack_id(pos).map_err(Die::Fatal)?;
+        let off = midx.offset(pos).map_err(Die::Fatal)?;
+        let pack = packs
+            .get(pid as usize)
+            .cloned()
+            .flatten()
+            .ok_or_else(|| Die::Fatal(format!("could not load pack {pid}")))?;
+        let (kind, _) = pack.object_info(off).map_err(|e| Die::Fatal(e.to_string()))?;
+        if kind == rgit_object::ObjectKind::Commit {
+            commits_in.insert(id);
+        }
+        objects.push((id, kind));
+    }
+    let mut preferred = preferred_tips(setup, config);
+    let args: Vec<String> = match snapshot {
+        Some(tips) => {
+            for (id, p) in tips {
+                if *p {
+                    preferred.insert(*id);
+                }
+            }
+            let mut v: Vec<String> = tips.iter().map(|(id, _)| id.to_hex()).collect();
+            v.sort();
+            v.dedup();
+            v
+        }
+        None => vec!["--all".to_owned()],
+    };
+    let walked = if args.is_empty() {
+        Vec::new()
+    } else {
+        crate::history::walk_commits(ctx, &args)?
+    };
+    let candidates: Vec<ObjectId> = walked.into_iter().filter(|c| commits_in.contains(c)).collect();
+    let names: Vec<u32> = objects
+        .iter()
+        .map(|(id, _)| hashes.get(id).copied().unwrap_or(0))
+        .collect();
+    let midx_sum = midx.checksum();
+    let objs = bw::Objects {
+        objects: &objects,
+        index_pos: &order,
+        checksum: midx_sum.as_bytes(),
+    };
+    let store = crate::repo_objects::Repo::open(ctx, setup.clone())?;
+    let opts = options(config);
+    let written = match bw::write_bitmap(
+        &store.odb,
+        hash,
+        &objs,
+        &candidates,
+        &|id| preferred.contains(id),
+        bw::NameHashes::Given(names),
+        opts,
+    ) {
+        Ok(w) => w,
+        Err(BuildError::Missing(id)) => {
+            return Err(Die::Fatal(msg::midx_missing(&id.to_hex())));
+        }
+        Err(e) => return Err(Die::Fatal(e.to_string())),
+    };
+    if opts.lookup_table {
+        let _r = rgit_trace::trace2::region("pack-bitmap-write", "writing_lookup_table", true);
+    }
+    write_file(
+        &rgit_pack::bitmap::midx_bitmap_path(pack_dir, &midx.checksum()),
+        &written.bytes,
+    )
 }
