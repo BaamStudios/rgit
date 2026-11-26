@@ -1402,16 +1402,11 @@ fn initial_checkout(
     for e in &applied.errors {
         eprintln!("error: {e}");
     }
-    let skip_hash = repo
-        .config
-        .bool("index.skiphash")
-        .ok()
-        .flatten()
-        .unwrap_or(false);
+    let opts = crate::index_config::write_options(&repo.config, &applied.index)?;
     let unable = || Die::Fatal(crate::messages::read_tree::UNABLE_TO_WRITE_INDEX.into());
     applied
         .index
-        .write_locked(&mut lock, &rgit_index::WriteOptions { skip_hash })
+        .write_locked(&mut lock, &opts)
         .map_err(|_| unable())?;
     lock.commit().map_err(|_| unable())?;
     if applied.errors.is_empty() {

@@ -28,7 +28,7 @@
 use std::path::{Path, PathBuf};
 
 use rgit_hash::ObjectId;
-use rgit_index::{AddOptions, Entry, Index, Mode as IndexMode, Stage, WriteOptions};
+use rgit_index::{AddOptions, Entry, Index, Mode as IndexMode, Stage};
 use rgit_object::{Object, ObjectKind};
 use rgit_pathspec::{ParseOptions, Pathspec};
 use rgit_refs::{RefUpdate, Transaction};
@@ -322,17 +322,8 @@ fn split_args(repo: &Repo, revs: &Revs, args: &[String]) -> Result<Args, Die> {
 
 fn write_index(repo: &Repo, index: &Index) -> Result<(), Die> {
     let path = repo.setup.cwd.join(repo.index_path());
-    let skip_hash = repo
-        .config
-        .bool("index.skiphash")
-        .ok()
-        .flatten()
-        .unwrap_or(false);
-    match index.write_file(
-        &path,
-        &rgit_fs::LockOptions::default(),
-        &WriteOptions { skip_hash },
-    ) {
+    let opts = crate::index_config::write_options(&repo.config, index)?;
+    match index.write_file(&path, &rgit_fs::LockOptions::default(), &opts) {
         Ok(()) => Ok(()),
         Err(rgit_index::WriteError::Lock(e)) => {
             if let Some(w) = e.warning() {

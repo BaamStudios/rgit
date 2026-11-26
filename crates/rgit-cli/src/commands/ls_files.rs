@@ -287,6 +287,25 @@ impl Lister<'_> {
         Ok(())
     }
 
+    /// `--resolve-undo`: the recorded conflict stages of resolved paths.
+    fn show_resolve_undo(&mut self, records: &[rgit_index::ResolveUndo]) {
+        for r in records {
+            if !self.wanted(&r.path) {
+                continue;
+            }
+            for (k, s) in r.stages.iter().enumerate() {
+                let Some((mode, id)) = s else { continue };
+                if self.show.tags {
+                    self.out.extend_from_slice(b"U ");
+                }
+                let line = format!("{mode:06o} {} {}\t", self.name(id), k + 1);
+                self.out.extend_from_slice(line.as_bytes());
+                self.write_path(&r.path);
+                self.end_line();
+            }
+        }
+    }
+
     /// `--debug`: the cached stat data and flags after the entry's line.
     fn debug_block(&mut self, e: &Entry) {
         if self.show.debug {
@@ -692,9 +711,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let prefix = repo.prefix();
 
     let (index, index_mtime) = repo.read_index()?;
-    if resolve_undo.get() && index.resolve_undo_raw().is_some() {
-        return Err(Die::Fatal(msg::not_supported("--resolve-undo")));
-    }
     if recurse_submodules.get()
         && (others.get()
             || killed.get()
@@ -859,6 +875,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         None
     };
     let result = lister.show_index(&entries, checker.as_ref(), &mut ex);
+    if result.is_ok() && resolve_undo.get() {
+        lister.show_resolve_undo(index.resolve_undo());
+    }
     lister.flush();
     result?;
 

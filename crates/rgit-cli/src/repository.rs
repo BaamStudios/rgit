@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use rgit_hash::{HashKind, ObjectId, Prefix};
-use rgit_index::{Index, ReadOptions, Time};
+use rgit_index::{Index, Time};
 use rgit_object::{Object, ObjectKind};
 use rgit_odb::ObjectDatabase;
 use rgit_worktree::stat::{CheckStat, Checker, StatOptions, index_mtime};
@@ -82,8 +82,10 @@ impl Repo {
     /// Set up the repository and open its configuration and objects.
     pub fn open(ctx: &Context, mode: Mode) -> Result<Repo, Die> {
         let setup = repo::setup(ctx, mode)?;
+        let inner = repo_objects::Repo::open(ctx, setup)?;
+        crate::index_config::apply_max_path_len(&inner.config)?;
         Ok(Repo {
-            inner: repo_objects::Repo::open(ctx, setup)?,
+            inner,
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
@@ -93,8 +95,10 @@ impl Repo {
     /// Open the repository of an existing `setup` (e.g. one a command
     /// just created).
     pub fn from_setup(ctx: &Context, setup: rgit_repo::Setup) -> Result<Repo, Die> {
+        let inner = repo_objects::Repo::open(ctx, setup)?;
+        crate::index_config::apply_max_path_len(&inner.config)?;
         Ok(Repo {
-            inner: repo_objects::Repo::open(ctx, setup)?,
+            inner,
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
@@ -278,7 +282,8 @@ impl Repo {
     pub fn read_index(&self) -> Result<(Index, Option<Time>), Die> {
         let path = self.index_path();
         let mtime = index_mtime(&path).ok().flatten();
-        let index = Index::read_file(&path, self.hash, &ReadOptions::default()).map_err(|e| {
+        let opts = crate::index_config::read_options(&self.config);
+        let index = Index::read_file(&path, self.hash, &opts).map_err(|e| {
             // git's lines; the last one ends the command.
             let mut lines = e.report(&path.display().to_string());
             let last = lines.pop().unwrap_or_default();

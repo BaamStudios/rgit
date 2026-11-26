@@ -1892,9 +1892,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if let (Some(mut lock), Some(index), true) = (lock, &state.index, state.index_changed) {
         let r = repo.as_ref().expect("lock implies repository");
-        let skip_hash = r.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
+        let opts = crate::index_config::write_options(&r.config, index)?;
         index
-            .write_locked(&mut lock, &WriteOptions { skip_hash })
+            .write_locked(&mut lock, &opts)
             .and_then(|()| lock.commit())
             .map_err(|e| Die::Fatal(e.to_string()))?;
     }

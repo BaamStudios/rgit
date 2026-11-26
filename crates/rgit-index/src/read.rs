@@ -14,6 +14,10 @@ pub struct ReadOptions {
     /// `index.skipHash`, is always accepted). Default: off, as git only
     /// verifies it in checks such as `fsck`.
     pub verify_checksum: bool,
+    /// Threads for parsing the entries of an index with an offset table
+    /// (`IEOT`, `index.threads`): 0 picks one per CPU, 1 parses in the
+    /// calling thread only.
+    pub threads: usize,
 }
 
 impl ReadOptions {
@@ -21,6 +25,7 @@ impl ReadOptions {
     pub fn verified() -> Self {
         ReadOptions {
             verify_checksum: true,
+            ..ReadOptions::default()
         }
     }
 }
@@ -76,13 +81,71 @@ pub(crate) fn parse(data: &[u8], kind: HashKind, opts: &ReadOptions) -> Result<I
     let mut index = Index::new(kind);
     index.version = version;
     index.checksum = checksum;
+
+    let blocks = offset_table(body, kind, count).filter(|b| b.len() > 1);
+    let (entries, mut pos) = match blocks {
+        Some(blocks) if opts.threads != 1 => {
+            parse_threaded(body, kind, version, &blocks, opts.threads)?
+        }
+        _ => parse_entries(body, HEADER_LEN, count, kind, version, false)?,
+    };
+    index.entries = entries;
+
+    while pos < body.len() {
+        let header = body
+            .get(pos..pos + 8)
+            .ok_or(Error::Corrupt("truncated extension"))?;
+        let sig: [u8; 4] = header[..4].try_into().expect("4 bytes");
+        let size = be32(&header[4..]) as usize;
+        pos += 8;
+        // git ignores an optional extension running past the end of the
+        // file, and with it everything after it. Required extensions are
+        // refused below anyway.
+        if size > body.len() - pos && sig[0].is_ascii_uppercase() {
+            rgit_trace::trace!(
+                rgit_trace::TRACE,
+                "index: {} extension size {size} exceeds the file, ignored",
+                String::from_utf8_lossy(&sig)
+            );
+            index.ignored.push(sig);
+            break;
+        }
+        let ext = &body[pos..(pos + size).min(body.len())];
+        pos = (pos + size).min(body.len());
+        match &sig {
+            b"TREE" => index.tree = CacheTree::parse(ext, kind),
+            b"REUC" => index.resolve_undo = Some(crate::index::parse_resolve_undo(ext, kind)),
+            b"link" => return Err(Error::SplitIndex),
+            b"sdir" => return Err(Error::SparseIndex),
+            // Written anew from the entries when asked for.
+            b"EOIE" | b"IEOT" => {}
+            // Known optional extensions that rgit does not keep yet: the
+            // untracked cache and fsmonitor data.
+            b"UNTR" | b"FSMN" => index.dropped.push(sig),
+            _ if sig[0].is_ascii_uppercase() => index.ignored.push(sig),
+            _ => return Err(Error::UnknownExtension(sig)),
+        }
+    }
+    Ok(index)
+}
+
+/// Parses `count` entries starting at `pos`; returns them and the position
+/// after the last one. In version 4 the first entry of an offset table
+/// `block` strips all of a previous path that is not known here.
+fn parse_entries(
+    body: &[u8],
+    mut pos: usize,
+    count: usize,
+    kind: HashKind,
+    version: u32,
+    block: bool,
+) -> Result<(Vec<Entry>, usize), Error> {
+    let hash_len = kind.byte_len();
     // Every entry takes at least STAT_LEN + hash + 2 bytes (v4: + 2 more).
     let min_entry = STAT_LEN + hash_len + 2;
-    index.entries.reserve(count.min(body.len() / min_entry));
-
-    let mut pos = HEADER_LEN;
+    let mut entries = Vec::with_capacity(count.min(body.len() / min_entry));
     let mut prev_path: Vec<u8> = Vec::new();
-    for _ in 0..count {
+    for i in 0..count {
         let start = pos;
         let fixed = body
             .get(start..start + min_entry)
@@ -129,20 +192,22 @@ pub(crate) fn parse(data: &[u8], kind: HashKind, opts: &ReadOptions) -> Result<I
         let name_len = usize::from(raw_flags & bits::NAME_MASK);
 
         let path = if version == 4 {
-            let (strip, used) =
-                varint::decode(&body[pos..]).ok_or(Error::Corrupt("path prefix"))?;
+            let (strip, used) = varint::decode(body.get(pos..).unwrap_or_default())
+                .ok_or(Error::Corrupt("path prefix"))?;
             pos += used;
-            if strip > prev_path.len() {
+            if strip > prev_path.len() && !(block && i == 0) {
                 return Err(Error::Corrupt("path prefix"));
             }
+            let keep = prev_path.len().saturating_sub(strip);
             let nul = body[pos..]
                 .iter()
                 .position(|&b| b == 0)
                 .ok_or(Error::Corrupt("unterminated path"))?;
-            let mut path = Vec::with_capacity(prev_path.len() - strip + nul);
-            path.extend_from_slice(&prev_path[..prev_path.len() - strip]);
+            let mut path = Vec::with_capacity(keep + nul);
+            path.extend_from_slice(&prev_path[..keep]);
             path.extend_from_slice(&body[pos..pos + nul]);
             pos += nul + 1;
+            prev_path.clone_from(&path);
             path
         } else {
             let rest = &body[pos..];
@@ -165,10 +230,7 @@ pub(crate) fn parse(data: &[u8], kind: HashKind, opts: &ReadOptions) -> Result<I
             pos = start + entry_len;
             path
         };
-        if version == 4 {
-            prev_path.clone_from(&path);
-        }
-        index.entries.push(Entry {
+        entries.push(Entry {
             stat,
             mode,
             id,
@@ -177,39 +239,100 @@ pub(crate) fn parse(data: &[u8], kind: HashKind, opts: &ReadOptions) -> Result<I
             path,
         });
     }
+    Ok((entries, pos))
+}
 
-    while pos < body.len() {
-        let header = body
-            .get(pos..pos + 8)
-            .ok_or(Error::Corrupt("truncated extension"))?;
-        let sig: [u8; 4] = header[..4].try_into().expect("4 bytes");
-        let size = be32(&header[4..]) as usize;
-        pos += 8;
-        // git ignores an optional extension running past the end of the
-        // file, and with it everything after it. Required extensions are
-        // refused below anyway.
-        if size > body.len() - pos && sig[0].is_ascii_uppercase() {
-            rgit_trace::trace!(
-                rgit_trace::TRACE,
-                "index: {} extension size {size} exceeds the file, ignored",
-                String::from_utf8_lossy(&sig)
-            );
-            index.ignored.push(sig);
-            break;
-        }
-        let ext = &body[pos..(pos + size).min(body.len())];
-        pos = (pos + size).min(body.len());
-        match &sig {
-            b"TREE" => index.tree = CacheTree::parse(ext, kind),
-            b"REUC" => index.resolve_undo = Some(ext.to_vec()),
-            b"link" => return Err(Error::SplitIndex),
-            b"sdir" => return Err(Error::SparseIndex),
-            // Known optional extensions that rgit does not keep yet: the
-            // untracked cache, fsmonitor data and the two offset tables.
-            b"UNTR" | b"FSMN" | b"EOIE" | b"IEOT" => index.dropped.push(sig),
-            _ if sig[0].is_ascii_uppercase() => index.ignored.push(sig),
-            _ => return Err(Error::UnknownExtension(sig)),
-        }
+/// The blocks (offset, entry count) of the Index Entry Offset Table, found
+/// through the End Of Index Entries extension, if both are present and
+/// consistent with the file.
+fn offset_table(body: &[u8], kind: HashKind, count: usize) -> Option<Vec<(usize, usize)>> {
+    let hash_len = kind.byte_len();
+    // EOIE is the last extension: header, 32-bit offset, hash.
+    let eoie_len = 8 + 4 + hash_len;
+    let eoie = body.len().checked_sub(eoie_len)?;
+    let ext = &body[eoie..];
+    if &ext[..4] != b"EOIE" || be32(&ext[4..8]) as usize != 4 + hash_len {
+        return None;
     }
-    Ok(index)
+    let entries_end = be32(&ext[8..12]) as usize;
+    if !(HEADER_LEN..=eoie).contains(&entries_end) {
+        return None;
+    }
+    // The hash covers the signature and size of every extension before it.
+    let mut hasher = Hasher::new(kind);
+    let mut pos = entries_end;
+    let mut ieot = None;
+    while pos < eoie {
+        let header = body.get(pos..pos + 8)?;
+        let size = be32(&header[4..]) as usize;
+        hasher.update(header);
+        if &header[..4] == b"IEOT" {
+            ieot = body.get(pos + 8..pos + 8 + size);
+        }
+        pos = pos.checked_add(8 + size)?;
+    }
+    let id = hasher.finalize().unwrap_or_else(|e| e.id);
+    if pos != eoie || id.as_bytes() != &ext[12..] {
+        return None;
+    }
+    let ieot = ieot?;
+    if ieot.len() < 4 || be32(ieot) != 1 || (ieot.len() - 4) % 8 != 0 {
+        return None;
+    }
+    let blocks: Vec<(usize, usize)> = ieot[4..]
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| (be32(c) as usize, be32(&c[4..]) as usize))
+        .collect();
+    let total: usize = blocks.iter().map(|b| b.1).sum();
+    let ordered = blocks.windows(2).all(|w| w[0].0 < w[1].0);
+    (total == count && ordered && blocks.first()?.0 == HEADER_LEN).then_some(blocks)
+}
+
+/// Parses the entries block by block on several threads.
+fn parse_threaded(
+    body: &[u8],
+    kind: HashKind,
+    version: u32,
+    blocks: &[(usize, usize)],
+    threads: usize,
+) -> Result<(Vec<Entry>, usize), Error> {
+    let threads = match threads {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+        n => n,
+    }
+    .clamp(1, blocks.len());
+    let per_thread = blocks.len().div_ceil(threads);
+    type Part = Result<(Vec<Entry>, usize), Error>;
+    let results: Vec<Part> = std::thread::scope(|s| {
+        let handles: Vec<_> = blocks
+            .chunks(per_thread)
+            .map(|chunk| {
+                s.spawn(move || -> Part {
+                    let mut out = Vec::new();
+                    let mut end = 0;
+                    for &(offset, count) in chunk {
+                        let (mut entries, e) =
+                            parse_entries(body, offset, count, kind, version, true)?;
+                        out.append(&mut entries);
+                        end = e;
+                    }
+                    Ok((out, end))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or(Err(Error::Corrupt("entry block"))))
+            .collect()
+    });
+    let mut entries = Vec::new();
+    let mut end = HEADER_LEN;
+    for r in results {
+        let (mut part, e) = r?;
+        entries.append(&mut part);
+        end = e;
+    }
+    Ok((entries, end))
 }

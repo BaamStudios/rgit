@@ -42,7 +42,7 @@ use rgit_config::SystemEnv;
 use rgit_date::{DateContext, DateMode};
 use rgit_hash::ObjectId;
 use rgit_ident::ident::{IdentConfig, Resolver, Role, Strictness};
-use rgit_index::{AddOptions, Entry, Index, Mode as IndexMode, Stage, WriteOptions};
+use rgit_index::{AddOptions, Entry, Index, Mode as IndexMode, Stage};
 use rgit_object::{Object, ObjectKind, Signature, SignatureRef};
 use rgit_pathspec::{ParseOptions, Pathspec};
 use rgit_refs::{RefUpdate, Transaction};
@@ -656,9 +656,9 @@ fn write_index(repo: &Repo, index: &mut Index, mtime: Option<rgit_index::Time>) 
         }
     }
     let path = repo.setup.cwd.join(repo.index_path());
-    let skip_hash = config_bool(repo, "index.skiphash").unwrap_or(false);
+    let opts = crate::index_config::write_options(&repo.config, index)?;
     index
-        .write_file(&path, &repo.index_lock_options(), &WriteOptions { skip_hash })
+        .write_file(&path, &repo.index_lock_options(), &opts)
         .map_err(|e| fatal(e.to_string()))
 }
 
@@ -836,9 +836,7 @@ impl HookIndex {
     /// Writes the files and returns the one the hooks get as
     /// `GIT_INDEX_FILE` (absolute).
     fn prepare(&mut self, repo: &Repo, index: &Index, commit: Option<&Index>) -> Result<PathBuf, Die> {
-        let opts = WriteOptions {
-            skip_hash: config_bool(repo, "index.skiphash").unwrap_or(false),
-        };
+        let opts = crate::index_config::write_options(&repo.config, index)?;
         let path = repo.setup.cwd.join(repo.index_path());
         let mut lock = rgit_fs::LockFile::acquire(&path, &repo.index_lock_options())
             .map_err(|e| fatal(e.to_string()))?;

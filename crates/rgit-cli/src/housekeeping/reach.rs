@@ -210,49 +210,12 @@ fn index_objects(path: &Path, kind: HashKind, out: &mut Vec<ObjectId>) {
             stack.extend(node.children.iter());
         }
     }
-    if let Some(reuc) = index.resolve_undo_raw() {
-        resolve_undo_objects(reuc, kind, out);
-    }
-}
-
-/// The blobs of a `REUC` extension (`gitformat-index(5)`): per path the
-/// name, three octal modes, then one object name per non-zero mode.
-fn resolve_undo_objects(mut data: &[u8], kind: HashKind, out: &mut Vec<ObjectId>) {
-    let take_str = |data: &mut &[u8]| -> Option<Vec<u8>> {
-        let nul = data.iter().position(|&b| b == 0)?;
-        let s = data[..nul].to_vec();
-        *data = &data[nul + 1..];
-        Some(s)
-    };
-    while !data.is_empty() {
-        if take_str(&mut data).is_none() {
-            return;
-        }
-        let mut modes = [0u32; 3];
-        for m in &mut modes {
-            let Some(s) = take_str(&mut data) else { return };
-            let Some(v) = std::str::from_utf8(&s)
-                .ok()
-                .and_then(|s| u32::from_str_radix(s, 8).ok())
-            else {
-                return;
-            };
-            *m = v;
-        }
-        for m in modes {
-            if m == 0 {
-                continue;
+    // The blobs of the resolve undo records (not gitlinks).
+    for r in index.resolve_undo() {
+        for (mode, id) in r.stages.iter().flatten() {
+            if mode & 0o170000 != 0o160000 {
+                out.push(*id);
             }
-            let n = kind.byte_len();
-            if data.len() < n {
-                return;
-            }
-            if let Ok(id) = ObjectId::from_bytes(kind, &data[..n]) {
-                if m & 0o170000 != 0o160000 {
-                    out.push(id);
-                }
-            }
-            data = &data[n..];
         }
     }
 }
@@ -490,32 +453,5 @@ impl<'a> Walk<'a> {
             stack.extend(subtrees.into_iter().rev());
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_undo_parsing() {
-        let kind = HashKind::Sha1;
-        let a = ObjectId::from_hex(kind, b"1111111111111111111111111111111111111111").unwrap();
-        let b = ObjectId::from_hex(kind, b"2222222222222222222222222222222222222222").unwrap();
-        let mut data = Vec::new();
-        for field in ["path", "100644", "0", "100755"] {
-            data.extend_from_slice(field.as_bytes());
-            data.push(0);
-        }
-        data.extend_from_slice(a.as_bytes());
-        data.extend_from_slice(b.as_bytes());
-        for field in ["sub", "160000", "0", "0"] {
-            data.extend_from_slice(field.as_bytes());
-            data.push(0);
-        }
-        data.extend_from_slice(a.as_bytes());
-        let mut out = Vec::new();
-        resolve_undo_objects(&data, kind, &mut out);
-        assert_eq!(out, vec![a, b]);
     }
 }

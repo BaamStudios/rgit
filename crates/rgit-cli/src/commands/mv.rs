@@ -30,7 +30,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rgit_index::{AddOptions, Entry, Stage, WriteOptions};
+use rgit_index::{AddOptions, Entry, Stage};
 use rgit_worktree::stat::{Status, smudge_racy_entries};
 
 use crate::messages::mv as msg;
@@ -271,9 +271,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some(reference) = index_mtime {
         let _ = smudge_racy_entries(&mut index, reference, &checker);
     }
-    let skip_hash = repo.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
+    let opts = crate::index_config::write_options(&repo.config, &index)?;
     index
-        .write_locked(&mut lock, &WriteOptions { skip_hash })
+        .write_locked(&mut lock, &opts)
         .and_then(|()| lock.commit())
         .map_err(|e| Die::Fatal(e.to_string()))?;
     Ok(0)

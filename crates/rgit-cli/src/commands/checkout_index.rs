@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use rgit_fs::{LockFile, LockOptions};
-use rgit_index::{Entry, Index, Stage, WriteOptions};
+use rgit_index::{Entry, Index, Stage};
 use rgit_unpack::messages as umsg;
 use rgit_unpack::CheckoutError;
 use rgit_worktree::stat::{Checker, Status, compare, stat_from_metadata};
@@ -431,9 +431,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if let Some(mut lock) = lock.take() {
         if state.refreshed {
-            let skip_hash = repo.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
+            let opts = crate::index_config::write_options(&repo.config, &index)?;
             index
-                .write_locked(&mut lock, &WriteOptions { skip_hash })
+                .write_locked(&mut lock, &opts)
                 .and_then(|()| lock.commit())
                 .map_err(|_| Die::Fatal(crate::messages::read_tree::UNABLE_TO_WRITE_INDEX.into()))?;
         }

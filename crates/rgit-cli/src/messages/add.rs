@@ -10,6 +10,11 @@ pub const HELP_FORCE: &str = "allow adding otherwise ignored files";
 pub const HELP_UPDATE: &str = "update tracked files";
 pub const HELP_RENORMALIZE: &str = "renormalize EOL of tracked files (implies -u)";
 pub const HELP_ALL: &str = "add changes from all tracked and untracked files";
+pub const HELP_IGNORE_REMOVAL: &str = "ignore paths removed in the working tree (same as --no-all)";
+
+pub fn unable_to_stat(path: &str, err: &str) -> String {
+    format!("unable to stat '{path}': {err}")
+}
 pub const HELP_INTERACTIVE: &str = "interactive picking";
 pub const HELP_PATCH: &str = "select hunks interactively";
 pub const HELP_AUTO_ADVANCE: &str =
@@ -54,6 +59,14 @@ pub const HELP_PATHSPEC_FILE_NUL: &str =
     "with --pathspec-from-file, pathspec elements are separated with NUL character";
 
 pub const ADDING_FAILED: &str = "adding files failed";
+
+pub fn invalid_path(path: &str) -> String {
+    format!("invalid path '{path}'")
+}
+
+pub fn unable_to_add(path: &str) -> String {
+    format!("unable to add '{path}' to index")
+}
 pub const UPDATING_FAILED: &str = "updating files failed";
 pub const FROM_FILE_WITH_ARGS: &str =
     "'--pathspec-from-file' and pathspec arguments cannot be used together";

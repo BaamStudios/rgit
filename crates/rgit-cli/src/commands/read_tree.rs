@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use rgit_fs::{LockError, LockFile, LockOptions};
 use rgit_hash::ObjectId;
-use rgit_index::{AddOptions, CacheTree, Entry, Index, TreeNode, WriteOptions};
+use rgit_index::{AddOptions, CacheTree, Entry, Index, TreeNode};
 use rgit_object::ObjectKind;
 use rgit_unpack::{Merge, Options, PathOptions, Worktree};
 use rgit_worktree::stat::smudge_racy_entries;
@@ -319,13 +319,7 @@ fn write_index(
     lock: &mut LockFile,
     output: Option<&str>,
 ) -> Result<(), Die> {
-    let skip_hash = repo
-        .config
-        .bool("index.skiphash")
-        .ok()
-        .flatten()
-        .unwrap_or(false);
-    let opts = WriteOptions { skip_hash };
+    let opts = crate::index_config::write_options(&repo.config, index)?;
     let fail = || Die::Fatal(msg::UNABLE_TO_WRITE_INDEX.into());
     // git refuses entries with a null object id unless GIT_ALLOW_NULL_SHA1
     // is set, which turns the error into a warning.
@@ -407,7 +401,7 @@ fn read_overlay(
     paths: PathOptions,
 ) -> Result<Index, Die> {
     let mut index = old.clone();
-    index.retain(|_| false);
+    index.clear_entries();
     index.clear_resolve_undo();
     index.set_cache_tree(None);
     for tree in trees {
@@ -522,7 +516,7 @@ fn read_plain(
     paths: PathOptions,
 ) -> Result<Index, Die> {
     let mut index = old.clone();
-    index.retain(|_| false);
+    index.clear_entries();
     index.clear_resolve_undo();
     let Some(tree) = tree else {
         let root = TreeNode::new_valid(Vec::new(), 0, ObjectId::empty_tree(repo.hash));
