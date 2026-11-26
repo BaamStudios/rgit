@@ -327,6 +327,13 @@ pub fn remove_entry(root: &Path, rel: &[u8], gitlink: bool) -> io::Result<()> {
                         )
                     );
                 }
+            } else if let Err(e) = fs::remove_file(&full) {
+                // A directory where a file was stays (and keeps whatever is
+                // in it); git only warns.
+                eprintln!(
+                    "warning: {}",
+                    crate::messages::unable_to_unlink(&String::from_utf8_lossy(rel), &strerror(&e))
+                );
             }
         }
         Ok(_) => fs::remove_file(&full)?,

@@ -103,6 +103,8 @@ pub enum Problem {
     NotUptodateDir,
     /// An untracked file is in the way of a new entry.
     UntrackedOverwritten,
+    /// An untracked file stands where a file of the old tree goes away.
+    UntrackedRemoved,
     /// An active submodule cannot be moved (`--recurse-submodules`).
     SubmoduleUpdate,
 }
@@ -156,6 +158,7 @@ impl Rejection {
                     Problem::NotUptodateFile => msg::not_uptodate_file(&path),
                     Problem::NotUptodateDir => msg::not_uptodate_dir(&path),
                     Problem::UntrackedOverwritten => msg::untracked_overwritten(&path),
+                    Problem::UntrackedRemoved => msg::untracked_removed(&path),
                     Problem::SubmoduleUpdate => msg::submodule_new_head(&path),
                 }
             })
@@ -185,6 +188,10 @@ impl Rejection {
                     (Problem::UntrackedOverwritten, Porcelain::Merge) => {
                         msg::MERGE_UNTRACKED_OVERWRITTEN
                     }
+                    (Problem::UntrackedRemoved, Porcelain::Checkout) => {
+                        msg::CHECKOUT_UNTRACKED_REMOVED
+                    }
+                    (Problem::UntrackedRemoved, Porcelain::Merge) => msg::MERGE_UNTRACKED_REMOVED,
                     (Problem::SubmoduleUpdate, _) => msg::CANNOT_UPDATE_SUBMODULE,
                 };
                 let mut s = head.to_string();
@@ -487,6 +494,8 @@ pub fn plan(
     let empty: Vec<Entry> = Vec::new();
     let old_list = old.as_ref().unwrap_or(&empty);
     let (mut gi, mut oi, mut ni) = (0, 0, 0);
+    // A file refused where a tree has a directory.
+    let mut failed_dir: Option<Vec<u8>> = None;
     loop {
         let heads = [
             groups.get(gi).map(|g| g[0].path()),
@@ -512,6 +521,14 @@ pub fn plan(
             }
             _ => None,
         };
+        if failed_dir
+            .as_ref()
+            .is_some_and(|d| path.starts_with(d) && path.get(d.len()) == Some(&b'/'))
+        {
+            // Like git, a directory whose file side was refused is not
+            // looked into (its entries report nothing more).
+            continue;
+        }
         let ok = if old.is_some() {
             u.two_way(&path, i, h, m, unmerged)?
         } else {
@@ -519,6 +536,9 @@ pub fn plan(
         };
         if !ok && !u.opts.show_all_errors {
             break;
+        }
+        if !ok && (has_dir(old_list, &path) || has_dir(&new, &path)) {
+            failed_dir = Some(path);
         }
     }
     if !u.rejection.problems.is_empty() {
@@ -696,7 +716,7 @@ fn three_way(
                 None => true,
             },
             None => {
-                let ok = i.is_none_or(|i| u.verify_uptodate(i));
+                let ok = i.is_none_or(|i| u.verify_uptodate(i, false));
                 for (stage, e) in [
                     (Stage::BASE, first_base),
                     (Stage::OURS, a),
@@ -756,6 +776,15 @@ fn take<'l, T>(
     let item = list.get(*pos).filter(|x| key(x) == path)?;
     *pos += 1;
     Some(item)
+}
+
+/// Whether the sorted `list` has entries below the directory `dir`.
+fn has_dir(list: &[Entry], dir: &[u8]) -> bool {
+    let start = list.partition_point(|e| e.path() <= dir);
+    list[start..]
+        .iter()
+        .take_while(|e| e.path().starts_with(dir))
+        .any(|e| e.path().get(dir.len()) == Some(&b'/'))
 }
 
 fn same(a: &Entry, b: &Entry) -> bool {
@@ -883,6 +912,9 @@ impl<'o> Unpacker<'_, 'o, '_> {
         }
         let Some(i) = i else {
             return match (h, m) {
+                // Gone from the index already: nothing untracked may be
+                // lost where the old tree's file goes away.
+                (Some(h), None) if !h.mode.is_gitlink() => self.verify_absent_removed(path),
                 (_, None) => Ok(true),
                 (Some(h), Some(m)) if !self.opts.initial_checkout => {
                     if same(h, m) {
@@ -941,7 +973,7 @@ impl<'o> Unpacker<'_, 'o, '_> {
 
     /// The index entry `i` goes away.
     fn deleted(&mut self, i: &Entry) -> bool {
-        if !self.verify_uptodate(i) {
+        if !self.verify_uptodate(i, true) {
             return false;
         }
         self.removed.insert(i.path().to_vec());
@@ -959,7 +991,7 @@ impl<'o> Unpacker<'_, 'o, '_> {
     /// The tree entry `t` replaces `old` (or is new).
     fn merged(&mut self, t: &Entry, old: Option<&Entry>) -> Result<bool, Error> {
         let mut ok = match old {
-            Some(old) => self.verify_uptodate(old),
+            Some(old) => self.verify_uptodate(old, false),
             None => self.verify_absent(t.path(), t.mode.is_gitlink())?,
         };
         // A submodule that moves to another commit: its staged changes
@@ -998,7 +1030,9 @@ impl<'o> Unpacker<'_, 'o, '_> {
         Ok(true)
     }
 
-    fn verify_uptodate(&mut self, e: &Entry) -> bool {
+    /// The work tree file of `e` holds nothing that `e` does not; `removing`
+    /// when `e` goes away (rather than being replaced by another file).
+    fn verify_uptodate(&mut self, e: &Entry, removing: bool) -> bool {
         if !self.checks_worktree() || e.mode.is_gitlink() {
             return true;
         }
@@ -1022,6 +1056,25 @@ impl<'o> Unpacker<'_, 'o, '_> {
             // refreshed (porcelain refreshes before merging).
             Ok(Status::Modified | Status::TypeChanged | Status::StatOnly) => {
                 self.problem(Problem::NotUptodateFile, e.path())
+            }
+            Ok(Status::Deleted) if !e.flags.skip_worktree => {
+                // A directory where the file was, or a file where one of
+                // its leading directories was, is a change too. A
+                // directory with untracked files in it that is to go away
+                // is reported as such (with `update`).
+                match fs::symlink_metadata(join(wt.root, e.path())) {
+                    Ok(m) if m.is_dir() => {
+                        if removing && self.opts.update && self.has_untracked(e.path()) {
+                            self.problem(Problem::NotUptodateDir, e.path())
+                        } else {
+                            self.problem(Problem::NotUptodateFile, e.path())
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotADirectory => {
+                        self.problem(Problem::NotUptodateFile, e.path())
+                    }
+                    _ => true,
+                }
             }
             _ => true,
         }
@@ -1071,8 +1124,9 @@ impl<'o> Unpacker<'_, 'o, '_> {
                 }
             }
             Ok(_) => {
-                if self.index.get(path, Stage::MERGED).is_some() && !self.removed.contains(path) {
-                    // Tracked and kept: not ours to judge (D/F within the index).
+                if self.index.get(path, Stage::MERGED).is_some() {
+                    // Tracked: kept (not ours to judge, D/F within the
+                    // index), or removed after its own up-to-date check.
                     return Ok(true);
                 }
                 if self.excluded(path, false) {
@@ -1084,24 +1138,68 @@ impl<'o> Unpacker<'_, 'o, '_> {
         }
     }
 
-    /// A directory at `dir` is replaced by a file: its tracked files must be
-    /// up to date (they go away with it) and it may hold no untracked files
-    /// that are not ignored.
+    /// The old tree's file at `path` goes away and the index has no entry
+    /// for it: an untracked file there would be lost, and a directory there
+    /// is checked as for a file replacing it.
+    fn verify_absent_removed(&mut self, path: &[u8]) -> Result<bool, Error> {
+        // Already removed with a directory that a file replaced.
+        if !self.checks_worktree() || !self.opts.update || self.consumed.contains(path) {
+            return Ok(true);
+        }
+        let Some(wt) = self.wt else {
+            return Ok(true);
+        };
+        match fs::symlink_metadata(join(wt.root, path)) {
+            Err(_) => Ok(true),
+            Ok(m) if m.is_dir() => Ok(self.verify_clean_subdirectory(path)),
+            Ok(_) => {
+                if self.excluded(path, false) {
+                    Ok(true)
+                } else {
+                    Ok(self.problem(Problem::UntrackedRemoved, path))
+                }
+            }
+        }
+    }
+
+    /// A directory at `dir` is replaced by a file (or a file at `dir` goes
+    /// away): its tracked files must be up to date (they go away with it)
+    /// and it may hold no untracked files that are not ignored.
+    ///
+    /// Like git, only the index entries that directly follow where `dir`
+    /// itself would sort count as the directory's tracked files: when other
+    /// paths sort in between (`dir-`, `dir.x`), the entries below `dir/`
+    /// stay and are merged on their own.
     fn verify_clean_subdirectory(&mut self, dir: &[u8]) -> bool {
         let mut ok = true;
         let index = self.index;
-        let range = index.dir_range(dir);
-        for e in &index.entries()[range] {
+        let start = match index.position(dir, Stage::MERGED) {
+            Ok(p) | Err(p) => p,
+        };
+        let below =
+            |e: &&Entry| e.path().starts_with(dir) && e.path().get(dir.len()) == Some(&b'/');
+        let range: Vec<&Entry> = index.entries()[start..]
+            .iter()
+            .skip_while(|e| e.path() == dir)
+            .take_while(below)
+            .collect();
+        for e in range {
             if self.consumed.contains(e.path()) {
                 continue;
             }
             if e.stage() == Stage::MERGED {
-                ok &= self.verify_uptodate(e);
+                // Like git, the first local change ends the check (even
+                // when all errors are shown).
+                if !self.verify_uptodate(e, true) {
+                    return false;
+                }
                 self.removed.insert(e.path().to_vec());
                 if e.mode.is_gitlink() {
                     if let Some(s) = self.submodule(e.path()) {
-                        ok &= self.move_submodule(s, e.path(), Some(&e.id), None, true);
                         self.consumed.insert(e.path().to_vec());
+                        if !self.move_submodule(s, e.path(), Some(&e.id), None, true) {
+                            return false;
+                        }
                         continue;
                     }
                 }

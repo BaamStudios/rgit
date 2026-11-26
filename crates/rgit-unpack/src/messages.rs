@@ -90,6 +90,24 @@ pub const MERGE_UNTRACKED_OVERWRITTEN: (&str, &str) = (
     "Please move or remove them before you merge.",
 );
 
+/// Plumbing: an untracked file stands where a file of the old tree goes
+/// away.
+pub fn untracked_removed(path: &str) -> String {
+    format!("Untracked working tree file '{path}' would be removed by merge.")
+}
+
+/// Porcelain `checkout`: untracked files that would be removed.
+pub const CHECKOUT_UNTRACKED_REMOVED: (&str, &str) = (
+    "The following untracked working tree files would be removed by checkout:\n",
+    "Please move or remove them before you switch branches.",
+);
+
+/// Porcelain `merge`: untracked files that would be removed.
+pub const MERGE_UNTRACKED_REMOVED: (&str, &str) = (
+    "The following untracked working tree files would be removed by merge:\n",
+    "Please move or remove them before you merge.",
+);
+
 /// `checkout-index`: the path has no index entry.
 pub fn not_in_cache(path: &str) -> String {
     format!("git checkout-index: {path} is not in the cache")
