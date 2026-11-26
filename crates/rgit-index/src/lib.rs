@@ -50,6 +50,7 @@ mod ewah;
 mod file;
 mod index;
 pub mod messages;
+mod name_hash;
 mod read;
 mod sparse;
 mod split;
@@ -66,6 +67,7 @@ pub use file::{
     INDEX_FILE_ENV, WriteError, index_path, notify_written, set_write_observer, shared_index_name,
 };
 pub use index::{AddOptions, Index, ResolveUndo};
+pub use name_hash::NameHash;
 pub use read::ReadOptions;
 pub use sparse::{
     CollapseRules, SparseOrigin, TreeReader, WriteTransform, has_tree_reader, set_tree_reader,

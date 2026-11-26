@@ -263,6 +263,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .or_else(|| int("transfer.unpacklimit"))
         .map_or(100, |v| v.max(0) as u64);
     let path_opts = rgit_unpack::PathOptions {
+        ignore_case: false,
         protect_ntfs: config
             .bool("core.protectntfs")
             .ok()

@@ -34,7 +34,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rgit_index::{AddOptions, Entry, Index, Mode, Stage};
+use rgit_index::{AddOptions, Entry, Index, Mode, NameHash, Stage};
 use rgit_object::ObjectKind;
 use rgit_pathspec::{DirInterest, MatchKind, ParseOptions, Pathspec};
 use rgit_worktree::ignore::{Excludes, default_excludes_file};
@@ -108,6 +108,8 @@ struct Walk<'a, 'b> {
     seen: Vec<bool>,
     found: Vec<(Vec<u8>, bool)>,
     ignored: Vec<Vec<u8>>,
+    /// `core.ignoreCase`: the index paths by folded name.
+    names: Option<&'a NameHash>,
 }
 
 impl Walk<'_, '_> {
@@ -121,6 +123,59 @@ impl Walk<'_, '_> {
             let p = p.strip_suffix(b"/").unwrap_or(p);
             p == dir || (p.len() > dir.len() && p.starts_with(dir) && p[dir.len()] == b'/')
         })
+    }
+
+    /// Whether the index has the file `path` (with `core.ignoreCase`: in
+    /// any case).
+    fn tracked(&self, path: &[u8]) -> bool {
+        !self.index.path_range(path).is_empty() || self.names.is_some_and(|n| n.has_file(path))
+    }
+
+    /// Whether the index has entries below directory `path`.
+    fn tracked_below(&self, path: &[u8]) -> bool {
+        !self.index.dir_range(path).is_empty() || self.names.is_some_and(|n| n.dir(path).is_some())
+    }
+
+    /// With `core.ignoreCase`, git reads the leading directory of a
+    /// pathspec as it was typed, not as the file system spells it:
+    /// `dir/SUB/file` finds `file` in `dir/sub` under the typed name (the
+    /// index then keeps the spelling it already has for the directory).
+    /// Walks those directories whose spelling the regular walk cannot reach.
+    fn walk_typed_directories(&mut self) {
+        let mut dirs: Vec<Vec<u8>> = Vec::new();
+        for it in self.pathspec.items() {
+            if it.is_exclude() {
+                continue;
+            }
+            let literal = &it.pattern()[..it.nowildcard_len().min(it.pattern().len())];
+            let Some(slash) = literal.iter().rposition(|&b| b == b'/') else {
+                continue;
+            };
+            let dir = &literal[..=slash];
+            if !dirs.iter().any(|d| d == dir) && !self.spelled_as_on_disk(dir) {
+                dirs.push(dir.to_vec());
+            }
+        }
+        for dir in dirs {
+            self.walk(&dir, false);
+        }
+    }
+
+    /// Whether every component of `dir` (ending in `/`) is a name its
+    /// parent directory lists, so that the regular walk gets there.
+    fn spelled_as_on_disk(&self, dir: &[u8]) -> bool {
+        let mut at = 0;
+        while let Some(len) = dir[at..].iter().position(|&b| b == b'/') {
+            let name = &dir[at..at + len];
+            let Ok(mut rd) = std::fs::read_dir(os_path(&self.root, &dir[..at])) else {
+                return true;
+            };
+            if !rd.any(|e| e.is_ok_and(|e| e.file_name().as_encoded_bytes() == name)) {
+                return false;
+            }
+            at += len + 1;
+        }
+        true
     }
 
     fn walk(&mut self, dir: &[u8], parent_excluded: bool) {
@@ -151,7 +206,7 @@ impl Walk<'_, '_> {
                     continue;
                 }
                 let excluded = parent_excluded || self.excludes.is_excluded(&path, true);
-                if self.index.dir_range(&path).is_empty()
+                if !self.tracked_below(&path)
                     && std::fs::symlink_metadata(os_path(&self.root, &path).join(".git")).is_ok()
                 {
                     // An embedded repository: added as a gitlink when a
@@ -187,7 +242,7 @@ impl Walk<'_, '_> {
                 path.push(b'/');
                 self.walk(&path, excluded);
             } else {
-                if !self.index.path_range(&path).is_empty() {
+                if self.tracked(&path) {
                     continue;
                 }
                 let kind = if self.pathspec.is_empty() {
@@ -617,6 +672,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut found = Vec::new();
     let mut ignored = Vec::new();
     let mut excludes = build_excludes(&repo, &root);
+    let mut names = repo.ignore_case().then(|| NameHash::new(&index));
     if !update {
         let mut walk = Walk {
             root: root.clone(),
@@ -628,7 +684,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             seen,
             found: Vec::new(),
             ignored: Vec::new(),
+            names: names.as_ref(),
         };
+        if walk.names.is_some() {
+            walk.walk_typed_directories();
+        }
         walk.walk(b"", false);
         for w in walk.excludes.take_warnings() {
             eprintln!("warning: {w}");
@@ -1013,7 +1073,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 if show {
                     println!("{}", msg::add(&lossy(path)));
                 }
-                if let Some(n) = n {
+                if let Some(mut n) = n {
+                    // core.ignoreCase: the directory keeps the spelling the
+                    // index already has for it.
+                    if let Some(names) = names.as_mut() {
+                        let spelled = names.adjust_dirname(path);
+                        names.insert(&spelled);
+                        if spelled != *path {
+                            n = n.with_path(spelled);
+                        }
+                    }
                     updates.push(n);
                 }
             }

@@ -341,6 +341,16 @@ impl Repo {
         Ok((index, mtime))
     }
 
+    /// `core.ignoreCase`: the work tree's file system folds case, so paths
+    /// that differ only in case name the same file (git-config(1)).
+    pub fn ignore_case(&self) -> bool {
+        self.config
+            .bool("core.ignorecase")
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    }
+
     /// The top of the work tree, or git's error for commands that need one.
     pub fn work_tree(&self) -> Result<PathBuf, Die> {
         self.setup

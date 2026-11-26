@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use rgit_hash::ObjectId;
-use rgit_index::{AddOptions, Entry, Index, Stage};
+use rgit_index::{AddOptions, Entry, Index, NameHash, Stage};
 use rgit_worktree::ignore::Excludes;
 use rgit_worktree::sparse::Sparse;
 use rgit_worktree::stat::{Checker, Status, stat_from_metadata};
@@ -666,6 +666,7 @@ pub fn plan(
         moves: Vec::new(),
         present: HashSet::new(),
         warnings: SparseWarnings::default(),
+        names: None,
     };
     let groups: Vec<&[Entry]> = index
         .entries()
@@ -794,6 +795,7 @@ pub fn reapply_sparse(
         moves: Vec::new(),
         present: HashSet::new(),
         warnings: SparseWarnings::default(),
+        names: None,
     };
     u.apply_sparse()?;
     // Only skip-worktree bits change; the entries stay in place.
@@ -870,6 +872,7 @@ fn three_way(
         moves: Vec::new(),
         present: HashSet::new(),
         warnings: SparseWarnings::default(),
+        names: None,
     };
     let groups: Vec<&[Entry]> = index
         .entries()
@@ -1066,6 +1069,8 @@ struct Unpacker<'u, 'o, 'w> {
     /// after the merge, see [`Unpacker::apply_sparse`]).
     present: HashSet<Vec<u8>>,
     warnings: SparseWarnings,
+    /// The index paths by folded name (`core.ignoreCase`), built on first use.
+    names: Option<NameHash>,
 }
 
 impl<'o> Unpacker<'_, 'o, '_> {
@@ -1080,6 +1085,36 @@ impl<'o> Unpacker<'_, 'o, '_> {
             self.rejection.problems.push((p, path.to_vec()));
         }
         false
+    }
+
+    /// With `core.ignoreCase`: the index has `path` in some case, so the
+    /// file found at `path` is a tracked file under another spelling.
+    fn tracked_icase(&mut self, path: &[u8]) -> bool {
+        if !self.opts.paths.ignore_case {
+            return false;
+        }
+        let index = self.index;
+        self.names
+            .get_or_insert_with(|| NameHash::new(index))
+            .has_file(path)
+    }
+
+    /// With `core.ignoreCase`: the file found at `path` is a tracked file
+    /// under another spelling, that is, the index has `path` in some case
+    /// and that entry's stat data is the file's (on a file system that
+    /// keeps both spellings apart, the other file is not the tracked one).
+    fn same_file_icase(&mut self, path: &[u8], meta: &fs::Metadata) -> bool {
+        if !self.tracked_icase(path) {
+            return false;
+        }
+        let (Some(wt), Some(names)) = (self.wt, self.names.as_ref()) else {
+            return false;
+        };
+        names.spellings(path).any(|spelled| {
+            self.index
+                .get(spelled, Stage::MERGED)
+                .is_some_and(|e| matches!(wt.checker.check_with(e, meta), Ok(Status::Unchanged)))
+        })
     }
 
     fn checks_worktree(&self) -> bool {
@@ -1517,8 +1552,11 @@ impl<'o> Unpacker<'_, 'o, '_> {
             match fs::symlink_metadata(join(root, dir)) {
                 Err(_) => return Ok(true),
                 Ok(m) if m.is_dir() => continue,
-                Ok(_) => {
-                    if self.removed.contains(dir) || self.excluded(dir, false) {
+                Ok(m) => {
+                    if self.removed.contains(dir)
+                        || self.same_file_icase(dir, &m)
+                        || self.excluded(dir, false)
+                    {
                         return Ok(true);
                     }
                     return Ok(self.problem(Problem::UntrackedOverwritten, dir));
@@ -1534,10 +1572,15 @@ impl<'o> Unpacker<'_, 'o, '_> {
                     Ok(self.verify_clean_subdirectory(path))
                 }
             }
-            Ok(_) => {
+            Ok(m) => {
                 if self.index.get(path, Stage::MERGED).is_some() {
                     // Tracked: kept (not ours to judge, D/F within the
                     // index), or removed after its own up-to-date check.
+                    return Ok(true);
+                }
+                if self.same_file_icase(path, &m) {
+                    // The same file under another spelling (a rename that
+                    // changes only the case, or two colliding paths).
                     return Ok(true);
                 }
                 if self.excluded(path, false) {
@@ -1589,11 +1632,21 @@ impl<'o> Unpacker<'_, 'o, '_> {
         };
         let below =
             |e: &&Entry| e.path().starts_with(dir) && e.path().get(dir.len()) == Some(&b'/');
-        let range: Vec<&Entry> = index.entries()[start..]
+        let mut range: Vec<&Entry> = index.entries()[start..]
             .iter()
             .skip_while(|e| e.path() == dir)
             .take_while(below)
             .collect();
+        // With core.ignoreCase the directory also holds the entries that
+        // spell it differently; they are not contiguous in the index.
+        if self.opts.paths.ignore_case {
+            range.extend(index.entries().iter().filter(|e| {
+                e.path().len() > dir.len()
+                    && e.path()[dir.len()] == b'/'
+                    && e.path()[..dir.len()].eq_ignore_ascii_case(dir)
+                    && !e.path().starts_with(dir)
+            }));
+        }
         for e in range {
             if self.consumed.contains(e.path()) {
                 continue;
@@ -1650,7 +1703,10 @@ impl<'o> Unpacker<'_, 'o, '_> {
                 if self.has_untracked(&rel) {
                     return true;
                 }
-            } else if self.index.entries_for_path(&rel).is_empty() && !self.excluded(&rel, false) {
+            } else if self.index.entries_for_path(&rel).is_empty()
+                && !self.tracked_icase(&rel)
+                && !self.excluded(&rel, false)
+            {
                 return true;
             }
         }
