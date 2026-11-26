@@ -15,8 +15,9 @@
 //! `-r` skips entries whose data does not inflate and goes on after
 //! them; deltas on a skipped entry stay unresolved.
 //!
-//! Not supported yet: objects larger than `core.bigFileThreshold` are not
-//! streamed (#89).
+//! Blobs larger than `core.bigFileThreshold` are not held in memory:
+//! they are hashed while the pack is read and then copied from the
+//! temporary pack file to loose objects as a stream.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
@@ -151,6 +152,9 @@ struct Sink<'a> {
     held: Mutex<Vec<(ObjectId, ObjectKind, Vec<u8>)>>,
     /// The first write error.
     write_error: Mutex<Option<String>>,
+    /// Large blobs to copy from the pack: id, type, size, zlib stream
+    /// offset.
+    large: Mutex<Vec<(ObjectId, ObjectKind, u64, u64)>>,
 }
 
 impl Sink<'_> {
@@ -210,6 +214,23 @@ impl ObjectHook for Sink<'_> {
         }
         if !self.args.dry_run && (*id == self.repo.hash.empty_tree() || !self.repo.odb.contains(id)) {
             self.write(kind, data);
+        }
+        Ok(())
+    }
+
+    fn large_object(
+        &self,
+        id: &ObjectId,
+        kind: rgit_pack::ObjectKind,
+        size: u64,
+        data_offset: u64,
+    ) -> Result<(), String> {
+        if !self.args.dry_run && !self.repo.odb.contains(id) {
+            let kind = ObjectKind::from_pack_type(kind.pack_type()).expect("object kind");
+            self.large
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((*id, kind, size, data_offset));
         }
         Ok(())
     }
@@ -330,11 +351,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     opts.allow_trailing_data = true;
     opts.recover = args.recover;
     opts.checksum_last = true;
+    // A dry run keeps no blob; otherwise large blobs are streamed.
+    opts.big_file_threshold = if args.dry_run && !args.strict {
+        0
+    } else {
+        repo.odb.big_file_threshold()
+    };
     let sink = Sink {
         repo: &repo,
         args: &args,
         held: Mutex::new(Vec::new()),
         write_error: Mutex::new(None),
+        large: Mutex::new(Vec::new()),
     };
 
     let pack_dir = crate::repo_objects::objects_dir(&repo.setup).join("pack");
@@ -359,9 +387,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         )
     };
     drop(file);
-    drop(tmp);
     let _ = args.quiet;
     let indexed = indexed.map_err(fail)?;
+    // Large blobs: from the pack file to loose objects, as streams.
+    let large = std::mem::take(&mut *sink.large.lock().unwrap_or_else(|p| p.into_inner()));
+    for (id, kind, size, offset) in large {
+        if repo.odb.contains(&id) {
+            continue;
+        }
+        let mut r = rgit_pack::EntryReader::open(&tmp_path, offset, size)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
+        repo.odb
+            .loose()
+            .write_stream(kind, size, &mut r)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
+    }
+    drop(tmp);
     if let Some(e) = sink.write_error.lock().unwrap_or_else(|p| p.into_inner()).take() {
         return Err(Die::Fatal(e));
     }

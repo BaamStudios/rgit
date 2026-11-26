@@ -411,6 +411,28 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         if !how.worktree {
             continue;
         }
+        if let Some(res) = rgit_unpack::stream_entry(repo.odb(), &conv, &work_tree, path, entry) {
+            match res {
+                Ok(meta) => {
+                    let stage = if how.source.is_some() { Stage::MERGED } else { entry.stage() };
+                    if how.source.is_none() || how.index {
+                        if let Ok(pos) = index.position(path, stage) {
+                            if let Some(e) = index
+                                .entry_mut(pos)
+                                .filter(|e| e.id == entry.id && e.mode == entry.mode)
+                            {
+                                e.stat = rgit_worktree::stat::stat_from_metadata(&meta);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    failed = true;
+                }
+            }
+            continue;
+        }
         let data = if entry.mode.is_gitlink() {
             Vec::new()
         } else {

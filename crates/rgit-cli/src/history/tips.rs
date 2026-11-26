@@ -146,6 +146,19 @@ impl Resolved {
     ) -> Result<(), Die> {
         let mut name = name;
         for _ in 0..64 {
+            // Blobs are not read (they may be large).
+            if repo.objects.kind_of(&id) == Some(ObjectKind::Blob) {
+                if negative {
+                    self.excluded.push((id, ObjectKind::Blob));
+                } else {
+                    self.pending.push(Pending {
+                        id,
+                        kind: ObjectKind::Blob,
+                        name,
+                    });
+                }
+                return Ok(());
+            }
             let Ok(Some((kind, data))) = repo.objects.read(&id) else {
                 return Err(Die::Fatal(msg::bad_object(&id.to_hex())));
             };

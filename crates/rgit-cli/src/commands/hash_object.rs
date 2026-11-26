@@ -106,6 +106,44 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         c.to_git(at.as_bytes(), data, opts)
     };
 
+    // Regular files above core.bigFileThreshold without a conversion are
+    // hashed (and stored) as a stream.
+    let threshold = repo
+        .as_ref()
+        .map_or(rgit_odb::DEFAULT_BIG_FILE_THRESHOLD, |r| r.odb.big_file_threshold());
+    let streamed = |file: &str, at: &str| -> Result<Option<rgit_hash::ObjectId>, Die> {
+        if kind != ObjectKind::Blob {
+            return Ok(None);
+        }
+        let Ok(meta) = std::fs::metadata(file) else {
+            return Ok(None);
+        };
+        if !meta.is_file() || meta.len() <= threshold {
+            return Ok(None);
+        }
+        if conv.as_ref().is_some_and(|c| c.converts(at.as_bytes())) {
+            return Ok(None);
+        }
+        let path = std::path::Path::new(file);
+        let result = match (&repo, write.get()) {
+            (Some(r), true) => crate::large::blob_from_file(&r.odb, r.hash, path, meta.len(), true),
+            _ => crate::large::blob_from_file_unstored(hasher.hash, path, meta.len()),
+        };
+        match result {
+            Ok(id) => Ok(Some(id)),
+            Err(crate::large::FileError::Read(e)) => Err(Die::Fatal(msg::could_not_open_for_reading(
+                file,
+                &crate::global::strerror(&e),
+            ))),
+            Err(crate::large::FileError::Odb(e)) => {
+                for line in e.git_lines() {
+                    eprintln!("error: {line}");
+                }
+                Err(Die::Fatal(msg::unable_to_add_to_database(Some(file))))
+            }
+        }
+    };
+
     let mut out = std::io::stdout().lock();
     if stdin.get() > 0 {
         let mut data = Vec::new();
@@ -119,6 +157,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     for a in &args {
         let file = prefixed(&prefix, a);
+        if let Some(oid) = streamed(&file, path.as_deref().unwrap_or(&file))? {
+            let _ = writeln!(out, "{oid}");
+            continue;
+        }
         let data = read_file(&file)?;
         let data = filter(Some(path.as_deref().unwrap_or(&file)), data)?;
         let oid = hasher.hash(&data, Some(&file))?;
@@ -136,6 +178,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             };
             // git does not apply the prefix to these paths.
             let file = String::from_utf8_lossy(&name).into_owned();
+            if let Some(oid) = streamed(&file, &file)? {
+                let _ = writeln!(out, "{oid}");
+                let _ = out.flush();
+                continue;
+            }
             let data = read_file(&file)?;
             let data = filter(Some(&file), data)?;
             let oid = hasher.hash(&data, Some(&file))?;

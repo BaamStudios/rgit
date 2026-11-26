@@ -638,6 +638,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     opts.reject_duplicates = args.strict || args.verify;
     opts.pack_header = args.pack_header;
     opts.compression_level = compression;
+    opts.big_file_threshold = cfg
+        .ulong("core.bigfilethreshold")
+        .map_err(|e| Die::Fatal(e.to_string()))?
+        .unwrap_or(rgit_odb::DEFAULT_BIG_FILE_THRESHOLD);
     // Data after the pack on a pipe belongs to the caller and is passed
     // on to stdout; in a regular file it is junk.
     opts.allow_trailing_data = args.stdin && !stdin_is_file();

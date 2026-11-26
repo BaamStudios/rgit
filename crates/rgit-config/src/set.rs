@@ -167,6 +167,14 @@ impl ConfigSet {
         self.get(name).map(|e| e.int(IntWidth::I64)).transpose()
     }
 
+    /// The effective value as an unsigned size (git's `git_config_ulong`):
+    /// negative values are `invalid unit`.
+    pub fn ulong(&self, name: impl AsRef<[u8]>) -> Result<Option<u64>, ValueError> {
+        self.get(name)
+            .map(|e| e.int(IntWidth::U64).map(|v| v as u64))
+            .transpose()
+    }
+
     /// The effective value as a path. A missing `:(optional)` path makes the
     /// variable count as unset, falling back to earlier values like git.
     pub fn path(

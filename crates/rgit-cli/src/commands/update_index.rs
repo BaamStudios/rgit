@@ -324,6 +324,28 @@ impl State<'_> {
             let Some(mode) = mode_from_metadata(&meta, checker.options(), old) else {
                 return Err(Some(msg::missing_remove(&shown)));
             };
+            let big = mode.is_file()
+                && crate::large::streams_file(self.repo.odb(), &meta)
+                && !self.repo.converter().map(|c| c.converts(path)).unwrap_or(true);
+            if big {
+                let id = crate::large::blob_from_file(
+                    self.repo.odb(),
+                    self.repo.hash,
+                    &full,
+                    meta.len(),
+                    !self.flag(Flag::InfoOnly),
+                )
+                .map_err(|e| match e {
+                    crate::large::FileError::Read(e) => Some(format!("open(\"{shown}\"): {e}")),
+                    crate::large::FileError::Odb(e) => {
+                        Some(crate::messages::objects::insert_failure(&e, &shown))
+                    }
+                })?;
+                if existing.is_empty() && !self.flag(Flag::Add) {
+                    return Err(Some(msg::missing_add(&shown)));
+                }
+                (mode, id)
+            } else {
             let data = if meta.file_type().is_symlink() {
                 std::fs::read_link(&full)
                     .map(|t| t.as_os_str().as_encoded_bytes().to_vec())
@@ -353,6 +375,7 @@ impl State<'_> {
                 return Err(Some(msg::missing_add(&shown)));
             }
             (mode, id)
+            }
         };
         let mut entry = Entry::new(path.to_vec(), Stage::MERGED, mode, id);
         entry.stat = stat_from_metadata(&meta);

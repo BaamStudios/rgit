@@ -94,6 +94,27 @@ impl State<'_> {
         if let Err(e) = rgit_unpack::create_leading_dirs(&base, &rel, self.force) {
             return Err(Die::Fatal(e.to_string()));
         }
+        let streamed = rgit_unpack::stream_entry(self.repo.odb(), &self.conv, &base, &rel, entry);
+        if let Some(res) = streamed {
+            match res {
+                Ok(meta) => {
+                    if self.update && self.prefix.is_empty() {
+                        if let Some(e) = index.entry_mut(pos) {
+                            e.stat = stat_from_metadata(&meta);
+                            self.refreshed = true;
+                        }
+                    }
+                }
+                Err(e @ CheckoutError::LeadingDirectory { .. }) => {
+                    return Err(Die::Fatal(e.to_string()));
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    self.errors = true;
+                }
+            }
+            return Ok(());
+        }
         let data = if entry.mode.is_gitlink() {
             Vec::new()
         } else {

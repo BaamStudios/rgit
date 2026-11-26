@@ -978,6 +978,7 @@ fn index_pack_options(repo: &LocalRepo) -> Options {
         .flatten()
         .or_else(|| cfg.int("core.compression").ok().flatten())
         .unwrap_or(1) as i32;
+    o.big_file_threshold = repo.odb.big_file_threshold();
     o
 }
 
@@ -985,8 +986,7 @@ fn index_pack_options(repo: &LocalRepo) -> Options {
 /// complete a thin pack) as loose objects, like `git unpack-objects`.
 fn unpack_to_loose(repo: &LocalRepo, tmp: &TempFile, indexed: &ip::IndexedPack) -> Result<()> {
     let idx = indexed.index_bytes(IndexVersion::default())?;
-    let data = std::fs::read(tmp.path())?;
-    let pack = rgit_pack::Pack::from_bytes(idx, data, tmp.path(), repo.hash)
+    let pack = rgit_pack::Pack::with_index(idx, tmp.path(), repo.hash)
         .map_err(|e| Error::fatal(e.to_string()))?;
     let mut cache = rgit_pack::DeltaBaseCache::default();
     let sent = indexed.objects().len() - indexed.local_objects() as usize;
@@ -994,6 +994,16 @@ fn unpack_to_loose(repo: &LocalRepo, tmp: &TempFile, indexed: &ip::IndexedPack) 
         // The empty tree is known without being stored; git writes it.
         if o.id != repo.hash.empty_tree() && repo.has_object(&o.id) {
             continue;
+        }
+        // Large whole objects are copied as a stream.
+        if !o.delta {
+            let size = pack.object_info(o.offset).map(|(_, s)| s).unwrap_or(0);
+            if repo.odb.is_big(size) {
+                if let Ok(Some((kind, size, mut r))) = pack.stream_at(o.offset) {
+                    repo.odb.loose().write_stream(kind, size, &mut r)?;
+                    continue;
+                }
+            }
         }
         let obj = pack
             .read_at(o.offset, &mut cache, &mut |_| None)

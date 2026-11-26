@@ -463,8 +463,11 @@ pub(crate) fn config_options(config: &ConfigSet) -> Result<WriteOptions, Die> {
     if let Some(v) = int("pack.threads", false)? {
         opts.threads = v.max(0) as usize;
     }
-    if let Some(v) = int("core.bigfilethreshold", true)? {
-        opts.big_file_threshold = v.max(0) as u64;
+    if let Some(v) = config
+        .ulong("core.bigfilethreshold")
+        .map_err(|e| Die::Fatal(e.to_string()))?
+    {
+        opts.big_file_threshold = v;
     }
     Ok(opts)
 }

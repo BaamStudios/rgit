@@ -793,6 +793,7 @@ impl State<'_> {
                             | rgit_unpack::CheckoutError::CreateSymlink { error, .. } => {
                                 error.clone()
                             }
+                            other => other.to_string(),
                         };
                         return Err(Die::Error(
                             msg::unable_to_write(&lossy(path), *mode, &err),

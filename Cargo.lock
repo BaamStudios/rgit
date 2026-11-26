@@ -739,6 +739,7 @@ dependencies = [
 name = "rgit-odb"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "flate2",
  "rgit-config",
  "rgit-difftest",

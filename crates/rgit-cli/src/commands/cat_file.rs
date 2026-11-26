@@ -379,6 +379,10 @@ fn single(repo: &mut Repo, opt: i32, name: &str, mailmap: Option<&Mailmap>) -> C
                 let _ = writeln!(out, "{}", header.size);
             }
         },
+        _ if header.kind == ObjectKind::Blob && repo.odb.is_big(header.size) => {
+            drop(out);
+            stream_blob(repo, &oid, name)?;
+        }
         _ => {
             let mut data = read_data(repo, &oid, name)?;
             if let Some(mm) = mailmap {
@@ -392,6 +396,49 @@ fn single(repo: &mut Repo, opt: i32, name: &str, mailmap: Option<&Mailmap>) -> C
         }
     }
     Ok(0)
+}
+
+/// Write blob `oid` to standard output as a stream (git never holds a
+/// blob in memory for this).
+fn stream_blob(repo: &Repo, oid: &ObjectId, name: &str) -> Result<(), Die> {
+    let mut reader = match repo.odb.stream(oid) {
+        Ok(Some(r)) => r,
+        Ok(None) => return Err(Die::Fatal(msg::bad_file(name))),
+        Err(e) if is_invalid_type(&e) => return Err(Die::Fatal(e.to_string())),
+        Err(e) => {
+            report(&e);
+            return Err(Die::Fatal(msg::bad_file(name)));
+        }
+    };
+    let mut out = std::io::stdout().lock();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match std::io::Read::read(&mut reader, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                let _ = out.flush();
+                return Err(Die::Fatal(stream_error(&e, name)));
+            }
+        };
+        if out.write_all(&buf[..n]).is_err() {
+            return Ok(());
+        }
+    }
+    let _ = out.flush();
+    Ok(())
+}
+
+/// The message for damage found while streaming an object.
+fn stream_error(e: &std::io::Error, name: &str) -> String {
+    match e.get_ref() {
+        Some(inner) => {
+            eprintln!("error: {inner}");
+            msg::bad_file(name)
+        }
+        None => crate::global::strerror(e),
+    }
 }
 
 fn read_data(repo: &Repo, oid: &ObjectId, name: &str) -> Result<Vec<u8>, Die> {
@@ -434,6 +481,16 @@ fn show_typed(
     let mut oid = r.oid;
     for _ in 0..64 {
         let real = repo.replaced(&oid);
+        let big_blob = repo
+            .odb
+            .header(&real)
+            .ok()
+            .flatten()
+            .is_some_and(|h| h.kind == ObjectKind::Blob && repo.odb.is_big(h.size));
+        if want == ObjectKind::Blob && big_blob {
+            stream_blob(repo, &real, name)?;
+            return Ok(0);
+        }
         let raw = match repo.odb.read(&real) {
             Ok(Some(raw)) => raw,
             Ok(None) => return Err(Die::Fatal(msg::bad_file(name))),
@@ -847,8 +904,14 @@ fn show_object(
         .mailmap
         .as_ref()
         .filter(|_| opts.use_mailmap.get() && has_idents(header.kind));
+    let filter_path = opts.filters && req.contents && header.kind == ObjectKind::Blob;
+    // Large blobs are copied to the output as a stream.
+    let stream = req.contents
+        && header.kind == ObjectKind::Blob
+        && !filter_path
+        && repo.odb.is_big(header.size);
     let mut data = None;
-    if req.contents || mailmap.is_some() {
+    if (req.contents && !stream) || mailmap.is_some() {
         let raw = match repo.odb.read(real) {
             Ok(Some(raw)) => raw.data,
             Ok(None) => return Err(Die::Fatal(msg::bad_file(&oid.to_hex()))),
@@ -883,7 +946,6 @@ fn show_object(
             }
         }
     }
-    let filter_path = opts.filters && req.contents && header.kind == ObjectKind::Blob;
     if filter_path && req.rest.is_empty() {
         // The header is out before git notices.
         out.put(&line);
@@ -904,6 +966,26 @@ fn show_object(
     };
     out.put(&line);
     out.end();
+    if stream {
+        let mut reader = match repo.odb.stream(real) {
+            Ok(Some(r)) => r,
+            Ok(None) => return Err(Die::Fatal(msg::bad_file(&oid.to_hex()))),
+            Err(e) => {
+                report(&e);
+                return Err(Die::Fatal(msg::bad_file(&oid.to_hex())));
+            }
+        };
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match std::io::Read::read(&mut reader, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.put(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(Die::Fatal(stream_error(&e, &oid.to_hex()))),
+            }
+        }
+        out.end();
+    }
     if let Some(data) = data {
         out.put(&data);
         out.end();

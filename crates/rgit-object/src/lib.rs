@@ -37,6 +37,7 @@
 //! assert_eq!(c.author().unwrap().email, b"a@example.com");
 //! ```
 
+pub mod alloc;
 mod commit;
 mod error;
 pub mod fsck;
@@ -50,6 +51,7 @@ mod raw;
 mod tag;
 mod tree;
 
+pub use alloc::AllocLimitError;
 pub use commit::Commit;
 pub use error::Error;
 pub use header::{MAX_HEADER_LEN, ObjectHeader};

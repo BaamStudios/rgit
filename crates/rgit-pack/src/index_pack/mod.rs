@@ -64,6 +64,18 @@ pub trait ObjectDb: Sync {
     fn contains(&self, id: &ObjectId) -> bool;
     /// Read an object. `Err` carries a message for a damaged object.
     fn read(&self, id: &ObjectId) -> Result<Option<Object>, String>;
+    /// The content of an object as a stream (for the collision check of
+    /// large objects). The default reads the object whole.
+    fn stream(&self, id: &ObjectId) -> Result<Option<Box<dyn Read + '_>>, String> {
+        Ok(self
+            .read(id)?
+            .map(|o| Box::new(std::io::Cursor::new(o.data)) as Box<dyn Read>))
+    }
+    /// Type and size of an object (for the collision check of large
+    /// objects, which are not read whole). The default reads the object.
+    fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, String> {
+        Ok(self.read(id)?.map(|o| (o.kind, o.data.len() as u64)))
+    }
 }
 
 /// Called for every object of the pack once its id is known, from several
@@ -71,6 +83,21 @@ pub trait ObjectDb: Sync {
 pub trait ObjectHook: Sync {
     /// Look at one object.
     fn object(&self, id: &ObjectId, kind: ObjectKind, data: &[u8]) -> Result<(), String>;
+
+    /// A blob above [`Options::big_file_threshold`], which is hashed while
+    /// it is read and not kept: its content is the zlib stream at
+    /// `data_offset` of the pack file (see
+    /// [`EntryReader::open`](crate::EntryReader::open)).
+    fn large_object(
+        &self,
+        id: &ObjectId,
+        kind: ObjectKind,
+        size: u64,
+        data_offset: u64,
+    ) -> Result<(), String> {
+        let _ = (id, kind, size, data_offset);
+        Ok(())
+    }
 
     /// An entry skipped under [`Options::recover`].
     fn corrupt(&self, _error: &Error) {}
@@ -149,6 +176,10 @@ pub struct Options {
     /// the objects that could be resolved reach the hook); an
     /// `OFS_DELTA` whose base offset starts no entry is left unresolved.
     pub checksum_last: bool,
+    /// Whole blobs larger than this are hashed as they are read and not
+    /// held in memory (`core.bigFileThreshold`); they reach
+    /// [`ObjectHook::large_object`] instead of [`ObjectHook::object`].
+    pub big_file_threshold: u64,
 }
 
 impl Options {
@@ -166,6 +197,7 @@ impl Options {
             allow_trailing_data: false,
             recover: false,
             checksum_last: false,
+            big_file_threshold: u64::MAX,
         }
     }
 }
@@ -342,7 +374,16 @@ pub fn index_pack(
         version,
         trailing,
         checksum_ok,
+        large,
     } = pass1;
+    // Large blobs that exist already must have the same content.
+    if let Some(db) = odb {
+        for (id, size, data_offset) in &large {
+            if db.contains(id) {
+                checker.compare_large(db, id, *size, &data_path, *data_offset)?;
+            }
+        }
+    }
     let deltas = entries.iter().filter(|e| e.is_delta() && !e.broken).count() as u64;
 
     let data = crate::mmap::FileData::open(&data_path).map_err(|e| Error::Open {
@@ -476,11 +517,84 @@ impl Checker<'_> {
         Ok(())
     }
 
+    /// The checks for a large object that is not held in memory: an
+    /// existing object of the same id must have the same type and size.
+    pub fn check_large(
+        &self,
+        id: &ObjectId,
+        kind: ObjectKind,
+        size: u64,
+        data_offset: u64,
+    ) -> Result<(), Error> {
+        if let Some(db) = self.odb {
+            if db.contains(id) {
+                match db.header(id) {
+                    Ok(Some(h)) if h == (kind, size) => {}
+                    Ok(Some(_)) => return Err(Error::Collision(*id)),
+                    Ok(None) => {}
+                    Err(msg) => return Err(Error::Hook(msg)),
+                }
+            }
+        }
+        if let Some(h) = self.hook {
+            h.large_object(id, kind, size, data_offset)
+                .map_err(Error::Hook)?;
+        }
+        Ok(())
+    }
+
+    /// Compare the large blob `id` at `data_offset` of the pack file
+    /// `path` with the existing object of that id, both as streams.
+    fn compare_large(
+        &self,
+        db: &dyn ObjectDb,
+        id: &ObjectId,
+        size: u64,
+        path: &Path,
+        data_offset: u64,
+    ) -> Result<(), Error> {
+        let Some(mut theirs) = db.stream(id).map_err(Error::Hook)? else {
+            return Ok(());
+        };
+        let mut ours =
+            crate::EntryReader::open(path, data_offset, size).map_err(|e| Error::Open {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+        let mut a = vec![0u8; 64 * 1024];
+        let mut b = vec![0u8; 64 * 1024];
+        loop {
+            let n = read_full(&mut ours, &mut a).map_err(Error::Read)?;
+            let m = read_full(&mut *theirs, &mut b[..n.max(1)]).map_err(Error::Read)?;
+            if n != m || a[..n] != b[..m] {
+                return Err(Error::Collision(*id));
+            }
+            if n == 0 {
+                return Ok(());
+            }
+        }
+    }
+
     pub fn corrupt(&self, error: &Error) {
         if let Some(h) = self.hook {
             h.corrupt(error);
         }
     }
+}
+
+/// Fill `buf` as far as `r` allows; returns the bytes read (less only at
+/// the end).
+fn read_full(r: &mut dyn Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
 }
 
 /// Number of threads for `requested` (0: available parallelism, at most 3,

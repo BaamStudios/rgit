@@ -62,6 +62,19 @@ impl Pack {
         Ok(Pack::new(index, pack_path, Some(data), false, false))
     }
 
+    /// A pack whose index is held in memory (`idx`) and whose data is the
+    /// file `pack_path` (mapped on first use), for example a pack that was
+    /// just received under a temporary name.
+    pub fn with_index(
+        idx: Vec<u8>,
+        pack_path: impl Into<PathBuf>,
+        kind: HashKind,
+    ) -> Result<Pack, Error> {
+        let pack_path: PathBuf = pack_path.into();
+        let index = PackIndex::from_bytes(idx, pack_path.with_extension("idx"), kind)?;
+        Ok(Pack::new(index, pack_path, None, false, false))
+    }
+
     fn new(
         index: PackIndex,
         pack_path: PathBuf,

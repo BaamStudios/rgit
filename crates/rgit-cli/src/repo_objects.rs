@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use rgit_config::{CommandLine, ConfigSet, LoadOptions, SystemEnv, sources};
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::{ObjectHeader, ObjectKind};
-use rgit_odb::{LooseOptions, LooseStore, ObjectDatabase, ObjectStore, RawObject};
+use rgit_odb::{LooseOptions, LooseStore, ObjectDatabase, ObjectReader, ObjectStore, RawObject};
 use rgit_pack::{DeltaBaseCache, PackSet};
 use rgit_repo::Setup;
 
@@ -97,6 +97,7 @@ impl ObjectStore for PackStore {
         _report: &mut dyn FnMut(&rgit_odb::Error),
         bases: &mut dyn FnMut(&ObjectId) -> Option<RawObject>,
     ) -> Result<Option<RawObject>, rgit_odb::Error> {
+        rgit_odb::check_pack_alloc(&self.set, oid)?;
         let mut cache = self.cache.lock().expect("cache lock");
         let obj = self
             .set
@@ -106,6 +107,16 @@ impl ObjectStore for PackStore {
             kind: kind_of(o.kind),
             data: o.data,
         }))
+    }
+
+    fn stream(&self, oid: &ObjectId) -> Result<Option<ObjectReader>, rgit_odb::Error> {
+        if !self.contains(oid) {
+            return Ok(None);
+        }
+        match rgit_odb::stream_from_packs(&self.set, oid) {
+            Some(r) => Ok(Some(r)),
+            None => Ok(self.read(oid)?.map(ObjectReader::from_raw)),
+        }
     }
 
     fn for_each_prefix_match(
@@ -215,6 +226,10 @@ impl Repo {
         }
         let objects = objects_dir(&setup);
         let mut odb = ObjectDatabase::open(&objects, hash, loose_opts.clone());
+        odb.set_large_object_options(
+            rgit_odb::LargeObjectOptions::from_config(&config)
+                .map_err(|e| Die::Fatal(e.to_string()))?,
+        );
         let mut dirs = Vec::new();
         let main_packs = Arc::new(PackStore::new(Arc::new(PackSet::open(
             objects.join("pack"),

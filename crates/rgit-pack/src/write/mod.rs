@@ -41,7 +41,7 @@ pub use pack::{
     DEFAULT_BIG_FILE_THRESHOLD, DEFAULT_DEPTH, DEFAULT_WINDOW, MAX_DEPTH, PackSummary,
     WriteOptions, WriteProgress, WrittenEntry, write_pack, write_pack_files, write_thin_pack,
 };
-pub use source::{ObjectSource, PackSetSource, ShallowSource};
+pub use source::{ObjectSource, PackSetSource, ShallowSource, SourceStream};
 pub use walk::{
     ListedObject, Tip, describe, enumerate, enumerate_with_edges, enumerate_with_edges_aggressive,
     name_hash, pack_order,

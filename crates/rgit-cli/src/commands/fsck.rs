@@ -110,6 +110,8 @@ pub(crate) struct Fsck {
     pub max_pathname_len: usize,
     /// `.gitattributes` / `.gitmodules` blobs named by trees.
     pub special: Vec<(ObjectId, rgit_object::fsck::SpecialFile)>,
+    /// `core.bigFileThreshold`: larger blobs are checked as streams.
+    pub big_file_threshold: u64,
 }
 
 impl Fsck {
@@ -264,6 +266,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         max_pathname_len: cfg.max_pathname_len,
         promisor: HashSet::new(),
         special: Vec::new(),
+        big_file_threshold: repo.odb.big_file_threshold(),
     };
 
     if opts.references {
