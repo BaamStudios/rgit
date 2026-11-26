@@ -140,7 +140,16 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
     }
 
     fn read_kind(&self, id: &ObjectId, expected: ObjectKind) -> Result<Vec<u8>, WriteError> {
-        let o = self.read(id)?;
+        let o = match self.read(id) {
+            // git: `bad tree object <id>` for a tree that is not there.
+            Err(WriteError::Missing(_)) if expected == ObjectKind::Tree => {
+                return Err(WriteError::Corrupt {
+                    id: *id,
+                    kind: ObjectKind::Tree,
+                });
+            }
+            other => other?,
+        };
         if o.kind != expected {
             return Err(WriteError::WrongType {
                 id: *id,
@@ -256,7 +265,11 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
             let mut by_name: BTreeMap<Vec<u8>, Sides> = BTreeMap::new();
             let mut done: HashSet<ObjectId> = HashSet::new();
             for t in exc.iter().filter(|t| done.insert(**t)) {
-                for (name, id, is_tree) in self.tree_entries(t)? {
+                // What the other side has need not be complete here.
+                let Ok(entries) = self.tree_entries(t) else {
+                    continue;
+                };
+                for (name, id, is_tree) in entries {
                     let kind = if is_tree {
                         ObjectKind::Tree
                     } else {
