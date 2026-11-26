@@ -15,7 +15,10 @@
 //! it. `update-server-info` runs unless `-n` or `repack.updateServerInfo`
 //! is false.
 //!
-//! Not yet: `--cruft` (#96), `--geometric`, `--write-midx` (#21),
+//! `--write-midx` writes a multi-pack index of the packs afterwards
+//! (`--write-midx=incremental` a new layer of the incremental chain).
+//!
+//! Not yet: `--cruft` (#96), `--geometric`,
 //! `--filter` (#24), `--max-pack-size`. `-b` is accepted, but bitmaps
 //! (#23) are not written.
 
@@ -53,6 +56,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let keep_packs: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let path_walk = Cell::new(false);
     let name_hash_version: RefCell<Option<String>> = RefCell::new(None);
+    let write_midx: RefCell<Option<String>> = RefCell::new(None);
     // Options that change the result and are not implemented yet: the
     // first one given is refused.
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
@@ -151,7 +155,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "write-midx",
                 Some("mode"),
                 msg::REPACK_H_WRITE_MIDX,
-                reject("write-midx"),
+                |v: Option<&str>, unset: bool| -> Result<(), CallbackError> {
+                    *write_midx.borrow_mut() = (!unset).then(|| v.unwrap_or("default").to_owned());
+                    Ok(())
+                },
             )
             .optional(None),
             Opt::callback(None, "expire-to", Some("dir"), msg::REPACK_H_EXPIRE_TO, reject("expire-to")),
@@ -297,7 +304,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     }
                 }
             }
-            if !old.is_empty() {
+            // The MIDX goes when it lists a pack that is deleted.
+            let mut midx_errors = Vec::new();
+            let midx_lists_old = rgit_pack::midx::MidxChain::open(&pack_dir, kind, &mut midx_errors)
+                .ok()
+                .flatten()
+                .is_none_or(|m| old.iter().any(|p| m.contains_pack(&p.file_name)));
+            if !old.is_empty() && midx_lists_old {
                 store::remove_multi_pack_index(&pack_dir);
             }
             for p in old {
@@ -313,6 +326,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let fresh = repo::odb_with_config(&setup, &config)?;
             reach::prune_shallow(&fresh, &common, kind);
         }
+    }
+
+    if let Some(mode) = write_midx.take() {
+        let opts = rgit_pack::midx::write::WriteOptions {
+            version: match config.int("midx.version").ok().flatten() {
+                Some(2) => 2,
+                _ => 1,
+            },
+            bitmap: bitmap.get(),
+            incremental: mode == "incremental",
+            progress: !quiet.get() && rgit_progress::stderr_is_terminal(),
+            ..Default::default()
+        };
+        let display = format!("{}/pack", objects_dir.display());
+        rgit_pack::midx::write::write(&pack_dir, &display, kind, &opts).map_err(|e| match e {
+            rgit_pack::midx::write::WriteError::Error(m) => Die::Error(m, 255),
+            rgit_pack::midx::write::WriteError::Fatal(m) => Die::Fatal(m),
+        })?;
     }
 
     let update_info = !no_server_info.get()

@@ -9,6 +9,7 @@ use std::time::SystemTime;
 
 use rgit_hash::{HashKind, ObjectId, Prefix};
 
+use crate::midx::{MidxChain, OpenError};
 use crate::{DeltaBaseCache, Error, ExternalBase, Object, Pack};
 
 /// The packs in one `objects/pack` directory.
@@ -25,6 +26,8 @@ pub struct PackSet {
     dir: PathBuf,
     kind: HashKind,
     state: RwLock<State>,
+    /// The multi-pack index, when one is used (`core.multiPackIndex`).
+    midx: Option<MidxChain>,
 }
 
 #[derive(Default)]
@@ -48,9 +51,47 @@ impl PackSet {
             dir: dir.into(),
             kind,
             state: RwLock::new(State::default()),
+            midx: None,
         };
         set.rescan();
         set
+    }
+
+    /// [`open`](PackSet::open), also loading the multi-pack index of the
+    /// directory. Objects are then looked up in the copy the MIDX selected
+    /// first. Problems that make the MIDX unusable are appended to `errors`
+    /// (print each as `error: <text>`); `Err` is a problem git dies on.
+    pub fn open_with_midx(
+        dir: impl Into<PathBuf>,
+        kind: HashKind,
+        errors: &mut Vec<String>,
+    ) -> Result<PackSet, OpenError> {
+        let mut set = PackSet::open(dir, kind);
+        set.midx = MidxChain::open(&set.dir, kind, errors)?;
+        if let Some(chain) = &set.midx {
+            // git notices listed packs with a broken index when it looks up
+            // an object through the MIDX; this reports them once.
+            let packs = set.packs();
+            for layer in chain.layers() {
+                for name in layer.pack_names() {
+                    let idx = set.dir.join(name);
+                    if idx.exists() && !packs.iter().any(|p| p.index().path() == idx) {
+                        errors.push(
+                            Error::IndexUnavailable {
+                                path: idx.with_extension("pack"),
+                            }
+                            .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(set)
+    }
+
+    /// The multi-pack index in use, if any.
+    pub fn midx(&self) -> Option<&MidxChain> {
+        self.midx.as_ref()
     }
 
     /// The directory.
@@ -193,6 +234,25 @@ impl PackSet {
     ) -> Result<Option<Object>, Error> {
         let packs = self.packs();
         let mut first_failure: Option<PathBuf> = None;
+        if let Some((pack, offset)) = self.midx_location(id, &packs, report) {
+            let mut external = |base: &ObjectId| -> Option<Object> {
+                if depth >= 64 {
+                    return None;
+                }
+                let mut tmp = DeltaBaseCache::new(0);
+                match self.read_once(base, &mut tmp, &mut |_| {}, depth + 1, &mut |_| None) {
+                    Ok(Some(o)) => Some(o),
+                    _ => fallback(base),
+                }
+            };
+            match pack.read_at(offset, cache, &mut external) {
+                Ok(o) => return Ok(Some(o)),
+                Err(e) => {
+                    report(&e);
+                    first_failure.get_or_insert_with(|| pack.path().to_path_buf());
+                }
+            }
+        }
         for pack in &packs {
             let Some(pos) = pack.index().lookup(id) else {
                 continue;
@@ -228,6 +288,31 @@ impl PackSet {
             Some(path) => Err(Error::Corrupt { id: *id, path }),
             None => Ok(None),
         }
+    }
+
+    /// The pack and offset the multi-pack index selected for `id`, if the
+    /// MIDX lists it and that pack is loaded. A listed pack whose index
+    /// cannot be loaded is reported (`packfile ... index unavailable`).
+    fn midx_location(
+        &self,
+        id: &ObjectId,
+        packs: &[Arc<Pack>],
+        report: Report<'_>,
+    ) -> Option<(Arc<Pack>, u64)> {
+        let (layer, pos) = self.midx.as_ref()?.lookup(id)?;
+        let pack_id = layer.pack_id(pos).ok()?;
+        let offset = layer.offset(pos).ok()?;
+        let name = layer.pack_name(pack_id)?;
+        let idx = self.dir.join(name);
+        if let Some(p) = packs.iter().find(|p| p.index().path() == idx) {
+            return Some((p.clone(), offset));
+        }
+        if idx.exists() {
+            report(&Error::IndexUnavailable {
+                path: idx.with_extension("pack"),
+            });
+        }
+        None
     }
 
     /// All ids starting with `prefix` across all packs, sorted, without

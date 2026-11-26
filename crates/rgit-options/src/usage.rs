@@ -15,7 +15,9 @@ const OPTS_WIDTH: usize = 26;
 /// under the first argument of the first line (the first word starting
 /// with `[`, `(`, `<`, `{` or `-`). A continuation line indented deeper
 /// than that keeps its own indentation (some git usage strings are, e.g.
-/// `git for-each-ref`).
+/// `git for-each-ref`). A continuation line starting with a tab is printed
+/// under `usage: ` with the spaces after the tab, unaligned (`git repack`,
+/// `git multi-pack-index`).
 ///
 /// An empty usage string ends the alternatives: the strings after it are a
 /// description, printed indented by four spaces (an empty one as a blank
@@ -34,6 +36,12 @@ pub(crate) fn usage_lines(usage: &[&str]) -> String {
         out.push('\n');
         let indent = 7 + continuation_indent(first);
         for l in lines {
+            if let Some(rest) = l.strip_prefix('\t') {
+                out.push_str("       ");
+                out.push_str(rest);
+                out.push('\n');
+                continue;
+            }
             let own = l.len() - l.trim_start_matches(' ').len();
             let l = l.trim_start();
             if l.is_empty() {

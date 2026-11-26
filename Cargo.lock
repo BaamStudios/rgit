@@ -761,6 +761,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "memmap2",
+ "rgit-fs",
  "rgit-hash",
  "rgit-object",
  "rgit-progress",

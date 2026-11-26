@@ -85,7 +85,7 @@ impl Objects {
 
     /// The objects in `dir`; `shallow` is the repository's `shallow` file.
     pub fn new(dir: PathBuf, kind: HashKind, shallow: &std::path::Path) -> Objects {
-        let odb = ObjectDatabase::open_with_packs(&dir, kind, LooseOptions::default());
+        let odb = crate::repo::odb_with_midx_or_die(&dir, kind, LooseOptions::default());
         let shallow = std::fs::read_to_string(shallow)
             .unwrap_or_default()
             .lines()

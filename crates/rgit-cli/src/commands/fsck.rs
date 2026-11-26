@@ -386,6 +386,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     print!("{broken}");
 
+    if !opts.connectivity_only {
+        f.errors |= verify_midx(&repo, &opts);
+    }
+
     report(&mut f, &repo)?;
     Ok(f.errors)
 }
@@ -567,4 +571,34 @@ fn read_skiplist(repo: &Repo, path: &str) -> Result<HashSet<ObjectId>, Die> {
         }
     }
     Ok(skip)
+}
+
+/// Verify the multi-pack index of the object directory and of every
+/// alternate, as `git multi-pack-index verify` does (unless
+/// `core.multiPackIndex` is off).
+fn verify_midx(repo: &Repo, opts: &Options) -> i32 {
+    let enabled = repo
+        .config
+        .bool("core.multiPackIndex")
+        .ok()
+        .flatten()
+        .unwrap_or(true);
+    if !enabled {
+        return 0;
+    }
+    let objects = rgit_odb::objects_dir(&repo.setup.common_dir);
+    let mut dirs = vec![objects.clone()];
+    dirs.extend(rgit_odb::resolve_alternates(&objects));
+    let mut errors = 0;
+    for dir in dirs {
+        match rgit_pack::midx::verify::verify(&dir.join("pack"), repo.hash, opts.progress) {
+            Ok(r) if r.failed() => errors |= ERROR_PACK,
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("error: {e}");
+                errors |= ERROR_PACK;
+            }
+        }
+    }
+    errors
 }

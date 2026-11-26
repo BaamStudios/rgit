@@ -47,6 +47,7 @@ pub mod merge_file;
 pub mod merge_tree;
 pub mod mktag;
 pub mod mktree;
+pub mod multi_pack_index;
 pub mod mv;
 pub mod name_rev;
 pub mod objects;

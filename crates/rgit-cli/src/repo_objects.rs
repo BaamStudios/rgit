@@ -216,10 +216,16 @@ impl Repo {
         let objects = objects_dir(&setup);
         let mut odb = ObjectDatabase::open(&objects, hash, loose_opts.clone());
         let mut dirs = Vec::new();
-        let main_packs = Arc::new(PackStore::new(Arc::new(PackSet::open(
+        let use_midx = config
+            .bool("core.multiPackIndex")
+            .ok()
+            .flatten()
+            .unwrap_or(true);
+        let main_packs = Arc::new(PackStore::new(Arc::new(crate::repo::pack_set(
             objects.join("pack"),
             hash,
-        ))));
+            use_midx,
+        )?)));
         odb.push_store(main_packs.clone());
         dirs.push(ObjectDir {
             loose: Arc::new(LooseStore::new(&objects, hash, loose_opts.clone())),
@@ -230,10 +236,11 @@ impl Repo {
         });
         for dir in alternates {
             let loose = Arc::new(LooseStore::new(&dir, hash, loose_opts.clone()));
-            let packs = Arc::new(PackStore::new(Arc::new(PackSet::open(
+            let packs = Arc::new(PackStore::new(Arc::new(crate::repo::pack_set(
                 dir.join("pack"),
                 hash,
-            ))));
+                use_midx,
+            )?)));
             odb.push_store(loose.clone());
             odb.push_store(packs.clone());
             dirs.push(ObjectDir { loose, packs });

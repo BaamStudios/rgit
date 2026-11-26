@@ -16,6 +16,7 @@
 //! - [`index_pack`]: index a pack stream (`git index-pack`): object ids,
 //!   parallel delta resolution, thin pack completion, `.idx` and `.rev`
 //!   output.
+//! - [`midx`]: multi-pack indexes (read, write, verify).
 //! - [`write`]: writing packs (`pack-objects` without delta search).
 //!
 //! Objects come back as [`Object`] (= [`rgit_object::RawObject`]): the
@@ -34,6 +35,7 @@ mod error;
 mod index;
 pub mod index_pack;
 pub mod messages;
+pub mod midx;
 mod mmap;
 mod pack;
 mod store;
