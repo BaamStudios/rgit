@@ -128,12 +128,25 @@ pub fn history_complete(
 /// complete, as the repository's own invariant guarantees. The parents
 /// of `shallow` commits are not followed. Returns the first missing
 /// object.
+///
+/// With `promisor` (the objects came from a promisor remote) the objects
+/// they refer to need not be here: the remote promised them. Tips that
+/// are missing are then accepted when they are promisor objects.
 pub fn check_connected(
     odb: &ObjectDatabase,
     tips: &[ObjectId],
     received: &HashSet<ObjectId>,
     shallow: &HashSet<ObjectId>,
+    promisor: bool,
 ) -> Result<(), ObjectId> {
+    if promisor {
+        for t in tips {
+            if !received.contains(t) && !odb.contains(t) && !odb.is_promisor_object(t) {
+                return Err(*t);
+            }
+        }
+        return Ok(());
+    }
     let hash = odb.hash_kind();
     let mut seen: HashSet<ObjectId> = HashSet::new();
     let mut stack: Vec<(ObjectId, bool)> = tips.iter().map(|t| (*t, false)).collect();

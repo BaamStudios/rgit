@@ -1071,6 +1071,74 @@ impl<'a> Output<'a> {
         self.diffcore_with(pairs, true)
     }
 
+    /// A partial clone fetches the blobs the diff will read in one batch
+    /// (`Documentation/technical/partial-clone.adoc`): both sides of every
+    /// pair when the output shows contents, else the added and deleted
+    /// blobs that inexact rename or copy detection compares.
+    fn prefetch(&self, pairs: &[Pair]) {
+        let Some(repo) = self.repo else {
+            return;
+        };
+        if !rgit_odb::lazy::enabled() {
+            return;
+        }
+        let blob = |s: &Option<Side>| {
+            s.as_ref()
+                .filter(|s| s.file.is_none() && s.mode & 0o170000 != 0o160000 && !s.oid.is_null())
+                .map(|s| s.oid)
+        };
+        let mut ids: Vec<ObjectId> = Vec::new();
+        if self.formats.needs_content() || self.pickaxe.is_some() {
+            for p in pairs {
+                let (old, new) = (blob(&p.old), blob(&p.new));
+                if old == new {
+                    continue;
+                }
+                ids.extend(old);
+                ids.extend(new);
+            }
+        } else if self.core.detect != Detect::Off || self.core.break_rewrites.is_some() {
+            if self.core.break_rewrites.is_some() {
+                // Every modified file may be a complete rewrite.
+                for p in pairs {
+                    if let (Some(old), Some(new)) = (blob(&p.old), blob(&p.new)) {
+                        if old != new {
+                            ids.push(old);
+                            ids.push(new);
+                        }
+                    }
+                }
+            }
+            let deleted: Vec<ObjectId> = pairs
+                .iter()
+                .filter(|p| p.new.is_none())
+                .filter_map(|p| blob(&p.old))
+                .collect();
+            let added: Vec<ObjectId> = pairs
+                .iter()
+                .filter(|p| p.old.is_none())
+                .filter_map(|p| blob(&p.new))
+                .collect();
+            let lone_deleted: Vec<ObjectId> = deleted
+                .iter()
+                .filter(|d| !added.contains(d))
+                .copied()
+                .collect();
+            let lone_added: Vec<ObjectId> = added
+                .iter()
+                .filter(|a| !deleted.contains(a))
+                .copied()
+                .collect();
+            if !lone_deleted.is_empty() && !lone_added.is_empty() {
+                ids.extend(lone_deleted);
+                ids.extend(lone_added);
+            }
+        }
+        if !ids.is_empty() {
+            repo.odb().prefetch(&ids);
+        }
+    }
+
     /// Whether a pickaxe (`-S`, `-G`, `--find-object`) is set.
     pub fn has_pickaxe(&self) -> bool {
         self.pickaxe.is_some()
@@ -1078,6 +1146,7 @@ impl<'a> Output<'a> {
 
     /// [`Output::diffcore`], with the pickaxe only when `pickaxe`.
     pub fn diffcore_with(&self, pairs: Vec<Pair>, pickaxe: bool) -> Result<Vec<Pair>, Die> {
+        self.prefetch(&pairs);
         let pick = self.pickaxe.as_ref().filter(|_| pickaxe);
         if !self.core.active() && pick.is_none() && !self.filter.is_active() {
             return Ok(pairs);

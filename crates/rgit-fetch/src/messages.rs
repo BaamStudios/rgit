@@ -171,3 +171,6 @@ pub fn unable_to_parse_config(name: &str) -> String {
 pub fn fsck_finding(id: &rgit_hash::ObjectId, finding: &dyn std::fmt::Display) -> String {
     format!("object {id}: {finding}")
 }
+
+/// The server does not support `filter`.
+pub const FILTER_NOT_RECOGNIZED: &str = "filtering not recognized by server, ignoring";

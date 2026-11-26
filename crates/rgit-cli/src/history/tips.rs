@@ -43,6 +43,12 @@ pub struct Resolved {
     pub paths: Vec<String>,
     /// All arguments turned out to be paths: no revision was given.
     pub no_revisions: bool,
+    /// `--missing=<action>` other than `error`: missing objects named on
+    /// the command line are passed over (with the type expected, if
+    /// known) instead of being fatal.
+    pub tolerate_missing: bool,
+    /// The missing objects passed over that way.
+    pub missing: Vec<(ObjectId, &'static str)>,
 }
 
 fn print_diagnostics(resolver: &Resolver<'_>) {
@@ -145,6 +151,7 @@ impl Resolved {
         source: &str,
     ) -> Result<(), Die> {
         let mut name = name;
+        let mut expected = "commit";
         for _ in 0..64 {
             // Blobs are not read (they may be large).
             if repo.objects.kind_of(&id) == Some(ObjectKind::Blob) {
@@ -159,7 +166,14 @@ impl Resolved {
                 }
                 return Ok(());
             }
-            let Ok(Some((kind, data))) = repo.objects.read(&id) else {
+            let found = repo.objects.read(&id);
+            if self.tolerate_missing && matches!(found, Ok(None)) {
+                if !negative {
+                    self.missing.push((id, expected));
+                }
+                return Ok(());
+            }
+            let Ok(Some((kind, data))) = found else {
                 return Err(Die::Fatal(msg::bad_object(&id.to_hex())));
             };
             match kind {
@@ -181,6 +195,7 @@ impl Resolved {
                             name: tag_name,
                         });
                     }
+                    expected = tag.target_kind().map_or("commit", |k| k.name());
                     id = tag
                         .object()
                         .map_err(|_| Die::Fatal(msg::bad_object(&id.to_hex())))?;
@@ -540,7 +555,12 @@ fn alternate_refs(repo: &Repo<'_>) -> Vec<ObjectId> {
 /// argument that is not a revision but a file in the work tree (or looks
 /// like a pathspec) starts the paths when `paths` allows it.
 pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Resolved, Die> {
-    let mut out = Resolved::default();
+    let mut out = Resolved {
+        tolerate_missing: opts
+            .missing
+            .is_some_and(|m| m != super::options::Missing::Error),
+        ..Resolved::default()
+    };
     let mut in_paths = false;
     let mut revisions = false;
     // `--merge`: `HEAD...<other>` before the revisions given.
@@ -563,6 +583,8 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
                 let found = rev_items(repo, arg);
                 let mut items = match found {
                     Err(_) if opts.ignore_missing => continue,
+                    // The parents of a missing promisor commit are none.
+                    Err(_) if opts.exclude_promisor && arg.ends_with("^@") => continue,
                     Err(e) if paths && !opts.dashdash && !arg.starts_with('^') => {
                         if names_path(repo, arg) {
                             in_paths = true;

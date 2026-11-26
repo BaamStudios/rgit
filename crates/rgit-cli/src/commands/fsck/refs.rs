@@ -204,6 +204,10 @@ fn read_head(repo: &Repo, git_dir: &Path) -> Option<ObjectId> {
 
 /// Add a head, reporting a missing object. Returns whether it counted.
 fn head(f: &mut Fsck, heads: &mut Vec<(ObjectId, String)>, oid: ObjectId, name: &str) {
+    if !f.objs.get(&oid).is_some_and(|o| o.has) && f.promisor.contains(&oid) {
+        // Promised by a promisor remote (partial clone).
+        return;
+    }
     if !f.objs.get(&oid).is_some_and(|o| o.has) {
         eprintln!("error: {}", msg::invalid_sha1_pointer(name, &oid.to_string()));
         f.errors |= ERROR_REACHABLE;
@@ -304,6 +308,9 @@ fn reflog_heads(f: &mut Fsck, repo: &Repo, data: &[u8], name: &str, heads: &mut 
         }
         for oid in [e.old, e.new] {
             if oid.is_null() {
+                continue;
+            }
+            if !f.objs.get(&oid).is_some_and(|o| o.has) && f.promisor.contains(&oid) {
                 continue;
             }
             if !f.objs.get(&oid).is_some_and(|o| o.has) {

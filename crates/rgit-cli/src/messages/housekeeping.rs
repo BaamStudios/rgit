@@ -174,3 +174,12 @@ pub const REPACK_GEOMETRIC_AND_ALL: &str =
 pub fn could_not_find_pack(name: &str) -> String {
     format!("could not find pack '{name}'")
 }
+
+/// `repack -b` cannot write a bitmap: the pack lacks an object.
+pub fn bitmap_no_closure(id: &str) -> String {
+    format!(
+        "Failed to write bitmap index. Packfile doesn't have full closure (object {id} is missing)"
+    )
+}
+
+pub const FAILED_TO_WRITE_BITMAP: &str = "failed to write bitmap index";

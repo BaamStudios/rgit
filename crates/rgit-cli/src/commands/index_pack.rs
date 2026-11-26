@@ -12,8 +12,10 @@
 //! that receive-pack and fetch pass on (`fsck.*` configuration does not
 //! apply here, as observed from git).
 //!
-//! Not supported yet: `--promisor` (#24),
-//! `core.sharedRepository` file modes.
+//! `--promisor[=<message>]` marks the stored pack as a promisor pack
+//! (partial clone) with a `.promisor` file holding the message.
+//!
+//! Not supported yet: `core.sharedRepository` file modes.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -52,6 +54,8 @@ struct Args {
     /// `--verify-stat` (`Some(false)`) / `--verify-stat-only` (`Some(true)`).
     stat: Option<bool>,
     keep: Option<String>,
+    /// `--promisor[=<message>]`.
+    promisor: Option<String>,
     threads: Option<usize>,
     pack_header: Option<(u32, u32)>,
     index_version: Option<IndexVersion>,
@@ -160,6 +164,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
                 a.stat = Some(true);
             }
             ("--keep", v) => a.keep = Some(v.unwrap_or("").to_string()),
+            ("--promisor", v) => a.promisor = Some(v.unwrap_or("").to_string()),
             ("--threads", Some(v)) => {
                 a.threads = Some(v.parse::<usize>().map_err(|_| usage())?);
             }
@@ -197,6 +202,9 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
     }
     if a.pack.is_none() && !a.stdin {
         return Err(usage());
+    }
+    if a.promisor.is_some() && a.pack.is_some() {
+        return Err(Die::Fatal(m::PROMISOR_WITH_PACK_NAME.into()));
     }
     Ok(a)
 }
@@ -801,6 +809,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let with = |ext: &str| base.with_extension(ext);
             if let Some(msg) = &args.keep {
                 kept = write_keep(&with("keep"), msg)?;
+            }
+            if let Some(msg) = &args.promisor {
+                let text = if msg.is_empty() {
+                    String::new()
+                } else {
+                    format!("{msg}\n")
+                };
+                write_file(&with("promisor"), "tmp_promisor_", text.as_bytes())?;
             }
             tmp.persist(with("pack"))
                 .map_err(|e| Die::Fatal(m::cannot_rename(&with("pack"), &e)))?;

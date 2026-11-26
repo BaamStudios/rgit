@@ -255,3 +255,33 @@ pub fn cannot_walk_reflogs(name: &str) -> String {
 pub fn could_not_open_for_writing(path: &str, err: &str) -> String {
     format!("could not open '{path}' for writing: {err}")
 }
+
+pub const MISSING_ONLY_NEEDS_PRINT: &str =
+    "--missing-only requires --missing=print or --missing=print-info";
+pub const FILTER_NEEDS_OBJECTS: &str = "object filtering requires --objects";
+
+/// `--missing=error` (the default) meets a missing object.
+pub fn missing_object(kind: &str, id: &str) -> String {
+    format!("missing {kind} object '{id}'")
+}
+
+/// `--missing=allow-promisor` meets a missing object that is no promisor
+/// object.
+pub fn unexpected_missing_object(kind: &str, id: &str) -> String {
+    format!("unexpected missing {kind} object '{id}'")
+}
+
+/// `GIT_TRACE`: an object filter skips the entries of a tree.
+pub fn skipping_tree(path: &str) -> String {
+    format!("Skipping contents of tree {path}...")
+}
+
+/// A tree that cannot be read.
+pub fn bad_tree_object(id: &str) -> String {
+    format!("bad tree object {id}")
+}
+
+/// The blob of `sparse:oid=<spec>` cannot be read.
+pub fn unable_to_access_sparse_blob(spec: &str) -> String {
+    format!("unable to access sparse blob in '{spec}'")
+}

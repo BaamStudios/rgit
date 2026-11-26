@@ -54,6 +54,10 @@ struct Args {
     dry_run: bool,
     porcelain: bool,
     write_fetch_head: bool,
+    /// `--filter` specs (several combine); `--no-filter` empties them and
+    /// sets `no_filter`.
+    filters: Vec<String>,
+    no_filter: bool,
     append: bool,
     atomic: bool,
     keep: bool,
@@ -136,6 +140,12 @@ impl Args {
         }
         for s in &self.server_options {
             o.push(format!("--server-option={s}"));
+        }
+        if self.no_filter {
+            o.push("--no-filter".to_owned());
+        }
+        for f in &self.filters {
+            o.push(format!("--filter={f}"));
         }
         for r in self.refmap.iter().flatten() {
             o.push(format!("--refmap={r}"));
@@ -247,6 +257,8 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     let deepen: RefCell<Option<String>> = RefCell::new(None);
     let unshallow = Cell::new(false);
     let update_shallow = Cell::new(false);
+    let filters: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let no_filter = Cell::new(false);
     // The options in the order of git's `-h` output: what transfers,
     // then what is stored.
     let mut table = vec![
@@ -344,6 +356,16 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::flag(None, "negotiate-only", &negotiate_only, msg::HELP_NEGOTIATE_ONLY),
             Opt::flag('4', "ipv4", &ipv4, msg::HELP_IPV4).noneg(),
             Opt::flag('6', "ipv6", &ipv6, msg::HELP_IPV6).noneg(),
+            Opt::callback(None, "filter", Some("args"), msg::HELP_FILTER, |v, unset| {
+                match v {
+                    Some(spec) if !unset => filters.borrow_mut().push(spec.to_owned()),
+                    _ => {
+                        filters.borrow_mut().clear();
+                        no_filter.set(true);
+                    }
+                }
+                Ok(())
+            }),
             Opt::flag(None, "auto-maintenance", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
             Opt::flag(None, "auto-gc", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
             Opt::bool(None, "show-forced-updates", &show_forced, msg::HELP_SHOW_FORCED),
@@ -382,6 +404,8 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
         dry_run: dry_run.get() > 0,
         porcelain: porcelain.get(),
         write_fetch_head: write_fetch_head.get(),
+        filters: filters.into_inner(),
+        no_filter: no_filter.get(),
         append: append.get(),
         atomic: atomic.get(),
         keep: keep.get(),
@@ -681,7 +705,16 @@ pub fn run_with_reflog_action(
             .unwrap_or(true),
         v => v > 0,
     };
+    let (filter, promisor) = crate::promisor::fetch_filter(
+        &setup,
+        &repo.config,
+        &remote.name.to_str_lossy(),
+        &args.filters,
+        args.no_filter,
+    )?;
     let opts = FetchOptions {
+        filter,
+        promisor,
         refspecs,
         tags: match args.tags {
             1 => Some(TagOpt::All),

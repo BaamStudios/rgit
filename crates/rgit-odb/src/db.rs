@@ -3,7 +3,7 @@
 //! The object database: an ordered list of stores plus the loose store
 //! that new objects are written to.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -130,6 +130,9 @@ pub struct ObjectDatabase {
     bulk: Mutex<Option<Bulk>>,
     /// Whether `bulk` holds objects that are not readable yet.
     bulk_pending: AtomicBool,
+    /// Packs of alternates (for [`ObjectDatabase::promisor_objects`]).
+    alternate_packs: Vec<Arc<PackStore>>,
+    promisor: std::sync::OnceLock<HashSet<ObjectId>>,
 }
 
 impl std::fmt::Debug for ObjectDatabase {
@@ -158,6 +161,8 @@ impl ObjectDatabase {
             large: LargeObjectOptions::default(),
             bulk: Mutex::new(None),
             bulk_pending: AtomicBool::new(false),
+            alternate_packs: Vec::new(),
+            promisor: std::sync::OnceLock::new(),
         }
     }
 
@@ -179,7 +184,9 @@ impl ObjectDatabase {
         db.packs = Some(packs);
         for alt in alternates::resolve(&objects_dir) {
             db.push_store(Arc::new(LooseStore::new(&alt, hash, options.clone())));
-            db.push_store(Arc::new(PackStore::open(alt.join("pack"), hash)));
+            let packs = Arc::new(PackStore::open(alt.join("pack"), hash));
+            db.alternate_packs.push(packs.clone());
+            db.push_store(packs);
         }
         db
     }
@@ -318,6 +325,14 @@ impl ObjectDatabase {
     /// `git cat-file -t` with a corrupt loose and an intact packed copy);
     /// when no copy answers, the first error is returned.
     pub fn header(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
+        match self.header_here(oid) {
+            Ok(None) if self.fetch_missing(oid) => self.header_here(oid),
+            other => other,
+        }
+    }
+
+    /// [`ObjectDatabase::header`] without asking a promisor remote.
+    pub fn header_here(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
         self.settle(oid);
         match self.first_in_stores(false, |s, r| s.header_reporting(oid, r)) {
             // A delta whose base is corrupt in its pack may still be
@@ -333,6 +348,48 @@ impl ObjectDatabase {
 
     /// An object's type and content.
     pub fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
+        match self.read_here(oid) {
+            Ok(None) if self.fetch_missing(oid) => self.read_here(oid),
+            other => other,
+        }
+    }
+
+    /// Fetch `oid` from a promisor remote ([`crate::lazy`]); whether it
+    /// may be here now.
+    fn fetch_missing(&self, oid: &ObjectId) -> bool {
+        if !crate::lazy::fetch(self.loose.objects_dir(), &[*oid]) {
+            return false;
+        }
+        if self.contains(oid) {
+            return true;
+        }
+        crate::lazy::mark_failed(oid);
+        false
+    }
+
+    /// Fetch those of `ids` that are missing in one batch from a promisor
+    /// remote ([`crate::lazy`]), as `checkout` does before writing files.
+    /// Does nothing when no fetcher is installed or fetching is off.
+    pub fn prefetch(&self, ids: &[ObjectId]) {
+        if !crate::lazy::enabled() {
+            return;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let missing: Vec<ObjectId> = ids
+            .iter()
+            .filter(|id| seen.insert(**id) && !self.contains(id))
+            .copied()
+            .collect();
+        if missing.is_empty() || !crate::lazy::fetch(self.loose.objects_dir(), &missing) {
+            return;
+        }
+        for id in missing.iter().filter(|id| !self.contains(id)) {
+            crate::lazy::mark_failed(id);
+        }
+    }
+
+    /// [`ObjectDatabase::read`] without asking a promisor remote.
+    pub fn read_here(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
         self.settle(oid);
         let found = self.first_in_stores(true, |s, r| {
             // A delta base that is corrupt in this store may have a good
@@ -375,6 +432,44 @@ impl ObjectDatabase {
             1 => PrefixMatch::Unique(found.into_iter().next().expect("one element")),
             _ => PrefixMatch::Ambiguous(found.into_iter().collect()),
         })
+    }
+
+    /// Whether any pack of the database is a promisor pack (has a
+    /// `.promisor` file).
+    pub fn has_promisor_packs(&self) -> bool {
+        self.packs
+            .iter()
+            .chain(&self.alternate_packs)
+            .any(|p| p.set().packs().iter().any(|p| p.is_promisor()))
+    }
+
+    /// The promisor objects (`Documentation/technical/partial-clone.adoc`):
+    /// the objects in promisor packs and the objects they refer to (the
+    /// tree and parents of a commit, the entries of a tree except
+    /// submodule commits, the target of a tag). A missing object in this
+    /// set is expected in a partial clone. Computed once per database.
+    pub fn promisor_objects(&self) -> &HashSet<ObjectId> {
+        self.promisor.get_or_init(|| {
+            let mut out = HashSet::new();
+            let mut cache = rgit_pack::DeltaBaseCache::default();
+            for store in self.packs.iter().chain(&self.alternate_packs) {
+                for pack in store.set().packs().iter().filter(|p| p.is_promisor()) {
+                    for id in pack.index().ids() {
+                        out.insert(id);
+                        let Ok(Some(obj)) = pack.read(&id, &mut cache) else {
+                            continue;
+                        };
+                        referenced_ids(self.hash, obj.kind, &obj.data, &mut out);
+                    }
+                }
+            }
+            out
+        })
+    }
+
+    /// Whether `oid` is a promisor object ([`ObjectDatabase::promisor_objects`]).
+    pub fn is_promisor_object(&self, oid: &ObjectId) -> bool {
+        self.promisor_objects().contains(oid)
     }
 
     /// Every object id in all stores (sorted, without duplicates).
@@ -578,8 +673,15 @@ impl rgit_pack::index_pack::ObjectDb for ObjectDatabase {
         id.kind() == self.hash && ObjectDatabase::contains(self, id)
     }
 
+    /// Thin pack bases missing in a partial clone are fetched from a
+    /// promisor remote, even where fetching is otherwise off (`fetch`).
     fn read(&self, id: &ObjectId) -> Result<Option<RawObject>, String> {
-        ObjectDatabase::read(self, id).map_err(|e| e.to_string())
+        match ObjectDatabase::read_here(self, id) {
+            Ok(None) if crate::lazy::fetch_anyway(self.loose.objects_dir(), &[*id]) => {
+                ObjectDatabase::read_here(self, id).map_err(|e| e.to_string())
+            }
+            other => other.map_err(|e| e.to_string()),
+        }
     }
 
     fn stream(&self, id: &ObjectId) -> Result<Option<Box<dyn Read + '_>>, String> {
@@ -589,7 +691,7 @@ impl rgit_pack::index_pack::ObjectDb for ObjectDatabase {
     }
 
     fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, String> {
-        ObjectDatabase::header(self, id)
+        ObjectDatabase::header_here(self, id)
             .map(|h| h.map(|h| (h.kind, h.size)))
             .map_err(|e| e.to_string())
     }
@@ -605,5 +707,36 @@ fn empty_tree() -> RawObject {
     RawObject {
         kind: rgit_object::ObjectKind::Tree,
         data: Vec::new(),
+    }
+}
+
+/// Add the ids an object refers to (see [`ObjectDatabase::promisor_objects`]).
+pub fn referenced_ids(hash: HashKind, kind: ObjectKind, data: &[u8], out: &mut HashSet<ObjectId>) {
+    match kind {
+        ObjectKind::Commit => {
+            if let Ok(c) = rgit_object::Commit::parse(hash, data) {
+                if let Ok(t) = c.tree() {
+                    out.insert(t);
+                }
+                if let Ok(ps) = c.parents() {
+                    out.extend(ps);
+                }
+            }
+        }
+        ObjectKind::Tree => {
+            for e in rgit_object::TreeIter::new(hash, data).flatten() {
+                if e.mode_bits & 0o170000 != 0o160000 {
+                    out.insert(e.oid);
+                }
+            }
+        }
+        ObjectKind::Tag => {
+            if let Ok(t) = rgit_object::Tag::parse(hash, data) {
+                if let Ok(o) = t.object() {
+                    out.insert(o);
+                }
+            }
+        }
+        ObjectKind::Blob => {}
     }
 }

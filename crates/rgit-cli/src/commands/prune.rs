@@ -79,6 +79,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     })?;
     let common = setup.absolute_common_dir();
     let mut walk = Walk::new(&odb, reach::shallow_commits(&common, kind));
+    // A partial clone: the walk stops at promisor objects, which may refer
+    // to objects that are not here.
+    if crate::promisor::has_remote(&config) {
+        walk.seen.extend(odb.promisor_objects().iter().copied());
+    }
     let strict: Vec<ObjectId> = roots.refs.iter().map(|(_, id)| *id).chain(heads).collect();
     walk.walk(&strict, false)?;
     walk.walk(&roots.weak, true)?;

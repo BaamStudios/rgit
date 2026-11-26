@@ -26,6 +26,12 @@ pub trait Objects {
         let _ = id;
         None
     }
+
+    /// Fetch the missing ones of `ids` in one batch (partial clone)
+    /// before they are read one by one. The default does nothing.
+    fn prefetch(&self, ids: &[ObjectId]) {
+        let _ = ids;
+    }
 }
 
 impl Objects for ObjectDatabase {
@@ -48,6 +54,10 @@ impl Objects for ObjectDatabase {
         }
         let r = self.stream(id).ok()??;
         Some(Box::new(r))
+    }
+
+    fn prefetch(&self, ids: &[ObjectId]) {
+        ObjectDatabase::prefetch(self, ids);
     }
 }
 

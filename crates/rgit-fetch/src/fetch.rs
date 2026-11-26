@@ -83,6 +83,12 @@ pub struct FetchOptions {
     /// `--prefetch`: store under `refs/prefetch/`, without tag refspecs
     /// and without the remote's HEAD.
     pub prefetch: bool,
+    /// `--filter` (or `remote.<name>.partialCloneFilter`): the filter
+    /// spec sent to the server.
+    pub filter: Option<String>,
+    /// The remote is a promisor remote: received packs get a `.promisor`
+    /// file and may refer to objects that are not here.
+    pub promisor: bool,
 }
 
 impl FetchOptions {
@@ -509,6 +515,8 @@ pub fn fetch(
             repo.hash,
             crate::messages::INDEX_PACK_FAILED,
         ),
+        filter: opts.filter.clone(),
+        promisor: opts.promisor.then(String::new),
     };
     let mut packs: Vec<ReceivedPack> = Vec::new();
     // `--refetch`: no negotiation, everything is sent again.
@@ -593,7 +601,7 @@ pub fn fetch(
                 .unwrap_or_default(),
         );
     }
-    if graph::check_connected(&repo.odb, &tips, &received, &boundary).is_err() {
+    if graph::check_connected(&repo.odb, &tips, &received, &boundary, opts.promisor).is_err() {
         for p in &packs {
             p.release();
         }
