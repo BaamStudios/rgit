@@ -268,10 +268,13 @@ fn port_wraps_like_git() {
         |p| format!(" +0x{:x}", u64::from(p) + (1 << 32)),
         |p| format!("0{:o}", u32::from(p) + 3 * 65536),
     ];
-    for form in forms {
+    for (i, form) in forms.into_iter().enumerate() {
         let port = free_port();
         let arg = format!("--port={}", form(port));
-        let pid_file = fx.work_dir().join(format!("wrap-{port}.pid"));
+        // One file per daemon: the port just freed may be handed out
+        // again, and the file of the daemon before would then stand for
+        // one that does not listen yet.
+        let pid_file = fx.work_dir().join(format!("wrap-{i}.pid"));
         let mut cmd = daemon(&fx, true);
         cmd.args([
             "--listen=127.0.0.1",
