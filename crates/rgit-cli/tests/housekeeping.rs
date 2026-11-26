@@ -1169,3 +1169,71 @@ head -c 3000 /dev/zero | tr '\0' b >tracked.bin
          fatal: --drop-filtered cannot be used while another operation (merge, rebase, am, cherry-pick, revert, or bisect) is in progress\nfailed\n"
     );
 }
+
+/// `objects/info/packs` with several packs lists them in git's order:
+/// directory order, and without `-f` the order of the existing file
+/// (#711). Both binaries run on the same directory, so they see the same
+/// `readdir` order.
+#[test]
+fn update_server_info_pack_order_matches_git() {
+    let fx = fixture()
+        .git(["init", "-q"])
+        .git(["config", "maintenance.auto", "false"])
+        .git(["config", "gc.auto", "0"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let script = r#"
+mkpack() {
+    echo "$1" >"f$1"
+    "$GIT" add "f$1"
+    "$GIT" commit -q -m "$1"
+    "$GIT" rev-parse "HEAD:f$1" | "$GIT" pack-objects -q .git/objects/pack/pack
+}
+# Move an index to the end of the directory order (on most file systems).
+rotate() {
+    f=.git/objects/pack/pack-$1.idx
+    mv "$f" "$f.x" && mv "$f.x" "$f"
+}
+# Run update-server-info with both binaries from the same starting file.
+both() {
+    cp .git/objects/info/packs start 2>/dev/null || rm -f start
+    for g in "$GIT" "$RGIT"; do
+        if test -f start; then cp start .git/objects/info/packs; else rm -f .git/objects/info/packs; fi
+        "$g" update-server-info "$@" 2>err
+        echo "== $*"
+        cat err .git/objects/info/packs
+    done
+}
+p1=$(mkpack 1)
+p2=$(mkpack 2)
+"$GIT" update-server-info
+mkpack 3 >/dev/null
+p4=$(mkpack 4)
+mkpack 5 >/dev/null
+rotate "$p1"
+rotate "$p4"
+both
+both -f
+printf 'X garbage\n' >>.git/objects/info/packs
+both
+cp start .git/objects/info/packs
+printf 'P %s\n' pack-0000000000000000000000000000000000000000.pack >>.git/objects/info/packs
+both
+printf 'D foo\n' >.git/objects/info/packs
+both
+cp start .git/objects/info/packs
+printf 'P %s.pack\n' "pack-$p1" "pack-$p2" "pack-$p1" >.git/objects/info/packs
+both
+mkpack 6 >/dev/null
+rotate "$p2"
+both
+both -f
+"#;
+    let out = sh(&fx, script);
+    let runs: Vec<&str> = out.split("== ").skip(1).collect();
+    assert_eq!(runs.len(), 16, "{out}");
+    for pair in runs.chunks(2) {
+        assert_eq!(pair[0], pair[1], "git vs rgit:\n{out}");
+    }
+}
