@@ -380,12 +380,24 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     let mut parser = Parser::new(msg::USAGE, table);
     let rest = parser.parse(argv)?.args;
     drop(parser);
-    let recurse = recurse_submodules.get();
+    let mut recurse = recurse_submodules.get();
     if recurse.is_some_and(|m| m != FetchRecurse::No) && negotiate_only.get() {
         return Err(Die::Fatal(msg::options_together(
             "--negotiate-only",
             "--recurse-submodules",
         )));
+    }
+    // The porcelain output has no place for submodule fetches: git refuses
+    // an explicit `--recurse-submodules` and otherwise leaves the
+    // submodules alone, whatever the configuration says.
+    if porcelain.get() {
+        if recurse.is_some_and(|m| m != FetchRecurse::No) {
+            return Err(Die::Fatal(msg::options_together(
+                "--porcelain",
+                "--recurse-submodules",
+            )));
+        }
+        recurse = Some(FetchRecurse::No);
     }
     let recurse_default = match recurse_default.borrow().as_deref() {
         None => None,
