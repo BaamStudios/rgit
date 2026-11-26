@@ -100,7 +100,7 @@ impl FetchOptions {
 
 /// `fetch.unpackLimit`, else `transfer.unpackLimit`, else 100; 0 or less
 /// means every pack is unpacked.
-fn unpack_limit(config: &rgit_config::ConfigSet) -> u32 {
+pub fn unpack_limit(config: &rgit_config::ConfigSet) -> u32 {
     let n = config
         .int("fetch.unpackLimit")
         .ok()

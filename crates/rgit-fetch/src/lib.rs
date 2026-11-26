@@ -50,7 +50,7 @@ pub mod shallow;
 pub mod update;
 
 pub use error::{Error, Result};
-pub use fetch::{FetchOptions, FetchResult, HeadWarning, fetch};
+pub use fetch::{FetchOptions, FetchResult, HeadWarning, fetch, unpack_limit};
 pub use repo::{LocalRepo, alternate_tips};
 pub use session::{
     ConnectSettings, FsckCheck, Negotiation, PackOptions, ReceivedPack, Session, helper_refs,
