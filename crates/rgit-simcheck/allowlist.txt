@@ -17,3 +17,7 @@
 #   - string literals without whitespace (env variables, config keys, paths)
 
 code crates/rgit-protocol/src/sideband.rs:354-361  # unit-test assertions at threshold, reviewed by lead 2026-11-12, coincidental (#205)
+code crates/rgit-cli/src/range_diff/lapjv.rs:108-123  # independent implementation of the published Jonker-Volgenant algorithm (Computing 38, 1987); similarity follows from the algorithm's phase structure, reviewed by the owner 2026-11-26 (#619)
+code crates/rgit-cli/src/range_diff/lapjv.rs:149-156  # independent implementation of the published Jonker-Volgenant algorithm (Computing 38, 1987); similarity follows from the algorithm's phase structure, reviewed by the owner 2026-11-26 (#619)
+code crates/rgit-cli/src/range_diff/lapjv.rs:165-174  # independent implementation of the published Jonker-Volgenant algorithm (Computing 38, 1987); similarity follows from the algorithm's phase structure, reviewed by the owner 2026-11-26 (#619)
+code crates/rgit-cli/src/range_diff/lapjv.rs:186-199  # independent implementation of the published Jonker-Volgenant algorithm (Computing 38, 1987); similarity follows from the algorithm's phase structure, reviewed by the owner 2026-11-26 (#619)
