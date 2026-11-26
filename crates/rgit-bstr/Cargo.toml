@@ -1,0 +1,11 @@
+[package]
+name = "rgit-bstr"
+description = "rgit: byte strings that are not UTF-8 (ref names, arguments), carried losslessly in String"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

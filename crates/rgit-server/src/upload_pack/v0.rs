@@ -261,7 +261,7 @@ fn advertise<R: Read, W: Write>(
     }
     for (i, (id, name)) in lines.iter().enumerate() {
         if i == 0 {
-            w.write_data(format!("{id} {name}\0{caps}\n").as_bytes())?;
+            w.write_data(&rgit_bstr::to_bytes(&format!("{id} {name}\0{caps}\n")))?;
         } else {
             w.write_line(&format!("{id} {name}"))?;
         }

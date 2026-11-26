@@ -110,7 +110,7 @@ pub fn read_advertisement<R: Read>(
         } else if name == NO_REFS_NAME {
             // Only capabilities, no refs.
         } else {
-            let name = String::from_utf8(name.to_vec()).map_err(|_| unexpected(&line))?;
+            let name = rgit_bstr::from_bytes(name).into_owned();
             adv.refs.push(AdvertisedRef { name, oid });
         }
     }
@@ -188,7 +188,9 @@ pub fn write_commands<W: Write>(
     push_options: Option<&[String]>,
 ) -> Result<()> {
     for (i, c) in commands.iter().enumerate() {
-        let mut line = format!("{} {} {}", c.old.to_hex(), c.new.to_hex(), c.name).into_bytes();
+        let mut line =
+            rgit_bstr::to_bytes(&format!("{} {} {}", c.old.to_hex(), c.new.to_hex(), c.name))
+                .into_owned();
         if i == 0 {
             line.push(0);
             for cap in caps {
@@ -228,9 +230,12 @@ pub fn push_cert_payload(
     }
     out.push(b'\n');
     for c in commands {
-        out.extend_from_slice(
-            format!("{} {} {}\n", c.old.to_hex(), c.new.to_hex(), c.name).as_bytes(),
-        );
+        out.extend_from_slice(&rgit_bstr::to_bytes(&format!(
+            "{} {} {}\n",
+            c.old.to_hex(),
+            c.new.to_hex(),
+            c.name
+        )));
     }
     out
 }
@@ -336,12 +341,12 @@ pub fn read_report<R: Read>(reader: &mut Reader<R>) -> Result<Report> {
         };
         if let Some(name) = line.strip_prefix(b"ok ") {
             report.refs.push(RefReport {
-                name: String::from_utf8_lossy(name).into_owned(),
+                name: rgit_bstr::from_bytes(name).into_owned(),
                 error: None,
                 options: RefOptions::default(),
             });
         } else if let Some(rest) = line.strip_prefix(b"ng ") {
-            let rest = String::from_utf8_lossy(rest);
+            let rest = rgit_bstr::from_bytes(rest);
             let (name, reason) = match rest.split_once(' ') {
                 Some((n, r)) => (n.to_owned(), r.to_owned()),
                 None => (rest.into_owned(), String::new()),
@@ -426,6 +431,21 @@ mod tests {
         );
         assert_eq!(caps[3], "object-format=sha1");
         assert!(caps[4].starts_with("agent="));
+    }
+
+    /// Advertised names that are not UTF-8 are kept (escaped), not
+    /// rejected (#214).
+    #[test]
+    fn advertisement_with_raw_name() {
+        let first = [
+            format!("{A} refs/heads/caf").as_bytes(),
+            b"\xe9\0report-status object-format=sha1",
+        ]
+        .concat();
+        let data = pkts(&[&first, b""]);
+        let mut r = Reader::new(&data[..], "push");
+        let adv = read_advertisement(&mut r, HashKind::Sha1).unwrap();
+        assert_eq!(adv.refs[0].name, "refs/heads/caf\u{10ffe9}");
     }
 
     /// The receiving end uses another hash algorithm: git's message, for a
