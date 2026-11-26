@@ -236,6 +236,14 @@ impl Entry {
         &self.path
     }
 
+    /// The same entry under another path (`core.ignoreCase`: a new entry
+    /// takes the spelling the index already uses for its directory).
+    #[must_use]
+    pub fn with_path(mut self, path: impl Into<Vec<u8>>) -> Entry {
+        self.path = path.into();
+        self
+    }
+
     /// Merge stage.
     pub fn stage(&self) -> Stage {
         self.stage
@@ -286,14 +294,143 @@ pub fn set_max_path_len(len: usize) {
     MAX_PATH_LEN.store(len, std::sync::atomic::Ordering::Relaxed);
 }
 
+static PROTECT_NTFS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static PROTECT_HFS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(cfg!(target_os = "macos"));
+
+/// Sets `core.protectNTFS` and `core.protectHFS` for the path checks of the
+/// whole process ([`verify_path`], [`verify_path_mode`], [`Index::add`]).
+/// Defaults, as in git: NTFS protection on every platform, HFS+ protection
+/// on macOS.
+///
+/// [`Index::add`]: crate::Index::add
+pub fn set_path_protection(ntfs: bool, hfs: bool) {
+    PROTECT_NTFS.store(ntfs, std::sync::atomic::Ordering::Relaxed);
+    PROTECT_HFS.store(hfs, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The settings of [`set_path_protection`]: (`core.protectNTFS`,
+/// `core.protectHFS`).
+pub fn path_protection() -> (bool, bool) {
+    (
+        PROTECT_NTFS.load(std::sync::atomic::Ordering::Relaxed),
+        PROTECT_HFS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 /// Checks a path for the index: not empty, no leading or trailing `/`, no
 /// empty, `.`, `..` or `.git` (any case) component, not longer than the
-/// limit of [`set_max_path_len`].
+/// limit of [`set_max_path_len`], and no component that NTFS or HFS+ would
+/// take for `.git` while [`set_path_protection`] asks for that check.
 pub fn verify_path(path: &[u8]) -> bool {
-    !path.is_empty()
-        && path.len() <= MAX_PATH_LEN.load(std::sync::atomic::Ordering::Relaxed)
-        && path
-            .split(|&b| b == b'/')
-            .all(|c| !c.is_empty() && c != b"." && c != b".." && !c.eq_ignore_ascii_case(b".git"))
-        && !path.contains(&0)
+    let (ntfs, hfs) = path_protection();
+    verify_path_with(path, None, ntfs, hfs)
+}
+
+/// [`verify_path`] for an entry of `mode`: a symbolic link may not be named
+/// `.gitmodules` (or what NTFS or HFS+ take for it) in any directory.
+pub fn verify_path_mode(path: &[u8], mode: Mode) -> bool {
+    let (ntfs, hfs) = path_protection();
+    verify_path_with(path, Some(mode), ntfs, hfs)
+}
+
+/// [`verify_path_mode`] with explicit `core.protectNTFS` (`ntfs`) and
+/// `core.protectHFS` (`hfs`) settings.
+///
+/// - NTFS: `.git` followed only by spaces and dots, `.git` followed by an
+///   alternate data stream (`.git::$INDEX_ALLOCATION`), the 8.3 short name
+///   `git~1`, and any of these behind a backslash (NTFS separates
+///   directories with backslashes too).
+/// - HFS+: `.git` with code points HFS+ ignores when it compares names
+///   (zero-width joiners, direction marks, ...).
+pub fn verify_path_with(path: &[u8], mode: Option<Mode>, ntfs: bool, hfs: bool) -> bool {
+    if path.is_empty()
+        || path.len() > MAX_PATH_LEN.load(std::sync::atomic::Ordering::Relaxed)
+        || path.contains(&0)
+    {
+        return false;
+    }
+    let mut comps = path.split(|&b| b == b'/').peekable();
+    while let Some(c) = comps.next() {
+        if c.is_empty() || c == b"." || c == b".." || c.eq_ignore_ascii_case(b".git") {
+            return false;
+        }
+        if ntfs && c.split(|&b| b == b'\\').any(ntfs_dot_git) {
+            return false;
+        }
+        if hfs && hfs_equivalent(c, b".git") {
+            return false;
+        }
+        let last = comps.peek().is_none();
+        if last && mode.is_some_and(Mode::is_symlink) {
+            // NTFS also separates directories with backslashes.
+            let file = c.rsplit(|&b| b == b'\\').next().unwrap_or(c);
+            let gitmodules = c.eq_ignore_ascii_case(b".gitmodules")
+                || (ntfs
+                    && (file.eq_ignore_ascii_case(b".gitmodules") || ntfs_dot_gitmodules(file)))
+                || (hfs && hfs_equivalent(c, b".gitmodules"));
+            if gitmodules {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// NTFS ignores trailing dots and spaces, and `:` starts a stream name.
+fn ntfs_tail_is_empty(tail: &[u8]) -> bool {
+    for &b in tail {
+        match b {
+            b'.' | b' ' => {}
+            b':' => return true,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// `.git` on NTFS: the name itself or its 8.3 short name `git~1`, compared
+/// without case, with nothing but an ignored tail behind it.
+fn ntfs_dot_git(c: &[u8]) -> bool {
+    let tail = if c.len() >= 4 && c[0] == b'.' && c[1..4].eq_ignore_ascii_case(b"git") {
+        &c[4..]
+    } else if c.len() >= 5 && c[..5].eq_ignore_ascii_case(b"git~1") {
+        &c[5..]
+    } else {
+        return false;
+    };
+    ntfs_tail_is_empty(tail)
+}
+
+/// `.gitmodules` on NTFS: the name itself or one of its 8.3 short names
+/// (`gitmod~1` to `gitmod~4`, or the hashed form `gi7eba~1` to `gi7eba~9`
+/// NTFS uses once four names with that prefix exist).
+fn ntfs_dot_gitmodules(c: &[u8]) -> bool {
+    const NAME: &[u8] = b"gitmodules";
+    if c.len() > NAME.len() && c[0] == b'.' && c[1..=NAME.len()].eq_ignore_ascii_case(NAME) {
+        return ntfs_tail_is_empty(&c[NAME.len() + 1..]);
+    }
+    if c.len() >= 8 && c[6] == b'~' {
+        let (six, digit) = (&c[..6], c[7]);
+        let short = six.eq_ignore_ascii_case(b"gitmod") && (b'1'..=b'4').contains(&digit);
+        let hashed = six.eq_ignore_ascii_case(b"gi7eba") && (b'1'..=b'9').contains(&digit);
+        if short || hashed {
+            return ntfs_tail_is_empty(&c[8..]);
+        }
+    }
+    false
+}
+
+/// Code points HFS+ ignores when comparing names.
+fn hfs_ignorable(ch: char) -> bool {
+    matches!(ch as u32,
+        0x200c..=0x200f | 0x202a..=0x202e | 0x206a..=0x206f | 0xfeff)
+}
+
+fn hfs_equivalent(c: &[u8], name: &[u8]) -> bool {
+    let Ok(s) = std::str::from_utf8(c) else {
+        return false;
+    };
+    let folded: String = s.chars().filter(|&ch| !hfs_ignorable(ch)).collect();
+    folded.as_bytes().eq_ignore_ascii_case(name)
 }

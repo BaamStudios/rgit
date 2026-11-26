@@ -1402,6 +1402,7 @@ fn initial_checkout(
         reset: true,
         update: true,
         initial_checkout: true,
+        report_collisions: true,
         paths: path_options(&repo),
         ..UnpackOptions::default()
     };
@@ -1412,6 +1413,12 @@ fn initial_checkout(
         plan.apply_with_progress(repo.odb(), &wt, &conv, crate::switch_branch::progress());
     for e in &applied.errors {
         eprintln!("error: {e}");
+    }
+    if !applied.collided.is_empty() {
+        eprintln!("warning: {}", msg::PATHS_COLLIDED);
+        for path in &applied.collided {
+            eprintln!("  '{}'", String::from_utf8_lossy(path));
+        }
     }
     let opts = crate::index_config::write_options(&repo.config, &applied.index)?;
     let unable = || Die::Fatal(crate::messages::read_tree::UNABLE_TO_WRITE_INDEX.into());

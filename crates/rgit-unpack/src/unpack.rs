@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use rgit_hash::ObjectId;
-use rgit_index::{AddOptions, Entry, Index, Stage};
+use rgit_index::{AddOptions, Entry, Index, NameHash, Stage};
 use rgit_worktree::ignore::Excludes;
 use rgit_worktree::stat::{Checker, Status, stat_from_metadata};
 
@@ -79,6 +79,10 @@ pub struct Options<'a> {
     /// The index has no entries and no file (`git clone`, a first checkout):
     /// two-way case 3 then takes the new tree.
     pub initial_checkout: bool,
+    /// A checkout into a new work tree (`git clone`): find the paths that
+    /// end up in one file because the file system does not tell them apart
+    /// ([`Applied::collided`]).
+    pub report_collisions: bool,
     /// `--aggressive`: a three-way merge also resolves removals on one or
     /// both sides and identical additions.
     pub aggressive: bool,
@@ -211,6 +215,7 @@ pub struct Plan {
     update: Vec<Vec<u8>>,
     /// Submodules to move ([`Options::submodules`]).
     moves: Vec<Move>,
+    report_collisions: bool,
 }
 
 /// What [`Plan::apply`] did.
@@ -222,6 +227,77 @@ pub struct Applied {
     /// or removed; git reports these and fails with exit code 128 after
     /// writing the index.
     pub errors: Vec<String>,
+    /// With [`Options::report_collisions`]: the paths that share a work
+    /// tree file with another path of the checkout (they differ only in a
+    /// way the file system ignores, such as case), every member of a group,
+    /// in the order git lists them.
+    pub collided: Vec<Vec<u8>>,
+}
+
+/// Finds the paths of a fresh checkout that end up in the same file.
+#[derive(Default)]
+struct Collisions {
+    /// Written so far, by file identity (device and inode).
+    #[cfg(unix)]
+    by_file: std::collections::HashMap<(u64, u64), Vec<u8>>,
+    /// Written so far, by folded name (where files have no stable identity).
+    #[cfg(not(unix))]
+    by_name: std::collections::HashMap<Vec<u8>, Vec<u8>>,
+    collided: HashSet<Vec<u8>>,
+}
+
+impl Collisions {
+    /// Before `path` is written: a file already there was written for
+    /// another path of this checkout.
+    fn check(&mut self, root: &Path, path: &[u8]) {
+        let Ok(meta) = fs::symlink_metadata(join(root, path)) else {
+            return;
+        };
+        if meta.is_dir() {
+            return;
+        }
+        self.collided.insert(path.to_vec());
+        #[cfg(unix)]
+        let other = {
+            use std::os::unix::fs::MetadataExt as _;
+            self.by_file.get(&(meta.dev(), meta.ino()))
+        };
+        #[cfg(not(unix))]
+        let other = self.by_name.get(&path.to_ascii_lowercase());
+        if let Some(other) = other {
+            self.collided.insert(other.clone());
+        }
+    }
+
+    /// After `path` was written.
+    fn written(&mut self, path: &[u8], meta: &fs::Metadata) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            self.by_file.insert((meta.dev(), meta.ino()), path.to_vec());
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = meta;
+            self.by_name
+                .entry(path.to_ascii_lowercase())
+                .or_insert_with(|| path.to_vec());
+        }
+    }
+
+    /// The collided paths of `index` as git lists them: sorted without
+    /// regard to case, the members of a group in index order.
+    fn into_list(self, index: &Index) -> Vec<Vec<u8>> {
+        let mut list: Vec<Vec<u8>> = index
+            .entries()
+            .iter()
+            .filter(|e| self.collided.contains(e.path()))
+            .map(|e| e.path().to_vec())
+            .collect();
+        list.dedup();
+        list.sort_by_key(|p| p.to_ascii_lowercase());
+        list
+    }
 }
 
 impl Plan {
@@ -320,7 +396,9 @@ impl Plan {
             remove,
             update,
             moves: _,
+            report_collisions,
         } = self;
+        let mut collisions = report_collisions.then(Collisions::default);
         let mut meter = progress.then(|| {
             rgit_progress::Progress::start_delayed(
                 msg::PROGRESS_UPDATING_FILES,
@@ -350,9 +428,15 @@ impl Plan {
                 continue;
             };
             let entry = index.entries()[pos].clone();
+            if let Some(c) = &mut collisions {
+                c.check(wt.root, path);
+            }
             if let Some(res) = checkout::stream_entry(odb, filter, wt.root, path, &entry) {
                 match res {
                     Ok(meta) => {
+                        if let Some(c) = &mut collisions {
+                            c.written(path, &meta);
+                        }
                         if let Some(e) = index.entry_mut(pos) {
                             e.stat = stat_from_metadata(&meta);
                         }
@@ -383,6 +467,9 @@ impl Plan {
             };
             match checkout::write_entry(wt.root, path, &entry, &data, symlinks) {
                 Ok(Some(meta)) => {
+                    if let Some(c) = &mut collisions {
+                        c.written(path, &meta);
+                    }
                     if let Some(e) = index.entry_mut(pos) {
                         e.stat = stat_from_metadata(&meta);
                     }
@@ -432,7 +519,12 @@ impl Plan {
             }
             errors.extend(missing);
         }
-        Applied { index, errors }
+        let collided = collisions.map_or_else(Vec::new, |c| c.into_list(&index));
+        Applied {
+            index,
+            errors,
+            collided,
+        }
     }
 }
 
@@ -479,6 +571,7 @@ pub fn plan(
         consumed: HashSet::new(),
         rejection: Rejection::default(),
         moves: Vec::new(),
+        names: None,
     };
     let groups: Vec<&[Entry]> = index
         .entries()
@@ -548,6 +641,7 @@ pub fn plan(
         remove: u.remove,
         update: u.update,
         moves: u.moves,
+        report_collisions: u.opts.report_collisions,
     })
 }
 
@@ -605,6 +699,7 @@ fn three_way(
         consumed: HashSet::new(),
         rejection: Rejection::default(),
         moves: Vec::new(),
+        names: None,
     };
     let groups: Vec<&[Entry]> = index
         .entries()
@@ -743,6 +838,7 @@ fn three_way(
         remove: u.remove,
         update: u.update,
         moves: u.moves,
+        report_collisions: u.opts.report_collisions,
     })
 }
 
@@ -776,6 +872,8 @@ struct Unpacker<'u, 'o, 'w> {
     rejection: Rejection,
     /// Submodules to move.
     moves: Vec<Move>,
+    /// The index paths by folded name (`core.ignoreCase`), built on first use.
+    names: Option<NameHash>,
 }
 
 impl<'o> Unpacker<'_, 'o, '_> {
@@ -790,6 +888,36 @@ impl<'o> Unpacker<'_, 'o, '_> {
             self.rejection.problems.push((p, path.to_vec()));
         }
         false
+    }
+
+    /// With `core.ignoreCase`: the index has `path` in some case, so the
+    /// file found at `path` is a tracked file under another spelling.
+    fn tracked_icase(&mut self, path: &[u8]) -> bool {
+        if !self.opts.paths.ignore_case {
+            return false;
+        }
+        let index = self.index;
+        self.names
+            .get_or_insert_with(|| NameHash::new(index))
+            .has_file(path)
+    }
+
+    /// With `core.ignoreCase`: the file found at `path` is a tracked file
+    /// under another spelling, that is, the index has `path` in some case
+    /// and that entry's stat data is the file's (on a file system that
+    /// keeps both spellings apart, the other file is not the tracked one).
+    fn same_file_icase(&mut self, path: &[u8], meta: &fs::Metadata) -> bool {
+        if !self.tracked_icase(path) {
+            return false;
+        }
+        let (Some(wt), Some(names)) = (self.wt, self.names.as_ref()) else {
+            return false;
+        };
+        names.spellings(path).any(|spelled| {
+            self.index
+                .get(spelled, Stage::MERGED)
+                .is_some_and(|e| matches!(wt.checker.check_with(e, meta), Ok(Status::Unchanged)))
+        })
     }
 
     fn checks_worktree(&self) -> bool {
@@ -1053,8 +1181,11 @@ impl<'o> Unpacker<'_, 'o, '_> {
             match fs::symlink_metadata(join(root, dir)) {
                 Err(_) => return Ok(true),
                 Ok(m) if m.is_dir() => continue,
-                Ok(_) => {
-                    if self.removed.contains(dir) || self.excluded(dir, false) {
+                Ok(m) => {
+                    if self.removed.contains(dir)
+                        || self.same_file_icase(dir, &m)
+                        || self.excluded(dir, false)
+                    {
                         return Ok(true);
                     }
                     return Ok(self.problem(Problem::UntrackedOverwritten, dir));
@@ -1070,9 +1201,14 @@ impl<'o> Unpacker<'_, 'o, '_> {
                     Ok(self.verify_clean_subdirectory(path))
                 }
             }
-            Ok(_) => {
+            Ok(m) => {
                 if self.index.get(path, Stage::MERGED).is_some() && !self.removed.contains(path) {
                     // Tracked and kept: not ours to judge (D/F within the index).
+                    return Ok(true);
+                }
+                if self.same_file_icase(path, &m) {
+                    // The same file under another spelling (a rename that
+                    // changes only the case, or two colliding paths).
                     return Ok(true);
                 }
                 if self.excluded(path, false) {
@@ -1091,7 +1227,19 @@ impl<'o> Unpacker<'_, 'o, '_> {
         let mut ok = true;
         let index = self.index;
         let range = index.dir_range(dir);
-        for e in &index.entries()[range] {
+        let exact = &index.entries()[range.clone()];
+        // With core.ignoreCase the directory also holds the entries that
+        // spell it differently; they are not contiguous in the index.
+        let ignore_case = self.opts.paths.ignore_case;
+        let folded = index.entries().iter().enumerate().filter(|(i, e)| {
+            ignore_case
+                && !range.contains(i)
+                && e.path().len() > dir.len()
+                && e.path()[dir.len()] == b'/'
+                && e.path()[..dir.len()].eq_ignore_ascii_case(dir)
+        });
+        let below: Vec<&Entry> = exact.iter().chain(folded.map(|(_, e)| e)).collect();
+        for e in below {
             if self.consumed.contains(e.path()) {
                 continue;
             }
@@ -1126,7 +1274,7 @@ impl<'o> Unpacker<'_, 'o, '_> {
         };
         let mut names: Vec<Vec<u8>> = read
             .flatten()
-            .map(|e| e.file_name().as_encoded_bytes().to_vec())
+            .map(|e| rgit_worktree::precompose::file_name(&e.file_name()))
             .collect();
         names.sort();
         for name in names {
@@ -1141,7 +1289,10 @@ impl<'o> Unpacker<'_, 'o, '_> {
                 if self.has_untracked(&rel) {
                     return true;
                 }
-            } else if self.index.entries_for_path(&rel).is_empty() && !self.excluded(&rel, false) {
+            } else if self.index.entries_for_path(&rel).is_empty()
+                && !self.tracked_icase(&rel)
+                && !self.excluded(&rel, false)
+            {
                 return true;
             }
         }

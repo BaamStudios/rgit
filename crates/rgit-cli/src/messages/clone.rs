@@ -194,3 +194,8 @@ pub fn failed_to_copy(path: &str, reason: &str) -> String {
 pub fn failed_to_create_directory(path: &str) -> String {
     format!("failed to create directory '{path}'")
 }
+/// Paths of the checkout that share a file (the list follows, one quoted
+/// path per line).
+pub const PATHS_COLLIDED: &str = "the following paths have collided (e.g. case-sensitive paths\n\
+on a case-insensitive filesystem) and only one from the same\n\
+colliding group is in the working tree:\n";

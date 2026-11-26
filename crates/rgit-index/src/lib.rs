@@ -49,6 +49,7 @@ mod ewah;
 mod file;
 mod index;
 pub mod messages;
+mod name_hash;
 mod read;
 mod split;
 mod tree;
@@ -57,13 +58,15 @@ mod varint;
 mod write;
 
 pub use entry::{
-    DEFAULT_MAX_PATH_LEN, Entry, Flags, Mode, Stage, Stat, Time, set_max_path_len, verify_path,
+    DEFAULT_MAX_PATH_LEN, Entry, Flags, Mode, Stage, Stat, Time, path_protection, set_max_path_len,
+    set_path_protection, verify_path, verify_path_mode, verify_path_with,
 };
 pub use error::{AddError, Error, OrderError};
 pub use file::{
     INDEX_FILE_ENV, WriteError, index_path, notify_written, set_write_observer, shared_index_name,
 };
 pub use index::{AddOptions, Index, ResolveUndo};
+pub use name_hash::NameHash;
 pub use read::ReadOptions;
 pub use split::{SplitMode, SplitOptions};
 pub use tree::{CacheTree, TreeNode};

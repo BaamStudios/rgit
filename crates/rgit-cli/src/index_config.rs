@@ -37,6 +37,28 @@ fn threads(config: &ConfigSet) -> Result<Option<usize>, Die> {
     }))
 }
 
+/// Applies `core.protectNTFS` and `core.protectHFS` to the path checks of
+/// the index (git-config(1); the defaults are NTFS protection everywhere
+/// and HFS+ protection on macOS).
+pub fn apply_path_protection(config: &ConfigSet) {
+    let setting = |key: &str, default: bool| config.bool(key).ok().flatten().unwrap_or(default);
+    rgit_index::set_path_protection(
+        setting("core.protectntfs", true),
+        setting("core.protecthfs", cfg!(target_os = "macos")),
+    );
+}
+
+/// Applies `core.precomposeUnicode` (macOS: names read from directories
+/// and from the command line are converted to precomposed form).
+pub fn apply_precompose_unicode(config: &ConfigSet) {
+    let on = config
+        .bool("core.precomposeunicode")
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    rgit_worktree::precompose::set_enabled(on);
+}
+
 /// The largest `index.maxPathLen`.
 const MAX_PATH_LEN_LIMIT: i64 = 2_147_483_647;
 

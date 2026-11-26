@@ -433,7 +433,7 @@ fn os_path(root: &Path, rel: &[u8]) -> PathBuf {
 }
 
 fn name_bytes(name: &std::ffi::OsStr) -> Vec<u8> {
-    name.as_encoded_bytes().to_vec()
+    rgit_worktree::precompose::file_name(name)
 }
 
 impl Walk<'_> {
@@ -837,6 +837,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             excludes: ex.as_mut(),
             pathspec: spec,
             scan_excluded: lister.show.ignored,
+            ignore_case: repo.ignore_case(),
         }
         .walk();
         let found = untracked::ls_files_others(

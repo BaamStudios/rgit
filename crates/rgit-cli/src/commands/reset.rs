@@ -207,7 +207,14 @@ fn reset_index(
                     ..Default::default()
                 },
             )
-            .map_err(|e| Die::Fatal(e.to_string()))?;
+            .map_err(|e| match e {
+                rgit_index::AddError::InvalidPath(p) => {
+                    let p = String::from_utf8_lossy(&p).into_owned();
+                    eprintln!("error: {}", msg::invalid_path(&p));
+                    Die::Fatal(msg::make_cache_entry_failed(&p))
+                }
+                e => Die::Fatal(e.to_string()),
+            })?;
     }
     Ok(())
 }

@@ -73,6 +73,11 @@ impl Excludes {
         self.icase = icase;
     }
 
+    /// Whether patterns are compared case-insensitively.
+    pub fn ignore_case(&self) -> bool {
+        self.icase
+    }
+
     /// Adds a command-line pattern (`ls-files -x <pattern>`), relative to
     /// the top of the work tree.
     pub fn add_pattern(&mut self, pattern: &[u8]) {

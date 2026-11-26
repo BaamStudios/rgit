@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rgit_index::Index;
+use rgit_index::{Index, NameHash};
 use rgit_pathspec::{DirInterest, Pathspec};
 use rgit_worktree::ignore::Excludes;
 
@@ -193,8 +193,8 @@ impl Listing {
 fn read_sorted(dir: &Path) -> std::io::Result<Listing> {
     let mut out = Listing::default();
     for e in std::fs::read_dir(dir)?.flatten() {
-        let name = e.file_name();
-        let name = name.as_encoded_bytes();
+        let name = rgit_worktree::precompose::file_name(&e.file_name());
+        let name = name.as_slice();
         if name == b".git" {
             continue;
         }
@@ -274,6 +274,10 @@ pub(crate) struct Walker<'a> {
     /// Also scan excluded directories (for commands that show ignored
     /// paths one by one or need to know whether they hold files).
     pub scan_excluded: bool,
+    /// `core.ignoreCase`: a file is tracked when the index has its path in
+    /// any case, and a directory holds tracked files when the index has
+    /// entries below a directory of that name in any case.
+    pub ignore_case: bool,
 }
 
 impl Walker<'_> {
@@ -309,7 +313,8 @@ impl Walker<'_> {
         } else {
             HashMap::new()
         };
-        self.walk_dir(b"", false, &mut listings, &mut out);
+        let names = self.ignore_case.then(|| NameHash::new(self.index));
+        self.walk_dir(b"", false, &mut listings, names.as_ref(), &mut out);
         out
     }
 
@@ -318,6 +323,7 @@ impl Walker<'_> {
         dir: &[u8],
         parent_excluded: bool,
         listings: &mut HashMap<Vec<u8>, Option<Listing>>,
+        names: Option<&NameHash>,
         out: &mut Vec<Node>,
     ) {
         let listing = match listings.remove(dir) {
@@ -345,6 +351,10 @@ impl Walker<'_> {
             path.extend_from_slice(dir);
             path.extend_from_slice(name);
             if !is_dir {
+                if names.is_some_and(|n| n.has_file(&path)) {
+                    // Tracked under another spelling.
+                    continue;
+                }
                 if !self.selects(&path) {
                     continue;
                 }
@@ -366,7 +376,8 @@ impl Walker<'_> {
                 continue;
             }
             let excluded = parent_excluded || self.excluded(&path, true);
-            let tracked_below = !self.index.dir_range(&path).is_empty();
+            let tracked_below = !self.index.dir_range(&path).is_empty()
+                || names.is_some_and(|n| n.dir(&path).is_some());
             if !tracked_below && is_nested_repo(&os_path(self.root, &path)) {
                 if self.selects_dir(&path) {
                     out.push(Node {
@@ -380,7 +391,7 @@ impl Walker<'_> {
             }
             if tracked_below || (!shadowing && !self.selects_dir(&path)) {
                 path.push(b'/');
-                self.walk_dir(&path, excluded, listings, out);
+                self.walk_dir(&path, excluded, listings, names, out);
                 continue;
             }
             let scan = (!excluded || self.scan_excluded).then(|| self.scan(&path, excluded));
