@@ -1,0 +1,16 @@
+[package]
+name = "rgit-mailnet"
+description = "Mail transport for rgit: minimal SMTP and IMAP clients over rustls, base64 and quoted-printable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = { version = "1.12", features = ["std"] }

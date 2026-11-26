@@ -13,10 +13,10 @@ use crate::commands;
 use crate::messages::help as msg;
 
 /// Commands rgit has that are programs of their own in git (`git-daemon`,
-/// `git-http-backend`,
+/// `git-http-backend`, `git-imap-send`,
 /// `git-shell`), not built into `git`: `--list-cmds=builtins` leaves them
 /// out, and they do not follow the conventions of the builtins (`-h`).
-pub const NOT_BUILTIN: &[&str] = &["daemon", "http-backend", "shell"];
+pub const NOT_BUILTIN: &[&str] = &["daemon", "http-backend", "imap-send", "shell"];
 
 /// Command categories, in the order `git help -a` prints them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -742,6 +742,8 @@ pub const SCRIPTS: &[&str] = &[
     "merge-one-file",
     "merge-resolve",
     "mergetool",
+    "request-pull",
+    "send-email",
 ];
 
 /// The catalogue entry of `name`.
