@@ -262,6 +262,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             excludes: excludes.as_mut(),
             submodules: None,
             visible: &[],
+            sparse_dirs: &[],
         };
         let updater = if recurse {
             crate::recurse_submodules::Updater::new(&repo, super_prefix.as_deref())

@@ -87,12 +87,24 @@
 //! With `reset` up-to-date and untracked checks are skipped; the
 //! "otherwise" row is still refused.
 //!
-//! Replacing a directory by a file (with `update`) requires its tracked
-//! files to be up to date; they are dropped from the index with it, and
-//! untracked files in it that are not ignored refuse the merge
-//! ([`Problem::NotUptodateDir`]). An untracked (or kept) file where a new
-//! entry needs a directory is [`Problem::UntrackedOverwritten`]. Ignored
-//! files (from [`Options::excludes`]) are overwritten.
+//! Replacing a directory by a file (with `update`), or removing an old
+//! tree's file that the index no longer has where a directory now is,
+//! requires the directory's tracked files to be up to date; they are
+//! dropped from the index with it, and untracked files in it that are not
+//! ignored refuse the merge ([`Problem::NotUptodateDir`]). Like git, only
+//! the index entries directly following where the directory's own name
+//! sorts count as its tracked files: when other paths sort in between
+//! (`d-`, `d.x` before `d/`), the entries below `d/` are merged on their
+//! own, and one that is kept replaces the new file `d` in the index (the
+//! documented odd behaviour of t1092 "checkout behaves oddly with
+//! df-conflict-1"). A directory where a tracked file is counts as a
+//! change to it (as untracked files in it when the file goes away). An
+//! untracked file where a new entry needs a directory is
+//! [`Problem::UntrackedOverwritten`]; one where an old tree's file goes
+//! away is [`Problem::UntrackedRemoved`]. Ignored files (from
+//! [`Options::excludes`]) are overwritten. When a file whose path is a
+//! directory in one of the trees is refused, nothing below that directory
+//! is checked.
 //!
 //! The new index keeps the old one's version and resolve-undo data; its
 //! cache tree has a node for every directory, valid where the tree
