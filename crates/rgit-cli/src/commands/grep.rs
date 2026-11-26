@@ -664,7 +664,10 @@ fn walk_dir(
     };
     let mut entries: Vec<(Vec<u8>, std::fs::FileType)> = rd
         .flatten()
-        .filter_map(|e| Some((e.file_name().as_encoded_bytes().to_vec(), e.file_type().ok()?)))
+        .filter_map(|e| {
+            let name = rgit_worktree::precompose::file_name(&e.file_name());
+            Some((name, e.file_type().ok()?))
+        })
         .filter(|(n, _)| n != b".git")
         .collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));

@@ -324,7 +324,7 @@ fn read_sorted(dir: &Path) -> Vec<(Vec<u8>, bool)> {
     let mut out: Vec<(Vec<u8>, bool)> = rd
         .flatten()
         .filter_map(|e| {
-            let name = e.file_name().as_encoded_bytes().to_vec();
+            let name = rgit_worktree::precompose::file_name(&e.file_name());
             if name == b".git" {
                 return None;
             }

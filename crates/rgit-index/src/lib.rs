@@ -60,7 +60,8 @@ mod varint;
 mod write;
 
 pub use entry::{
-    DEFAULT_MAX_PATH_LEN, Entry, Flags, Mode, Stage, Stat, Time, set_max_path_len, verify_path,
+    DEFAULT_MAX_PATH_LEN, Entry, Flags, Mode, Stage, Stat, Time, path_protection, set_max_path_len,
+    set_path_protection, verify_path, verify_path_mode, verify_path_with,
 };
 pub use error::{AddError, Error, OrderError};
 pub use file::{
