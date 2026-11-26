@@ -12,6 +12,11 @@
 //! with 255. `--strict` raises warnings to errors, which concerns none of
 //! these checks (their defaults are errors or informational).
 //!
+//! In a reftable repository the stack of the repository and of every
+//! linked worktree is checked instead: the names of the tables
+//! (`badReftableTableName`, a warning), whether the stack can be read,
+//! and the targets of symbolic references (`badReferentName`).
+//!
 //! Entries are visited in name order (git follows the directory order).
 
 use std::collections::HashMap;
@@ -43,6 +48,7 @@ enum Id {
     BadPackedRefEntry,
     PackedRefEntryNotTerminated,
     PackedRefUnsorted,
+    BadReftableTableName,
 }
 
 impl Id {
@@ -61,7 +67,13 @@ impl Id {
             Id::BadPackedRefEntry => "badPackedRefEntry",
             Id::PackedRefEntryNotTerminated => "packedRefEntryNotTerminated",
             Id::PackedRefUnsorted => "packedRefUnsorted",
+            Id::BadReftableTableName => "badReftableTableName",
         }
+    }
+
+    /// A warning by default, which `--strict` turns into an error.
+    fn warn(self) -> bool {
+        matches!(self, Id::BadReftableTableName)
     }
 
     /// Informational by default (reported as a warning).
@@ -94,12 +106,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = crate::refs_support::load_config(ctx, &setup)?;
+    if setup.format.ref_storage == rgit_repo::RefStorage::Reftable {
+        let failed = reftable(&setup, &config, verbose.get(), strict.get())?;
+        return if failed { Err(Die::Exit(255)) } else { Ok(0) };
+    }
     let levels = crate::commands::mktag::fsck_levels(&config)?;
     let common = setup.common_dir.clone();
     let mut c = Checker {
         levels,
         hash: setup.format.object_format,
         verbose: verbose.get(),
+        strict: strict.get(),
         failed: false,
         own: setup
             .git_dir
@@ -128,11 +145,55 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if c.failed { Err(Die::Exit(255)) } else { Ok(0) }
 }
 
+/// Checks the reftable stacks of the repository (also for `fsck`).
+/// Returns whether an error was reported.
+pub(crate) fn reftable(
+    setup: &rgit_repo::Setup,
+    config: &rgit_config::ConfigSet,
+    verbose: bool,
+    strict: bool,
+) -> Result<bool, Die> {
+    let common = setup.common_dir.clone();
+    let mut c = Checker {
+        // `fsck` passes its own configuration, with settings such as
+        // `fsck.largePathname=warn:10` that only it understands.
+        levels: crate::commands::mktag::fsck_levels(config).unwrap_or_default(),
+        hash: setup.format.object_format,
+        verbose,
+        strict,
+        failed: false,
+        own: None,
+    };
+    c.reftable_stack(&common, None);
+    for id in crate::worktrees::linked_ids(&common) {
+        c.reftable_stack(&common.join("worktrees").join(&id), Some(&id));
+    }
+    Ok(c.failed)
+}
+
+/// `0x<12 hex digits>-0x<12 hex digits>-<8 hex digits>.ref`
+fn valid_table_name(name: &str) -> bool {
+    let hex = |s: &str, len: usize| {
+        s.len() == len && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    let Some(stem) = name.strip_suffix(".ref") else {
+        return false;
+    };
+    let mut parts = stem.split('-');
+    let index = |p: Option<&str>| p.and_then(|p| p.strip_prefix("0x")).is_some_and(|d| hex(d, 12));
+    index(parts.next())
+        && index(parts.next())
+        && parts.next().is_some_and(|r| hex(r, 8))
+        && parts.next().is_none()
+}
+
 struct Checker {
     /// `fsck.<msg-id>` by lower-case id.
     levels: HashMap<String, Severity>,
     hash: HashKind,
     verbose: bool,
+    /// `--strict`: warnings count as errors.
+    strict: bool,
     /// An error was reported.
     failed: bool,
     /// In a linked worktree: its directory below the common directory
@@ -182,6 +243,7 @@ impl Checker {
             Some(Severity::Ignore) => return,
             Some(Severity::Error | Severity::Fatal) => true,
             Some(_) => false,
+            None if id.warn() => self.strict,
             None => !id.info(),
         };
         if error {
@@ -189,6 +251,55 @@ impl Checker {
             eprintln!("error: {at}: {}: {detail}", id.name());
         } else {
             eprintln!("warning: {at}: {}: {detail}", id.name());
+        }
+    }
+
+    /// The stack of the repository (`worktree` is `None`) or of a linked
+    /// worktree in `git_dir`.
+    fn reftable_stack(&mut self, git_dir: &Path, worktree: Option<&str>) {
+        use rgit_refs::reftable::{RefValue, merged, stack::Stack};
+        self.say(msg::CHECKING_CONSISTENCY);
+        let dir = git_dir.join(rgit_refs::reftable::backend::REFTABLE_DIR);
+        // A stack that cannot be read is reported as such, nothing else.
+        let loaded = Stack::open(&dir, self.hash).tables().ok().and_then(|tables| {
+            let records = merged::refs_with_prefix(&tables, b"").ok()?;
+            Some((tables, records))
+        });
+        let Some((tables, records)) = loaded else {
+            eprintln!("error: {}", msg::stack_broken(worktree));
+            self.failed = true;
+            return;
+        };
+        for table in &tables {
+            self.say(&msg::checking_table(table.name()));
+            if !valid_table_name(table.name()) {
+                self.report(table.name(), Id::BadReftableTableName, msg::INVALID_TABLE_NAME);
+            }
+        }
+        for rec in records {
+            if let RefValue::Symbolic(target) = &rec.value {
+                let target = String::from_utf8_lossy(target);
+                let valid = if target.contains('/') {
+                    check_refname_format(target.as_bytes(), RefNameFlags::STRICT).is_ok()
+                } else {
+                    is_root_ref_syntax(&target) && !is_pseudo_ref(&target)
+                };
+                if !valid {
+                    let name = String::from_utf8_lossy(&rec.name);
+                    let failed = std::mem::replace(&mut self.failed, false);
+                    self.report(&name, Id::BadReferentName, &msg::invalid_referent(&target));
+                    let was_error = std::mem::replace(&mut self.failed, failed) || failed;
+                    self.failed |= was_error;
+                    // A finding that is not an error lets the next check
+                    // of the target run as well.
+                    if !was_error
+                        && !target.starts_with("refs/")
+                        && !target.starts_with("worktrees/")
+                    {
+                        self.report(&name, Id::SymrefTargetIsNotARef, &msg::non_ref_target(&target));
+                    }
+                }
+            }
         }
     }
 

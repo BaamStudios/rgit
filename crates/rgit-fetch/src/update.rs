@@ -213,6 +213,8 @@ pub fn ref_update(local: &BStr, new: ObjectId, status: &Status, action: &str) ->
 struct FetchHooks<'a> {
     reflog: Option<rgit_refs::reflog::ReflogWriter>,
     transaction: Option<&'a crate::repo::TransactionHook>,
+    /// For the peeled value of tags (stored by the reftable backend).
+    odb: &'a rgit_odb::ObjectDatabase,
 }
 
 impl RefHooks for FetchHooks<'_> {
@@ -226,6 +228,13 @@ impl RefHooks for FetchHooks<'_> {
     fn reflog_delete(&mut self, name: &str) {
         if let Some(w) = &mut self.reflog {
             w.reflog_delete(name);
+        }
+    }
+
+    fn peel(&mut self, oid: &ObjectId) -> Option<ObjectId> {
+        match crate::graph::peel(self.odb, oid) {
+            Some(p) if p != *oid => Some(p),
+            _ => None,
         }
     }
 
@@ -249,6 +258,7 @@ pub fn write_all(repo: &LocalRepo, updates: Vec<RefUpdate>) -> Result<(), String
     let mut hooks = FetchHooks {
         reflog: repo.reflog_hooks(),
         transaction: repo.transaction_hook.as_deref(),
+        odb: &repo.odb,
     };
     let hooks: &mut dyn RefHooks = &mut hooks;
     let store: &dyn RefStore = &repo.refs;
@@ -265,6 +275,7 @@ pub fn write(repo: &LocalRepo, update: RefUpdate) -> Result<(), String> {
     let mut hooks = FetchHooks {
         reflog: repo.reflog_hooks(),
         transaction: repo.transaction_hook.as_deref(),
+        odb: &repo.odb,
     };
     let hooks: &mut dyn RefHooks = &mut hooks;
     let store: &dyn RefStore = &repo.refs;

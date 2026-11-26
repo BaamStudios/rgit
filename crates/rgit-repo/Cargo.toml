@@ -15,6 +15,7 @@ bstr = { version = "1.13", default-features = false, features = ["std"] }
 rgit-config = { path = "../rgit-config" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
+rgit-refs = { path = "../rgit-refs" }
 rgit-trace = { path = "../rgit-trace" }
 thiserror = "2"
 

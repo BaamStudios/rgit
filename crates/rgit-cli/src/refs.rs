@@ -108,13 +108,23 @@ impl Refs {
             .collect()
     }
 
+    /// The reflog of `name` as lines of the files format.
+    fn reflog_data(&self, name: &str) -> Option<Vec<u8>> {
+        if self.store.is_reftable() {
+            return rgit_refs::reflog::FilesReflog::new(&self.git_dir, &self.common_dir, self.hash)
+                .read_raw(name)
+                .ok()
+                .flatten();
+        }
+        std::fs::read(self.dir_for(name).join("logs").join(name)).ok()
+    }
+
     /// The full entries of the reflog of `name`, oldest first.
     pub fn reflog_entries(&self, name: &str) -> Option<Vec<rgit_refs::reflog::Entry>> {
         if !valid_name(name) {
             return None;
         }
-        let file = self.dir_for(name).join("logs").join(name);
-        let data = std::fs::read(file).ok()?;
+        let data = self.reflog_data(name)?;
         Some(rgit_refs::reflog::Entry::parse_all(&data, self.hash))
     }
 
@@ -123,8 +133,7 @@ impl Refs {
         if !valid_name(name) {
             return None;
         }
-        let file = self.dir_for(name).join("logs").join(name);
-        let data = std::fs::read(file).ok()?;
+        let data = self.reflog_data(name)?;
         let hex_len = self.hash.hex_len();
         let mut out = Vec::new();
         for line in data.split(|&b| b == b'\n') {

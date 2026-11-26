@@ -387,7 +387,7 @@ fn discover(ctx: &Context, env: &SystemEnv) -> Option<(PathBuf, PathBuf, Option<
 
 /// The current branch from `HEAD`, for `includeIf.onbranch`.
 fn current_branch(git_dir: &Path) -> Option<BString> {
-    let head = std::fs::read(git_dir.join("HEAD")).ok()?;
+    let head = rgit_refs::read_head_file(git_dir).ok()?;
     let r = head.strip_prefix(b"ref: refs/heads/")?;
     Some(r.trim_ascii_end().into())
 }

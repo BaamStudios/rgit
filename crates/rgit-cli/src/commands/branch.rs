@@ -832,70 +832,94 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
         }
     }
 
-    // A forced target goes away first, with its log.
-    if let Some(t) = target {
-        if old != new {
-            let mut quiet = c.hooks();
+    if c.store.is_reftable() && old != new {
+        // One table holds the whole rename (or copy): references and
+        // logs, as git writes it.
+        let Some(committer) = hooks.committer().cloned() else {
+            return Err(Die::Fatal(
+                if is_copy { msg::COPY_FAILED } else { msg::RENAME_FAILED }.to_owned(),
+            ));
+        };
+        if let Err(e) = c
+            .store
+            .rename_reftable(&old_ref, &new_ref, &committer, &message, is_copy)
+        {
+            eprintln!("error: {e}");
+            let failed = if is_copy { msg::COPY_FAILED } else { msg::RENAME_FAILED };
+            return Err(Die::Fatal(failed.to_owned()));
+        }
+        if !is_copy && is_current {
+            let mut h = c.hooks();
+            h.mark_symbolic("HEAD");
             c.run_tx(
-                RefUpdate::delete(new_ref.as_str(), hash, Some(t)).no_deref(true),
-                &mut quiet,
+                RefUpdate::symref_update("HEAD", new_ref.as_str(), None)
+                    .no_deref(true)
+                    .message(message.as_str()),
+                &mut h,
             )?;
         }
-    }
-    if let Some(logs) = &logs {
-        if is_copy {
+    } else {
+        // A forced target goes away first, with its log.
+        if let Some(t) = target {
             if old != new {
-                if let Ok(Some(data)) = logs.read_raw(&old_ref) {
-                    let path = logs.path(&new_ref);
-                    if let Some(dir) = path.parent() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
-                    std::fs::write(&path, data).map_err(|e| Die::Fatal(e.to_string()))?;
-                }
+                let mut quiet = c.hooks();
+                c.run_tx(
+                    RefUpdate::delete(new_ref.as_str(), hash, Some(t)).no_deref(true),
+                    &mut quiet,
+                )?;
             }
-        } else {
-            logs.rename(&old_ref, &new_ref)
-                .map_err(|e| Die::Fatal(e.to_string()))?;
         }
-    }
-    if !is_copy && old != new {
-        // Deleting the old branch notes the change in HEAD's log when HEAD
-        // is on it.
-        let mut h = c.hooks();
-        c.run_tx(
-            RefUpdate::delete(old_ref.as_str(), hash, Some(oid))
-                .no_deref(true)
-                .message(message.as_str()),
-            &mut h,
-        )?;
-        // Its log was moved above; the delete must not take it along.
-    }
-    if old != new {
-        let mut silent = c.hooks().without_reflogs();
-        // A dangling symbolic reference of the new name is overwritten.
-        let dangling = matches!(c.store.read_raw(&new_ref), Ok(Some(Target::Symbolic(_))));
-        let update = if dangling {
-            RefUpdate::update(new_ref.as_str(), oid, None)
-        } else {
-            RefUpdate::create(new_ref.as_str(), oid)
-        };
-        c.run_tx(update.no_deref(true), &mut silent)?;
-    }
-    let create_log = logs
-        .as_ref()
-        .is_some_and(|l| l.exists(&new_ref) || l.exists(&old_ref))
-        || log_all_ref_updates(c);
-    hooks.log(&new_ref, oid, oid, &message, create_log);
-    if !is_copy && is_current {
-        let mut silent = c.hooks().without_reflogs();
-        silent.mark_symbolic("HEAD");
-        c.run_tx(
-            RefUpdate::symref_update("HEAD", new_ref.as_str(), None).no_deref(true),
-            &mut silent,
-        )?;
+        if let Some(logs) = &logs {
+            if is_copy {
+                if old != new {
+                    logs.copy(&old_ref, &new_ref)
+                        .map_err(|e| Die::Fatal(e.to_string()))?;
+                }
+            } else {
+                logs.rename(&old_ref, &new_ref)
+                    .map_err(|e| Die::Fatal(e.to_string()))?;
+            }
+        }
+        if !is_copy && old != new {
+            // Deleting the old branch notes the change in HEAD's log when HEAD
+            // is on it.
+            let mut h = c.hooks();
+            c.run_tx(
+                RefUpdate::delete(old_ref.as_str(), hash, Some(oid))
+                    .no_deref(true)
+                    .message(message.as_str()),
+                &mut h,
+            )?;
+            // Its log was moved above; the delete must not take it along.
+        }
         if old != new {
-            hooks.log("HEAD", ObjectId::null(hash), oid, &message, false);
+            let mut silent = c.hooks().without_reflogs();
+            // A dangling symbolic reference of the new name is overwritten.
+            let dangling = matches!(c.store.read_raw(&new_ref), Ok(Some(Target::Symbolic(_))));
+            let update = if dangling {
+                RefUpdate::update(new_ref.as_str(), oid, None)
+            } else {
+                RefUpdate::create(new_ref.as_str(), oid)
+            };
+            c.run_tx(update.no_deref(true), &mut silent)?;
         }
+        let create_log = logs
+            .as_ref()
+            .is_some_and(|l| l.exists(&new_ref) || l.exists(&old_ref))
+            || log_all_ref_updates(c);
+        hooks.log(&new_ref, oid, oid, &message, create_log);
+        if !is_copy && is_current {
+            let mut silent = c.hooks().without_reflogs();
+            silent.mark_symbolic("HEAD");
+            c.run_tx(
+                RefUpdate::symref_update("HEAD", new_ref.as_str(), None).no_deref(true),
+                &mut silent,
+            )?;
+            if old != new {
+                hooks.log("HEAD", ObjectId::null(hash), oid, &message, false);
+            }
+        }
+
     }
 
     if !is_copy && old != new {
@@ -954,14 +978,19 @@ fn move_other_heads(
     let mut ok = true;
     for w in others {
         let head = w.git_dir.join("HEAD");
-        let written = rgit_fs::LockFile::acquire(&head, &rgit_fs::LockOptions::new())
+        let in_stack = rgit_refs::write_head_symref(&w.git_dir, new_ref).map_err(|e| e.to_string());
+        let written = match in_stack {
+            Ok(true) => Ok(()),
+            Err(e) => Err(e),
+            Ok(false) => rgit_fs::LockFile::acquire(&head, &rgit_fs::LockOptions::new())
             .map_err(|e| rgit_refs::messages::cannot_lock("HEAD", e))
             .and_then(|mut lock| {
                 lock.file_mut()
                     .write_all(format!("ref: {new_ref}\n").as_bytes())
                     .and_then(|()| lock.commit())
                     .map_err(|e| e.to_string())
-            });
+            }),
+        };
         match written {
             Ok(()) => done(w),
             Err(e) => {

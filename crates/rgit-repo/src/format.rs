@@ -22,7 +22,7 @@ pub enum RefStorage {
 
 /// What this build of rgit can open. Known extensions outside this set are
 /// refused with [`Error::Unsupported`] before anything is read or written.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Support {
     /// `extensions.objectFormat=sha256`.
     pub sha256: bool,
@@ -30,6 +30,18 @@ pub struct Support {
     pub compat_object_format: bool,
     /// `extensions.refStorage=reftable`.
     pub reftable: bool,
+}
+
+impl Default for Support {
+    /// What every command can work with: SHA-1 object ids, references as
+    /// files or reftable.
+    fn default() -> Self {
+        Support {
+            sha256: false,
+            compat_object_format: false,
+            reftable: true,
+        }
+    }
 }
 
 /// The repository format: version and extensions of a repository's own
@@ -279,6 +291,11 @@ mod tests {
         let f = fmt("[core]\nrepositoryformatversion=1\n[extensions]\nrefstorage=reftable://x\n")
             .unwrap();
         assert_eq!(f.ref_storage, RefStorage::Reftable);
-        assert!(f.check_support(&Support::default()).is_err());
+        assert!(f.check_support(&Support::default()).is_ok());
+        let files_only = Support {
+            reftable: false,
+            ..Support::default()
+        };
+        assert!(f.check_support(&files_only).is_err());
     }
 }

@@ -167,6 +167,11 @@ pub fn not_a_symbolic_ref(name: &str) -> String {
     format!("ref {name} is not a symbolic ref")
 }
 
+/// `rev-parse --show-object-format=<mode>` with a mode git does not know.
+pub fn unknown_object_format_mode(mode: &str) -> String {
+    format!("unknown mode for --show-object-format: {mode}")
+}
+
 /// rgit wording: a rev-parse argument that is not implemented yet.
 pub fn rev_parse_not_supported(arg: &str) -> String {
     format!("rgit rev-parse: '{arg}' is not supported yet")

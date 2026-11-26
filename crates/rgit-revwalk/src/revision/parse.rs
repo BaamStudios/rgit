@@ -324,6 +324,7 @@ impl Resolver<'_> {
         let Some(log) = self.repo.refs.reflog(&full)? else {
             return Err(Error::NotFound);
         };
+        let mut selector = None;
         if !content.is_empty() && content.bytes().all(|b| b.is_ascii_digit()) {
             let n: usize = content.parse().map_err(|_| Error::NotFound)?;
             // `@{0}` of an empty log is the current value; one past the
@@ -346,15 +347,28 @@ impl Resolver<'_> {
             if n >= log.len() {
                 return Err(Error::Fatal(messages::log_only_has(&display, log.len())));
             }
-            return Ok(log[log.len() - 1 - n].new);
+            let new = log[log.len() - 1 - n].new;
+            if !new.is_null() {
+                return Ok(new);
+            }
+            // The entry records a deletion (a rename in a reftable
+            // repository leaves one): the general lookup falls back to
+            // the value the reference has now, with a warning.
+            selector = Some(rgit_refs::reflog::Selector::Nth(n));
         }
         if log.is_empty() {
             return Err(Error::NotFound);
         }
-        let (at, bad) = approxidate_careful(content, &self.opts.date);
-        if bad {
-            return Err(Error::NotFound);
-        }
+        let selector = match selector {
+            Some(s) => s,
+            None => {
+                let (at, bad) = approxidate_careful(content, &self.opts.date);
+                if bad {
+                    return Err(Error::NotFound);
+                }
+                rgit_refs::reflog::Selector::Date(at)
+            }
+        };
         let entries: Vec<rgit_refs::reflog::Entry> = log
             .iter()
             .map(|e| rgit_refs::reflog::Entry {
@@ -372,9 +386,8 @@ impl Resolver<'_> {
             display: &display,
             current,
         };
-        let resolved =
-            rgit_refs::reflog::resolve(&entries, rgit_refs::reflog::Selector::Date(at), target)
-                .map_err(|e| Error::Fatal(e.to_string()))?;
+        let resolved = rgit_refs::reflog::resolve(&entries, selector, target)
+            .map_err(|e| Error::Fatal(e.to_string()))?;
         // `-q` silences only `only goes back`; gaps and a log that ended
         // early are always reported.
         for w in &resolved.warnings {

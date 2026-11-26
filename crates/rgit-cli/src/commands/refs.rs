@@ -2,11 +2,14 @@
 //! `git refs` (Documentation/git-refs.adoc): low-level access to the
 //! references. `list` is `for-each-ref`, `optimize` is `pack-refs`;
 //! `exists`, `create`, `update`, `delete` and `rename` work on single
-//! references like `update-ref`; `verify` checks the files backend
-//! ([`verify`]). `migrate` is not implemented yet (#31).
+//! references like `update-ref`; `verify` checks the reference store
+//! ([`verify`]); `migrate` converts it to the other storage format
+//! ([`migrate`]).
 
+#[path = "refs/migrate.rs"]
+mod migrate;
 #[path = "refs/verify.rs"]
-mod verify;
+pub(crate) mod verify;
 
 use rgit_hash::ObjectId;
 use rgit_refs::name::{RefNameFlags, check_refname_format};
@@ -32,7 +35,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(op @ ("create" | "update" | "delete")) => write(ctx, op, args),
         Some("rename") => rename(ctx, args),
         Some("verify") => verify::run(ctx, args),
-        Some(s @ "migrate") => Err(Die::Fatal(msg::not_supported(s))),
+        Some("migrate") => migrate::run(ctx, args),
         Some(s) if !s.starts_with('-') => {
             Err(top.error_with_usage(&msg::unknown_subcommand(s)).into())
         }
@@ -207,6 +210,16 @@ fn rename(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(Die::Fatal(msg::already_exists(new)));
     }
     let hooks = UpdateHooks::new(&setup, &config, &objects);
+    if store.is_reftable() {
+        // One table with the deletion, the creation and the moved log.
+        let Some(committer) = hooks.committer().cloned() else {
+            return Err(Die::Fatal(msg::does_not_exist(old)));
+        };
+        return store
+            .rename_reftable(old, new, &committer, &message, false)
+            .map(|()| 0)
+            .map_err(|e| Die::Fatal(e.to_string()));
+    }
     let logs = hooks.reflogs().cloned();
     let had_log = logs.as_ref().is_some_and(|l| l.exists(old));
     if let Some(logs) = &logs {

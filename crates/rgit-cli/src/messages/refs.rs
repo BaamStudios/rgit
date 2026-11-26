@@ -82,11 +82,6 @@ pub fn already_exists(name: &str) -> String {
     format!("reference already exists: '{name}'")
 }
 
-/// rgit wording: a subcommand that is not implemented yet.
-pub fn not_supported(sub: &str) -> String {
-    format!("rgit refs: '{sub}' is not supported yet")
-}
-
 pub fn rename_symref(name: &str) -> String {
     format!("refname {name} is a symbolic ref, renaming it is not supported")
 }
@@ -160,4 +155,46 @@ pub fn packed_not_terminated(line: &str) -> String {
 
 pub fn packed_unsorted(name: &str, previous: &str) -> String {
     format!("refname '{name}' is less than previous refname '{previous}'")
+}
+
+/// `reftable.blockSize` above the largest block the format can describe.
+pub const REFTABLE_BLOCK_SIZE_TOO_LARGE: &str = "reftable block size cannot exceed 16MB";
+/// `reftable.restartInterval` above 65535 (git's wording names the block
+/// size here as well).
+pub const REFTABLE_RESTART_INTERVAL_TOO_LARGE: &str = "reftable block size cannot exceed 65535";
+
+pub const USAGE_MIGRATE: &str = "git refs migrate --ref-format=<format> [--no-reflog] [--dry-run]";
+pub const HELP_REF_FORMAT: &str = "specify the reference format to convert to";
+pub const HELP_DRY_RUN: &str = "perform a non-destructive dry-run";
+pub const HELP_REFLOG: &str = "drop reflogs entirely during the migration";
+pub const TOO_MANY_ARGUMENTS: &str = "too many arguments";
+pub const MISSING_REF_FORMAT: &str = "missing --ref-format=<format>";
+pub const MIGRATE_WITH_WORKTREES: &str =
+    "migrating repositories with worktrees is not supported yet";
+
+pub fn unknown_ref_storage_format(name: &str) -> String {
+    format!("unknown ref storage format '{name}'")
+}
+
+pub fn already_uses_format(name: &str) -> String {
+    format!("repository already uses '{name}' format")
+}
+
+pub fn dry_run_finished(dir: &str) -> String {
+    format!("Finished dry-run migration of refs, the result can be found at '{dir}'")
+}
+
+pub const INVALID_TABLE_NAME: &str = "invalid reftable table name";
+
+pub fn checking_table(name: &str) -> String {
+    format!("Checking table: {name}")
+}
+
+/// The stack of a linked worktree (or, without a name, of the repository
+/// itself) cannot be read.
+pub fn stack_broken(worktree: Option<&str>) -> String {
+    match worktree {
+        Some(id) => format!("reftable stack for worktree '{id}' is broken"),
+        None => "reftable stack for the main worktree is broken".to_owned(),
+    }
 }

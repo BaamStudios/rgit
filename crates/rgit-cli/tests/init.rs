@@ -279,8 +279,8 @@ fn formats() {
         .run();
 }
 
-/// Creating SHA-256 or reftable repositories is refused until rgit supports
-/// them (#12, #31); git creates them.
+/// Creating SHA-256 repositories is refused until rgit supports them
+/// (#12); git creates them.
 #[test]
 fn unsupported_formats_are_refused() {
     let mut fx = fixture();

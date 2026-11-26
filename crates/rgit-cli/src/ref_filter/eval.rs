@@ -198,7 +198,7 @@ impl<'a> Env<'a> {
         self.head
             .get_or_init(|| match self.repo {
                 Some(r) => {
-                    let text = std::fs::read_to_string(r.setup.git_dir.join("HEAD")).ok()?;
+                    let text = rgit_refs::read_head_text(&r.setup.git_dir).ok()?;
                     let text = text.trim_end();
                     match text.strip_prefix("ref: ") {
                         Some(name) => Some(Target::Symbolic(name.to_owned())),
@@ -883,7 +883,7 @@ impl<'a> Env<'a> {
                     .into_owned()
             };
             let head_of = |dir: &std::path::Path| {
-                std::fs::read_to_string(dir.join("HEAD"))
+                rgit_refs::read_head_text(dir)
                     .ok()
                     .and_then(|t| t.trim_end().strip_prefix("ref: ").map(str::to_owned))
             };

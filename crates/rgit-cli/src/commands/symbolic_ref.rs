@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 //! `git symbolic-ref` (Documentation/git-symbolic-ref.adoc). Creating and
-//! deleting go through `rgit_refs` transactions; reflog entries (`-m`) are
-//! written once the reflog exists (#30).
+//! deleting go through `rgit_refs` transactions; creating writes a reflog
+//! entry (with the `-m` reason) from what the reference resolved to
+//! before to what its new target resolves to.
 
 use std::path::{Path, PathBuf};
 
+use rgit_refs::RefStore as _;
 use rgit_refs::files::FilesStore;
 use rgit_refs::messages as refs_msg;
 use rgit_refs::name::{RefNameFlags, is_valid_refname};
@@ -48,7 +50,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let reason = reason.borrow().clone().unwrap_or_default();
             let config = crate::refs_support::load_config(ctx, &setup)?;
             let symlinks = matches!(config.bool("core.prefersymlinkrefs"), Ok(Some(true)));
-            return create_symref(&setup, &args[0], &args[1], &reason, symlinks);
+            return create_symref(&setup, &config, &args[0], &args[1], &reason, symlinks);
         }
         _ => return Err(parser.usage_error().into()),
     }
@@ -106,6 +108,7 @@ fn apply(store: &FilesStore, update: RefUpdate) -> CmdResult {
 /// `symbolic-ref <name> <target>`.
 fn create_symref(
     setup: &rgit_repo::Setup,
+    config: &rgit_config::ConfigSet,
     name: &str,
     target: &str,
     reason: &str,
@@ -117,12 +120,28 @@ fn create_symref(
     if !is_valid_refname(target.as_bytes(), RefNameFlags::ONELEVEL) {
         return Err(Die::Fatal(refs_msg::invalid_symref_target(name, target)));
     }
-    let store = store_for(setup, name);
+    // The store with the settings of the configuration, at absolute
+    // paths (lock messages name them).
+    let options = *crate::refs_support::ref_store(setup, config).options();
+    let store = FilesStore::with_options(
+        setup.cwd.join(&setup.common_dir),
+        setup.format.object_format,
+        options,
+    )
+    .with_worktree(setup.absolute_git_dir());
     let update = RefUpdate::symref_update(name, target, None)
         .no_deref(true)
         .skip_name_check(true)
         .message(reason);
-    let code = apply(&store, update)?;
+    let objects = crate::refs_support::Objects::open(setup);
+    let mut hooks = crate::refs_support::UpdateHooks::new(setup, config, &objects);
+    hooks.mark_symbolic(name);
+    let mut tx = Transaction::new(&store);
+    let code = tx
+        .push(update)
+        .and_then(|()| tx.commit(&mut hooks))
+        .map(|()| 0)
+        .map_err(|e| Die::Error(e.to_string(), 1))?;
     if symlinks {
         super::update_ref::symrefs_as_symlinks(&store, vec![(name.to_owned(), target.to_owned())]);
     }
@@ -157,6 +176,13 @@ fn per_worktree(name: &str) -> bool {
 fn read_symref(setup: &rgit_repo::Setup, name: &str) -> Option<String> {
     if name.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
         return None;
+    }
+    let store = store_for(setup, name);
+    if store.is_reftable() {
+        return match store.read_raw(name) {
+            Ok(Some(rgit_refs::Target::Symbolic(t))) => Some(t),
+            _ => None,
+        };
     }
     let base: &Path = if per_worktree(name) {
         &setup.git_dir

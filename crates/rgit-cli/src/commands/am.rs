@@ -1232,15 +1232,14 @@ impl<'c> Am<'c> {
         match self.head()? {
             Some(h) => {
                 // `reset` records ORIG_HEAD, which `--abort` still needs.
-                let orig_path = self.git_dir.join("ORIG_HEAD");
-                let orig = std::fs::read(&orig_path).ok();
+                let orig = rgit_refs::read_root_ref_file(&self.git_dir, "ORIG_HEAD").ok();
                 let code = seq::reset_merge(self.ctx, &h.to_hex());
                 match orig {
                     Some(o) => {
-                        let _ = std::fs::write(&orig_path, o);
+                        let _ = rgit_refs::write_root_ref_file(&self.git_dir, "ORIG_HEAD", &o);
                     }
                     None => {
-                        let _ = std::fs::remove_file(&orig_path);
+                        let _ = rgit_refs::remove_root_ref_file(&self.git_dir, "ORIG_HEAD");
                     }
                 }
                 code
@@ -1319,8 +1318,9 @@ impl<'c> Am<'c> {
             let _ = std::fs::remove_dir_all(&self.dir);
             return Ok(0);
         }
-        let orig = std::fs::read_to_string(self.git_dir.join("ORIG_HEAD"))
+        let orig = rgit_refs::read_root_ref_file(&self.git_dir, "ORIG_HEAD")
             .ok()
+            .and_then(|d| String::from_utf8(d).ok())
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty());
         if !self.safe_to_reset()? {
@@ -1916,17 +1916,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         am.write("applying", "")?;
     }
     let head = am.head()?;
-    let orig = git_dir.join("ORIG_HEAD");
     match head {
         Some(h) if am.rebasing => {
             am.write("abort-safety", format!("{}\n", h.to_hex()))?;
         }
         Some(h) => {
-            std::fs::write(&orig, format!("{}\n", h.to_hex())).map_err(io_die)?;
+            rgit_refs::write_root_ref_file(&git_dir, "ORIG_HEAD", format!("{}\n", h.to_hex()).as_bytes())
+                .map_err(io_die)?;
             am.write("abort-safety", format!("{}\n", h.to_hex()))?;
         }
         None => {
-            let _ = std::fs::remove_file(&orig);
+            let _ = rgit_refs::remove_root_ref_file(&git_dir, "ORIG_HEAD");
             am.write("abort-safety", "")?;
         }
     }

@@ -561,7 +561,7 @@ impl State<'_, '_> {
         if unreadable && u.old.is_some() {
             return Err(cannot_lock(LockReason::ErrorReading));
         }
-        self.check_old(u, &final_name, current.as_ref(), old_oid)?;
+        check_old(self.store.kind, u, &final_name, current.as_ref(), old_oid)?;
         if current.is_none() {
             if let Some(reason) = locked.blocked {
                 return Err(cannot_lock(reason));
@@ -696,74 +696,6 @@ impl State<'_, '_> {
         self.prepared.hook_updates = hook_updates;
     }
 
-    fn check_old(
-        &self,
-        u: &RefUpdate,
-        final_name: &str,
-        current: Option<&Target>,
-        old_oid: Option<ObjectId>,
-    ) -> Result<(), TransactionError> {
-        let fail = |reason: LockReason| {
-            Err(TransactionError::CannotLock {
-                name: u.name.clone(),
-                reason,
-            })
-        };
-        let Some(old) = &u.old else { return Ok(()) };
-        let null = ObjectId::null(self.store.kind);
-        // "Must not exist" behaves the same for both spellings.
-        let old = match old {
-            OldValue::SymbolicAbsent => &OldValue::Object(null),
-            other => other,
-        };
-        match (old, current) {
-            (OldValue::Object(x), None) if x.is_null() => Ok(()),
-            (OldValue::Object(x), Some(Target::Symbolic(_))) if x.is_null() => {
-                if old_oid.is_none() {
-                    fail(LockReason::DanglingSymrefExists)
-                } else {
-                    fail(LockReason::AlreadyExists)
-                }
-            }
-            (OldValue::Object(x), Some(_)) if x.is_null() => fail(LockReason::AlreadyExists),
-            (OldValue::Object(_), None) => fail(LockReason::Unresolvable(final_name.to_owned())),
-            (OldValue::Object(x), Some(Target::Symbolic(_))) => match old_oid {
-                None => fail(LockReason::MissingButExpected(x.to_hex())),
-                Some(o) if o != *x => fail(LockReason::IsAt {
-                    actual: o.to_hex(),
-                    expected: x.to_hex(),
-                }),
-                Some(_) => Ok(()),
-            },
-            (OldValue::Object(x), Some(Target::Object(o))) => {
-                if o == x {
-                    Ok(())
-                } else {
-                    fail(LockReason::IsAt {
-                        actual: o.to_hex(),
-                        expected: x.to_hex(),
-                    })
-                }
-            }
-            (OldValue::Symbolic(_), None) => fail(LockReason::Unresolvable(final_name.to_owned())),
-            (OldValue::Symbolic(t), Some(Target::Object(_))) => {
-                fail(LockReason::ExpectedSymref(t.clone()))
-            }
-            (OldValue::Symbolic(t), Some(Target::Symbolic(a))) => {
-                if a == t {
-                    Ok(())
-                } else {
-                    Err(TransactionError::SymrefMismatch {
-                        name: final_name.to_owned(),
-                        actual: a.clone(),
-                        expected: t.clone(),
-                    })
-                }
-            }
-            (OldValue::SymbolicAbsent, _) => Ok(()),
-        }
-    }
-
     /// Conflicts of the references to be created with packed references
     /// and between names of the transaction, checked after every loose
     /// reference is locked.
@@ -786,6 +718,76 @@ impl State<'_, '_> {
             }
         }
         Ok(())
+    }
+}
+
+/// Checks the expected old value of `u` against the `current` value of
+/// its final reference `final_name`, which resolves to `old_oid`.
+pub(crate) fn check_old(
+    kind: rgit_hash::HashKind,
+    u: &RefUpdate,
+    final_name: &str,
+    current: Option<&Target>,
+    old_oid: Option<ObjectId>,
+) -> Result<(), TransactionError> {
+    let fail = |reason: LockReason| {
+        Err(TransactionError::CannotLock {
+            name: u.name.clone(),
+            reason,
+        })
+    };
+    let Some(old) = &u.old else { return Ok(()) };
+    let null = ObjectId::null(kind);
+    // "Must not exist" behaves the same for both spellings.
+    let old = match old {
+        OldValue::SymbolicAbsent => &OldValue::Object(null),
+        other => other,
+    };
+    match (old, current) {
+        (OldValue::Object(x), None) if x.is_null() => Ok(()),
+        (OldValue::Object(x), Some(Target::Symbolic(_))) if x.is_null() => {
+            if old_oid.is_none() {
+                fail(LockReason::DanglingSymrefExists)
+            } else {
+                fail(LockReason::AlreadyExists)
+            }
+        }
+        (OldValue::Object(x), Some(_)) if x.is_null() => fail(LockReason::AlreadyExists),
+        (OldValue::Object(_), None) => fail(LockReason::Unresolvable(final_name.to_owned())),
+        (OldValue::Object(x), Some(Target::Symbolic(_))) => match old_oid {
+            None => fail(LockReason::MissingButExpected(x.to_hex())),
+            Some(o) if o != *x => fail(LockReason::IsAt {
+                actual: o.to_hex(),
+                expected: x.to_hex(),
+            }),
+            Some(_) => Ok(()),
+        },
+        (OldValue::Object(x), Some(Target::Object(o))) => {
+            if o == x {
+                Ok(())
+            } else {
+                fail(LockReason::IsAt {
+                    actual: o.to_hex(),
+                    expected: x.to_hex(),
+                })
+            }
+        }
+        (OldValue::Symbolic(_), None) => fail(LockReason::Unresolvable(final_name.to_owned())),
+        (OldValue::Symbolic(t), Some(Target::Object(_))) => {
+            fail(LockReason::ExpectedSymref(t.clone()))
+        }
+        (OldValue::Symbolic(t), Some(Target::Symbolic(a))) => {
+            if a == t {
+                Ok(())
+            } else {
+                Err(TransactionError::SymrefMismatch {
+                    name: final_name.to_owned(),
+                    actual: a.clone(),
+                    expected: t.clone(),
+                })
+            }
+        }
+        (OldValue::SymbolicAbsent, _) => Ok(()),
     }
 }
 

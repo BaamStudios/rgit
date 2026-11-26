@@ -205,8 +205,13 @@ impl Refs {
         &self.store
     }
 
-    fn log_path(&self, name: &str) -> PathBuf {
-        rgit_refs::reflog::FilesReflog::new(&self.git_dir, &self.common_dir, self.kind).path(name)
+    /// The reflog of `name` as lines of the files format.
+    fn log_data(&self, name: &str) -> Option<Vec<u8>> {
+        let logs = rgit_refs::reflog::FilesReflog::new(&self.git_dir, &self.common_dir, self.kind);
+        if logs.is_reftable() {
+            return logs.read_raw(name).ok().flatten();
+        }
+        std::fs::read(logs.path(name)).ok()
     }
 }
 
@@ -263,9 +268,8 @@ impl RefLookup for Refs {
     }
 
     fn reflog(&self, name: &str) -> Result<Option<Vec<ReflogEntry>>, LookupError> {
-        let data = match std::fs::read(self.log_path(name)) {
-            Ok(d) => d,
-            Err(_) => return Ok(None),
+        let Some(data) = self.log_data(name) else {
+            return Ok(None);
         };
         let text = String::from_utf8_lossy(&data);
         Ok(Some(

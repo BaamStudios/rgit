@@ -797,6 +797,8 @@ dependencies = [
 name = "rgit-refs"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
+ "flate2",
  "rgit-date",
  "rgit-difftest",
  "rgit-fs",
@@ -826,6 +828,7 @@ dependencies = [
  "rgit-difftest",
  "rgit-fs",
  "rgit-hash",
+ "rgit-refs",
  "rgit-trace",
  "rustix",
  "thiserror",

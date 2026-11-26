@@ -503,15 +503,8 @@ fn drop_entry(repo: &Repo, info: &Info, quiet: bool) -> Result<(), Die> {
         tx.push(RefUpdate::update(STASH_REF, newest, None))
             .and_then(|()| tx.commit(&mut hooks))
             .map_err(|e| fail(e.to_string()))?;
-        let mut data = Vec::new();
-        for e in &rest {
-            data.extend_from_slice(&e.to_line());
-        }
-        let path = logs.path(STASH_REF);
-        let mut lock = rgit_fs::LockFile::acquire(&path, &rgit_fs::LockOptions::default())
+        logs.write_entries(STASH_REF, &rest)
             .map_err(|e| fail(e.to_string()))?;
-        lock.write_all(&data).map_err(|e| fail(e.to_string()))?;
-        lock.commit().map_err(|e| fail(e.to_string()))?;
     }
     if !quiet {
         say(&msg::dropped(&info.revision, &info.w.to_hex()));

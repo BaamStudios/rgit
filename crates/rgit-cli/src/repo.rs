@@ -174,7 +174,7 @@ pub fn load_config(ctx: &Context, setup: &Setup) -> Result<rgit_config::ConfigSe
 
     let env = SystemEnv::default();
     let git_dir = setup.absolute_git_dir();
-    let branch = std::fs::read(git_dir.join("HEAD")).ok().and_then(|h| {
+    let branch = rgit_refs::read_head_file(&git_dir).ok().and_then(|h| {
         h.strip_prefix(b"ref: refs/heads/")
             .map(|r| r.trim_ascii_end().into())
     });

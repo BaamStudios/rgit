@@ -125,7 +125,7 @@ impl Repo<'_> {
             if std::path::absolute(&dir).ok() == own {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(dir.join("HEAD")) else {
+            let Ok(text) = rgit_refs::read_head_text(&dir) else {
                 continue;
             };
             let text = text.trim_end();
