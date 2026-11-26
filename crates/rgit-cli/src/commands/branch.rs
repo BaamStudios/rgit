@@ -624,6 +624,18 @@ fn merge_base_start(c: &Ctx<'_>, start: &str) -> Option<ObjectId> {
     }
 }
 
+/// Is `name` the branch of this or another worktree (an unborn one when
+/// it has no commit)?
+fn checked_out_somewhere(c: &Ctx<'_>, name: &str) -> bool {
+    if c.current.as_deref() == Some(name) {
+        return true;
+    }
+    let full = format!("refs/heads/{name}");
+    crate::worktrees::list(c.setup, false)
+        .into_iter()
+        .any(|w| w.head_ref.as_deref() == Some(full.as_str()))
+}
+
 /// `--edit-description [<branch>]`: edits `branch.<name>.description` in
 /// the editor (an empty result removes it).
 fn edit_branch_description(ctx: &Context, c: &Ctx<'_>, args: &[String]) -> CmdResult {
@@ -636,7 +648,7 @@ fn edit_branch_description(ctx: &Context, c: &Ctx<'_>, args: &[String]) -> CmdRe
         _ => return Err(Die::Fatal(msg::DESCRIPTION_MANY.to_owned())),
     };
     if c.branch_oid(&name).is_none() {
-        if c.current.as_deref() == Some(name.as_str()) {
+        if checked_out_somewhere(c, &name) {
             return Err(Die::Error(msg::no_commit_on_branch(&name), 1));
         }
         return Err(Die::Error(msg::no_branch_named(&name), 1));
@@ -1106,7 +1118,7 @@ fn set_upstream_to(c: &Ctx<'_>, upstream: &str, args: &[String]) -> CmdResult {
         },
         1 => {
             if c.branch_oid(&args[0]).is_none() {
-                if c.current.as_deref() == Some(args[0].as_str()) {
+                if checked_out_somewhere(c, &args[0]) {
                     return Err(Die::Fatal(msg::no_commit_on_branch(&args[0])));
                 }
                 // `-u <remote> <branch>` meant `-u <remote>/<branch>`.
