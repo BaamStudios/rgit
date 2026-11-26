@@ -353,6 +353,33 @@ pub struct Walk<S: CommitSource> {
     children: HashMap<u32, Vec<ObjectId>>,
     /// The whole output of `--reverse --boundary`.
     reversed: Option<VecDeque<Shown>>,
+    /// Why the walk stopped at an unreadable parent.
+    traverse_failure: Option<TraverseFailure>,
+}
+
+/// A walk that stopped because a parent could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraverseFailure {
+    /// While reading the parents of `commit` to continue the walk
+    /// (`Failed to traverse parents of commit`).
+    Parents { commit: ObjectId, parent: ObjectId },
+    /// While comparing `commit` with `parent` for path limiting (`cannot
+    /// simplify commit`).
+    Simplify { commit: ObjectId, parent: ObjectId },
+    /// While preparing a limited or sorted walk before the first commit
+    /// (`revision walk setup failed`).
+    Setup { parent: ObjectId },
+}
+
+impl TraverseFailure {
+    /// The parent that could not be read.
+    pub fn parent(&self) -> ObjectId {
+        match *self {
+            TraverseFailure::Parents { parent, .. }
+            | TraverseFailure::Simplify { parent, .. }
+            | TraverseFailure::Setup { parent } => parent,
+        }
+    }
 }
 
 impl<S: CommitSource> std::fmt::Debug for Walk<S> {
@@ -387,7 +414,15 @@ impl<S: CommitSource> Walk<S> {
             limited_list: Vec::new(),
             children: HashMap::new(),
             reversed: None,
+            traverse_failure: None,
         }
+    }
+
+    /// After an error: the parent the walk could not read and what it
+    /// was doing then. `None` when the error came from a tip or another
+    /// object.
+    pub fn traverse_failure(&self) -> Option<TraverseFailure> {
+        self.traverse_failure
     }
 
     /// The options of this walk.
@@ -611,7 +646,12 @@ impl<S: CommitSource> Walk<S> {
             self.limited = true;
         }
         if self.limited || self.opts.order != Order::Default {
-            self.prepare()?;
+            if let Err(e) = self.prepare() {
+                if let Some(f) = self.traverse_failure {
+                    self.traverse_failure = Some(TraverseFailure::Setup { parent: f.parent() });
+                }
+                return Err(e);
+            }
         } else if self.opts.reverse {
             // Lazy walk, then reverse what it selected.
             let mut list = VecDeque::new();
@@ -740,7 +780,19 @@ impl<S: CommitSource> Walk<S> {
         let id = self.nodes[n as usize].id;
         for i in 0..count {
             let p = self.nodes[n as usize].parents[i];
-            let pn = self.node(&p)?;
+            let pn = match self.node(&p) {
+                Ok(pn) => pn,
+                // The parents of excluded commits may be missing (as in a
+                // repository receiving a push): the walk stops there.
+                Err(_) if uninteresting => continue,
+                Err(e) => {
+                    self.traverse_failure = Some(TraverseFailure::Parents {
+                        commit: id,
+                        parent: p,
+                    });
+                    return Err(e);
+                }
+            };
             self.nodes[pn as usize].flags |= sides;
             if self.opts.children && !uninteresting {
                 self.children.entry(pn).or_default().insert(0, id);

@@ -153,3 +153,57 @@ fn alternate_refs_follow_the_configuration() {
         fx.compare(args).checks(Check::OUTPUT).run();
     }
 }
+
+/// A commit whose parent is missing: the walk fails with `Failed to
+/// traverse parents` (the connectivity check of `receive-pack`), while a
+/// missing parent of an excluded commit only ends the walk there.
+#[test]
+fn missing_parent_fails_the_traversal() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    fx = commit(fx, "a");
+    fx = commit(fx, "b");
+    fx = commit(fx, "c");
+    if fx.is_skipped() {
+        return;
+    }
+    let tip = String::from_utf8(fx.git_stdout(["rev-parse", "HEAD"])).unwrap();
+    let tip = tip.trim().to_string();
+    let parent = String::from_utf8(fx.git_stdout(["rev-parse", "HEAD~1"])).unwrap();
+    let parent = parent.trim().to_string();
+    fx = fx
+        .git(["checkout", "-q", "--orphan", "other"])
+        .git(["commit", "-q", "--allow-empty", "-m", "other"])
+        .git(["branch", "-q", "-D", "main"])
+        .remove(format!(".git/objects/{}/{}", &parent[..2], &parent[2..]));
+    let stdin = format!("{tip}\n");
+    for args in [
+        &["rev-list", "--objects", "--stdin", "--not", "--all"][..],
+        &[
+            "rev-list",
+            "--objects",
+            "--stdin",
+            "--not",
+            "--all",
+            "--quiet",
+        ],
+        &["rev-list", "--stdin"],
+    ] {
+        fx.compare(args)
+            .stdin(stdin.clone())
+            .checks(Check::OUTPUT)
+            .run();
+    }
+    for args in [
+        &["rev-list", tip.as_str()][..],
+        &["log", "--oneline", tip.as_str()],
+        &["rev-list", "--topo-order", tip.as_str()],
+        &["rev-list", "--bisect", tip.as_str()],
+        &["rev-list", tip.as_str(), "--", "a"],
+        &["rev-list", "HEAD", "--not", tip.as_str()],
+        &["rev-list", "--objects", "HEAD", "--not", tip.as_str()],
+    ] {
+        fx.compare(args).checks(Check::OUTPUT).run();
+    }
+}

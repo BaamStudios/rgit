@@ -142,6 +142,22 @@ pub fn bad_object(id: &str) -> String {
     format!("bad object {id}")
 }
 
+pub fn could_not_read(id: &str) -> String {
+    format!("Could not read {id}")
+}
+
+pub fn failed_to_traverse_parents(id: &str) -> String {
+    format!("Failed to traverse parents of commit {id}")
+}
+
+pub fn cannot_simplify(commit: &str, parent: &str) -> String {
+    format!("cannot simplify commit {commit} (because of {parent})")
+}
+
+pub fn walk_setup_failed() -> &'static str {
+    "revision walk setup failed"
+}
+
 pub fn invalid_pretty(name: &str) -> String {
     format!("invalid --pretty format: {name}")
 }

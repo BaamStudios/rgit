@@ -32,7 +32,7 @@ use rgit_hash::ObjectId;
 
 use super::{
     ADDED, BOTTOM, CommitSource, DROPPED, KEEP, PULL, RELATED, SEEN, SIMPLIFIED, TREESAME,
-    UNINTERESTING, Walk,
+    TraverseFailure, UNINTERESTING, Walk,
 };
 
 impl<S: CommitSource> Walk<S> {
@@ -62,7 +62,13 @@ impl<S: CommitSource> Walk<S> {
                 same.push(false);
                 continue;
             }
-            self.node(p)?;
+            if let Err(e) = self.node(p) {
+                self.traverse_failure = Some(TraverseFailure::Simplify {
+                    commit: id,
+                    parent: *p,
+                });
+                return Err(e);
+            }
             let ts = self.source.treesame(&id, Some(p))?;
             // An excluded parent that is not a bottom only counts when no
             // parent is relevant (observed with merges of side branches
