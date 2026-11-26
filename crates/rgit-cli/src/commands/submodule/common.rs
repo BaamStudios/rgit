@@ -409,9 +409,12 @@ pub fn prefixed_path(sup: &Super, arg: &str) -> Result<String, Die> {
 
 /// Write `key` into the configuration file `path`.
 pub fn set_in_file(path: &Path, key: &str, value: Option<&str>) -> Result<(), Die> {
+    // Names that are not UTF-8 go into the file as their raw bytes.
+    let key = rgit_bstr::to_bytes(key);
+    let raw = value.map(rgit_bstr::to_bytes);
     let req = SetRequest {
-        key: key.as_bytes(),
-        value: value.map(str::as_bytes),
+        key: &key,
+        value: raw.as_deref(),
         pattern: &ValuePattern::Any,
         all: value.is_none(),
         comment: None,
@@ -443,7 +446,12 @@ pub fn matches_active(specs: &[String], path: &str) -> bool {
 /// The remote of the current branch, else the only remote, else `origin`.
 pub fn default_remote(config: &ConfigSet, head_target: Option<&str>) -> String {
     if let Some(branch) = head_target.and_then(|t| t.strip_prefix("refs/heads/")) {
-        if let Some(r) = get_string(config, &format!("branch.{branch}.remote")) {
+        if let Some(r) = config
+            .string(crate::tracking::branch_key(branch, "remote"))
+            .ok()
+            .flatten()
+            .map(|v| rgit_bstr::from_bytes(v).into_owned())
+        {
             return r;
         }
     }

@@ -181,7 +181,8 @@ impl Child {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut c = Command::new(&self.exe);
-        c.args(args)
+        // Names that are not UTF-8 go to the child as their raw bytes.
+        c.args(args.iter().map(|a| rgit_bstr::to_os(a)))
             .current_dir(&self.dir)
             .env_remove("GIT_INDEX_FILE")
             .env_remove("GIT_DIR")
@@ -738,7 +739,8 @@ fn add_worktree(
     } else {
         match (&head, opts.orphan) {
             (Head::NewBranch { name, .. }, true) => {
-                write_file(&admin.join("HEAD"), format!("ref: refs/heads/{name}\n").as_bytes())?;
+                let line = format!("ref: refs/heads/{name}\n");
+                write_file(&admin.join("HEAD"), &rgit_bstr::to_bytes(&line))?;
             }
             _ => write_file(&admin.join("HEAD"), format!("{null}\n").as_bytes())?,
         }
@@ -903,7 +905,10 @@ fn list(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 out.push(end);
                 if !w.head_broken {
                     match &w.head_ref {
-                        Some(r) => out.extend_from_slice(format!("branch {r}").as_bytes()),
+                        Some(r) => {
+                            out.extend_from_slice(b"branch ");
+                            out.extend_from_slice(&rgit_bstr::to_bytes(r));
+                        }
                         None => out.extend_from_slice(b"detached"),
                     }
                     out.push(end);
@@ -976,7 +981,7 @@ fn list(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     line.push_str(" prunable");
                 }
             }
-            out.extend_from_slice(line.as_bytes());
+            out.extend_from_slice(&rgit_bstr::to_bytes(&line));
             out.extend_from_slice(extra.as_bytes());
             out.push(b'\n');
         }

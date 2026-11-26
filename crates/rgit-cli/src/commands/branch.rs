@@ -19,7 +19,6 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use bstr::ByteSlice;
 use rgit_config::write as config_write;
 use rgit_config::{SetRequest, ValuePattern};
 use rgit_hash::ObjectId;
@@ -124,11 +123,11 @@ impl Ctx<'_> {
 
     /// The upstream ref of branch `name` from its configuration.
     fn upstream_of(&self, name: &str) -> Option<String> {
-        let b = BranchConfig::from_config(self.config, name.as_bytes()).ok()?;
+        let b = BranchConfig::from_config(self.config, &rgit_bstr::to_bytes(name)).ok()?;
         let remotes = Remotes::from_config(self.config).ok()?;
         upstream_ref(&remotes, Some(&self.setup.git_dir), Some(&b))
             .ok()
-            .map(|r| r.to_str_lossy().into_owned())
+            .map(|r| rgit_bstr::from_vec(r.into()))
     }
 
     /// Whether `HEAD` is a symbolic ref (not detached).
@@ -136,11 +135,11 @@ impl Ctx<'_> {
         matches!(self.store.read_raw("HEAD"), Ok(Some(Target::Symbolic(_))))
     }
 
-    fn config_set(&self, key: &str, value: Option<&str>) -> Result<(), Die> {
+    fn config_set(&self, key: &[u8], value: Option<&[u8]>) -> Result<(), Die> {
         let pattern = ValuePattern::Any;
         let req = SetRequest {
-            key: key.as_bytes(),
-            value: value.map(str::as_bytes),
+            key,
+            value,
             pattern: &pattern,
             all: true,
             comment: None,
@@ -366,7 +365,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if show_current.get() {
         if let Some(cur) = &c.current {
-            println!("{cur}");
+            crate::argv::outln(cur);
         }
         return Ok(0);
     }
@@ -642,7 +641,7 @@ fn edit_branch_description(ctx: &Context, c: &Ctx<'_>, args: &[String]) -> CmdRe
         }
         return Err(Die::Error(msg::no_branch_named(&name), 1));
     }
-    let key = format!("branch.{name}.description");
+    let key = crate::tracking::branch_key(&name, "description");
     let comment = String::from_utf8_lossy(&crate::comment::comment(c.config)?.or_hash()).into_owned();
     let mut text = match c.config.get(&key).and_then(|e| e.value.clone()) {
         Some(v) => v.to_vec(),
@@ -683,7 +682,7 @@ fn edit_branch_description(ctx: &Context, c: &Ctx<'_>, args: &[String]) -> CmdRe
     if cleaned.is_empty() {
         c.config_set(&key, None)?;
     } else {
-        c.config_set(&key, Some(&String::from_utf8_lossy(&cleaned)))?;
+        c.config_set(&key, Some(&cleaned))?;
     }
     Ok(0)
 }
@@ -776,7 +775,7 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
             let _ = config_write::rename_section_in_file(
                 &c.config_path(),
                 &Default::default(),
-                format!("branch.{name}").as_bytes(),
+                &crate::tracking::branch_key(name, ""),
                 None,
             );
         }
@@ -1019,23 +1018,23 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
         }
     }
 
-    let old_section = format!("branch.{old}");
-    let new_section = format!("branch.{new}");
+    let old_section = crate::tracking::branch_key(&old, "");
+    let new_section = crate::tracking::branch_key(&new, "");
     if old != new {
         let path = c.config_path();
         let r = if is_copy {
             config_write::copy_section_in_file(
                 &path,
                 &Default::default(),
-                old_section.as_bytes(),
-                new_section.as_bytes(),
+                &old_section,
+                &new_section,
             )
         } else {
             config_write::rename_section_in_file(
                 &path,
                 &Default::default(),
-                old_section.as_bytes(),
-                Some(new_section.as_bytes()),
+                &old_section,
+                Some(&new_section),
             )
         };
         if let Err(e) = r {
@@ -1069,7 +1068,7 @@ fn move_other_heads(
             .map_err(|e| rgit_refs::messages::cannot_lock("HEAD", e))
             .and_then(|mut lock| {
                 lock.file_mut()
-                    .write_all(format!("ref: {new_ref}\n").as_bytes())
+                    .write_all(&rgit_bstr::to_bytes(&format!("ref: {new_ref}\n")))
                     .and_then(|()| lock.commit())
                     .map_err(|e| e.to_string())
             }),
@@ -1156,15 +1155,15 @@ fn unset_upstream_of(c: &Ctx<'_>, args: &[String]) -> CmdResult {
     };
     let has = c
         .config
-        .string(format!("branch.{branch}.merge"))
+        .string(crate::tracking::branch_key(&branch, "merge"))
         .ok()
         .flatten()
         .is_some();
     if !has {
         return Err(Die::Fatal(msg::no_upstream_information(&branch)));
     }
-    c.config_set(&format!("branch.{branch}.remote"), None)?;
-    c.config_set(&format!("branch.{branch}.merge"), None)?;
+    c.config_set(&crate::tracking::branch_key(&branch, "remote"), None)?;
+    c.config_set(&crate::tracking::branch_key(&branch, "merge"), None)?;
     Ok(0)
 }
 

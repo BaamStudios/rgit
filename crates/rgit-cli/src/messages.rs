@@ -228,8 +228,7 @@ pub fn cannot_chdir(dir: &str, reason: &str) -> String {
 
 /// Print `error: <msg>` to standard error.
 pub fn print_error(msg: &str) {
-    use std::io::Write;
-    let _ = writeln!(std::io::stderr(), "error: {msg}");
+    crate::argv::errln(&format!("error: {msg}"));
 }
 
 /// A configuration value that cannot be used, given on the command line.

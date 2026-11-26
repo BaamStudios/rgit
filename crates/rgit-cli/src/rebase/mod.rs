@@ -291,7 +291,7 @@ fn check_author_script(path: &Path) -> Result<(), String> {
 }
 
 fn read_author_script(path: &Path) -> Vec<(String, String)> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = read_text(path).unwrap_or_default();
     text.lines()
         .filter_map(|l| l.split_once('='))
         .map(|(k, v)| (k.trim().to_owned(), sq_unquote(v)))
@@ -332,7 +332,7 @@ fn print_bad(ctx: &Context, repo: &Repo, bad: &[todo::BadLine]) -> Result<(), Di
 }
 
 fn commits_of(repo: &Repo) -> rgit_merge::ObjectCommits<'_> {
-    let shallow = std::fs::read_to_string(repo.setup.common_dir.join("shallow"))
+    let shallow = read_text(repo.setup.common_dir.join("shallow"))
         .unwrap_or_default()
         .lines()
         .filter_map(|l| ObjectId::from_hex(repo.hash, l.trim().as_bytes()).ok())
@@ -608,17 +608,16 @@ fn configured_upstream(repo: &Repo) -> Result<String, Die> {
         return Err(Die::Exit(1));
     };
     let config = &repo.config;
-    let up = rgit_remote::BranchConfig::from_config(config, branch.as_bytes())
+    let up = rgit_remote::BranchConfig::from_config(config, &rgit_bstr::to_bytes(&branch))
         .ok()
         .and_then(|b| {
             let remotes = rgit_remote::Remotes::from_config(config).ok()?;
             rgit_remote::upstream_ref(&remotes, Some(&repo.setup.git_dir), Some(&b)).ok()
         });
     match up {
-        Some(r) => Ok(r.to_string()),
+        Some(r) => Ok(rgit_bstr::from_vec(r.into())),
         None => {
-            print!("{}", msg::no_tracking(&branch));
-            println!();
+            crate::argv::outln(&msg::no_tracking(&branch));
             Err(Die::Exit(1))
         }
     }
@@ -847,7 +846,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
                 }
                 crate::maintenance::run_auto(ctx);
                 if !quiet {
-                    println!("{}", msg::up_to_date(branch_short.as_deref(), false));
+                    crate::argv::outln(&msg::up_to_date(branch_short.as_deref(), false));
                 }
                 if let Some(s) = stash {
                     apply_autostash(ctx, &s)?;
@@ -855,7 +854,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
                 return Ok(0);
             }
             if !quiet {
-                println!("{}", msg::up_to_date(branch_short.as_deref(), true));
+                crate::argv::outln(&msg::up_to_date(branch_short.as_deref(), true));
             }
         }
     }
@@ -892,14 +891,14 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         let b = match bases.first() {
             Some(base) => {
                 if o.verbose {
-                    println!("{}", msg::changes_from(&base.to_hex(), &n));
+                    crate::argv::outln(&msg::changes_from(&base.to_hex(), &n));
                 }
                 base.to_hex()
             }
             // Unrelated histories: everything up to the new base.
             None => {
                 if o.verbose {
-                    println!("{}", msg::changes_to(&n));
+                    crate::argv::outln(&msg::changes_to(&n));
                 }
                 ObjectId::empty_tree(repo.hash).to_hex()
             }
@@ -948,7 +947,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
         if fast_forward {
             // Nothing to replay: the branch moves to the new base.
             let branch = branch_short.as_deref().unwrap_or("HEAD");
-            println!("{}", msg::fast_forwarded(branch, &onto_name));
+            crate::argv::outln(&msg::fast_forwarded(branch, &onto_name));
             return apply::finish(ctx, &state);
         }
         return apply::start(
@@ -1087,7 +1086,7 @@ pub fn start(ctx: &mut Context, o: &Options) -> CmdResult {
             }
             return Ok(code);
         }
-        let text = std::fs::read_to_string(&path).map_err(io_die)?;
+        let text = read_text(&path).map_err(io_die)?;
         let has_commands = text.lines().any(|l| {
             let t = l.trim_start();
             !t.is_empty() && !t.starts_with(comment.as_str())
@@ -1454,7 +1453,7 @@ fn validate(
     };
     todo.strip_comments(comment);
     let dir = state_dir(repo);
-    let done_text = std::fs::read_to_string(dir.join("done")).unwrap_or_default();
+    let done_text = read_text(dir.join("done")).unwrap_or_default();
     if done_text.trim().is_empty()
         && let Some(first) = todo.peek()
         && first.cmd.melds()
@@ -1470,7 +1469,7 @@ fn validate(
     if check == Check::Ignore {
         return Ok(todo);
     }
-    let backup = std::fs::read_to_string(dir.join("git-rebase-todo.backup")).unwrap_or_default();
+    let backup = read_text(dir.join("git-rebase-todo.backup")).unwrap_or_default();
     let done = done_text;
     let mut resolve = |name: &str| resolve_named(repo, name);
     let original = todo::parse(&backup, comment, &mut resolve).unwrap_or_default();
@@ -1676,7 +1675,23 @@ fn is_empty_commit(repo: &Repo, commit: &Commit) -> bool {
 }
 
 fn write(path: &Path, data: impl AsRef<[u8]>) -> Result<(), Die> {
-    std::fs::write(path, data).map_err(io_die)
+    std::fs::write(path, unescape(data.as_ref())).map_err(io_die)
+}
+
+/// Text written into the state files (`head-name`, the todo list, ...):
+/// names that are not UTF-8 (escaped by [`rgit_bstr`]) go in as their raw
+/// bytes, as git writes them. Data that is not UTF-8 is written as it is.
+pub(crate) fn unescape(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    match std::str::from_utf8(data) {
+        Ok(s) => rgit_bstr::to_bytes(s),
+        Err(_) => std::borrow::Cow::Borrowed(data),
+    }
+}
+
+/// A state file as text, bytes that are not UTF-8 escaped
+/// ([`rgit_bstr::from_vec`]): the counterpart of [`write`].
+pub(crate) fn read_text(path: impl AsRef<Path>) -> std::io::Result<String> {
+    std::fs::read(path).map(rgit_bstr::from_vec)
 }
 
 /// Creates `.git/rebase-merge` for a new rebase; `help` is appended to
@@ -1767,7 +1782,7 @@ fn write_state(
 
 /// Reads the state of the rebase in progress.
 fn read_state(repo: &Repo, dir: &Path) -> Result<State, Die> {
-    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+    let read = |name: &str| read_text(dir.join(name)).ok();
     let exists = |name: &str| dir.join(name).exists();
     let oid = |name: &str| read(name).and_then(|s| parse_oid(repo, &s));
     let head_name = read("head-name")
@@ -1945,8 +1960,7 @@ impl<'c> Rebase<'c> {
     fn read_todo(&self) -> Result<Result<todo::Todo, ()>, Die> {
         let mut repo = self.repo()?;
         let comment = crate::commands::commit::comment_string(&repo, b"")?;
-        let text =
-            std::fs::read_to_string(state_dir(&repo).join("git-rebase-todo")).unwrap_or_default();
+        let text = read_text(state_dir(&repo).join("git-rebase-todo")).unwrap_or_default();
         let mut resolve = |name: &str| resolve_named(&mut repo, name);
         Ok(match todo::parse(&text, &comment, &mut resolve) {
             Ok(mut t) => {
@@ -1962,7 +1976,7 @@ impl<'c> Rebase<'c> {
     }
 
     fn count_done(&self) -> Result<usize, Die> {
-        let text = std::fs::read_to_string(self.dir()?.join("done")).unwrap_or_default();
+        let text = read_text(self.dir()?.join("done")).unwrap_or_default();
         Ok(text
             .lines()
             .filter(|l| {
@@ -2032,8 +2046,7 @@ impl<'c> Rebase<'c> {
             match step {
                 Step::Done => {
                     // An editor or `exec` may have edited the list.
-                    let now =
-                        std::fs::read_to_string(dir.join("git-rebase-todo")).unwrap_or_default();
+                    let now = read_text(dir.join("git-rebase-todo")).unwrap_or_default();
                     if now != todo.text() {
                         todo = match self.read_todo()? {
                             Ok(t) => t,
@@ -2409,7 +2422,7 @@ impl<'c> Rebase<'c> {
         let dir = state_dir(&repo);
 
         // The chain so far.
-        let mut chain = std::fs::read_to_string(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
+        let mut chain = read_text(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
         if chain.is_empty() {
             write(&dir.join(SQUASH_FIRST), head_commit.message())?;
         }
@@ -2560,7 +2573,7 @@ impl<'c> Rebase<'c> {
     fn drop_from_chain(&mut self, todo: &todo::Todo, what: &str) -> Result<Option<i32>, Die> {
         let repo = self.repo()?;
         let dir = state_dir(&repo);
-        let chain = std::fs::read_to_string(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
+        let chain = read_text(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
         if chain.is_empty() {
             return Ok(None);
         }
@@ -2617,7 +2630,7 @@ impl<'c> Rebase<'c> {
     fn squash_message(&self, repo: &Repo, comment: &str) -> Result<(Vec<u8>, bool), Fail> {
         let dir = state_dir(repo);
         let first = std::fs::read(dir.join(SQUASH_FIRST)).unwrap_or_default();
-        let chain = std::fs::read_to_string(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
+        let chain = read_text(dir.join(CURRENT_FIXUPS)).unwrap_or_default();
         let mut members: Vec<(todo::Cmd, Option<char>, Vec<u8>)> = Vec::new();
         for line in chain.lines() {
             let mut words = line.split(' ');
@@ -3372,7 +3385,7 @@ impl<'c> Rebase<'c> {
             .append(true)
             .open(dir.join("rewritten-list"))
             .map_err(io_die)?;
-        let pending = std::fs::read_to_string(&pending_path).unwrap_or_default();
+        let pending = read_text(&pending_path).unwrap_or_default();
         for p in pending.lines().filter(|l| !l.is_empty()) {
             writeln!(f, "{p} {}", new.to_hex()).map_err(io_die)?;
         }
@@ -3614,7 +3627,7 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
     // The edited todo list was rejected: check it again and start.
     if !dir.join("msgnum").exists() {
         let comment = crate::commands::commit::comment_string(&repo, b"")?;
-        let text = std::fs::read_to_string(dir.join("git-rebase-todo")).unwrap_or_default();
+        let text = read_text(dir.join("git-rebase-todo")).unwrap_or_default();
         {
             let mut resolve = |name: &str| resolve_named(&mut repo, name);
             if let Ok(t) = todo::parse(&text, &comment, &mut resolve) {
@@ -3667,10 +3680,10 @@ pub fn continue_rebase(ctx: &mut Context) -> CmdResult {
     let head_tree = sequencer::tree_of(&repo, &head).map_err(fail_die)?;
     let staged = !sequencer::index_matches_tree(&repo, &index, &head_tree)?;
     drop(index);
-    let stopped = std::fs::read_to_string(dir.join("stopped-sha"))
+    let stopped = read_text(dir.join("stopped-sha"))
         .ok()
         .and_then(|s| parse_oid(&repo, &s));
-    let amend = std::fs::read_to_string(dir.join("amend"))
+    let amend = read_text(dir.join("amend"))
         .ok()
         .and_then(|s| parse_oid(&repo, &s));
     let in_chain = dir.join(CURRENT_FIXUPS).exists();
@@ -3870,7 +3883,7 @@ pub fn edit_todo(ctx: &mut Context) -> CmdResult {
     let dir = state_dir(&repo);
     let path = dir.join("git-rebase-todo");
     let comment = crate::commands::commit::comment_string(&repo, b"")?;
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let text = read_text(&path).unwrap_or_default();
     let parsed = {
         let mut resolve = |name: &str| resolve_named(&mut repo, name);
         todo::parse(&text, &comment, &mut resolve)
@@ -3894,7 +3907,7 @@ pub fn edit_todo(ctx: &mut Context) -> CmdResult {
     if let Err(code) = sequence_edit(rb.ctx, &repo, &path) {
         return Ok(code);
     }
-    let edited = std::fs::read_to_string(&path).map_err(io_die)?;
+    let edited = read_text(&path).map_err(io_die)?;
     match validate(rb.ctx, &mut repo, &edited, &comment, None) {
         Ok(t) => {
             write(&path, t.text())?;

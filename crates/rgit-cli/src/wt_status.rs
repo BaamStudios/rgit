@@ -206,7 +206,7 @@ pub fn sequencing(repo: &Repo) -> Option<Sequencing> {
         return None;
     }
     let pseudo = |name: &str| {
-        std::fs::read_to_string(dir.join(name))
+        crate::rebase::read_text(dir.join(name))
             .ok()
             .and_then(|s| ObjectId::from_hex(repo.hash, s.trim_end().as_bytes()).ok())
     };
@@ -339,7 +339,7 @@ pub fn rebasing(repo: &Repo) -> Option<Rebasing> {
         }
         apply = true;
     }
-    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let read = |name: &str| crate::rebase::read_text(dir.join(name)).unwrap_or_default();
     let abbrev = |id: ObjectId| repo.abbrev(&id, repo.default_abbrev());
     let onto = ObjectId::from_hex(repo.hash, read("onto").trim().as_bytes())
         .map(abbrev)
@@ -610,18 +610,22 @@ pub fn header(repo: &Repo, head: Option<ObjectId>) -> Header {
 }
 
 pub(crate) fn tracking(repo: &Repo, branch: &str, head: Option<ObjectId>) -> Option<Tracking> {
-    let get = |k: String| repo.config.string(k).ok().flatten().map(|s| s.to_string());
-    let remote = get(format!("branch.{branch}.remote"))?;
-    let merge = get(format!("branch.{branch}.merge"))?;
+    let get = |var: &str| {
+        let key = crate::tracking::branch_key(branch, var);
+        let v = repo.config.string(key).ok().flatten()?;
+        Some(rgit_bstr::from_bytes(v).into_owned())
+    };
+    let remote = get("remote")?;
+    let merge = get("merge")?;
     let full = if remote == "." {
         merge.clone()
     } else {
         // The remote-tracking ref the fetch refspecs map `merge` to; none
         // means the branch has no upstream to compare with.
         repo.config
-            .get_all(format!("remote.{remote}.fetch"))
+            .get_all(rgit_bstr::to_bytes(&format!("remote.{remote}.fetch")))
             .filter_map(|e| e.value.as_ref())
-            .find_map(|v| map_refspec(&String::from_utf8_lossy(v), &merge))?
+            .find_map(|v| map_refspec(&rgit_bstr::from_bytes(v), &merge))?
     };
     let name = ["refs/heads/", "refs/remotes/", "refs/"]
         .iter()

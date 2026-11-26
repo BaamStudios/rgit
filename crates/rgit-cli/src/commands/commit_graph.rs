@@ -211,7 +211,7 @@ fn run_write(ctx: &mut Context, argv: &[String], object_dir: Option<String>) -> 
     let setup = repo::setup(ctx, Mode::Required)?;
     let config = repo::load_config(ctx, &setup)?;
     if !cg::enabled(&config) {
-        let _ = writeln!(std::io::stderr(), "warning: {}", msg::DISABLED);
+        crate::argv::errln(&format!("warning: {}", msg::DISABLED));
         return Ok(0);
     }
     let hash = setup.format.object_format;
@@ -293,7 +293,7 @@ fn run_write(ctx: &mut Context, argv: &[String], object_dir: Option<String>) -> 
         Err(WriteError::UnparsableCommit(id)) => {
             let hex = id.to_hex();
             if !odb.contains(&id) {
-                let _ = writeln!(std::io::stderr(), "error: {}", msg::could_not_read(&hex));
+                crate::argv::errln(&format!("error: {}", msg::could_not_read(&hex)));
             }
             Err(Die::Fatal(format!("unable to parse commit {hex}")))
         }

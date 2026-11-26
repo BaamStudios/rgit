@@ -465,30 +465,37 @@ impl RefLookup for Refs {
     }
 }
 
-/// The configuration as a [`ConfigLookup`].
+/// The configuration as a [`ConfigLookup`]. Keys and values are strings
+/// whose bytes that are not UTF-8 are escaped ([`rgit_bstr`]): a branch
+/// name that is not UTF-8 finds its section `[branch "<raw bytes>"]`.
 pub struct Config<'a>(pub &'a ConfigSet);
+
+fn text(v: &[u8]) -> String {
+    rgit_bstr::from_bytes(v).into_owned()
+}
 
 impl ConfigLookup for Config<'_> {
     fn get(&self, key: &str) -> Option<String> {
         self.0
-            .get(key)
+            .get(rgit_bstr::to_bytes(key))
             .and_then(|e| e.value.as_ref())
-            .map(|v| v.to_string())
+            .map(|v| text(v))
     }
 
     fn get_all(&self, key: &str) -> Vec<String> {
         self.0
-            .get_all(key)
-            .filter_map(|e| e.value.as_ref().map(|v| v.to_string()))
+            .get_all(rgit_bstr::to_bytes(key))
+            .filter_map(|e| e.value.as_ref().map(|v| text(v)))
             .collect()
     }
 
     fn entries_with_prefix(&self, prefix: &str) -> Vec<(String, String)> {
+        let prefix = rgit_bstr::to_bytes(prefix);
         self.0
             .entries()
             .iter()
-            .filter(|e| e.name.starts_with(prefix.as_bytes()))
-            .filter_map(|e| Some((e.name.to_string(), e.value.as_ref()?.to_string())))
+            .filter(|e| e.name.starts_with(&prefix))
+            .filter_map(|e| Some((text(&e.name), text(e.value.as_ref()?))))
             .collect()
     }
 }

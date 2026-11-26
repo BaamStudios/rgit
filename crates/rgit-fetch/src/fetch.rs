@@ -240,7 +240,7 @@ pub fn fetch(
     if !cmdline {
         if let Some(branch) = repo.current_branch() {
             let short = &branch["refs/heads/".len()..];
-            if let Ok(bc) = BranchConfig::from_config(&repo.config, short.as_bytes()) {
+            if let Ok(bc) = BranchConfig::from_config(&repo.config, &rgit_bstr::to_bytes(short)) {
                 if bc.remote.as_ref().map(|r| r.as_slice()) == Some(remote.name.as_slice()) {
                     merge_refs = bc.merge;
                 }
@@ -257,7 +257,7 @@ pub fn fetch(
 
     let mut extra: Vec<String> = Vec::new();
     for m in &merge_refs {
-        let m = m.to_str_lossy();
+        let m = rgit_bstr::from_bytes(m);
         if m.starts_with("refs/") {
             extra.push(m.into_owned());
         } else {

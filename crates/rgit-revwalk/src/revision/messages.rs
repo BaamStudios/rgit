@@ -7,6 +7,11 @@ pub fn refname_ambiguous(name: &str) -> String {
     format!("refname '{name}' is ambiguous.")
 }
 
+/// A ref lookup skips a symbolic ref that points nowhere (`warning:`).
+pub fn ignoring_dangling_symref(name: &str) -> String {
+    format!("ignoring dangling symref {name}")
+}
+
 /// `--symbolic-full-name` / `--abbrev-ref` of an ambiguous name (`error:`).
 pub fn refname_ambiguous_error(name: &str) -> String {
     format!("refname '{name}' is ambiguous")

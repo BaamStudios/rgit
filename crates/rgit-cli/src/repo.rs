@@ -312,7 +312,7 @@ pub fn odb_with_midx_or_die(
     match rgit_odb::ObjectDatabase::open_with_midx(dir, kind, options.clone()) {
         Ok(db) => db,
         Err(e) => {
-            let _ = writeln!(std::io::stderr(), "fatal: {e}");
+            crate::argv::errln(&format!("fatal: {e}"));
             std::process::exit(128);
         }
     }
@@ -332,7 +332,7 @@ pub fn pack_set(
     let mut errors = Vec::new();
     let set = rgit_pack::PackSet::open_with_midx(pack_dir, kind, &mut errors);
     for e in &errors {
-        let _ = writeln!(std::io::stderr(), "error: {e}");
+        crate::argv::errln(&format!("error: {e}"));
     }
     set.map_err(|e| Die::Fatal(e.0))
 }

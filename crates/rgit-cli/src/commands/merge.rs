@@ -349,7 +349,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // branch.<name>.mergeOptions come before the command line.
     let mut full = vec![argv[0].clone()];
     if let Some(b) = branch.as_deref().and_then(|b| b.strip_prefix("refs/heads/")) {
-        let key = format!("branch.{b}.mergeoptions");
+        let key = crate::tracking::branch_key(b, "mergeoptions");
         if let Some(v) = repo.config.get(&key).and_then(|e| e.value.as_ref()) {
             full.extend(lossy(v).split_whitespace().map(str::to_owned));
         }
@@ -623,12 +623,12 @@ impl Session<'_> {
             )));
         }
         let config = &self.repo.config;
-        let b = rgit_remote::BranchConfig::from_config(config, branch.as_bytes())
+        let b = rgit_remote::BranchConfig::from_config(config, &rgit_bstr::to_bytes(&branch))
             .map_err(|e| fatal(e.to_string()))?;
         let remotes = rgit_remote::Remotes::from_config(config).map_err(|e| fatal(e.to_string()))?;
         let full = rgit_remote::upstream_ref(&remotes, Some(&self.repo.setup.git_dir), Some(&b))
-            .map_err(|e| fatal(e.to_string()))?
-            .to_string();
+            .map_err(|e| fatal(e.to_string()))?;
+        let full = rgit_bstr::from_vec(full.into());
         let short = ["refs/heads/", "refs/tags/", "refs/remotes/"]
             .iter()
             .find_map(|p| full.strip_prefix(p))
@@ -733,7 +733,7 @@ impl Session<'_> {
             return Err(fatal(msg::NO_CURRENT_BRANCH));
         };
         let config = &self.repo.config;
-        let b = rgit_remote::BranchConfig::from_config(config, branch.as_bytes())
+        let b = rgit_remote::BranchConfig::from_config(config, &rgit_bstr::to_bytes(branch))
             .map_err(|e| fatal(e.to_string()))?;
         let Some(remote) = &b.remote else {
             return Err(fatal(msg::NO_REMOTE));
@@ -743,10 +743,10 @@ impl Session<'_> {
         };
         let remotes = rgit_remote::Remotes::from_config(config).map_err(|e| fatal(e.to_string()))?;
         match rgit_remote::upstream_ref(&remotes, Some(&self.repo.setup.git_dir), Some(&b)) {
-            Ok(r) => Ok(r.to_string()),
+            Ok(r) => Ok(rgit_bstr::from_vec(r.into())),
             Err(_) => Err(fatal(msg::no_remote_tracking_branch(
-                &merge.to_string(),
-                &remote.to_string(),
+                &rgit_bstr::from_bytes(merge),
+                &rgit_bstr::from_bytes(remote),
             ))),
         }
     }
