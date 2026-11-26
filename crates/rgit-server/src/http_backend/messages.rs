@@ -94,3 +94,12 @@ pub fn read_failed(err: &str) -> String {
 pub fn cannot_run(service: &str, err: &str) -> String {
     format!("cannot run {service}: {err}")
 }
+
+/// `Cache-Control` of a response that must not be cached.
+pub const CACHE_CONTROL_NO_CACHE: &str = "no-cache, max-age=0, must-revalidate";
+
+/// `Content-Type` of the reference advertisement of `service`
+/// (gitprotocol-http).
+pub fn advertisement_content_type(service: &str) -> String {
+    format!("application/x-git-{service}-advertisement")
+}
