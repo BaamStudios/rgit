@@ -101,6 +101,8 @@ struct Settings {
     signature: Option<Vec<u8>>,
     encode: bool,
     zero_commit: bool,
+    /// The notes to show: `format.notes`, then the command line.
+    notes: crate::notes::DisplayOptions,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -438,7 +440,25 @@ fn settings(repo: &Repo, o: &Options) -> Result<Settings, Die> {
             .map_err(config_err)?
             .unwrap_or(true),
     };
+    // `format.notes` acts like `--[no-]notes[=<ref>]` given before the
+    // command line options.
+    let mut notes = crate::notes::DisplayOptions::default();
+    for e in config.get_all("format.notes") {
+        let arg = match e.bool() {
+            Ok(true) => "--notes".to_owned(),
+            Ok(false) => "--no-notes".to_owned(),
+            Err(_) => match &e.value {
+                Some(v) => format!("--notes={}", String::from_utf8_lossy(v)),
+                None => "--notes".to_owned(),
+            },
+        };
+        notes.parse(&arg);
+    }
+    for arg in &o.notes {
+        notes.parse(arg);
+    }
     Ok(Settings {
+        notes,
         numbered,
         start: o.start_number.unwrap_or(1),
         keep_subject: o.keep_subject,
@@ -1258,9 +1278,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         None
     };
 
-    let notes = if o.notes.shown(false) {
+    let notes = if s.notes.shown(false) {
         let store = crate::refs_support::ref_store(&repo.setup, &repo.config);
-        Some(crate::notes::Display::load(&o.notes, &repo.config, &store, repo.odb())?)
+        Some(crate::notes::Display::load(&s.notes, &repo.config, &store, repo.odb())?)
     } else {
         None
     };
@@ -1532,6 +1552,19 @@ fn range_diff_block(
     };
     if color {
         opts.color = Some(crate::range_diff::Colors::from_config(&repo.config)?);
+    }
+    // The range-diff compares the notes the patches show, none by
+    // default; with the standard notes only those (as git does).
+    if s.notes.shown(false) {
+        if s.notes.standard != Some(false) {
+            opts.log_args.push("--notes".to_owned());
+        } else {
+            for r in &s.notes.extra {
+                opts.log_args.push(format!("--notes={r}"));
+            }
+        }
+    } else {
+        opts.log_args.push("--no-notes".to_owned());
     }
     let body = crate::range_diff::compare(ctx, repo, &range1, &range2, &[], &opts)?;
     let header = msg::range_diff_header(previous_version(s.reroll.as_deref()));
