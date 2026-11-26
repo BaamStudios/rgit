@@ -281,6 +281,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     objects::scan(&mut f, &repo);
+    // Missing promisor objects are expected only in a repository with a
+    // promisor remote.
+    if !crate::promisor::has_remote(&repo.config) {
+        f.promisor.clear();
+    }
 
     // Heads.
     let mut heads: Vec<(ObjectId, String)> = Vec::new();
@@ -290,7 +295,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let resolved = crate::revision::Resolver::new(&mut repo).resolve(arg);
             match resolved {
                 Ok(r) => {
-                    if !f.objs.get(&r.oid).is_some_and(|o| o.has) {
+                    let has = f.objs.get(&r.oid).is_some_and(|o| o.has);
+                    if !has && f.promisor.contains(&r.oid) {
+                        default_refs += 1;
+                        continue;
+                    }
+                    if !has {
                         eprintln!("error: {}", msg::invalid_sha1_pointer(arg, &r.oid.to_string()));
                         f.errors |= ERROR_REACHABLE;
                         continue;
@@ -435,7 +445,7 @@ fn report(f: &mut Fsck, repo: &Repo) -> Result<(), Die> {
     for oid in order {
         let o = &f.objs[&oid];
         if o.reachable {
-            if !o.has {
+            if !o.has && !f.promisor.contains(&oid) {
                 let _ = writeln!(out, "{}", msg::missing(kind_name(o.kind), &f.label(&oid)));
                 f.errors |= ERROR_REACHABLE;
                 continue;

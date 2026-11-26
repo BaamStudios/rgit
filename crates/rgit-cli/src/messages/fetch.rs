@@ -145,3 +145,5 @@ pub const NEGOTIATE_ONLY_NEEDS_TIPS: &str =
     "--negotiate-only needs one or more --negotiation-restrict=*";
 pub const NEGOTIATE_ONLY_NEEDS_V2: &str = "--negotiate-only requires protocol v2";
 pub const HELP_PREFETCH: &str = "modify the refspec to place all refs within refs/prefetch/";
+
+pub const HELP_FILTER: &str = "object filtering";

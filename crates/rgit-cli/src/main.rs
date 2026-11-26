@@ -37,6 +37,7 @@ mod messages;
 mod objects;
 mod pager;
 mod patch_id;
+mod promisor;
 mod push;
 mod quote;
 mod rebase;
@@ -217,6 +218,7 @@ fn run_command(ctx: &mut Context, argv: &[String]) -> Option<CmdResult> {
         let child = ctx.clone();
         let pager_started = pager::started();
         rgit_convert::filter::set_base_env_with(move || child.child_env_with(pager_started));
+        promisor::install(ctx, name);
         return Some((cmd.run)(ctx, argv));
     }
     external::run(ctx, argv)

@@ -19,6 +19,11 @@ pub trait Objects {
     fn read_raw(&self, id: &ObjectId) -> Result<Option<RawObject>, String>;
     /// Whether the object exists (used to validate cache tree nodes).
     fn has(&self, id: &ObjectId) -> bool;
+    /// Fetch the missing ones of `ids` in one batch (partial clone)
+    /// before they are read one by one. The default does nothing.
+    fn prefetch(&self, ids: &[ObjectId]) {
+        let _ = ids;
+    }
 }
 
 impl Objects for ObjectDatabase {
@@ -32,6 +37,10 @@ impl Objects for ObjectDatabase {
 
     fn has(&self, id: &ObjectId) -> bool {
         self.contains(id)
+    }
+
+    fn prefetch(&self, ids: &[ObjectId]) {
+        ObjectDatabase::prefetch(self, ids);
     }
 }
 

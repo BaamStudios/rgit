@@ -151,3 +151,6 @@ pub const INVALID_INDEX_PACK_OUTPUT: &str = "fetch-pack: invalid index-pack outp
 pub fn fsck_finding(id: &rgit_hash::ObjectId, finding: &dyn std::fmt::Display) -> String {
     format!("object {id}: {finding}")
 }
+
+/// The server does not support `filter`.
+pub const FILTER_NOT_RECOGNIZED: &str = "filtering not recognized by server, ignoring";

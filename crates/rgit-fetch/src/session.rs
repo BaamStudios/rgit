@@ -371,6 +371,17 @@ impl Session {
             ..FetchArgs::default()
         };
         args.server_options.clone_from(&opts.server_options);
+        if let Some(spec) = &opts.filter {
+            let supported = match &self.proto {
+                Proto::V2(client) => client.supports_filter(),
+                Proto::V0 { adv, .. } => adv.caps.contains("filter"),
+            };
+            if supported {
+                args.filter = Some(spec.clone());
+            } else {
+                eprintln!("warning: {}", crate::messages::FILTER_NOT_RECOGNIZED);
+            }
+        }
 
         // A v0/v1 service that sent a pack has ended: connect again.
         if let Proto::V0 { adv, client } = &mut self.proto {
@@ -463,7 +474,11 @@ impl Session {
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
         let proto = &mut self.proto;
         let show_progress = !opts.no_progress;
-        let unpack_limit = u64::from(opts.unpack_limit.unwrap_or(0));
+        let unpack_limit = if opts.promisor.is_some() {
+            0
+        } else {
+            u64::from(opts.unpack_limit.unwrap_or(0))
+        };
         let fsck_hook = opts.fsck.as_ref().map(|check| FsckHook {
             hash: repo.hash,
             check,
@@ -585,9 +600,10 @@ impl Session {
         // Objects in the pack as sent (without bases appended for a thin
         // pack): below the unpack limit they become loose objects.
         let sent = indexed.objects().len() as u64 - indexed.local_objects();
-        if opts
-            .unpack_limit
-            .is_some_and(|limit| sent < u64::from(limit))
+        if opts.promisor.is_none()
+            && opts
+                .unpack_limit
+                .is_some_and(|limit| sent < u64::from(limit))
         {
             unpack_to_loose(repo, &tmp, &indexed)?;
             drop(tmp);
@@ -598,7 +614,7 @@ impl Session {
                 rounds: outcome.rounds,
             }));
         }
-        let stored = store_pack(repo, tmp, &indexed)?;
+        let stored = store_pack(repo, tmp, &indexed, opts.promisor.as_deref())?;
         repo.rescan_packs();
         Ok(Some(ReceivedPack {
             objects,
@@ -711,6 +727,12 @@ pub struct PackOptions {
     /// Check every received object (`fetch.fsckObjects`,
     /// `transfer.fsckObjects`).
     pub fsck: Option<FsckCheck>,
+    /// `filter <spec>` (partial clone); dropped with a warning when the
+    /// server does not support filters.
+    pub filter: Option<String>,
+    /// The server is a promisor remote: the pack is always kept and marked
+    /// with a `.promisor` file holding this text.
+    pub promisor: Option<String>,
 }
 
 /// Object checks of `fetch.fsckObjects` / `transfer.fsckObjects`, at the
@@ -966,7 +988,7 @@ pub fn store_pack_stream(repo: &LocalRepo, reader: &mut dyn Read) -> Result<Rece
         None,
         None,
     )?;
-    let stored = store_pack(repo, tmp, &indexed)?;
+    let stored = store_pack(repo, tmp, &indexed, None)?;
     repo.rescan_packs();
     Ok(ReceivedPack {
         objects: indexed.objects().iter().map(|o| o.id).collect(),
@@ -1023,12 +1045,16 @@ fn store_pack(
     repo: &LocalRepo,
     tmp: TempFile,
     indexed: &ip::IndexedPack,
+    promisor: Option<&str>,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
     let dir = tmp.path().parent().expect("in objects/pack").to_path_buf();
     let base = dir.join(format!("pack-{}", indexed.checksum().to_hex()));
     let with = |ext: &str| base.with_extension(ext);
     let keep = with("keep");
     let kept = write_keep(&keep)?;
+    if let Some(text) = promisor {
+        write_file(&with("promisor"), "tmp_promisor_", text.as_bytes())?;
+    }
     tmp.persist(with("pack"))?;
     let write_rev = repo
         .config

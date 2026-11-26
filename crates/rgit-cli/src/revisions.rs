@@ -67,6 +67,36 @@ impl Objects {
         self.replace = map;
     }
 
+    /// The promisor objects of the repository (partial clone, see
+    /// [`rgit_odb::ObjectDatabase::promisor_objects`]).
+    pub fn promisor_objects(&self) -> HashSet<ObjectId> {
+        self.odb.promisor_objects().clone()
+    }
+
+    /// Whether the object exists here (no lazy fetch).
+    pub fn contains(&self, oid: &ObjectId) -> bool {
+        self.odb.contains(self.replaced(oid))
+    }
+
+    /// The size of an object here (no lazy fetch), `None` when it is
+    /// missing.
+    pub fn size_here(&self, oid: &ObjectId) -> Option<u64> {
+        self.odb
+            .header_here(self.replaced(oid))
+            .ok()
+            .flatten()
+            .map(|h| h.size)
+    }
+
+    /// The size of an object, `None` when it is missing.
+    pub fn size(&self, oid: &ObjectId) -> Option<u64> {
+        self.odb
+            .header(self.replaced(oid))
+            .ok()
+            .flatten()
+            .map(|h| h.size)
+    }
+
     /// Whether replace refs are in use (see [`Objects::use_replace_refs`]).
     pub fn replacing(&self) -> bool {
         self.replacing

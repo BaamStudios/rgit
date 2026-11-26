@@ -44,6 +44,7 @@
 mod alternates;
 mod db;
 mod error;
+pub mod lazy;
 mod loose;
 pub mod messages;
 mod options;
@@ -57,7 +58,7 @@ pub use alternates::{
 };
 pub use db::{
     OBJECT_DIRECTORY_ENV, ObjectDatabase, PrefixMatch, ReadObjectError, objects_dir,
-    print_error_to_stderr,
+    print_error_to_stderr, referenced_ids,
 };
 pub use error::Error;
 pub use loose::{LooseReader, LooseStore};

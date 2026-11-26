@@ -92,6 +92,11 @@ struct Options {
     shallow_submodules: bool,
     remote_submodules: bool,
     jobs: i32,
+    /// `--filter`: the spec sent to the server and the one stored in
+    /// `remote.<name>.partialCloneFilter`.
+    filter: Option<(String, String)>,
+    /// `--also-filter-submodules`.
+    filter_submodules: bool,
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
@@ -126,7 +131,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let config = RefCell::new(Vec::new());
     let server_options = RefCell::new(Vec::new());
     let ip = Cell::new(0);
-    let filter = RefCell::new(None);
+    let filter: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let also_filter_submodules = Cell::new(false);
     let remote_submodules = Cell::new(false);
     let sparse = Cell::new(false);
@@ -210,7 +215,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             ),
             Opt::set_int('4', "ipv4", &ip, msg::HELP_IPV4, 4).noneg(),
             Opt::set_int('6', "ipv6", &ip, msg::HELP_IPV6, 6).noneg(),
-            Opt::string(None, "filter", &filter, "args", msg::HELP_FILTER),
+            Opt::callback(None, "filter", Some("args"), msg::HELP_FILTER, |v, unset| {
+                match v {
+                    Some(spec) if !unset => filter.borrow_mut().push(spec.to_owned()),
+                    _ => filter.borrow_mut().clear(),
+                }
+                Ok(())
+            }),
             Opt::flag(
                 None,
                 "also-filter-submodules",
@@ -237,15 +248,29 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
 
     // Options rgit does not implement yet.
-    let unsupported: [(&str, bool); 4] = [
-        ("--filter", filter.borrow().is_some()),
-        ("--also-filter-submodules", also_filter_submodules.get()),
+    if also_filter_submodules.get() {
+        if filter.borrow().is_empty() {
+            return Err(Die::Fatal(msg::option_requires(
+                "--also-filter-submodules",
+                "--filter",
+            )));
+        }
+        if recurse.borrow().is_empty() {
+            return Err(Die::Fatal(msg::option_requires(
+                "--also-filter-submodules",
+                "--recurse-submodules",
+            )));
+        }
+    }
+    let unsupported: [(&str, bool); 2] = [
         ("--sparse", sparse.get()),
         ("--bundle-uri", bundle_uri.borrow().is_some()),
     ];
     if let Some((name, _)) = unsupported.iter().find(|(_, used)| *used) {
         return Err(Die::Fatal(msg::unsupported(name)));
     }
+    let filter = crate::promisor::parse_filters(&filter.borrow())?
+        .map(|(f, text)| (f.to_spec(), text));
     let ref_format = match ref_format.into_inner() {
         Some(f) => Some(repo_init::parse_ref_format(&f).map_err(|e| init_failed(&e))?),
         None => None,
@@ -293,6 +318,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         shallow_submodules: shallow_submodules.get(),
         remote_submodules: remote_submodules.get(),
         jobs: jobs.get(),
+        filter,
+        filter_submodules: also_filter_submodules.get(),
     };
     if opts.bare {
         opts.no_checkout = true;
@@ -504,6 +531,9 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
     // Implies --single-branch, also when ignored.
     let shallow_clone = !ignored_local.is_empty();
+    if opts.filter.is_some() {
+        ignored_local.push("--filter");
+    }
     if local_source {
         deepen = PackOptions::default();
     }
@@ -743,6 +773,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         eprintln!("warning: {}", msg::LOCAL_IGNORED);
     }
 
+    // A partial clone: the server filters, the pack is a promisor pack.
+    // Nothing is fetched lazily before the checkout.
+    let partial = opts.filter.is_some() && !local_mode;
+    let lazy_before = rgit_odb::lazy::set_enabled(false);
+
     // Talk to the remote.
     let connect = ConnectSettings {
         env: &env,
@@ -950,6 +985,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     if opts.mirror {
         cfg.push((format!("remote.{origin}.mirror"), "true".to_owned()));
     }
+    if let Some((_, text)) = &opts.filter {
+        cfg.push(("core.repositoryformatversion".to_owned(), "1".to_owned()));
+        cfg.push((format!("remote.{origin}.promisor"), "true".to_owned()));
+        cfg.push((format!("remote.{origin}.partialclonefilter"), text.clone()));
+    }
     for (k, v) in &cfg {
         if *k == fetch_key {
             config_add(&config_path, k, v)?;
@@ -1045,6 +1085,8 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 repo.hash,
                 rgit_fetch::messages::INVALID_INDEX_PACK_OUTPUT,
             ),
+            filter: partial.then(|| opts.filter.as_ref().map(|f| f.0.clone())).flatten(),
+            promisor: partial.then(|| promisor_refs(&refs)),
             ..deepen.clone()
         };
         packs.extend(
@@ -1114,7 +1156,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         if let Some(Our::Tag(_, oid) | Our::Branch(_, oid) | Our::Detached(oid)) = &our {
             all_tips.push(*oid);
         }
-        if graph::check_connected(&repo.odb, &tips, &received, &shallow).is_err() {
+        if graph::check_connected(&repo.odb, &tips, &received, &shallow, partial).is_err() {
             return Err(Die::Fatal(msg::REMOTE_DID_NOT_SEND_ALL.into()));
         }
         if !shallow.is_empty() {
@@ -1254,6 +1296,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
 
     // From here on the repository stays, even when the checkout fails.
     junk.armed = false;
+    rgit_odb::lazy::set_enabled(lazy_before);
     // `--recurse-submodules`: the submodules to initialise are the active
     // ones.
     if work_tree.is_some() && !opts.no_checkout {
@@ -1335,6 +1378,9 @@ fn update_submodules(ctx: &Context, opts: &Options, root: &Path) -> CmdResult {
         Some(true) => args.push("--progress".into()),
         Some(false) => args.push("--no-progress".into()),
         None => {}
+    }
+    if let (true, Some((_, text))) = (opts.filter_submodules, &opts.filter) {
+        args.push(format!("--filter={text}"));
     }
     if opts.shallow_submodules {
         args.push("--depth=1".into());
@@ -1783,4 +1829,16 @@ fn dissociate(repo: &LocalRepo, tips: &[ObjectId], alternates_file: &Path) -> Re
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(Die::Fatal(e.to_string())),
     }
+}
+
+/// The text of the `.promisor` file of a partial clone's pack: the
+/// remote's refs it was fetched for, `<id> <name>` per line.
+fn promisor_refs(refs: &[RemoteRef]) -> String {
+    let mut out = String::new();
+    for r in refs {
+        if let Some(oid) = r.oid {
+            out.push_str(&format!("{} {}\n", oid.to_hex(), String::from_utf8_lossy(&r.name)));
+        }
+    }
+    out
 }

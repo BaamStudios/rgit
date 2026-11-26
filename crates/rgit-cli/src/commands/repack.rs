@@ -15,8 +15,14 @@
 //! it. `update-server-info` runs unless `-n` or `repack.updateServerInfo`
 //! is false.
 //!
+//! In a repository with a promisor remote (partial clone,
+//! Documentation/technical/partial-clone.adoc) promisor packs and other
+//! packs are kept apart: `-a`/`-A` put the objects of the promisor packs
+//! into one new promisor pack, and the walk for the other pack stops at
+//! promisor objects (which may refer to objects that are not here).
+//!
 //! Not yet: `--cruft` (#96), `--geometric`, `--write-midx` (#21),
-//! `--filter` (#24), `--max-pack-size`. `-b` is accepted, but bitmaps
+//! `--filter`, `--max-pack-size`. `-b` is accepted, but bitmaps
 //! (#23) are not written.
 
 use std::collections::HashSet;
@@ -227,8 +233,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let loose_ids: HashSet<ObjectId> = loose.iter().map(|(id, _, _)| *id).collect();
     let is_local = |id: &ObjectId| loose_ids.contains(id) || in_local_pack(id);
 
-    // What is reachable.
+    // What is reachable. Promisor objects are left to the promisor packs.
+    let partial = crate::promisor::has_remote(&config);
     let mut walk = Walk::new(&odb, reach::shallow_commits(&common, kind));
+    if partial {
+        walk.seen.extend(odb.promisor_objects().iter().copied());
+    }
     let needs_walk = pack_everything || !loose_ids.is_empty();
     if needs_walk {
         let roots = reach::roots(&setup, &odb).map_err(|e| match e {
@@ -260,6 +270,34 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .map_err(|e| Die::Fatal(e.to_string()))?;
         chosen.extend(described.into_iter().filter(|o| pack_kept || !in_kept(&o.id)));
     }
+    // The objects of the promisor packs go into one promisor pack.
+    let mut promisor_name = None;
+    if partial && pack_everything {
+        let mut ids: Vec<ObjectId> = packs
+            .iter()
+            .filter(|p| !p.keep && p.pack.is_promisor())
+            .flat_map(|p| p.pack.index().ids().collect::<Vec<_>>())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        if !ids.is_empty() {
+            let described = rgit_pack::write::describe(&odb, kind, &ids)
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+            let ordered = rgit_pack::write::pack_order(&described);
+            if let Some(c) = store::write_pack(&odb, &pack_dir, &ordered, &opts)? {
+                let name = format!("pack-{}", c.to_hex());
+                let marker = pack_dir.join(format!("{name}.promisor"));
+                if !marker.exists() {
+                    std::fs::write(&marker, b"")
+                        .map_err(|e| Die::Fatal(format!("{}: {e}", marker.display())))?;
+                }
+                promisor_name = Some(format!("{name}.pack"));
+            }
+        }
+    }
+    if partial && bitmap.get() && pack_everything {
+        check_closure(&odb, &chosen)?;
+    }
     let ordered = rgit_pack::write::pack_order(&chosen);
     let new_pack = store::write_pack(&odb, &pack_dir, &ordered, &opts)?;
     if new_pack.is_none() && !quiet.get() {
@@ -273,12 +311,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if pack_everything {
             let old: Vec<&store::LocalPack> = packs
                 .iter()
-                .filter(|p| !p.keep && Some(&p.file_name) != new_name.as_ref())
+                .filter(|p| {
+                    !p.keep
+                        && Some(&p.file_name) != new_name.as_ref()
+                        && Some(&p.file_name) != promisor_name.as_ref()
+                })
                 .collect();
             if all_loosen && !keep_unreachable.get() {
                 let hooked = crate::housekeeping::recent_objects_hook(&config, &odb)?;
                 let rescued =
                     rescue_recent(&odb, &walk, &packs, &loose, unpack_expire, &hooked, &common)?;
+                let mut loosened = 0usize;
                 for p in &old {
                     let old_pack = unpack_expire.is_some_and(|t| p.mtime < t);
                     for id in p.pack.index().ids() {
@@ -294,8 +337,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                             continue;
                         }
                         store::loosen(&odb, &id, p.mtime)?;
+                        loosened += 1;
                     }
                 }
+                // As git's pack-objects child reports it.
+                rgit_trace::trace2::data(
+                    "pack-objects",
+                    "loosen_unused_packed_objects/loosened",
+                    &loosened.to_string(),
+                    true,
+                );
             }
             if !old.is_empty() {
                 store::remove_multi_pack_index(&pack_dir);
@@ -389,4 +440,24 @@ fn remove_stale_tmp_packs(pack_dir: &std::path::Path) {
             let _ = std::fs::remove_file(e.path());
         }
     }
+}
+
+/// `-b` in a partial clone: a bitmap needs every object the pack refers
+/// to in the pack, which fails when promisor objects are left out.
+fn check_closure(odb: &rgit_odb::ObjectDatabase, chosen: &[ListedObject]) -> Result<(), Die> {
+    let ids: HashSet<ObjectId> = chosen.iter().map(|o| o.id).collect();
+    for o in chosen {
+        let Ok(Some(raw)) = odb.read(&o.id) else {
+            continue;
+        };
+        let mut refs = HashSet::new();
+        rgit_odb::referenced_ids(odb.hash_kind(), raw.kind, &raw.data, &mut refs);
+        let mut refs: Vec<ObjectId> = refs.into_iter().filter(|r| !ids.contains(r)).collect();
+        refs.sort();
+        if let Some(missing) = refs.first() {
+            eprintln!("warning: {}", msg::bitmap_no_closure(&missing.to_hex()));
+            return Err(Die::Fatal(msg::FAILED_TO_WRITE_BITMAP.into()));
+        }
+    }
+    Ok(())
 }

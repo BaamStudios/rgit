@@ -262,6 +262,15 @@ impl Plan {
             }
         }
         let symlinks = wt.checker.options().symlinks;
+        // A partial clone fetches the missing blobs in one batch.
+        let wanted: Vec<ObjectId> = update
+            .iter()
+            .filter_map(|path| index.position(path, Stage::MERGED).ok())
+            .map(|pos| &index.entries()[pos])
+            .filter(|e| !e.mode.is_gitlink())
+            .map(|e| e.id)
+            .collect();
+        odb.prefetch(&wanted);
         let mut delayed = 0u64;
         for path in &update {
             tick(&mut meter);

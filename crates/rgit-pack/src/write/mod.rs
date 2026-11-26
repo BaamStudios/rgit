@@ -29,6 +29,7 @@ mod encode;
 mod entry;
 mod error;
 mod filter;
+mod filter_state;
 pub mod messages;
 mod output;
 mod pack;
@@ -38,6 +39,7 @@ mod walk;
 
 pub use error::{SourceError, WriteError};
 pub use filter::{FilterError, ObjectFilter};
+pub use filter_state::{FilterState, SparsePatterns, Verdict};
 pub use output::PackStream;
 pub use pack::{
     DEFAULT_BIG_FILE_THRESHOLD, DEFAULT_DEPTH, DEFAULT_WINDOW, MAX_DEPTH, PackSummary,

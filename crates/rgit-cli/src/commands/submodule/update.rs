@@ -130,6 +130,8 @@ struct Opts {
     dissociate: bool,
     /// `--ref-format` for submodules that are cloned.
     ref_format: Option<String>,
+    /// `--filter` for submodules that are cloned.
+    filter: Option<String>,
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
@@ -182,9 +184,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(parser.usage_error().into());
     }
     drop(parser);
-    if filter.borrow().is_some() {
-        return Err(Die::Fatal(crate::messages::clone::unsupported("--filter")));
-    }
     let tri = |c: &Cell<i32>| (c.get() >= 0).then(|| c.get() > 0);
     let opts = Opts {
         quiet: quiet.get(),
@@ -207,6 +206,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         ref_format: ref_format.borrow().clone(),
         reference: reference.into_inner(),
         dissociate: dissociate.get(),
+        filter: filter.borrow().clone(),
     };
     let mut sup = Super::open(ctx, super_prefix.borrow().as_deref())?;
     // The submodules are updated one after the other; the number of
@@ -390,6 +390,7 @@ fn clone_module(sup: &Super, gm: &Gitmodules, t: &Todo, opts: &Opts) -> Result<(
             reference: &opts.reference,
             dissociate: opts.dissociate,
             ref_format: opts.ref_format.as_deref(),
+            filter: opts.filter.as_deref(),
         },
     )
 }
@@ -689,6 +690,8 @@ pub struct CloneArgs<'a> {
     pub dissociate: bool,
     /// The reference storage format of the new repository.
     pub ref_format: Option<&'a str>,
+    /// `--filter` for the clone (partial clone).
+    pub filter: Option<&'a str>,
 }
 
 /// Clone a submodule into its path, its git directory below
@@ -738,6 +741,9 @@ pub fn clone_into(sup: &Super, a: CloneArgs<'_>) -> Result<(), Die> {
     }
     if let Some(f) = a.ref_format {
         args.push(format!("--ref-format={f}"));
+    }
+    if let Some(f) = a.filter {
+        args.push(format!("--filter={f}"));
     }
     args.push("--".into());
     args.push(a.url.to_owned());

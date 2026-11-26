@@ -164,3 +164,12 @@ pub const REPACK_NOTHING_NEW: &str = "Nothing new to pack.";
 pub const REPACK_PRECIOUS: &str = "cannot delete packs in a precious-objects repo";
 pub const REPACK_KEEP_AND_CRUFT: &str =
     "options '-k/--keep-unreachable' and '--cruft' cannot be used together";
+
+/// `repack -b` cannot write a bitmap: the pack lacks an object.
+pub fn bitmap_no_closure(id: &str) -> String {
+    format!(
+        "Failed to write bitmap index. Packfile doesn't have full closure (object {id} is missing)"
+    )
+}
+
+pub const FAILED_TO_WRITE_BITMAP: &str = "failed to write bitmap index";

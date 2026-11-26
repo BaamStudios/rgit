@@ -194,3 +194,8 @@ pub fn failed_to_copy(path: &str, reason: &str) -> String {
 pub fn failed_to_create_directory(path: &str) -> String {
     format!("failed to create directory '{path}'")
 }
+
+/// An option that needs another one.
+pub fn option_requires(option: &str, needed: &str) -> String {
+    format!("the option '{option}' requires '{needed}'")
+}
