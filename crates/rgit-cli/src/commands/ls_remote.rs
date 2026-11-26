@@ -20,6 +20,7 @@ use rgit_pathspec::wildmatch::{WildmatchFlags, wildmatch};
 use rgit_protocol::v2::{Client, LsRefsArgs, RemoteRef};
 use rgit_protocol::{Capabilities, Packet, ProtocolVersion, Reader};
 use rgit_remote::{BranchConfig, Remotes};
+use rgit_transport::helper::{HelperContext, Target};
 use rgit_transport::{ConnectOptions, Connection, IpVersion, Service, Settings};
 
 use rgit_hash::ObjectId;
@@ -216,7 +217,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(0);
     }
 
-    rgit_remote::check_allowed(rgit_fetch::protocol_name(&url).as_bytes(), &config, &env)
+    let vcs = remote.vcs.as_ref().map(|v| v.to_str_lossy().into_owned());
+    let protocol = vcs.clone().unwrap_or_else(|| rgit_fetch::protocol_name(&url));
+    rgit_remote::check_allowed(protocol.as_bytes(), &config, &env)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     let settings = Settings {
         env: &env,
@@ -225,8 +228,26 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         base_env: ctx.child_env(),
     };
     let fatal = |e: &dyn std::fmt::Display| Die::Fatal(e.to_string());
-    let Some(mut transport) = rgit_http::transport_for(&url, &settings).map_err(|e| fatal(&e))?
-    else {
+    let helper_ctx = HelperContext {
+        remote: remote
+            .is_configured()
+            .then(|| remote.name.to_str_lossy().into_owned()),
+        vcs,
+        git_dir: setup.as_ref().map(|s| s.git_dir.clone()),
+    };
+    let target = rgit_http::target_for(&url, &settings, &helper_ctx).map_err(|e| fatal(&e))?;
+    let (transport, helper) = match target {
+        Some(Target::Transport(t)) => (Some(t), None),
+        Some(Target::Helper(h)) => (None, Some(h)),
+        None => (None, None),
+    };
+    let refs: Vec<RemoteRef> = if let Some(mut helper) = helper {
+        helper.standard_options(false, 1).map_err(|e| fatal(&e))?;
+        let list = helper.list(false).map_err(|e| fatal(&e))?;
+        helper.disconnect().map_err(|e| fatal(&e))?;
+        rgit_fetch::helper_refs(&list)
+    } else {
+    let Some(mut transport) = transport else {
         return Err(Die::Fatal(msg::no_remote_helper(
             url.split("://").next().unwrap_or(&url),
         )));
@@ -250,7 +271,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let _ = reader.into_inner().close();
         return Err(Die::Fatal(msg::READ_FAILED.into()));
     }
-    let refs: Vec<RemoteRef> = match ProtocolVersion::read(&mut reader).map_err(|e| fatal(&e))? {
+    match ProtocolVersion::read(&mut reader).map_err(|e| fatal(&e))? {
         ProtocolVersion::V2 => {
             let caps = Capabilities::read_v2(&mut reader).map_err(|e| fatal(&e))?;
             let mut client = Client::with_capabilities(reader, caps).map_err(|e| fatal(&e))?;
@@ -296,6 +317,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let _ = conn.close();
             refs
         }
+    }
     };
     if dest.is_none() && !quiet.get() {
         eprintln!("From {url}");

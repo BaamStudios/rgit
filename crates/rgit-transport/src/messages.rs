@@ -270,3 +270,44 @@ pub fn connect_attempt_failed(host: &str, n: usize, addr: &str, reason: &str) ->
 pub fn unable_to_connect(host: &str, attempts: &str) -> String {
     format!("unable to connect to {host}:\n{attempts}")
 }
+
+// ---- remote helpers --------------------------------------------------------
+
+/// `fatal:` when a remote helper ends before answering a command.
+pub fn helper_aborted(name: &str) -> String {
+    format!("remote helper '{name}' aborted session")
+}
+
+/// `fatal:` for a mandatory capability rgit does not know.
+pub fn unknown_mandatory_capability(cap: &str) -> String {
+    format!(
+        "unknown mandatory capability {cap}; this remote helper probably needs newer version of Git"
+    )
+}
+
+/// `fatal:` for an answer to `connect` other than an empty line or
+/// `fallback`.
+pub fn unknown_connect_response(line: &str) -> String {
+    format!("unknown response to connect: {line}")
+}
+
+/// `fatal:` when a `connect`-only helper asks to fall back.
+pub fn cannot_connect_to_subservice(name: &str) -> String {
+    format!("remote helper '{name}' cannot connect to the service")
+}
+
+/// `fatal:` for a line a helper should not have sent.
+pub fn unexpected_helper_line(line: &str) -> String {
+    format!("unexpected line from remote helper: {line}")
+}
+
+/// `fatal:` when `git fast-import` fails during an `import`.
+pub const FAST_IMPORT_FAILED: &str = "error while running fast-import";
+
+/// `fatal:` when `git fast-export` fails during an `export`.
+pub const FAST_EXPORT_FAILED: &str = "error while running fast-export";
+
+/// `warning:` when the export marks cannot be moved into place.
+pub fn could_not_rename(from: &str, to: &str, reason: &str) -> String {
+    format!("could not rename '{from}' to '{to}': {reason}")
+}

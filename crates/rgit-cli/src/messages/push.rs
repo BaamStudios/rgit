@@ -35,6 +35,19 @@ pub fn not_supported(opt: &str) -> String {
     format!("rgit push: {opt} is not supported yet")
 }
 
+/// `fatal:` for an exporting remote helper without `refspec` capability.
+pub const EXPORT_NEEDS_REFSPEC: &str = "remote-helper doesn't support push; refspec needed";
+
+/// `fatal:` for `--dry-run` through a helper without the option.
+pub fn helper_no_dry_run(name: &str) -> String {
+    format!("helper {name} does not support dry-run")
+}
+
+/// `fatal:` for a remote helper that can neither `push` nor `export`.
+pub fn helper_cannot_push(name: &str) -> String {
+    format!("helper {name} does not support push")
+}
+
 /// rgit: a transport that cannot push yet.
 pub fn transport_not_supported(url: &str) -> String {
     format!("rgit push: pushing to '{url}' is not supported yet")
