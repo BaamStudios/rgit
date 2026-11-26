@@ -80,6 +80,9 @@ pub enum Error {
     /// Version 0 with extensions that require version 1.
     #[error("{}", messages::v1_only_extensions(.0))]
     V1OnlyExtensions(Vec<String>),
+    /// `GIT_REFERENCE_BACKEND` names a format git does not know.
+    #[error("{}", messages::unknown_ref_storage(.0))]
+    UnknownRefStorage(String),
     /// A known extension rgit does not implement yet (rgit's own message).
     #[error("{}", messages::unsupported(.0))]
     Unsupported(String),

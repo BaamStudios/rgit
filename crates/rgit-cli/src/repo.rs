@@ -88,6 +88,18 @@ pub fn setup_gently_quiet(ctx: &Context) -> Result<Option<Setup>, Die> {
     setup_gently(ctx)
 }
 
+/// Set by the commands that enter a repository like git's `enter_repo()`
+/// (`upload-pack`, `receive-pack`): they do not take
+/// `GIT_REFERENCE_BACKEND`, which a `clone` passes on to them while it
+/// sets up its own repository with it.
+static IGNORE_REF_BACKEND_ENV: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// See [`IGNORE_REF_BACKEND_ENV`].
+pub fn ignore_ref_backend_env() {
+    IGNORE_REF_BACKEND_ENV.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn setup_inner(
     ctx: &Context,
     support: rgit_repo::format::Support,
@@ -98,6 +110,9 @@ fn setup_inner(
     let env = SystemEnv::default();
     let mut opts = SetupOptions::from_process().map_err(die)?;
     opts.support = support;
+    if IGNORE_REF_BACKEND_ENV.load(std::sync::atomic::Ordering::Relaxed) {
+        opts.ref_backend = None;
+    }
     if let Some(d) = &ctx.git_dir {
         opts.git_dir = Some(d.into());
     }

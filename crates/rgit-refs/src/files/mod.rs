@@ -134,7 +134,7 @@ impl FilesStore {
         kind: HashKind,
         options: FilesOptions,
     ) -> Self {
-        let git_dir = git_dir.into();
+        let git_dir = crate::location::resolve(&git_dir.into());
         Self {
             reftable: crate::reftable::backend::uses_reftable(&git_dir),
             git_dir,
@@ -149,7 +149,7 @@ impl FilesStore {
     /// directory); the store's own directory is the common directory. A
     /// `dir` equal to the common directory changes nothing.
     pub fn with_worktree(mut self, dir: impl Into<PathBuf>) -> Self {
-        let dir = dir.into();
+        let dir = crate::location::resolve(&dir.into());
         let same = dir == self.git_dir
             || matches!(
                 (dir.canonicalize(), self.git_dir.canonicalize()),
