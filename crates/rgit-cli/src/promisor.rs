@@ -190,12 +190,6 @@ fn fetch_missing(ctx: &Context, objects: &Path, ids: &[ObjectId]) -> bool {
     let quiet = config.bool("promisor.quiet").ok().flatten() == Some(true);
     let mut remaining: Vec<ObjectId> = ids.to_vec();
     for remote in &remotes {
-        rgit_trace::trace2::data(
-            "promisor",
-            "fetch_count",
-            &remaining.len().to_string(),
-            true,
-        );
         run_fetch(ctx, &git_dir, remote, quiet, &remaining);
         remaining.retain(|id| !odb.contains(id));
         if remaining.is_empty() {
@@ -243,9 +237,16 @@ fn run_fetch(ctx: &Context, git_dir: &Path, remote: &str, quiet: bool, ids: &[Ob
         .env("GIT_DIR", git_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null());
+    let child_trace = rgit_trace::trace2::child_start(Default::default(), &traced);
     let Ok(mut child) = cmd.spawn() else {
+        if let Some(t) = child_trace {
+            t.exit(-1, -1);
+        }
         return;
     };
+    // After the start of the child and for the repository ("repo":1),
+    // as git reports it.
+    rgit_trace::trace2::data("promisor", "fetch_count", &ids.len().to_string(), true);
     if let Some(mut stdin) = child.stdin.take() {
         let mut text = String::new();
         for id in ids {
@@ -254,7 +255,14 @@ fn run_fetch(ctx: &Context, git_dir: &Path, remote: &str, quiet: bool, ids: &[Ob
         }
         let _ = stdin.write_all(text.as_bytes());
     }
-    let _ = child.wait();
+    let pid = child.id();
+    let status = child.wait();
+    if let Some(t) = child_trace {
+        match status {
+            Ok(s) => t.exit_status(pid, s),
+            Err(_) => t.exit(i64::from(pid), -1),
+        }
+    }
 }
 
 /// `--filter=auto` (git-clone(1)).
@@ -395,8 +403,12 @@ pub fn fetch_filter(
     if !remotes(config).iter().any(|r| r == remote) {
         return Ok((None, false));
     }
+    // Observed from git 2.56: without a filter (`--no-filter`, none
+    // configured) a promisor remote's pack is stored like any other one
+    // (loose below the unpack limit, no `.promisor` file) and checked for
+    // connectivity.
     if no_filter {
-        return Ok((None, true));
+        return Ok((None, false));
     }
     let spec = match filter_of(config, remote) {
         Some(s) if s == AUTO => Some(s),
@@ -407,5 +419,6 @@ pub fn fetch_filter(
         ),
         None => None,
     };
-    Ok((spec, true))
+    let promisor = spec.is_some();
+    Ok((spec, promisor))
 }

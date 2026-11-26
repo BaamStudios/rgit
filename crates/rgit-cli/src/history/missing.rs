@@ -30,6 +30,9 @@ pub struct Tracker {
     /// The promisor objects (`--missing=allow-promisor`,
     /// `--exclude-promisor-objects`).
     promisor: Option<HashSet<ObjectId>>,
+    /// The objects in promisor packs, where `--exclude-promisor-objects`
+    /// stops (objects they only refer to are listed when present).
+    in_promisor_packs: Option<HashSet<ObjectId>>,
     exclude_promisor: bool,
     /// Missing objects passed over, in the order found: id, type, path.
     found: Vec<(ObjectId, &'static str, Option<Vec<u8>>)>,
@@ -50,6 +53,9 @@ impl Tracker {
         Rc::new(RefCell::new(Tracker {
             action,
             promisor,
+            in_promisor_packs: opts
+                .exclude_promisor
+                .then(|| repo.objects.promisor_pack_objects()),
             exclude_promisor: opts.exclude_promisor,
             found: Vec::new(),
             seen: HashSet::new(),
@@ -60,15 +66,17 @@ impl Tracker {
     /// Whether `id` is a promisor object to leave out
     /// (`--exclude-promisor-objects`).
     pub fn excludes(&self, id: &ObjectId) -> bool {
-        self.exclude_promisor && self.promisor.as_ref().is_some_and(|p| p.contains(id))
+        self.in_promisor_packs
+            .as_ref()
+            .is_some_and(|p| p.contains(id))
     }
 
     /// The promisor objects to leave out, if any.
     pub fn excluded_objects(&self) -> Vec<ObjectId> {
-        match (&self.promisor, self.exclude_promisor) {
-            (Some(p), true) => p.iter().copied().collect(),
-            _ => Vec::new(),
-        }
+        self.in_promisor_packs
+            .as_ref()
+            .map(|p| p.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// A missing object: `Ok(())` when it is passed over (and noted), the
@@ -115,20 +123,38 @@ impl Tracker {
     /// Whether a missing commit is passed over rather than fatal.
     pub fn tolerates_commits(&self, id: &ObjectId) -> bool {
         match self.action {
-            Missing::Error => self.excludes(id),
+            Missing::Error => {
+                self.exclude_promisor && self.promisor.as_ref().is_some_and(|p| p.contains(id))
+            }
             Missing::AllowPromisor => self.promisor.as_ref().is_some_and(|p| p.contains(id)),
             _ => true,
         }
     }
 
     /// The lines for `--missing=print` / `print-info` (`?` dropped with
-    /// `--missing-only`).
-    pub fn report(&self, only: bool) -> Vec<u8> {
+    /// `--missing-only`). With `-z` (`nul`) every field ends in NUL and is
+    /// unquoted: `<id> NUL missing=yes NUL [path=<p> NUL] [type=<t> NUL]`.
+    pub fn report(&self, only: bool, nul: bool) -> Vec<u8> {
         let mut out = Vec::new();
         if !matches!(self.action, Missing::Print | Missing::PrintInfo) {
             return out;
         }
         for (id, kind, path) in &self.found {
+            if nul {
+                out.extend_from_slice(id.to_hex().as_bytes());
+                out.extend_from_slice(b"\0missing=yes\0");
+                if self.action == Missing::PrintInfo {
+                    if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
+                        out.extend_from_slice(b"path=");
+                        out.extend_from_slice(p);
+                        out.push(0);
+                    }
+                    out.extend_from_slice(b"type=");
+                    out.extend_from_slice(kind.as_bytes());
+                    out.push(0);
+                }
+                continue;
+            }
             if !only {
                 out.push(b'?');
             }
@@ -269,7 +295,7 @@ pub fn object_filter(repo: &Repo<'_>, opts: &Options) -> Result<Option<FilterSta
 
 /// Print the `~<id>` lines of `--filter-print-omitted` and the missing
 /// objects of `--missing=print`, also under `--quiet`.
-pub fn print_tail(omitted: &[ObjectId], tracker: &Tracker, missing_only: bool) {
+pub fn print_tail(omitted: &[ObjectId], tracker: &Tracker, missing_only: bool, nul: bool) {
     let mut out = Vec::new();
     if !missing_only {
         for id in omitted {
@@ -278,7 +304,7 @@ pub fn print_tail(omitted: &[ObjectId], tracker: &Tracker, missing_only: bool) {
             out.push(b'\n');
         }
     }
-    out.extend_from_slice(&tracker.report(missing_only));
+    out.extend_from_slice(&tracker.report(missing_only, nul));
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(&out);
     let _ = stdout.flush();

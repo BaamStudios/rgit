@@ -31,6 +31,18 @@ pub fn run_auto(ctx: &Context) {
 /// [`run_auto`] for a command run with `--quiet`, which git passes on as
 /// `maintenance run --auto --quiet`.
 pub fn run_auto_quiet(ctx: &Context, quiet: bool) {
+    run_auto_with(ctx, quiet, false);
+}
+
+/// [`run_auto_quiet`] after `fetch --refetch`: the new pack holds every
+/// object again, so the child is told to consolidate the packs
+/// (`gc.autoPackLimit=1` and `maintenance.incremental-repack.auto=-1`,
+/// each unless configured to 0, which switches the check off).
+pub fn run_auto_after_refetch(ctx: &Context, quiet: bool) {
+    run_auto_with(ctx, quiet, true);
+}
+
+fn run_auto_with(ctx: &Context, quiet: bool, refetch: bool) {
     let Ok(Some(repo)) = Repo::open_gently(ctx) else {
         return;
     };
@@ -38,6 +50,16 @@ pub fn run_auto_quiet(ctx: &Context, quiet: bool) {
         return;
     }
     let detach = auto_detach(&repo.config);
+    let mut overrides: Vec<(&str, &str)> = Vec::new();
+    if refetch {
+        let off = |name: &str| repo.config.int(name).ok().flatten() == Some(0);
+        if !off("gc.autopacklimit") {
+            overrides.push(("gc.autoPackLimit", "1"));
+        }
+        if !off("maintenance.incremental-repack.auto") {
+            overrides.push(("maintenance.incremental-repack.auto", "-1"));
+        }
+    }
     drop(repo);
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -53,6 +75,21 @@ pub fn run_auto_quiet(ctx: &Context, quiet: bool) {
     cmd.args(args).stdin(std::process::Stdio::null());
     for (k, v) in ctx.child_env() {
         cmd.env(k, v);
+    }
+    if !overrides.is_empty() {
+        let mut params: Vec<String> = ctx
+            .config_parameters_env()
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+        for (k, v) in &overrides {
+            params.push(format!(
+                "{}={}",
+                crate::context::sq_quote(k),
+                crate::context::sq_quote(v)
+            ));
+        }
+        cmd.env("GIT_CONFIG_PARAMETERS", params.join(" "));
     }
     let _ = rgit_trace::trace2::status(
         &mut cmd,

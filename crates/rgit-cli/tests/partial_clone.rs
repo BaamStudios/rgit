@@ -160,6 +160,40 @@ fn rev_list_missing_objects_same_as_git() {
         ],
         &["rev-list", "--objects", "--missing=allow-promisor", "HEAD"],
         &["rev-list", "--objects", "--missing=print", tree],
+        // `--missing-only` lists, it does not count (#743).
+        &[
+            "rev-list",
+            "--objects",
+            "--missing=print",
+            "--missing-only",
+            "--count",
+            "HEAD",
+        ],
+        &[
+            "rev-list",
+            "--objects",
+            "--missing=print",
+            "--missing-only",
+            "--disk-usage",
+            "HEAD",
+        ],
+        &["rev-list", "-z", "--objects", "--missing=print", "HEAD"],
+        &[
+            "rev-list",
+            "-z",
+            "--objects",
+            "--no-object-names",
+            "--missing=print-info",
+            "HEAD",
+        ],
+        &[
+            "rev-list",
+            "-z",
+            "--objects",
+            "--missing=print-info",
+            "--missing-only",
+            "HEAD",
+        ],
     ] {
         fx.compare(args).checks(Check::OUTPUT).run();
     }
@@ -278,4 +312,119 @@ fn fetch_filter_registers_promisor_same_as_git() {
         .env("PATH", &path)
         .checks(Check::OUTPUT)
         .run();
+}
+
+/// After a partial clone (#743): `rev-list --exclude-promisor-objects`
+/// stops at the objects of promisor packs only, `pack-objects
+/// --stdin-packs` refuses a promisor pack with
+/// `--exclude-promisor-objects`, and a fetch without a filter stores its
+/// objects like any other fetch.
+#[test]
+fn promisor_packs_after_partial_clone_same_as_git() {
+    let fx = repo().git(["config", "uploadpack.allowfilter", "1"]).git([
+        "config",
+        "uploadpack.allowanysha1inwant",
+        "1",
+    ]);
+    if fx.is_skipped() {
+        return;
+    }
+    let url = format!("file://{}", fx.work_dir().display());
+    let path = server_path(&fx);
+    let mut fx = fx
+        .git([
+            "clone",
+            "-q",
+            "--no-checkout",
+            "--filter=blob:none",
+            &url,
+            "pc",
+        ])
+        .git(["-C", "pc", "config", "maintenance.auto", "false"]);
+    // A blob outside the promisor pack that a promisor tree names.
+    let blob = String::from_utf8(fx.git_stdout(["rev-parse", "HEAD:top"])).unwrap();
+    let blob = blob.trim().to_owned();
+    fx = fx
+        .write("pc/top-copy", "top\n")
+        .git(["-C", "pc", "hash-object", "-w", "top-copy"]);
+    for args in [
+        &[
+            "-C",
+            "pc",
+            "rev-list",
+            "--objects",
+            "--exclude-promisor-objects",
+            &blob,
+        ][..],
+        &[
+            "-C",
+            "pc",
+            "rev-list",
+            "--objects",
+            "--exclude-promisor-objects",
+            "HEAD^{tree}",
+        ],
+        &[
+            "-C",
+            "pc",
+            "rev-list",
+            "--objects",
+            "--exclude-promisor-objects",
+            "--all",
+        ],
+    ] {
+        fx.compare(args).checks(Check::OUTPUT).run();
+    }
+    let pack_dir = fx.work_dir().join("pc/.git/objects/pack");
+    let promisor = std::fs::read_dir(&pack_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n.ends_with(".promisor"))
+        .expect("a promisor pack");
+    let pack = promisor.replace(".promisor", ".pack");
+    fx.compare([
+        "-C",
+        "pc",
+        "pack-objects",
+        "--stdin-packs",
+        "--exclude-promisor-objects",
+        "--stdout",
+    ])
+    .stdin(format!("{pack}\n"))
+    .checks(Check::OUTPUT)
+    .run();
+    // New history on the server, fetched without a filter.
+    fx = commit(fx, "later", "later\n");
+    fx.compare(["-C", "pc", "fetch", "-q", "--no-filter", "origin"])
+        .env("PATH", &path)
+        .repo("pc")
+        .normalize_state(Normalizer::pack_names())
+        .skip(Check::Worktree)
+        .run();
+}
+
+/// `upload-pack` dies on `uploadpackfilter.*` values it cannot parse.
+#[test]
+fn upload_pack_filter_config_same_as_git() {
+    let mut fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    for config in [
+        "uploadpackfilter.tree.maxdepth",
+        "uploadpackfilter.tree.maxdepth=x",
+        "uploadpackfilter.tree.maxdepth=-1",
+        "uploadpackfilter.tree.maxdepth=5k",
+        "uploadpackfilter.allow=maybe",
+        "uploadpackfilter.blob:none.allow=maybe",
+        "uploadpackfilter.blob:none.allow",
+        "uploadpackfilter.Tree.maxDepth",
+    ] {
+        // (The advertisement names the agent: compare the errors.)
+        fx.compare(["-c", config, "upload-pack", "."])
+            .stdin("0000")
+            .checks([Check::Stderr, Check::ExitCode])
+            .run();
+    }
 }
