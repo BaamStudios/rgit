@@ -37,11 +37,27 @@ pub trait ObjectSource {
     fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, SourceError> {
         Ok(self.read(id)?.map(|o| (o.kind, o.data.len() as u64)))
     }
+
+    /// The content of `id` as a stream, for objects above
+    /// `core.bigFileThreshold` that are written without being held in
+    /// memory. `Ok(None)` when the source cannot stream it (the object is
+    /// then read whole). The default never streams.
+    fn stream(&self, id: &ObjectId) -> Result<Option<SourceStream<'_>>, SourceError> {
+        let _ = id;
+        Ok(None)
+    }
 }
+
+/// An object's type, size and content reader (see [`ObjectSource::stream`]).
+pub type SourceStream<'a> = (ObjectKind, u64, Box<dyn std::io::Read + 'a>);
 
 impl<T: ObjectSource + ?Sized> ObjectSource for &T {
     fn read(&self, id: &ObjectId) -> Result<Option<Object>, SourceError> {
         (**self).read(id)
+    }
+
+    fn stream(&self, id: &ObjectId) -> Result<Option<SourceStream<'_>>, SourceError> {
+        (**self).stream(id)
     }
 
     fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, SourceError> {
@@ -69,6 +85,10 @@ pub struct ShallowSource<'a, S: ObjectSource + ?Sized> {
 impl<S: ObjectSource + ?Sized> ObjectSource for ShallowSource<'_, S> {
     fn read(&self, id: &ObjectId) -> Result<Option<Object>, SourceError> {
         self.inner.read(id)
+    }
+
+    fn stream(&self, id: &ObjectId) -> Result<Option<SourceStream<'_>>, SourceError> {
+        self.inner.stream(id)
     }
 
     fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, SourceError> {

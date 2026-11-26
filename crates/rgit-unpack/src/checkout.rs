@@ -8,13 +8,14 @@
 //! whatever was at its place has been removed.
 
 use std::fs::{self, Metadata};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use rgit_hash::ObjectId;
 use rgit_index::Entry;
 
 use crate::messages as msg;
+use crate::objects::Objects;
 
 /// Content conversion applied to regular files on their way into the work
 /// tree (line endings, `ident`, `working-tree-encoding`, filter drivers).
@@ -36,6 +37,13 @@ pub trait Filter {
     fn finish_delayed(&self, _ready: &mut dyn FnMut(&[u8], Vec<u8>)) -> Vec<String> {
         Vec::new()
     }
+
+    /// Whether the content of `path` reaches the work tree unchanged, so
+    /// that a large blob can be streamed to it. The default says no.
+    fn passes_unchanged(&self, path: &[u8]) -> bool {
+        let _ = path;
+        false
+    }
 }
 
 /// The filter that changes nothing.
@@ -45,6 +53,10 @@ pub struct Identity;
 impl Filter for Identity {
     fn to_worktree(&self, _path: &[u8], _id: &ObjectId, data: Vec<u8>) -> Vec<u8> {
         data
+    }
+
+    fn passes_unchanged(&self, _path: &[u8]) -> bool {
+        true
     }
 }
 
@@ -66,6 +78,12 @@ pub enum CheckoutError {
         path: String,
         /// `strerror` text.
         error: String,
+    },
+    /// The blob could not be read while it was streamed to the file.
+    #[error("{}", msg::unable_to_read_sha1(&.id.to_hex()))]
+    ReadBlob {
+        /// The blob.
+        id: ObjectId,
     },
     /// Creating the symbolic link failed.
     #[error("{}", msg::unable_to_create_symlink(.path, .error))]
@@ -209,6 +227,70 @@ pub fn write_entry(
     fs::symlink_metadata(&full)
         .map(Some)
         .map_err(|e| create_err(&e))
+}
+
+/// Writes a regular file entry whose content is a large blob read from
+/// the object database as a stream (never held in memory), when that is
+/// possible: `entry` is a regular file, `filter` leaves `path` unchanged
+/// and the blob is above `core.bigFileThreshold`. `None` otherwise; the
+/// caller then reads the blob and uses [`write_entry`]. `rel` is where
+/// the file goes below `root` (the path, or the path with a prefix).
+pub fn stream_entry(
+    odb: &dyn Objects,
+    filter: &dyn Filter,
+    root: &Path,
+    rel: &[u8],
+    entry: &Entry,
+) -> Option<Result<Metadata, CheckoutError>> {
+    if !entry.mode.is_file() || !filter.passes_unchanged(entry.path()) {
+        return None;
+    }
+    let mut reader = odb.stream_big_blob(&entry.id)?;
+    Some(write_file_from(root, rel, entry, &mut reader))
+}
+
+/// [`write_entry`] for a regular file whose content comes from `reader`.
+fn write_file_from(
+    root: &Path,
+    rel: &[u8],
+    entry: &Entry,
+    reader: &mut dyn Read,
+) -> Result<Metadata, CheckoutError> {
+    create_leading_dirs(root, rel, true)?;
+    let full = join(root, rel);
+    let create_err = |e: &io::Error| CheckoutError::CreateFile {
+        path: lossy(rel),
+        error: strerror(e),
+    };
+    remove_any(&full).map_err(|e| create_err(&e))?;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(if entry.mode.0 & 0o111 != 0 {
+            0o777
+        } else {
+            0o666
+        });
+    }
+    let mut f = opts.open(&full).map_err(|e| create_err(&e))?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                drop(f);
+                let _ = fs::remove_file(&full);
+                return Err(CheckoutError::ReadBlob { id: entry.id });
+            }
+        };
+        f.write_all(&buf[..n]).map_err(|e| create_err(&e))?;
+    }
+    drop(f);
+    fs::symlink_metadata(&full).map_err(|e| create_err(&e))
 }
 
 #[cfg(unix)]

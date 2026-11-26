@@ -136,7 +136,24 @@ fn scan_loose(f: &mut Fsck, store: &LooseStore, oid: &ObjectId, path: &Path) {
         }
         return;
     }
-    match store.verify(oid) {
+    let big = matches!(store.header(oid),
+        Ok(Some(h)) if h.kind == ObjectKind::Blob && h.size > f.big_file_threshold);
+    let verified = if big {
+        // Large blobs are hashed as a stream and not kept.
+        store.verify_stream(oid).map(|h| rgit_odb::RawObject {
+            kind: h.kind,
+            data: Vec::new(),
+        })
+    } else {
+        store.verify(oid)
+    };
+    match verified {
+        Ok(o) if big => {
+            if f.opts.verbose {
+                eprintln!("{}", msg::checking(&format!("{} {oid}", o.kind.name())));
+            }
+            note_object(f, oid, o.kind, None);
+        }
         Ok(o) => {
             if f.opts.verbose {
                 eprintln!("{}", msg::checking(&format!("{} {oid}", o.kind.name())));
@@ -224,6 +241,28 @@ fn scan_pack(f: &mut Fsck, pack: &rgit_pack::Pack) {
                 Err(_) => {}
             }
             continue;
+        }
+        // Large whole blobs are hashed as a stream.
+        let big = matches!(pack.object_info(offset),
+            Ok((ObjectKind::Blob, size)) if size > f.big_file_threshold);
+        if big {
+            if let Ok(Some((kind, size, mut r))) = pack.stream_at(offset) {
+                let ok = crate::large::hash_stream(f.hash, kind, size, &mut r)
+                    .is_ok_and(|actual| actual == oid);
+                if !ok {
+                    eprintln!(
+                        "error: {}",
+                        msg::packed_hash_mismatch(&oid.to_string(), &pack.path().display().to_string(), offset)
+                    );
+                    f.errors |= ERROR_OBJECT;
+                    continue;
+                }
+                if f.opts.verbose {
+                    eprintln!("{}", msg::checking(&format!("{} {oid}", kind.name())));
+                }
+                note_object(f, &oid, kind, None);
+                continue;
+            }
         }
         match pack.read_at(offset, &mut cache, &mut |_| None) {
             Ok(o) => {

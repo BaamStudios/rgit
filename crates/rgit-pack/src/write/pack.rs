@@ -472,11 +472,23 @@ fn write_impl<W: Write, S: ObjectSource + Sync + ?Sized>(
             };
             let mut delta = false;
             let mut reused = false;
+            // Large objects go to the output without being held in
+            // memory: copied compressed data, or a stream compressed on
+            // the way.
+            let mut direct: Option<Direct<'_>> = None;
             match &reps[i] {
                 _ if !usable => {}
                 Rep::Whole => {}
                 Rep::PackedWhole { pack, offset: from } => {
-                    reused = copy_whole(pack, *from, &mut buf).is_some();
+                    let big = pack
+                        .entry_end(*from)
+                        .is_ok_and(|end| end - *from > opts.big_file_threshold);
+                    if big {
+                        direct = direct_copy(pack, *from);
+                        reused = direct.is_some();
+                    } else {
+                        reused = copy_whole(pack, *from, &mut buf).is_some();
+                    }
                 }
                 Rep::PackedDelta {
                     pack,
@@ -504,10 +516,25 @@ fn write_impl<W: Write, S: ObjectSource + Sync + ?Sized>(
             }
             if !reused && !delta {
                 buf.clear();
-                compress_whole(source, &ids[i], level, &mut buf)?;
+                let big = source
+                    .header(&ids[i])
+                    .ok()
+                    .flatten()
+                    .is_some_and(|(_, size)| size > opts.big_file_threshold);
+                match big.then(|| source.stream(&ids[i])).transpose() {
+                    Ok(Some(Some((kind, size, reader)))) => {
+                        direct = Some(Direct::Compress { kind, size, reader });
+                    }
+                    _ => compress_whole(source, &ids[i], level, &mut buf)?,
+                }
             }
+            let entry_len = match &direct {
+                Some(Direct::Copy { len, .. }) => *len,
+                Some(Direct::Compress { size, .. }) => *size,
+                None => buf.len() as u64,
+            };
             if let Some((next, limit)) = split.as_mut() {
-                let end = stream.offset() + buf.len() as u64 + hash.byte_len() as u64;
+                let end = stream.offset() + entry_len + hash.byte_len() as u64;
                 if end > *limit && !summary.entries.is_empty() {
                     summary.pack_len = stream.offset() + hash.byte_len() as u64;
                     let (checksum, w) = stream.finish_partial()?;
@@ -531,7 +558,22 @@ fn write_impl<W: Write, S: ObjectSource + Sync + ?Sized>(
             }
             summary.reused += u32::from(reused);
             summary.deltas += u32::from(delta);
-            stream.put(&buf)?;
+            match direct {
+                Some(Direct::Copy { pack, start, len }) => {
+                    let data = pack.data().map_err(|e| WriteError::read(ids[i], e))?;
+                    let bytes = data
+                        .bytes()
+                        .get(start as usize..(start + len) as usize)
+                        .ok_or(WriteError::Mismatch(ids[i]))?;
+                    for chunk in bytes.chunks(1 << 16) {
+                        stream.put(chunk)?;
+                    }
+                }
+                Some(Direct::Compress { kind, size, reader }) => {
+                    compress_stream(&mut stream, &ids[i], kind, size, reader, level)?;
+                }
+                None => stream.put(&buf)?,
+            }
             let crc32 = stream.end_entry();
             offsets[i] = Some(offset);
             pack_of[i] = current;
@@ -766,6 +808,81 @@ fn copy_delta(pack: &Pack, offset: u64, base: BaseRef, buf: &mut Vec<u8>) -> Opt
             .get(header.data_offset as usize..end as usize)?,
     );
     Some(true)
+}
+
+/// A large entry written straight to the output.
+enum Direct<'a> {
+    /// The whole entry (header and compressed data) at `start` of `pack`.
+    Copy {
+        pack: Arc<Pack>,
+        start: u64,
+        len: u64,
+    },
+    /// An object compressed while it is read.
+    Compress {
+        kind: ObjectKind,
+        size: u64,
+        reader: Box<dyn std::io::Read + 'a>,
+    },
+}
+
+/// The whole entry at `offset` of `pack`, checked, for a direct copy.
+fn direct_copy(pack: &Arc<Pack>, offset: u64) -> Option<Direct<'static>> {
+    let (_, header, end) = checked_entry(pack, offset)?;
+    let EntryKind::Base(_) = header.kind else {
+        return None;
+    };
+    Some(Direct::Copy {
+        pack: pack.clone(),
+        start: offset,
+        len: end - offset,
+    })
+}
+
+/// Write the entry of a large object read from `reader`: header, then the
+/// content compressed piece by piece. The content must hash to `id`.
+fn compress_stream<W: Write>(
+    stream: &mut PackStream<W>,
+    id: &ObjectId,
+    kind: ObjectKind,
+    size: u64,
+    mut reader: Box<dyn std::io::Read + '_>,
+    level: Compression,
+) -> Result<(), WriteError> {
+    struct Put<'s, W: Write>(&'s mut PackStream<W>);
+    impl<W: Write> Write for Put<'_, W> {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.put(b).map_err(std::io::Error::other)?;
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut header = Vec::with_capacity(10);
+    push_entry_header(&mut header, kind.pack_type(), size);
+    stream.put(&header)?;
+    let mut hasher = rgit_hash::object_hasher(id.kind(), kind.name(), size);
+    let mut z = ZlibEncoder::new(Put(stream), level);
+    let mut buf = vec![0u8; 1 << 16];
+    let mut left = size;
+    while left > 0 {
+        let want = left.min(buf.len() as u64) as usize;
+        let n = match reader.read(&mut buf[..want]) {
+            Ok(0) => return Err(WriteError::Mismatch(*id)),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(WriteError::read(*id, e)),
+        };
+        hasher.update(&buf[..n]);
+        z.write_all(&buf[..n])?;
+        left -= n as u64;
+    }
+    z.finish()?;
+    match hasher.finalize() {
+        Ok(actual) if actual == *id => Ok(()),
+        _ => Err(WriteError::Mismatch(*id)),
+    }
 }
 
 /// Objects are checked against their id before they are written anew or

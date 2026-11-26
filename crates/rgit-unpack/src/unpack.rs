@@ -269,6 +269,17 @@ impl Plan {
                 continue;
             };
             let entry = index.entries()[pos].clone();
+            if let Some(res) = checkout::stream_entry(odb, filter, wt.root, path, &entry) {
+                match res {
+                    Ok(meta) => {
+                        if let Some(e) = index.entry_mut(pos) {
+                            e.stat = stat_from_metadata(&meta);
+                        }
+                    }
+                    Err(e) => errors.push(e.to_string()),
+                }
+                continue;
+            }
             let data = if entry.mode.is_gitlink() {
                 Vec::new()
             } else {

@@ -714,6 +714,10 @@ impl rgit_worktree::stat::ContentFilter for Converter {
 }
 
 impl rgit_unpack::Filter for Converter {
+    fn passes_unchanged(&self, path: &[u8]) -> bool {
+        !Converter::converts(self, path)
+    }
+
     fn to_worktree(&self, path: &[u8], id: &ObjectId, data: Vec<u8>) -> Vec<u8> {
         Converter::to_worktree(self, path, id, data)
     }

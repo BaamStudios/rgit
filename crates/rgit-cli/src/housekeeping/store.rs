@@ -230,6 +230,12 @@ impl PackOptions {
                 break;
             }
         }
+        if let Some(v) = config
+            .ulong("core.bigfilethreshold")
+            .map_err(|e| Die::Fatal(e.to_string()))?
+        {
+            write.big_file_threshold = v;
+        }
         let rev = config
             .bool("pack.writereverseindex")
             .ok()
@@ -350,13 +356,30 @@ pub fn loosen(odb: &ObjectDatabase, id: &ObjectId, mtime: u64) -> Result<(), Die
     if loose.contains(id) {
         return Ok(());
     }
-    let o = odb
-        .read(id)
-        .map_err(|e| Die::Fatal(e.to_string()))?
-        .ok_or_else(|| Die::Fatal(msg::unable_to_read(&id.to_hex())))?;
-    loose
-        .write(o.kind, &o.data)
-        .map_err(|e| Die::Fatal(e.to_string()))?;
+    let big = odb
+        .header(id)
+        .ok()
+        .flatten()
+        .is_some_and(|h| odb.is_big(h.size));
+    if big {
+        // Large objects are copied as a stream.
+        let mut r = odb
+            .stream(id)
+            .map_err(|e| Die::Fatal(e.to_string()))?
+            .ok_or_else(|| Die::Fatal(msg::unable_to_read(&id.to_hex())))?;
+        let (kind, size) = (r.kind(), r.size());
+        loose
+            .write_stream(kind, size, &mut r)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
+    } else {
+        let o = odb
+            .read(id)
+            .map_err(|e| Die::Fatal(e.to_string()))?
+            .ok_or_else(|| Die::Fatal(msg::unable_to_read(&id.to_hex())))?;
+        loose
+            .write(o.kind, &o.data)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
+    }
     let path = loose.path_of(id);
     let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime);
     if let Ok(f) = std::fs::File::open(&path) {

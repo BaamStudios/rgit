@@ -31,6 +31,9 @@ pub(crate) struct Pass1 {
     pub trailing: Vec<u8>,
     /// The trailing checksum matched (always, unless `Options::checksum_last`).
     pub checksum_ok: bool,
+    /// Large blobs that were not kept: id, size and zlib stream offset
+    /// (their collision check needs the written pack file).
+    pub large: Vec<(ObjectId, u64, u64)>,
 }
 
 /// Buffered input that hashes, counts and copies what is consumed.
@@ -137,6 +140,7 @@ impl<'a> Input<'a> {
         keep: bool,
         offset: u64,
         exact_room: bool,
+        mut digest: Option<&mut Hasher>,
     ) -> Result<Vec<u8>, Error> {
         let bad = |code: i32, detail: Option<String>| Error::BadObject {
             offset,
@@ -172,6 +176,9 @@ impl<'a> Input<'a> {
             }
             if keep {
                 out.extend_from_slice(&chunk[..made]);
+            }
+            if let Some(h) = digest.as_deref_mut() {
+                h.update(&chunk[..made]);
             }
             match status {
                 Ok(Status::StreamEnd) => {
@@ -248,6 +255,7 @@ pub(crate) fn read_pack(
         p.start(Phase::Reading, count as u64);
     }
     // Do not trust the count for the allocation.
+    let mut large_seen: Vec<(ObjectId, u64, u64)> = Vec::new();
     let mut entries: Vec<Entry> = Vec::with_capacity((count as usize).min(1 << 16));
     let mut slots: Slots = Vec::with_capacity((count as usize).min(1 << 16));
     let hlen = opts.hash.byte_len();
@@ -335,7 +343,18 @@ pub(crate) fn read_pack(
         };
         let data_offset = input.offset;
         let slot = OnceLock::new();
-        let inflated = input.inflate(size, matches!(base, Base::None(_)), offset, opts.recover);
+        // Large blobs are hashed while they are inflated, not kept.
+        let mut large = match base {
+            Base::None(kind @ ObjectKind::Blob) if size > opts.big_file_threshold => {
+                Some(object_hasher(opts.hash, kind.as_str(), size))
+            }
+            _ => None,
+        };
+        let keep = matches!(base, Base::None(_)) && large.is_none();
+        if keep {
+            rgit_object::alloc::check_object(size).map_err(Error::AllocLimit)?;
+        }
+        let inflated = input.inflate(size, keep, offset, opts.recover, large.as_mut());
         let broken = match inflated {
             // Recovery goes on after the end of the broken zlib stream.
             Err(
@@ -348,6 +367,15 @@ pub(crate) fn read_pack(
                 true
             }
             Err(e) => return Err(e),
+            Ok(_) if large.is_some() => {
+                let kind = ObjectKind::Blob;
+                let h = large.take().expect("large");
+                let id = h.finalize().map_err(|_| Error::CollisionAttack(offset))?;
+                checker.check_large(&id, kind, size, data_offset)?;
+                large_seen.push((id, size, data_offset));
+                let _ = slot.set((id, kind));
+                false
+            }
             Ok(data) => {
                 if let Base::None(kind) = base {
                     let mut h = object_hasher(opts.hash, kind.as_str(), size);
@@ -410,5 +438,6 @@ pub(crate) fn read_pack(
         version,
         trailing,
         checksum_ok,
+        large: large_seen,
     })
 }

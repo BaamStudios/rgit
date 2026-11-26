@@ -19,6 +19,7 @@ use rgit_hash::{HashKind, Hasher, ObjectId, Prefix, object_hasher};
 use rgit_object::{Error as ObjError, ObjectHeader, ObjectKind};
 
 use crate::store::{ObjectStore, RawObject};
+use crate::stream::ObjectReader;
 use crate::zlib::{InflateError, Inflater};
 use crate::{Error, LooseOptions};
 
@@ -139,6 +140,7 @@ impl LooseStore {
         }
         let mut inf = Inflater::new(compressed);
         let (header, mut data) = read_header(&mut inf, oid, path)?;
+        rgit_object::alloc::check_object(header.size)?;
         data.reserve(header.size.min(MAX_PREALLOC) as usize);
         read_content(&mut inf, oid, path, header.size, &mut data)?;
         let trailing = inf
@@ -191,6 +193,56 @@ impl LooseStore {
         }
         self.check_hash(oid, &path, &obj)?;
         Ok(obj)
+    }
+
+    /// [`LooseStore::verify`] without holding the content in memory (for
+    /// large blobs): the content is hashed while it is inflated. Returns
+    /// the header.
+    pub fn verify_stream(&self, oid: &ObjectId) -> Result<ObjectHeader, Error> {
+        let path = self.path_of(oid);
+        let Some(mut r) = self.open(oid)? else {
+            return Err(Error::io(
+                path.display().to_string(),
+                io::Error::from(io::ErrorKind::NotFound),
+            ));
+        };
+        let header = r.header;
+        let mut h = object_hasher(self.hash, header.kind.name(), header.size);
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => h.update(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    return Err(match e.into_inner().map(|b| b.downcast::<Error>()) {
+                        Some(Ok(inner)) => *inner,
+                        Some(Err(other)) => {
+                            Error::io(path.display().to_string(), io::Error::other(other))
+                        }
+                        None => {
+                            Error::io(path.display().to_string(), io::Error::other("read failed"))
+                        }
+                    });
+                }
+            }
+        }
+        let trailing = r
+            .inf
+            .has_trailing_input()
+            .map_err(|e| content_error(e, oid, &path))?;
+        if trailing {
+            return Err(Error::TrailingGarbage { oid: *oid, path });
+        }
+        let actual = h.finalize()?;
+        if actual != *oid {
+            return Err(Error::HashMismatch {
+                oid: *oid,
+                actual,
+                path,
+            });
+        }
+        Ok(header)
     }
 
     /// Call `f` for every loose object whose id starts with `prefix`.
@@ -580,6 +632,10 @@ impl ObjectStore for LooseStore {
 
     fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
         LooseStore::read(self, oid)
+    }
+
+    fn stream(&self, oid: &ObjectId) -> Result<Option<ObjectReader>, Error> {
+        Ok(LooseStore::open(self, oid)?.map(|r| ObjectReader::new(r.header(), Box::new(r))))
     }
 
     fn for_each_prefix_match(

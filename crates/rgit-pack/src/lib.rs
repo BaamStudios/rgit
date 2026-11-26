@@ -37,6 +37,7 @@ pub mod messages;
 mod mmap;
 mod pack;
 mod store;
+mod stream;
 pub mod write;
 
 pub use cache::{DEFAULT_DELTA_BASE_CACHE_LIMIT, DeltaBaseCache};
@@ -46,6 +47,7 @@ pub use error::Error;
 pub use index::PackIndex;
 pub use pack::{ExternalBase, Pack};
 pub use store::{PackSet, Report};
+pub use stream::EntryReader;
 
 /// The type of a stored object (the same type as everywhere in rgit).
 pub use rgit_object::ObjectKind;

@@ -353,6 +353,14 @@ impl<'a> Walk<'a> {
                 if !self.seen.insert(id) {
                     break;
                 }
+                // Blobs are listed without reading them (they may be
+                // large).
+                if let Ok(Some(h)) = self.odb.header(&id) {
+                    if h.kind == ObjectKind::Blob {
+                        self.list(id, ObjectKind::Blob, None);
+                        break;
+                    }
+                }
                 let Some(o) = self.read(&id) else {
                     self.seen.remove(&id);
                     if lenient {

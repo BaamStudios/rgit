@@ -6,6 +6,11 @@
 //! They were taken from the observable output of the reference `git` binary
 //! (`git mktag`, `git hash-object`, `git cat-file`).
 
+/// A buffer above `GIT_ALLOC_LIMIT` (printed as `fatal: <text>`).
+pub fn attempting_to_allocate(size: &u64, limit: &u64) -> String {
+    format!("attempting to allocate {size} over limit {limit}")
+}
+
 /// Tree parse errors (printed as `error: <text>` / `fatal: <text>`).
 pub mod tree {
     /// A tree entry runs past the end of the object.

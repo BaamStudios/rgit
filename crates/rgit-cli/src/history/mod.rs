@@ -578,6 +578,10 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.set_large_object_options(
+        rgit_odb::LargeObjectOptions::from_config(&config)
+            .map_err(|e| Die::Fatal(e.to_string()))?,
+    );
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -722,6 +726,10 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.set_large_object_options(
+        rgit_odb::LargeObjectOptions::from_config(&config)
+            .map_err(|e| Die::Fatal(e.to_string()))?,
+    );
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -861,6 +869,10 @@ pub fn walk_formatted(
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.set_large_object_options(
+        rgit_odb::LargeObjectOptions::from_config(&config)
+            .map_err(|e| Die::Fatal(e.to_string()))?,
+    );
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -2406,6 +2418,16 @@ fn show_objects(
         let mut name = arg.clone();
         loop {
             let bad = || Die::Fatal(msg::bad_object(&id.to_hex()));
+            if let Some(mut reader) = repo.objects.big_blob(&id) {
+                // Large blobs go to the output as a stream.
+                p.flush();
+                if !p.opts.quiet {
+                    let mut out = std::io::stdout().lock();
+                    let _ = std::io::copy(&mut reader, &mut out);
+                    let _ = out.flush();
+                }
+                break;
+            }
             let (kind, data) = repo.objects.read(&id).ok().flatten().ok_or_else(bad)?;
             match kind {
                 ObjectKind::Commit => {

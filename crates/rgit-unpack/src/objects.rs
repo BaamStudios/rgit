@@ -19,6 +19,13 @@ pub trait Objects {
     fn read_raw(&self, id: &ObjectId) -> Result<Option<RawObject>, String>;
     /// Whether the object exists (used to validate cache tree nodes).
     fn has(&self, id: &ObjectId) -> bool;
+    /// Blob `id` as a stream, if it is too large to be read into memory
+    /// (`core.bigFileThreshold`); `None` for other objects. The default
+    /// never streams.
+    fn stream_big_blob(&self, id: &ObjectId) -> Option<Box<dyn std::io::Read + Send>> {
+        let _ = id;
+        None
+    }
 }
 
 impl Objects for ObjectDatabase {
@@ -32,6 +39,15 @@ impl Objects for ObjectDatabase {
 
     fn has(&self, id: &ObjectId) -> bool {
         self.contains(id)
+    }
+
+    fn stream_big_blob(&self, id: &ObjectId) -> Option<Box<dyn std::io::Read + Send>> {
+        let h = self.header(id).ok()??;
+        if h.kind != ObjectKind::Blob || !self.is_big(h.size) {
+            return None;
+        }
+        let r = self.stream(id).ok()??;
+        Some(Box::new(r))
     }
 }
 

@@ -9,6 +9,8 @@ use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::ObjectHeader;
 use rgit_pack::{DEFAULT_DELTA_BASE_CACHE_LIMIT, DeltaBaseCache, PackSet};
 
+use crate::stream::ObjectReader;
+
 use crate::Error;
 use crate::store::{ObjectStore, RawObject};
 
@@ -117,6 +119,7 @@ impl ObjectStore for PackStore {
         report: &mut dyn FnMut(&Error),
         bases: &mut dyn FnMut(&ObjectId) -> Option<RawObject>,
     ) -> Result<Option<RawObject>, Error> {
+        check_pack_alloc(&self.set, oid)?;
         let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         self.set
             .read_with_fallback(
@@ -126,6 +129,16 @@ impl ObjectStore for PackStore {
                 bases,
             )
             .map_err(Error::PackSummary)
+    }
+
+    fn stream(&self, oid: &ObjectId) -> Result<Option<ObjectReader>, Error> {
+        if !self.contains(oid) {
+            return Ok(None);
+        }
+        match stream_from_packs(&self.set, oid) {
+            Some(r) => Ok(Some(r)),
+            None => Ok(self.read(oid)?.map(ObjectReader::from_raw)),
+        }
     }
 
     fn for_each_prefix_match(
@@ -147,4 +160,51 @@ impl ObjectStore for PackStore {
         }
         Ok(())
     }
+}
+
+/// Stream `oid` from the first pack that stores it as a whole object
+/// (see [`rgit_pack::Pack::stream_at`]). `None` when no pack does: the
+/// object is a delta, missing or unreadable, and has to be read whole.
+pub fn stream_from_packs(set: &PackSet, oid: &ObjectId) -> Option<ObjectReader> {
+    for pack in set.packs() {
+        let Some(pos) = pack.index().lookup(oid) else {
+            continue;
+        };
+        let Ok(offset) = pack.index().offset_at(pos) else {
+            continue;
+        };
+        match pack.stream_at(offset) {
+            Ok(Some((kind, size, reader))) => {
+                return Some(ObjectReader::new(
+                    ObjectHeader { kind, size },
+                    Box::new(reader),
+                ));
+            }
+            Ok(None) => return None,
+            Err(_) => continue,
+        }
+    }
+    None
+}
+
+/// With `GIT_ALLOC_LIMIT` set: fail before reading a packed object whose
+/// content would need a larger buffer.
+pub fn check_pack_alloc(set: &PackSet, oid: &ObjectId) -> Result<(), Error> {
+    if rgit_object::alloc::limit().is_none() {
+        return Ok(());
+    }
+    for pack in set.packs() {
+        let Some(pos) = pack.index().lookup(oid) else {
+            continue;
+        };
+        let info = pack
+            .index()
+            .offset_at(pos)
+            .and_then(|off| pack.object_info(off));
+        if let Ok((_, size)) = info {
+            rgit_object::alloc::check_object(size)?;
+            return Ok(());
+        }
+    }
+    Ok(())
 }

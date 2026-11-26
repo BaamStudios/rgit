@@ -319,12 +319,20 @@ struct Loaded {
     conv_failed: bool,
     /// Read from the object database (the textconv cache applies).
     from_odb: bool,
+    /// Above `core.bigFileThreshold`: the size, the contents were not
+    /// read (`data` is empty) and the file counts as binary.
+    big: Option<u64>,
 }
 
 impl Loaded {
     /// The contents shown in patches.
     fn shown(&self) -> &[u8] {
         self.conv.as_deref().unwrap_or(&self.data)
+    }
+
+    /// The size of the contents.
+    fn size(&self) -> usize {
+        self.big.map_or(self.data.len(), |s| s as usize)
     }
 }
 
@@ -871,6 +879,7 @@ impl<'a> Output<'a> {
                 conv: None,
                 conv_failed: false,
                 from_odb: false,
+                big: None,
             });
         }
         if side.file.is_some() {
@@ -898,6 +907,7 @@ impl<'a> Output<'a> {
                 conv: None,
                 conv_failed: false,
                 from_odb: false,
+                big: None,
             });
         }
         let data = if is_file_mode(side.mode) {
@@ -919,6 +929,67 @@ impl<'a> Output<'a> {
             conv: None,
             conv_failed: false,
             from_odb: self.repo.is_some() && is_file_mode(side.mode),
+            big: None,
+        })
+    }
+
+    /// [`Output::load`] for a pair to be shown: contents above
+    /// `core.bigFileThreshold` are not read (only hashed when they come
+    /// from the work tree), as git treats such files as binary.
+    fn load_shown(&self, side: &Side, path: &[u8]) -> Result<Loaded, Die> {
+        if let Some(l) = self.load_big(side, path) {
+            return Ok(l);
+        }
+        self.load(side, path)
+    }
+
+    fn load_big(&self, side: &Side, path: &[u8]) -> Option<Loaded> {
+        let repo = self.repo?;
+        if !is_file_mode(side.mode) || type_bits(side.mode) == 0o120000 {
+            return None;
+        }
+        if type_bits(side.mode) == GITLINK_MODE {
+            return None;
+        }
+        let odb = repo.odb();
+        let (oid, size, from_odb) = match &side.file {
+            Some(file) => {
+                if self.streams.iter().any(|(p, _)| p == file) {
+                    return None;
+                }
+                let meta = std::fs::metadata(file).ok()?;
+                if !crate::large::streams_file(odb, &meta) {
+                    return None;
+                }
+                if self.convert && repo.converter().ok()?.converts(path) {
+                    return None;
+                }
+                let mut f = std::fs::File::open(file).ok()?;
+                let oid = crate::large::hash_stream(
+                    self.hash,
+                    rgit_object::ObjectKind::Blob,
+                    meta.len(),
+                    &mut f,
+                )
+                .ok()?;
+                (oid, meta.len(), false)
+            }
+            None => {
+                let h = odb.header(&side.oid).ok()??;
+                if h.kind != rgit_object::ObjectKind::Blob || !odb.is_big(h.size) {
+                    return None;
+                }
+                (side.oid, h.size, true)
+            }
+        };
+        Some(Loaded {
+            mode: side.mode,
+            oid,
+            data: Vec::new(),
+            conv: None,
+            conv_failed: false,
+            from_odb,
+            big: Some(size),
         })
     }
 
@@ -1242,13 +1313,29 @@ impl<'a> Output<'a> {
                 (
                     p.old
                         .as_ref()
-                        .map(|s| self.load(s, &p.old_path))
+                        .map(|s| self.load_shown(s, &p.old_path))
                         .transpose()?,
-                    p.new.as_ref().map(|s| self.load(s, &p.path)).transpose()?,
+                    p.new
+                        .as_ref()
+                        .map(|s| self.load_shown(s, &p.path))
+                        .transpose()?,
                 )
             } else {
                 (None, None)
             };
+            // A work tree file of the same size as the other side is read
+            // to see whether it changed at all, and then its contents
+            // decide whether it is binary (as in git).
+            if let (Some(ol), Some(nl)) = (&o, &n) {
+                if (ol.big.is_some() || nl.big.is_some()) && has_file && ol.size() == nl.size() {
+                    o = p
+                        .old
+                        .as_ref()
+                        .map(|s| self.load(s, &p.old_path))
+                        .transpose()?;
+                    n = p.new.as_ref().map(|s| self.load(s, &p.path)).transpose()?;
+                }
+            }
             // (Standard input has no id: its contents decide.)
             let same = matches!((&o, &n), (Some(o), Some(n)) if o.mode == n.mode
                 && same_contents(o, n));
@@ -1371,8 +1458,8 @@ impl<'a> Output<'a> {
                         StatKind::BinarySame
                     } else if binary {
                         StatKind::Binary {
-                            old_size: od.len(),
-                            new_size: nd.len(),
+                            old_size: o.as_ref().map_or(0, Loaded::size),
+                            new_size: n.as_ref().map_or(0, Loaded::size),
                         }
                     } else {
                         let same = matches!((o, n), (Some(o), Some(n)) if same_contents(o, n));
@@ -1641,6 +1728,7 @@ impl<'a> Output<'a> {
                             conv: None,
                             conv_failed: false,
                             from_odb: false,
+                            big: None,
                         };
                         Some(&dirty_data)
                     }
@@ -1931,7 +2019,7 @@ impl Output<'_> {
 
     /// Run the textconv filter of `path`'s driver on `l`.
     fn apply_textconv(&self, path: &[u8], l: &mut Loaded) -> Result<(), Die> {
-        if !is_file_mode(l.mode) || type_bits(l.mode) == 0o120000 {
+        if !is_file_mode(l.mode) || type_bits(l.mode) == 0o120000 || l.big.is_some() {
             return Ok(());
         }
         let attr = self.diff_attr(path)?;
@@ -1988,6 +2076,9 @@ impl Output<'_> {
             let Some(l) = side else { continue };
             if patch && l.conv.is_some() {
                 continue;
+            }
+            if l.big.is_some() {
+                return Ok(true);
             }
             // Symbolic links ignore diff drivers (t4011).
             let forced = if (self.repo.is_some() || self.outside.is_some())

@@ -6,7 +6,8 @@
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::{Object, ObjectHeader, ObjectKind};
@@ -14,9 +15,11 @@ use rgit_object::{Object, ObjectHeader, ObjectKind};
 use rgit_config::ConfigSet;
 
 use crate::alternates;
+use crate::bulk::{Bulk, BulkOptions};
 use crate::packed::PackStore;
 use crate::store::{ObjectStore, RawObject};
-use crate::{Error, LooseOptions, LooseStore};
+use crate::stream::{DEFAULT_BIG_FILE_THRESHOLD, ObjectReader};
+use crate::{Error, LooseOptions, LooseStore, ZLIB_DEFAULT_COMPRESSION, messages};
 
 /// The environment variable that overrides `$GIT_DIR/objects`.
 pub const OBJECT_DIRECTORY_ENV: &str = "GIT_OBJECT_DIRECTORY";
@@ -42,6 +45,55 @@ pub enum PrefixMatch {
 }
 
 type ErrorSink = Box<dyn Fn(&Error) + Send + Sync>;
+
+/// How large objects are handled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LargeObjectOptions {
+    /// `core.bigFileThreshold`: blobs above this size are streamed and,
+    /// when added, stored deflated in a pack without delta compression.
+    pub big_file_threshold: u64,
+    /// zlib level for those packs (`pack.compression`, else
+    /// `core.compression`; `-1` is zlib's default).
+    pub pack_compression: u32,
+    /// `pack.packSizeLimit` (0: none).
+    pub pack_size_limit: u64,
+}
+
+impl Default for LargeObjectOptions {
+    fn default() -> LargeObjectOptions {
+        LargeObjectOptions {
+            big_file_threshold: DEFAULT_BIG_FILE_THRESHOLD,
+            pack_compression: ZLIB_DEFAULT_COMPRESSION,
+            pack_size_limit: 0,
+        }
+    }
+}
+
+impl LargeObjectOptions {
+    /// Read the settings from `config`. A malformed value is an
+    /// [`Error::Config`] (git dies).
+    pub fn from_config(config: &ConfigSet) -> Result<LargeObjectOptions, Error> {
+        let cfg = |e: rgit_config::ValueError| Error::Config(e.to_string());
+        let mut o = LargeObjectOptions::default();
+        if let Some(v) = config.ulong("core.bigFileThreshold").map_err(cfg)? {
+            o.big_file_threshold = v;
+        }
+        for key in ["pack.compression", "core.compression"] {
+            if let Some(v) = config.int(key).map_err(cfg)? {
+                o.pack_compression = match v {
+                    -1 => ZLIB_DEFAULT_COMPRESSION,
+                    0..=9 => v as u32,
+                    _ => return Err(Error::Config(messages::bad_compression_level(v))),
+                };
+                break;
+            }
+        }
+        if let Some(v) = config.ulong("pack.packSizeLimit").map_err(cfg)? {
+            o.pack_size_limit = v;
+        }
+        Ok(o)
+    }
+}
 
 /// The default error sink: every line of [`Error::skipped_copy_lines`] as
 /// `error: <line>` on standard error, like git.
@@ -73,6 +125,11 @@ pub struct ObjectDatabase {
     packs: Option<Arc<PackStore>>,
     stores: Vec<Arc<dyn ObjectStore>>,
     sink: Option<ErrorSink>,
+    large: LargeObjectOptions,
+    /// The pack large objects are being written to (see `bulk.rs`).
+    bulk: Mutex<Option<Bulk>>,
+    /// Whether `bulk` holds objects that are not readable yet.
+    bulk_pending: AtomicBool,
 }
 
 impl std::fmt::Debug for ObjectDatabase {
@@ -98,6 +155,9 @@ impl ObjectDatabase {
             loose,
             packs: None,
             sink: Some(Box::new(print_error_to_stderr)),
+            large: LargeObjectOptions::default(),
+            bulk: Mutex::new(None),
+            bulk_pending: AtomicBool::new(false),
         }
     }
 
@@ -145,8 +205,10 @@ impl ObjectDatabase {
         warnings: &mut Vec<String>,
     ) -> Result<ObjectDatabase, Error> {
         let options = LooseOptions::from_config(config, warnings)?;
+        let large = LargeObjectOptions::from_config(config)?;
         let hash = setup.format.object_format;
-        let db = ObjectDatabase::open_with_packs(objects_dir(&setup.common_dir), hash, options);
+        let mut db = ObjectDatabase::open_with_packs(objects_dir(&setup.common_dir), hash, options);
+        db.set_large_object_options(large);
         let limit = config.int("core.deltaBaseCacheLimit").ok().flatten();
         if let (Some(limit), Some(packs)) = (limit, &db.packs) {
             packs.set_cache_limit(usize::try_from(limit).unwrap_or(0));
@@ -247,6 +309,7 @@ impl ObjectDatabase {
 
     /// Whether any store has the object.
     pub fn contains(&self, oid: &ObjectId) -> bool {
+        self.settle(oid);
         self.stores.iter().any(|s| s.contains(oid)) || is_empty_tree(oid)
     }
 
@@ -255,6 +318,7 @@ impl ObjectDatabase {
     /// `git cat-file -t` with a corrupt loose and an intact packed copy);
     /// when no copy answers, the first error is returned.
     pub fn header(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
+        self.settle(oid);
         match self.first_in_stores(false, |s, r| s.header_reporting(oid, r)) {
             // A delta whose base is corrupt in its pack may still be
             // readable with a base from another store.
@@ -269,6 +333,7 @@ impl ObjectDatabase {
 
     /// An object's type and content.
     pub fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
+        self.settle(oid);
         let found = self.first_in_stores(true, |s, r| {
             // A delta base that is corrupt in this store may have a good
             // copy in another one (git reads it from there).
@@ -298,6 +363,7 @@ impl ObjectDatabase {
 
     /// All objects whose id starts with `prefix`.
     pub fn resolve_prefix(&self, prefix: &Prefix) -> Result<PrefixMatch, Error> {
+        self.settle_all();
         let mut found = BTreeSet::new();
         for store in &self.stores {
             store.for_each_prefix_match(prefix, &mut |oid| {
@@ -313,6 +379,7 @@ impl ObjectDatabase {
 
     /// Every object id in all stores (sorted, without duplicates).
     pub fn all_objects(&self) -> Result<BTreeSet<ObjectId>, Error> {
+        self.settle_all();
         let mut all = BTreeSet::new();
         for store in &self.stores {
             store.for_each_object(&mut |oid| {
@@ -349,6 +416,121 @@ impl ObjectDatabase {
     }
 }
 
+/// Large objects.
+impl ObjectDatabase {
+    /// Use `options` for large objects (the default comes from
+    /// [`LargeObjectOptions::default`]; [`ObjectDatabase::open_for_repo`]
+    /// reads them from the configuration).
+    pub fn set_large_object_options(&mut self, options: LargeObjectOptions) {
+        self.large = options;
+    }
+
+    /// The settings for large objects.
+    pub fn large_object_options(&self) -> LargeObjectOptions {
+        self.large
+    }
+
+    /// `core.bigFileThreshold`.
+    pub fn big_file_threshold(&self) -> u64 {
+        self.large.big_file_threshold
+    }
+
+    /// Whether content of `size` bytes is above `core.bigFileThreshold`.
+    pub fn is_big(&self, size: u64) -> bool {
+        size > self.large.big_file_threshold
+    }
+
+    /// An object's content as a stream: loose objects and whole pack
+    /// entries are inflated while being read, so memory use does not
+    /// depend on the object's size. Copies that cannot be opened are
+    /// skipped like in [`ObjectDatabase::read`]; damage found while
+    /// reading is an error of the reader.
+    pub fn stream(&self, oid: &ObjectId) -> Result<Option<ObjectReader>, Error> {
+        self.settle(oid);
+        match self.first_in_stores(true, |s, _| s.stream(oid)) {
+            Ok(None) if is_empty_tree(oid) => Ok(Some(ObjectReader::from_raw(empty_tree()))),
+            other => other,
+        }
+    }
+
+    /// Store a large object of known `size` from `reader` in the pack of
+    /// large objects of this command, unless some store has it already
+    /// (then it is only freshened). The content is never held in memory.
+    /// The pack becomes visible with [`ObjectDatabase::flush_bulk`], when
+    /// one of its objects is looked up, or when the database is dropped.
+    pub fn write_bulk(
+        &self,
+        kind: ObjectKind,
+        size: u64,
+        reader: &mut dyn Read,
+    ) -> Result<ObjectId, Error> {
+        let mut bulk = self.bulk.lock().unwrap_or_else(|p| p.into_inner());
+        let bulk = bulk.get_or_insert_with(|| {
+            Bulk::new(
+                self.loose.objects_dir(),
+                self.hash,
+                BulkOptions {
+                    compression: self.large.pack_compression,
+                    size_limit: self.large.pack_size_limit,
+                },
+            )
+        });
+        let exists = |oid: &ObjectId| self.stores.iter().any(|s| s.freshen(oid));
+        let oid = bulk.write(kind, size, reader, &exists)?;
+        if bulk.pending(&oid) {
+            self.bulk_pending.store(true, Ordering::Release);
+        }
+        Ok(oid)
+    }
+
+    /// Finish the pack of large objects, if one is being written: its
+    /// header, checksum and index are written and it is moved into place.
+    pub fn flush_bulk(&self) -> Result<(), Error> {
+        let mut bulk = self.bulk.lock().unwrap_or_else(|p| p.into_inner());
+        self.bulk_pending.store(false, Ordering::Release);
+        match bulk.as_mut() {
+            Some(b) => b.finish(),
+            None => Ok(()),
+        }
+    }
+
+    /// Make `oid` readable if it waits in the unfinished pack.
+    fn settle(&self, oid: &ObjectId) {
+        if !self.bulk_pending.load(Ordering::Acquire) {
+            return;
+        }
+        let pending = self
+            .bulk
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|b| b.pending(oid));
+        if pending {
+            self.flush_reporting();
+        }
+    }
+
+    fn settle_all(&self) {
+        if self.bulk_pending.load(Ordering::Acquire) {
+            self.flush_reporting();
+        }
+    }
+
+    fn flush_reporting(&self) {
+        if let Err(e) = self.flush_bulk() {
+            for line in e.git_lines() {
+                eprintln!("error: {line}");
+            }
+        }
+    }
+}
+
+impl Drop for ObjectDatabase {
+    fn drop(&mut self) {
+        self.flush_reporting();
+    }
+}
+
 /// Errors of [`ObjectDatabase::read_object`].
 #[derive(Debug, thiserror::Error)]
 pub enum ReadObjectError {
@@ -377,6 +559,16 @@ impl rgit_pack::write::ObjectSource for ObjectDatabase {
     ) -> Result<Option<(ObjectKind, u64)>, rgit_pack::write::SourceError> {
         Ok(ObjectDatabase::header(self, id)?.map(|h| (h.kind, h.size)))
     }
+
+    fn stream(
+        &self,
+        id: &ObjectId,
+    ) -> Result<Option<rgit_pack::write::SourceStream<'_>>, rgit_pack::write::SourceError> {
+        Ok(ObjectDatabase::stream(self, id)?.map(|r| {
+            let (kind, size) = (r.kind(), r.size());
+            (kind, size, Box::new(r) as Box<dyn Read>)
+        }))
+    }
 }
 
 /// `index-pack` looks up objects (collision checks, thin pack bases)
@@ -388,6 +580,18 @@ impl rgit_pack::index_pack::ObjectDb for ObjectDatabase {
 
     fn read(&self, id: &ObjectId) -> Result<Option<RawObject>, String> {
         ObjectDatabase::read(self, id).map_err(|e| e.to_string())
+    }
+
+    fn stream(&self, id: &ObjectId) -> Result<Option<Box<dyn Read + '_>>, String> {
+        ObjectDatabase::stream(self, id)
+            .map(|r| r.map(|r| Box::new(r) as Box<dyn Read>))
+            .map_err(|e| e.to_string())
+    }
+
+    fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, String> {
+        ObjectDatabase::header(self, id)
+            .map(|h| h.map(|h| (h.kind, h.size)))
+            .map_err(|e| e.to_string())
     }
 }
 

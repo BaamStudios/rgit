@@ -9,6 +9,7 @@ use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::ObjectHeader;
 
 use crate::Error;
+use crate::stream::ObjectReader;
 
 pub use rgit_object::RawObject;
 
@@ -72,6 +73,12 @@ pub trait ObjectStore: Send + Sync + fmt::Debug {
     ) -> Result<Option<ObjectHeader>, Error> {
         let _ = report;
         self.header(oid)
+    }
+
+    /// The object as a stream (see [`crate::ObjectDatabase::stream`]). The
+    /// default reads the whole object.
+    fn stream(&self, oid: &ObjectId) -> Result<Option<ObjectReader>, Error> {
+        Ok(self.read(oid)?.map(ObjectReader::from_raw))
     }
 
     /// Call `f` for every object id in the store that starts with `prefix`

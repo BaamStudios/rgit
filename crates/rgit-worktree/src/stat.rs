@@ -663,6 +663,16 @@ impl Checker {
 
     fn content_differs_stat(&self, entry: &Entry, meta: &FileStat) -> io::Result<bool> {
         let path = os::join(&self.root, entry.path());
+        let converts = entry.mode.is_file()
+            && self
+                .filter
+                .as_ref()
+                .is_some_and(|f| f.converts(entry.path()));
+        if !meta.is_symlink() && !converts {
+            // Hashed as a stream: the file may be large.
+            self.hashed.set(self.hashed.get() + 1);
+            return Ok(stream_blob_id(self.kind, &path)? != entry.id);
+        }
         let data = if meta.is_symlink() {
             os::path_bytes(&std::fs::read_link(&path)?)
         } else {
@@ -749,6 +759,29 @@ fn beyond_symlink(path: &[u8], cache: &mut Vec<u8>, is_real_dir: impl Fn(&[u8]) 
     cache.clear();
     cache.extend_from_slice(dir);
     false
+}
+
+/// The blob id of the file at `path`, read in pieces.
+fn stream_blob_id(kind: HashKind, path: &Path) -> io::Result<ObjectId> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let size = f.metadata()?.len();
+    let mut h = rgit_hash::object_hasher(kind, "blob", size);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut left = size;
+    while left > 0 {
+        let want = left.min(buf.len() as u64) as usize;
+        match f.read(&mut buf[..want]) {
+            Ok(0) => return Ok(ObjectId::null(kind)),
+            Ok(n) => {
+                h.update(&buf[..n]);
+                left -= n as u64;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    h.finalize().map_err(|e| io::Error::other(e.to_string()))
 }
 
 fn blob_id(kind: HashKind, data: &[u8]) -> io::Result<ObjectId> {

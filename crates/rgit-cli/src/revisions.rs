@@ -39,6 +39,29 @@ pub struct Objects {
 }
 
 impl Objects {
+    /// Blob `oid` as a stream when it is above `core.bigFileThreshold`
+    /// (after replacements); `None` for anything else.
+    pub fn big_blob(&self, oid: &ObjectId) -> Option<rgit_odb::ObjectReader> {
+        let oid = self.replaced(oid);
+        let h = self.odb.header(oid).ok()??;
+        if h.kind != ObjectKind::Blob || !self.odb.is_big(h.size) {
+            return None;
+        }
+        self.odb.stream(oid).ok()?
+    }
+
+    /// The type of `oid` (after replacements) without reading it.
+    pub fn kind_of(&self, oid: &ObjectId) -> Option<ObjectKind> {
+        let oid = self.replaced(oid);
+        Some(self.odb.header(oid).ok()??.kind)
+    }
+
+    /// Use the large object settings of the repository
+    /// (`core.bigFileThreshold`).
+    pub fn set_large_object_options(&mut self, options: rgit_odb::LargeObjectOptions) {
+        self.odb.set_large_object_options(options);
+    }
+
     /// Read replaced objects through their replacements (git-replace(1)):
     /// the refs under `refs/replace/` (`$GIT_REPLACE_REF_BASE`), unless
     /// `disabled` (`--no-replace-objects`), `$GIT_NO_REPLACE_OBJECTS` or

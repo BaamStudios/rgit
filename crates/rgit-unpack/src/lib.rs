@@ -125,7 +125,7 @@ mod unpack;
 pub use cache_tree::repair_cache_tree;
 pub use checkout::{
     CheckoutError, Filter, Identity, create_leading_dirs, remove_empty_parents, remove_entry,
-    write_entry,
+    stream_entry, write_entry,
 };
 pub use objects::{Objects, read_blob, tree_entries};
 pub use path::{PathOptions, verify_checkout_path};

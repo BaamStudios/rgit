@@ -256,6 +256,28 @@ pub(crate) fn entry_for(
         return Ok(None);
     };
     let full = os_path(root, path);
+    let big = if mode.is_file() && crate::large::streams_file(repo.odb(), &meta) {
+        let conv = repo.converter().map_err(EntryError::Fatal)?;
+        if conv.converts(path) {
+            None
+        } else {
+            let id = crate::large::blob_from_file(repo.odb(), repo.hash, &full, meta.len(), !dry_run)
+                .map_err(|e| match e {
+                    crate::large::FileError::Read(e) => {
+                        read_err(format!("open(\"{shown}\"): {}", strerror(&e)))
+                    }
+                    crate::large::FileError::Odb(e) => {
+                        read_err(crate::messages::objects::insert_failure(&e, &shown))
+                    }
+                })?;
+            Some(id)
+        }
+    } else {
+        None
+    };
+    let id = if let Some(id) = big {
+        id
+    } else {
     let data = if meta.file_type().is_symlink() {
         std::fs::read_link(&full)
             .map(|t| t.as_os_str().as_encoded_bytes().to_vec())
@@ -277,12 +299,13 @@ pub(crate) fn entry_for(
             raw
         }
     };
-    let id = if dry_run {
+    if dry_run {
         rgit_hash::hash_object(repo.hash, "blob", &data).map_err(|e| read_err(e.to_string()))?
     } else {
         repo.odb()
             .write(ObjectKind::Blob, &data)
             .map_err(|e| read_err(crate::messages::objects::insert_failure(&e, &shown)))?
+    }
     };
     let mut entry = Entry::new(path.to_vec(), Stage::MERGED, mode, id);
     entry.stat = stat_from_metadata(&meta);

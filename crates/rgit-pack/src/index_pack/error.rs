@@ -98,6 +98,8 @@ pub enum Error {
     Hook(String),
     /// Index version 1 cannot hold an offset.
     OffsetTooLarge,
+    /// An object would need a buffer above `GIT_ALLOC_LIMIT`.
+    AllocLimit(rgit_object::AllocLimitError),
 }
 
 impl Error {
@@ -142,6 +144,7 @@ impl fmt::Display for Error {
             Error::CollisionAttack(offset) => m::collision_attack(f, *offset),
             Error::Hook(msg) => f.write_str(msg),
             Error::OffsetTooLarge => f.write_str(m::OFFSET_TOO_LARGE_V1),
+            Error::AllocLimit(e) => write!(f, "{e}"),
         }
     }
 }

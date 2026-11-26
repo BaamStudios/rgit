@@ -126,6 +126,10 @@ pub enum Error {
         /// The object directory, as the repository names it.
         dir: PathBuf,
     },
+    /// Reading the object would need a buffer above `GIT_ALLOC_LIMIT`
+    /// (fatal in git).
+    #[error(transparent)]
+    AllocLimit(#[from] rgit_object::AllocLimitError),
     /// An I/O error.
     #[error("{context}: {source}")]
     Io {
@@ -150,7 +154,10 @@ impl Error {
     pub fn is_corruption(&self) -> bool {
         !matches!(
             self,
-            Error::Config(_) | Error::Collision(_) | Error::InsufficientPermission { .. }
+            Error::Config(_)
+                | Error::Collision(_)
+                | Error::InsufficientPermission { .. }
+                | Error::AllocLimit(_)
         )
     }
 

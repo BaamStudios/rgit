@@ -42,6 +42,7 @@
 //! ```
 
 mod alternates;
+mod bulk;
 mod db;
 mod error;
 mod loose;
@@ -49,6 +50,7 @@ pub mod messages;
 mod options;
 mod packed;
 mod store;
+mod stream;
 mod zlib;
 
 pub use alternates::{
@@ -56,11 +58,12 @@ pub use alternates::{
     resolve_reporting as resolve_alternates_reporting,
 };
 pub use db::{
-    OBJECT_DIRECTORY_ENV, ObjectDatabase, PrefixMatch, ReadObjectError, objects_dir,
-    print_error_to_stderr,
+    LargeObjectOptions, OBJECT_DIRECTORY_ENV, ObjectDatabase, PrefixMatch, ReadObjectError,
+    objects_dir, print_error_to_stderr,
 };
 pub use error::Error;
 pub use loose::{LooseReader, LooseStore};
 pub use options::{DEFAULT_LOOSE_COMPRESSION, LooseOptions, ZLIB_DEFAULT_COMPRESSION, parse_fsync};
-pub use packed::PackStore;
+pub use packed::{PackStore, check_pack_alloc, stream_from_packs};
 pub use store::{ObjectStore, RawObject};
+pub use stream::{DEFAULT_BIG_FILE_THRESHOLD, ObjectReader};
