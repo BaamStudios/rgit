@@ -475,6 +475,7 @@ fn respond<R: Read, W: Write>(
         include_tag: req.include_tag,
         progress: !req.no_progress,
         filter: req.filter.as_ref().map(ObjectFilter::to_spec),
+        allow_promisor: s.promisor_accepted,
         band: Some(rgit_protocol::sideband::SidebandMode::Large),
     };
     pack::send(s, &pack)?;

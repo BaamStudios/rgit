@@ -33,6 +33,7 @@ mod ls_refs;
 pub mod messages;
 mod object_info;
 mod pack;
+mod promisor;
 mod refs;
 mod serve;
 mod shallow;
@@ -173,6 +174,8 @@ pub(crate) struct Settings {
     pub keep_alive: u64,
     /// `uploadpack.packObjectsHook`, from protected configuration only.
     pub pack_objects_hook: Option<String>,
+    /// The `promisor-remote` capability (`promisor.advertise`).
+    pub promisor_remotes: Option<String>,
 }
 
 /// `lsrefs.unborn`.
@@ -238,6 +241,7 @@ impl Settings {
             unborn,
             keep_alive,
             pack_objects_hook,
+            promisor_remotes: promisor::advertisement(config),
         })
     }
 }

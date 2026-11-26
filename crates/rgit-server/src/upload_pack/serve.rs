@@ -14,7 +14,7 @@ use rgit_protocol::{Packet, Reader, Writer};
 use rgit_trace::trace2;
 
 use super::{Error, Options, Repository, Result, Settings, Unborn, messages as msg};
-use super::{fetch, ls_refs, object_info};
+use super::{fetch, ls_refs, object_info, promisor};
 
 /// The commands of protocol v2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +43,9 @@ pub(crate) struct Session<'a, R: Read, W: Write> {
     pub settings: Settings,
     pub reader: Reader<R>,
     pub out: Output<W>,
+    /// The client accepted promisor remotes we advertised: objects
+    /// missing here that they promise may be left out of packs.
+    pub promisor_accepted: bool,
 }
 
 /// The response stream. With `sideband-all` every line goes out on
@@ -120,6 +123,7 @@ pub(crate) fn serve<R: Read, W: Write>(
             writer: Writer::new(output, "upload-pack"),
             sideband_all: false,
         },
+        promisor_accepted: false,
     };
     if opts.advertise_refs {
         session.advertise()?;
@@ -178,6 +182,9 @@ impl<R: Read, W: Write> Session<'_, R, W> {
         if s.advertise_bundle_uris {
             w.write_line("bundle-uri")?;
         }
+        if let Some(value) = &s.promisor_remotes {
+            w.write_line(&format!("promisor-remote={value}"))?;
+        }
         w.flush_pkt()?;
         Ok(())
     }
@@ -194,7 +201,7 @@ impl<R: Read, W: Write> Session<'_, R, W> {
 
     /// Check a capability line of a request. Returns the client's object
     /// format if this line names it.
-    fn capability(&self, line: &str) -> Result<Option<String>> {
+    fn capability(&mut self, line: &str) -> Result<Option<String>> {
         let (key, value) = match line.split_once('=') {
             Some((k, v)) => (k, Some(v)),
             None => (line, None),
@@ -212,9 +219,17 @@ impl<R: Read, W: Write> Session<'_, R, W> {
                 Ok(None)
             }
             // git knows this capability even when it does not advertise
-            // it; rgit has no promisor remotes to offer.
+            // it. The client names the advertised remotes it accepts.
             "promisor-remote" => match value {
-                Some(_) => Ok(None),
+                Some(names) => {
+                    if self.settings.promisor_remotes.is_some() {
+                        let ours = promisor::promisor_remotes(self.repo.config);
+                        self.promisor_accepted |= names
+                            .split(';')
+                            .any(|n| ours.iter().any(|o| promisor::encode(o) == n));
+                    }
+                    Ok(None)
+                }
                 None => Err(Error::fatal(msg::capability_requires_argument(key))),
             },
             _ => Err(Error::fatal(msg::unknown_capability(line))),

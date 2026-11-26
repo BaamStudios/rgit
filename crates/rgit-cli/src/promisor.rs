@@ -48,6 +48,15 @@ pub fn remotes(config: &ConfigSet) -> Vec<String> {
         out.retain(|r| *r != name);
         out.push(name);
     }
+    // Those accepted from a server in this process come first.
+    let accepted: Vec<String> = rgit_fetch::promisor::accepted_remotes()
+        .into_iter()
+        .filter(|r| out.contains(r))
+        .collect();
+    if !accepted.is_empty() {
+        out.retain(|r| !accepted.contains(r));
+        out.splice(0..0, accepted);
+    }
     out
 }
 
@@ -73,7 +82,8 @@ pub fn filter_of(config: &ConfigSet, remote: &str) -> Option<String> {
 }
 
 /// Commands that never fetch missing objects (git turns fetching off in
-/// them): transfers, packing and checking commands.
+/// them): transfers, packing and checking commands. `repack` does fetch an
+/// object it needs that is not a promisor object (t5710).
 const NO_FETCH: &[&str] = &[
     "fetch",
     "fetch-pack",
@@ -83,7 +93,6 @@ const NO_FETCH: &[&str] = &[
     "fsck-objects",
     "prune",
     "prune-packed",
-    "repack",
     "gc",
     "upload-pack",
     "receive-pack",
@@ -181,6 +190,12 @@ fn fetch_missing(ctx: &Context, objects: &Path, ids: &[ObjectId]) -> bool {
     let quiet = config.bool("promisor.quiet").ok().flatten() == Some(true);
     let mut remaining: Vec<ObjectId> = ids.to_vec();
     for remote in &remotes {
+        rgit_trace::trace2::data(
+            "promisor",
+            "fetch_count",
+            &remaining.len().to_string(),
+            true,
+        );
         run_fetch(ctx, &git_dir, remote, quiet, &remaining);
         remaining.retain(|id| !odb.contains(id));
         if remaining.is_empty() {
@@ -240,6 +255,14 @@ fn run_fetch(ctx: &Context, git_dir: &Path, remote: &str, quiet: bool, ids: &[Ob
         let _ = stdin.write_all(text.as_bytes());
     }
     let _ = child.wait();
+}
+
+/// `--filter=auto` (git-clone(1)).
+pub const AUTO: &str = "auto";
+
+/// Whether the `--filter` options ask for `auto`.
+pub fn is_auto(filters: &[String]) -> bool {
+    matches!(filters, [one] if one == AUTO)
 }
 
 /// Characters written as `%xx` in a filter inside `combine:`
@@ -359,6 +382,12 @@ pub fn fetch_filter(
     filters: &[String],
     no_filter: bool,
 ) -> Result<(Option<String>, bool), crate::Die> {
+    // `--filter=auto`: the filters of the promisor remotes the server
+    // advertises and we accept (resolved once connected).
+    if is_auto(filters) {
+        register(setup, config, remote, AUTO)?;
+        return Ok((Some(AUTO.to_owned()), true));
+    }
     if let Some((f, text)) = parse_filters(filters)? {
         register(setup, config, remote, &text)?;
         return Ok((Some(f.to_spec()), true));
@@ -370,6 +399,7 @@ pub fn fetch_filter(
         return Ok((None, true));
     }
     let spec = match filter_of(config, remote) {
+        Some(s) if s == AUTO => Some(s),
         Some(s) => Some(
             rgit_pack::write::ObjectFilter::parse(&s)
                 .map_err(|e| crate::Die::Fatal(e.to_string()))?

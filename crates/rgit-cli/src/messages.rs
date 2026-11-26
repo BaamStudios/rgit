@@ -6,6 +6,7 @@ pub mod add;
 pub mod am;
 pub mod apply;
 pub mod archive;
+pub mod backfill;
 pub mod bisect;
 pub mod bitmap;
 pub mod blame;

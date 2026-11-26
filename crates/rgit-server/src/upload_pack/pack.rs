@@ -52,6 +52,9 @@ pub(crate) struct PackRequest {
     pub progress: bool,
     /// `filter`, as an expanded spec.
     pub filter: Option<String>,
+    /// The client accepted our promisor remotes: objects they promise
+    /// that are missing here are left out (`--missing=allow-promisor`).
+    pub allow_promisor: bool,
     /// How the pack travels: on sideband 1 with progress on sideband 2,
     /// or (protocol v0 without `side-band`) as it is, with the progress
     /// on our standard error.
@@ -82,6 +85,9 @@ impl PackRequest {
         }
         if self.include_tag {
             args.push("--include-tag".into());
+        }
+        if self.allow_promisor {
+            args.push("--missing=allow-promisor".into());
         }
         args.push(
             if self.progress {
@@ -318,6 +324,7 @@ mod tests {
             include_tag: false,
             progress: false,
             filter: None,
+            allow_promisor: false,
             band: Some(SidebandMode::Large),
         };
         assert_eq!(
@@ -348,6 +355,7 @@ mod tests {
             include_tag: true,
             progress: true,
             filter: Some("blob:limit=1024".into()),
+            allow_promisor: true,
             band: Some(SidebandMode::Large),
         };
         assert_eq!(
@@ -362,6 +370,7 @@ mod tests {
                 "--shallow",
                 "--delta-base-offset",
                 "--include-tag",
+                "--missing=allow-promisor",
                 "--progress",
                 "--filter=blob:limit=1024"
             ]

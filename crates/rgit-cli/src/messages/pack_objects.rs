@@ -176,3 +176,7 @@ pub fn total_reused(
          pack-reused {pack_reused} (from 1)"
     )
 }
+
+pub fn invalid_missing(value: &str) -> String {
+    format!("invalid value for '--missing': '{value}'")
+}
