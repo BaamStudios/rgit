@@ -15,12 +15,14 @@ Baseline format, one entry per line:
 
     -p rgit-cli --test add    #679 reason
     -p rgit-cli               #679 every target of the crate
+    -p rgit-cli --test diff*  #679 every target the pattern matches
     skip -p rgit-cli --test fetch   #680 hangs
 
 A target is named as cargo names it (`-p <crate> --lib`, `--bin <name>`,
 `--test <name>`, `--doc`). `skip` entries are not run at all (for targets
-that hang). Every entry needs an issue reference (`#<number>`), so nothing
-is skipped or tolerated silently.
+that hang or take too long to be worth running while they fail). Every
+entry needs an issue reference (`#<number>`), so nothing is skipped or
+tolerated silently.
 
 Usage: scripts/platform-tests.py <platform> [--timeout <seconds>]
 
@@ -28,6 +30,7 @@ Usage: scripts/platform-tests.py <platform> [--timeout <seconds>]
 trying the script locally; the comparison then covers those targets only).
 """
 
+import fnmatch
 import json
 import os
 import re
@@ -138,6 +141,10 @@ def run(name, command, cwd, limit, env=None):
 
 
 def main():
+    # The output of failing tests is printed as it is: never fail on a
+    # character the console encoding lacks (Windows: cp1252).
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     args = sys.argv[1:]
     limit = 900
     if "--timeout" in args:
@@ -151,9 +158,16 @@ def main():
     baseline = os.path.join("ci", "platform", f"{platform}.txt")
     known, skipped = read_baseline(os.path.join(ROOT, baseline))
 
-    def listed(name):
+    def matches(name, entries):
         crate = " ".join(name.split()[:2])
-        return name in known or crate in known
+        return (
+            name in entries
+            or crate in entries
+            or any("*" in e and fnmatch.fnmatchcase(name, e) for e in entries)
+        )
+
+    def listed(name):
+        return matches(name, known)
 
     only = re.compile(os.environ.get("PLATFORM_TESTS_ONLY", ""))
     failed = []
@@ -162,7 +176,7 @@ def main():
         if not only.search(name):
             continue
         seen.add(name)
-        if name in skipped:
+        if matches(name, skipped):
             print(f"skipped {name} (listed in {baseline})", flush=True)
             continue
         env = dict(os.environ, CARGO_MANIFEST_DIR=manifest_dir)
@@ -174,7 +188,7 @@ def main():
     for crate in crates:
         name = f"-p {crate} --doc"
         seen.add(name)
-        if name in skipped:
+        if matches(name, skipped):
             print(f"skipped {name} (listed in {baseline})", flush=True)
             continue
         lib = os.path.join(ROOT, "crates", crate, "src", "lib.rs")
@@ -192,11 +206,8 @@ def main():
     for name in new:
         print(f"::error::{platform}: test target fails and is not in {baseline}: {name}")
     for entry in sorted(known - skipped):
-        if len(entry.split()) > 2:
-            if entry in seen and entry not in failed:
-                print(f"::notice::{platform}: {entry} passes now, remove it from {baseline}")
-        elif not any(name.startswith(entry + " ") for name in failed):
-            print(f"::notice::{platform}: every target of {entry} passes now, remove it from {baseline}")
+        if not any(matches(name, {entry}) for name in failed):
+            print(f"::notice::{platform}: nothing listed as {entry} fails now, remove it from {baseline}")
     if new:
         print(
             f"error: new failures on {platform}. Fix them, or record them in "

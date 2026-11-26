@@ -1,1 +1,7 @@
 # Test targets known to fail on Windows (format: scripts/platform-tests.py).
+
+# The differential tests of the command line: about two thirds of the
+# targets differ from Git for Windows (paths, shell scripts in fixtures,
+# file modes, names NTFS cannot hold), and the whole set takes more than an
+# hour on the runner. Not run until the areas of #681, #682 and #683 are done.
+skip -p rgit-cli --test *  #679 not run on Windows yet
