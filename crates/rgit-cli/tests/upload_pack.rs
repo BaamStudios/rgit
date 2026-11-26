@@ -600,6 +600,15 @@ fn negotiation_and_packs_equal_git() {
         // No wants.
         vec![have(&head)],
         vec![have(&head), done()],
+        // `wait-for-done` (`fetch --negotiate-only`): the acknowledgments
+        // come without wants too.
+        vec![have(&head), "wait-for-done".into()],
+        vec![have(&parent), have(&unknown), "wait-for-done".into()],
+        vec![have(&unknown), "wait-for-done".into()],
+        vec!["wait-for-done".into(), quiet()],
+        // No haves: nothing to acknowledge, the pack follows at once.
+        vec![want(&head), quiet()],
+        vec![want(&head), "wait-for-done".into(), quiet()],
     ];
     for args in &cases {
         same_fetch(&fx, &[], "srv", args);
