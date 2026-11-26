@@ -46,6 +46,7 @@ pub mod messages;
 pub mod refmap;
 mod repo;
 mod session;
+pub use session::trace_child;
 pub mod shallow;
 pub mod update;
 

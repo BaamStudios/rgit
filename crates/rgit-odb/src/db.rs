@@ -574,6 +574,19 @@ impl ObjectDatabase {
             .any(|p| p.set().packs().iter().any(|p| p.is_promisor()))
     }
 
+    /// The objects stored in promisor packs themselves, without the
+    /// objects they refer to (where `rev-list --exclude-promisor-objects`
+    /// stops its traversal).
+    pub fn promisor_pack_objects(&self) -> HashSet<ObjectId> {
+        let mut out = HashSet::new();
+        for store in self.packs.iter().chain(&self.alternate_packs) {
+            for pack in store.set().packs().iter().filter(|p| p.is_promisor()) {
+                out.extend(pack.index().ids());
+            }
+        }
+        out
+    }
+
     /// The promisor objects (`Documentation/technical/partial-clone.adoc`):
     /// the objects in promisor packs and the objects they refer to (the
     /// tree and parents of a commit, the entries of a tree except

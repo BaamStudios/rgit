@@ -67,6 +67,7 @@ pub fn select(
     input: &mut dyn BufRead,
     follow: bool,
     unpacked: bool,
+    exclude_promisor: bool,
 ) -> Result<Vec<ListedObject>, Die> {
     let mut lines: Vec<(Role, String)> = Vec::new();
     let mut line = String::new();
@@ -98,6 +99,11 @@ pub fn select(
         let Some((_, pack)) = packs.iter().find(|(n, _)| n == name) else {
             return Err(Die::Fatal(msg::could_not_find_pack(name)));
         };
+        if exclude_promisor && *role == Role::Included && pack.is_promisor() {
+            return Err(Die::Fatal(msg::promisor_pack_excluded(
+                &pack.path().display().to_string(),
+            )));
+        }
         listed.push((*role, pack.clone()));
     }
     let any_open = listed.iter().any(|(r, _)| *r == Role::ExcludedOpen);
@@ -132,6 +138,13 @@ pub fn select(
         }
     }
 
+    // `--exclude-promisor-objects`: the follow walk stops at the objects
+    // of promisor packs.
+    let promisor = if exclude_promisor && follow {
+        odb.promisor_pack_objects()
+    } else {
+        HashSet::new()
+    };
     if follow {
         let mut visited: HashSet<ObjectId> = chosen.iter().chain(&starts).copied().collect();
         let mut queue: VecDeque<ObjectId> = visited.iter().copied().collect();
@@ -145,7 +158,7 @@ pub fn select(
                 if any_open && in_role(&next, Role::Excluded) {
                     continue;
                 }
-                if !odb.contains(&next) {
+                if !odb.contains(&next) || promisor.contains(&next) {
                     continue;
                 }
                 if !excluded(&next) && seen.insert(next) {

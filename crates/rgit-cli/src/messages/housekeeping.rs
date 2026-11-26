@@ -184,6 +184,10 @@ pub fn could_not_find_pack(name: &str) -> String {
     format!("could not find pack '{name}'")
 }
 
+pub fn promisor_pack_excluded(path: &str) -> String {
+    format!("packfile {path} is a promisor but --exclude-promisor-objects was given")
+}
+
 /// `repack -b` cannot write a bitmap: the pack lacks an object.
 pub fn bitmap_no_closure(id: &str) -> String {
     format!(

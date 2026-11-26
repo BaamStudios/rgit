@@ -30,6 +30,9 @@ pub struct Tracker {
     /// The promisor objects (`--missing=allow-promisor`,
     /// `--exclude-promisor-objects`).
     promisor: Option<HashSet<ObjectId>>,
+    /// The objects in promisor packs, where `--exclude-promisor-objects`
+    /// stops (objects they only refer to are listed when present).
+    in_promisor_packs: Option<HashSet<ObjectId>>,
     exclude_promisor: bool,
     /// Missing objects passed over, in the order found: id, type, path.
     found: Vec<(ObjectId, &'static str, Option<Vec<u8>>)>,
@@ -50,6 +53,9 @@ impl Tracker {
         Rc::new(RefCell::new(Tracker {
             action,
             promisor,
+            in_promisor_packs: opts
+                .exclude_promisor
+                .then(|| repo.objects.promisor_pack_objects()),
             exclude_promisor: opts.exclude_promisor,
             found: Vec::new(),
             seen: HashSet::new(),
@@ -60,15 +66,17 @@ impl Tracker {
     /// Whether `id` is a promisor object to leave out
     /// (`--exclude-promisor-objects`).
     pub fn excludes(&self, id: &ObjectId) -> bool {
-        self.exclude_promisor && self.promisor.as_ref().is_some_and(|p| p.contains(id))
+        self.in_promisor_packs
+            .as_ref()
+            .is_some_and(|p| p.contains(id))
     }
 
     /// The promisor objects to leave out, if any.
     pub fn excluded_objects(&self) -> Vec<ObjectId> {
-        match (&self.promisor, self.exclude_promisor) {
-            (Some(p), true) => p.iter().copied().collect(),
-            _ => Vec::new(),
-        }
+        self.in_promisor_packs
+            .as_ref()
+            .map(|p| p.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// A missing object: `Ok(())` when it is passed over (and noted), the
@@ -115,7 +123,9 @@ impl Tracker {
     /// Whether a missing commit is passed over rather than fatal.
     pub fn tolerates_commits(&self, id: &ObjectId) -> bool {
         match self.action {
-            Missing::Error => self.excludes(id),
+            Missing::Error => {
+                self.exclude_promisor && self.promisor.as_ref().is_some_and(|p| p.contains(id))
+            }
             Missing::AllowPromisor => self.promisor.as_ref().is_some_and(|p| p.contains(id)),
             _ => true,
         }

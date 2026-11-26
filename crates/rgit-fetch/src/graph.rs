@@ -155,7 +155,9 @@ pub fn check_connected(
             continue;
         }
         if !received.contains(&id) {
-            if odb.contains(&id) {
+            // In a partial clone an object that promisor packs refer to
+            // need not be here (`rev-list --exclude-promisor-objects`).
+            if odb.contains(&id) || odb.is_promisor_object(&id) {
                 continue;
             }
             return Err(id);

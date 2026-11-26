@@ -620,6 +620,28 @@ pub fn fetch(
                 .unwrap_or_default(),
         );
     }
+    // git checks what a non-promisor pack brought with a `rev-list` child
+    // (with `--shallow-file` when the boundary moves, not reported here).
+    if !opts.promisor && !received.is_empty() && new_shallow.is_none() && current.is_empty() {
+        let mut args: Vec<String> = ["rev-list", "--objects", "--stdin"]
+            .map(String::from)
+            .to_vec();
+        // A repository with a promisor remote (partial clone).
+        let partial = repo.config.get("extensions.partialclone").is_some()
+            || repo.config.entries().iter().any(|e| {
+                e.name.starts_with(b"remote.")
+                    && e.name.ends_with(b".promisor")
+                    && e.bool().unwrap_or(false)
+            });
+        if partial {
+            args.push("--exclude-promisor-objects".into());
+        }
+        args.extend(
+            ["--not", "--exclude-hidden=fetch", "--all", "--quiet", "--alternate-refs"]
+                .map(String::from),
+        );
+        crate::trace_child(&args);
+    }
     if graph::check_connected(&repo.odb, &tips, &received, &boundary, opts.promisor).is_err() {
         for p in &packs {
             p.release();

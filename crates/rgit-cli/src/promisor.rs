@@ -378,8 +378,12 @@ pub fn fetch_filter(
     if !remotes(config).iter().any(|r| r == remote) {
         return Ok((None, false));
     }
+    // Observed from git 2.56: without a filter (`--no-filter`, none
+    // configured) a promisor remote's pack is stored like any other one
+    // (loose below the unpack limit, no `.promisor` file) and checked for
+    // connectivity.
     if no_filter {
-        return Ok((None, true));
+        return Ok((None, false));
     }
     let spec = match filter_of(config, remote) {
         Some(s) => Some(
@@ -389,5 +393,6 @@ pub fn fetch_filter(
         ),
         None => None,
     };
-    Ok((spec, true))
+    let promisor = spec.is_some();
+    Ok((spec, promisor))
 }

@@ -1280,6 +1280,24 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         if let Some(Our::Tag(_, oid) | Our::Branch(_, oid) | Our::Detached(oid)) = &our {
             all_tips.push(*oid);
         }
+        // git checks what a full clone received with a `rev-list` child.
+        if !partial && !received.is_empty() {
+            let mut args: Vec<String> = [
+                "rev-list",
+                "--objects",
+                "--stdin",
+                "--not",
+                "--all",
+                "--quiet",
+                "--alternate-refs",
+            ]
+            .map(String::from)
+            .to_vec();
+            if show_progress {
+                args.push("--progress=Checking connectivity".into());
+            }
+            rgit_fetch::trace_child(&args);
+        }
         if graph::check_connected(&repo.odb, &tips, &received, &shallow, partial).is_err() {
             return Err(Die::Fatal(msg::REMOTE_DID_NOT_SEND_ALL.into()));
         }
