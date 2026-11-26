@@ -256,6 +256,137 @@ fn format_patch_range_diff() {
     }
 }
 
+/// Notes of the compared commits: compared by default in `range-diff`,
+/// only on request (`--notes`, `format.notes`) in `format-patch`, where
+/// the standard notes leave the other refs out of the comparison.
+#[test]
+fn range_diff_notes() {
+    let mut fx = history();
+    if fx.is_skipped() {
+        return;
+    }
+    fx = fx
+        .git(["notes", "add", "-m", "v1 note", "v1~2"])
+        .git(["notes", "add", "-m", "v2 note", "v2~3"])
+        .git(["notes", "--ref=custom", "add", "-m", "v1 custom", "v1~2"])
+        .git(["notes", "--ref=custom", "add", "-m", "v2 custom", "v2~3"])
+        .git(["notes", "--ref=other", "add", "-m", "other", "v2~3"]);
+    let cases: &[&[&str]] = &[
+        &["range-diff", "--no-color", "base", "v1", "v2"],
+        &["range-diff", "--no-color", "--no-notes", "base", "v1", "v2"],
+        &[
+            "range-diff",
+            "--no-color",
+            "--notes=custom",
+            "base",
+            "v1",
+            "v2",
+        ],
+        &[
+            "range-diff",
+            "--no-color",
+            "--notes=custom",
+            "--notes=other",
+            "base",
+            "v1",
+            "v2",
+        ],
+        &[
+            "log",
+            "--pretty=medium",
+            "--show-notes-by-default",
+            "-1",
+            "v2~3",
+        ],
+        &[
+            "log",
+            "--pretty=medium",
+            "--show-notes-by-default",
+            "--notes=custom",
+            "-1",
+            "v2~3",
+        ],
+    ];
+    for case in cases {
+        fx.compare(*case).checks(Check::OUTPUT).run();
+    }
+    let fp: &[&[&str]] = &[
+        &["--cover-letter", "--range-diff=v1", "base..v2"],
+        &["--notes", "--cover-letter", "--range-diff=v1", "base..v2"],
+        &[
+            "--notes=custom",
+            "--cover-letter",
+            "--range-diff=v1",
+            "base..v2",
+        ],
+        &[
+            "--notes",
+            "--no-notes",
+            "--cover-letter",
+            "--range-diff=v1",
+            "base..v2",
+        ],
+        &[
+            "-c",
+            "format.notes=custom",
+            "--range-diff=v1",
+            "--cover-letter",
+            "base..v2",
+        ],
+        &[
+            "--notes=custom",
+            "--notes=other",
+            "-1",
+            "--range-diff=v1~2",
+            "v2~3",
+        ],
+        &[
+            "--notes=custom",
+            "--notes",
+            "-1",
+            "--range-diff=v1~2",
+            "v2~3",
+        ],
+        &[
+            "-c",
+            "format.notes=other",
+            "--notes=custom",
+            "-1",
+            "--range-diff=v1~2",
+            "v2~3",
+        ],
+    ];
+    for case in fp {
+        let (config, rest): (Vec<&str>, Vec<&str>) = if case[0] == "-c" {
+            (vec!["-c", case[1]], case[2..].to_vec())
+        } else {
+            (Vec::new(), case.to_vec())
+        };
+        let argv: Vec<&str> = config
+            .into_iter()
+            .chain(["format-patch", "--stdout", "--no-signature"])
+            .chain(rest)
+            .collect();
+        fx.compare(&argv).checks(Check::OUTPUT).run();
+    }
+    fx = fx.git(["config", "--add", "format.notes", "true"]).git([
+        "config",
+        "--add",
+        "format.notes",
+        "other",
+    ]);
+    fx.compare([
+        "format-patch",
+        "--stdout",
+        "--no-signature",
+        "--cover-letter",
+        "--range-diff=v1",
+        "base..v2",
+    ])
+    .checks(Check::OUTPUT)
+    .run();
+}
+
 #[test]
 fn range_diff_help_outside_a_repository() {
     let mut fx = Fixture::new().rgit(env!("CARGO_BIN_EXE_rgit"));

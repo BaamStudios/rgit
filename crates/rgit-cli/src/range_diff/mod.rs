@@ -163,12 +163,11 @@ fn read_patches(
         "--output-indicator-context=#",
         "--no-abbrev-commit",
         "--pretty=medium",
+        "--show-notes-by-default",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
-    // git also passes `--show-notes-by-default`; rgit's `log` shows no
-    // notes yet (rgit #138), so they are left out of the patches (#614).
     if !opts.include_merges {
         args.push("--no-merges".to_string());
     }
