@@ -328,11 +328,7 @@ fn crontab_update(programs: &Programs, region: Option<(&Invocation, u32)>) -> Re
         }
         out.push_str(CRON_BEGIN);
         out.push('\n');
-        out.push_str(
-            "# The following schedule was created by Git\n\
-             # Any edits made in this region might be\n\
-             # replaced in the future by a Git command.\n\n",
-        );
+        out.push_str(msg::CRON_HEADER);
         out.push_str(&format!("{minute} 1-23 * * * {}\n", inv.line("hourly")));
         out.push_str(&format!("{minute} 0 * * 1-6 {}\n", inv.line("daily")));
         out.push_str(&format!("{minute} 0 * * 0 {}\n", inv.line("weekly")));
@@ -365,14 +361,6 @@ fn crontab_update(programs: &Programs, region: Option<(&Invocation, u32)>) -> Re
 
 // systemd
 
-const UNIT_HEADER: &str = "# This file was created and is maintained by Git.
-# Any edits made in this file might be replaced in the future
-# by a Git command.
-
-[Unit]
-Description=Optimize Git repositories data
-";
-
 fn systemd_dir() -> Option<PathBuf> {
     match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         Some(x) => Some(PathBuf::from(x).join("systemd").join("user")),
@@ -402,19 +390,10 @@ fn systemd_enable(
             Schedule::Daily => format!("Tue..Sun *-*-* 0:{minute:02}:00"),
             Schedule::Weekly => format!("Mon 0:{minute:02}:00"),
         };
-        let text = format!(
-            "{UNIT_HEADER}\n[Timer]\nOnCalendar={calendar}\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
-        );
+        let text = msg::systemd_timer(&calendar);
         std::fs::write(dir.join(timer_unit(f)), text).map_err(|_| None)?;
     }
-    let service = format!(
-        "{UNIT_HEADER}\n[Service]\nType=oneshot\nExecStart={}\n\
-         LockPersonality=yes\nMemoryDenyWriteExecute=yes\nNoNewPrivileges=yes\n\
-         RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_VSOCK\nRestrictNamespaces=yes\n\
-         RestrictRealtime=yes\nRestrictSUIDSGID=yes\nSystemCallArchitectures=native\n\
-         SystemCallFilter=@system-service\n",
-        inv.line("%i")
-    );
+    let service = msg::systemd_service(&inv.line("%i"));
     std::fs::write(dir.join("git-maintenance@.service"), service).map_err(|_| None)?;
     for f in Schedule::ALL {
         let unit = timer_unit(f);
@@ -476,15 +455,7 @@ fn xml_escape(s: &str) -> String {
 }
 
 fn plist(inv: &Invocation, f: Schedule, minute: u32) -> String {
-    let mut s = String::from(
-        "<?xml version=\"1.0\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">",
-    );
-    s.push_str(&format!(
-        "<dict>\n<key>Label</key><string>{}</string>\n<key>ProgramArguments</key>\n<array>\n",
-        launch_label(f)
-    ));
+    let mut s = msg::plist_start(&launch_label(f));
     let schedule = format!("--schedule={}", f.name());
     let exec = format!("--exec-path={}", inv.exec_path);
     for a in [
@@ -503,17 +474,8 @@ fn plist(inv: &Invocation, f: Schedule, minute: u32) -> String {
     ] {
         s.push_str(&format!("<string>{}</string>\n", xml_escape(a)));
     }
-    s.push_str("</array>\n<key>StartCalendarInterval</key>\n<array>\n");
-    let entry = |weekday: Option<u32>, hour: u32| {
-        let mut e = String::from("<dict>\n");
-        if let Some(w) = weekday {
-            e.push_str(&format!("<key>Weekday</key><integer>{w}</integer>\n"));
-        }
-        e.push_str(&format!(
-            "<key>Hour</key><integer>{hour}</integer>\n<key>Minute</key><integer>{minute}</integer>\n</dict>\n"
-        ));
-        e
-    };
+    s.push_str(msg::PLIST_CALENDAR);
+    let entry = |weekday: Option<u32>, hour: u32| msg::plist_interval(weekday, hour, minute);
     match f {
         Schedule::Hourly => (1..=23).for_each(|h| s.push_str(&entry(None, h))),
         Schedule::Daily => (1..=6).for_each(|d| s.push_str(&entry(Some(d), 0))),
@@ -585,47 +547,17 @@ fn schtasks_name(f: Schedule) -> String {
 
 fn schtasks_xml(inv: &Invocation, f: Schedule, minute: u32) -> String {
     let (hour, trigger) = match f {
-        Schedule::Hourly => (
-            1,
-            "<ScheduleByDay>\n<DaysInterval>1</DaysInterval>\n</ScheduleByDay>\n\
-             <Repetition>\n<Interval>PT1H</Interval>\n<Duration>PT23H</Duration>\n\
-             <StopAtDurationEnd>false</StopAtDurationEnd>\n</Repetition>\n"
-                .to_string(),
-        ),
-        Schedule::Daily => (
-            0,
-            "<ScheduleByWeek>\n<DaysOfWeek>\n<Monday />\n<Tuesday />\n<Wednesday />\n\
-             <Thursday />\n<Friday />\n<Saturday />\n</DaysOfWeek>\n\
-             <WeeksInterval>1</WeeksInterval>\n</ScheduleByWeek>\n"
-                .to_string(),
-        ),
-        Schedule::Weekly => (
-            0,
-            "<ScheduleByWeek>\n<DaysOfWeek>\n<Sunday />\n</DaysOfWeek>\n\
-             <WeeksInterval>1</WeeksInterval>\n</ScheduleByWeek>\n"
-                .to_string(),
-        ),
+        Schedule::Hourly => (1, msg::SCHTASKS_HOURLY),
+        Schedule::Daily => (0, msg::SCHTASKS_DAILY),
+        Schedule::Weekly => (0, msg::SCHTASKS_WEEKLY),
     };
-    format!(
-        "<?xml version=\"1.0\" ?>\n\
-         <Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n\
-         <Triggers>\n<CalendarTrigger>\n\
-         <StartBoundary>2020-01-01T{hour:02}:{minute:02}:00</StartBoundary>\n\
-         <Enabled>true</Enabled>\n{trigger}</CalendarTrigger>\n</Triggers>\n\
-         <Principals>\n<Principal id=\"Author\">\n<LogonType>InteractiveToken</LogonType>\n\
-         <RunLevel>LeastPrivilege</RunLevel>\n</Principal>\n</Principals>\n\
-         <Settings>\n<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n\
-         <Enabled>true</Enabled>\n<Hidden>true</Hidden>\n\
-         <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>\n\
-         <WakeToRun>false</WakeToRun>\n<ExecutionTimeLimit>PT72H</ExecutionTimeLimit>\n\
-         <Priority>7</Priority>\n</Settings>\n\
-         <Actions Context=\"Author\">\n<Exec>\n<Command>\"{}\"</Command>\n\
-         <Arguments>--exec-path=\"{}\" -c credential.interactive=false -c core.askPass=true  \
-         for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule={}</Arguments>\n\
-         </Exec>\n</Actions>\n</Task>\n",
-        xml_escape(&inv.exe),
-        xml_escape(&inv.exec_path),
-        f.name()
+    msg::schtasks_xml(
+        hour,
+        minute,
+        trigger,
+        &xml_escape(&inv.exe),
+        &xml_escape(&inv.exec_path),
+        f.name(),
     )
 }
 

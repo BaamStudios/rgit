@@ -106,3 +106,106 @@ pub const MISSING_CONFIG: &str = "missing --config=<config>";
 pub fn bad_config(key: &str) -> String {
     format!("got bad config --config={key}")
 }
+
+// The files `maintenance start` writes for the schedulers, reproduced from
+// what the reference git writes (observed output, CLEANROOM.md).
+
+/// The comment lines after `# BEGIN GIT MAINTENANCE SCHEDULE`.
+pub const CRON_HEADER: &str = "# The following schedule was created by Git
+# Any edits made in this region might be
+# replaced in the future by a Git command.
+
+";
+
+const UNIT_HEADER: &str = "# This file was created and is maintained by Git.
+# Any edits made in this file might be replaced in the future
+# by a Git command.
+
+[Unit]
+Description=Optimize Git repositories data
+";
+
+/// `git-maintenance@<frequency>.timer`.
+pub fn systemd_timer(calendar: &str) -> String {
+    format!(
+        "{UNIT_HEADER}\n[Timer]\nOnCalendar={calendar}\nPersistent=true\n\n\
+         [Install]\nWantedBy=timers.target\n"
+    )
+}
+
+/// `git-maintenance@.service`.
+pub fn systemd_service(exec: &str) -> String {
+    format!(
+        "{UNIT_HEADER}\n[Service]\nType=oneshot\nExecStart={exec}\n\
+         LockPersonality=yes\nMemoryDenyWriteExecute=yes\nNoNewPrivileges=yes\n\
+         RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_VSOCK\nRestrictNamespaces=yes\n\
+         RestrictRealtime=yes\nRestrictSUIDSGID=yes\nSystemCallArchitectures=native\n\
+         SystemCallFilter=@system-service\n"
+    )
+}
+
+/// The start of a launchd property list, up to the program arguments.
+pub fn plist_start(label: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\n<key>Label</key><string>{label}</string>\n\
+         <key>ProgramArguments</key>\n<array>\n"
+    )
+}
+
+pub const PLIST_CALENDAR: &str = "</array>\n<key>StartCalendarInterval</key>\n<array>\n";
+
+/// One entry of `StartCalendarInterval`.
+pub fn plist_interval(weekday: Option<u32>, hour: u32, minute: u32) -> String {
+    let mut e = String::from("<dict>\n");
+    if let Some(w) = weekday {
+        e.push_str(&format!("<key>Weekday</key><integer>{w}</integer>\n"));
+    }
+    e.push_str(&format!(
+        "<key>Hour</key><integer>{hour}</integer>\n\
+         <key>Minute</key><integer>{minute}</integer>\n</dict>\n"
+    ));
+    e
+}
+
+pub const SCHTASKS_HOURLY: &str = "<ScheduleByDay>\n<DaysInterval>1</DaysInterval>\n</ScheduleByDay>\n\
+     <Repetition>\n<Interval>PT1H</Interval>\n<Duration>PT23H</Duration>\n\
+     <StopAtDurationEnd>false</StopAtDurationEnd>\n</Repetition>\n";
+
+pub const SCHTASKS_DAILY: &str = "<ScheduleByWeek>\n<DaysOfWeek>\n<Monday />\n<Tuesday />\n\
+     <Wednesday />\n<Thursday />\n<Friday />\n<Saturday />\n</DaysOfWeek>\n\
+     <WeeksInterval>1</WeeksInterval>\n</ScheduleByWeek>\n";
+
+pub const SCHTASKS_WEEKLY: &str = "<ScheduleByWeek>\n<DaysOfWeek>\n<Sunday />\n</DaysOfWeek>\n\
+     <WeeksInterval>1</WeeksInterval>\n</ScheduleByWeek>\n";
+
+/// The task definition for `schtasks /create ... /xml`.
+pub fn schtasks_xml(
+    hour: u32,
+    minute: u32,
+    trigger: &str,
+    exe: &str,
+    exec_path: &str,
+    schedule: &str,
+) -> String {
+    format!(
+        "<?xml version=\"1.0\" ?>\n\
+         <Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n\
+         <Triggers>\n<CalendarTrigger>\n\
+         <StartBoundary>2020-01-01T{hour:02}:{minute:02}:00</StartBoundary>\n\
+         <Enabled>true</Enabled>\n{trigger}</CalendarTrigger>\n</Triggers>\n\
+         <Principals>\n<Principal id=\"Author\">\n<LogonType>InteractiveToken</LogonType>\n\
+         <RunLevel>LeastPrivilege</RunLevel>\n</Principal>\n</Principals>\n\
+         <Settings>\n<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n\
+         <Enabled>true</Enabled>\n<Hidden>true</Hidden>\n\
+         <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>\n\
+         <WakeToRun>false</WakeToRun>\n<ExecutionTimeLimit>PT72H</ExecutionTimeLimit>\n\
+         <Priority>7</Priority>\n</Settings>\n\
+         <Actions Context=\"Author\">\n<Exec>\n<Command>\"{exe}\"</Command>\n\
+         <Arguments>--exec-path=\"{exec_path}\" -c credential.interactive=false -c core.askPass=true  \
+         for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule={schedule}</Arguments>\n\
+         </Exec>\n</Actions>\n</Task>\n"
+    )
+}
