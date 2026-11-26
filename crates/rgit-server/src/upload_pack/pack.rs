@@ -112,7 +112,7 @@ enum Event {
     Closed,
 }
 
-fn pump(mut from: impl Read, tx: mpsc::Sender<Event>, wrap: fn(Vec<u8>) -> Event) {
+fn pump(mut from: impl Read, tx: mpsc::SyncSender<Event>, wrap: fn(Vec<u8>) -> Event) {
     // One sideband packet per read.
     let mut buf = vec![0u8; SidebandMode::Large.max_data()];
     loop {
@@ -167,7 +167,9 @@ pub(crate) fn send<R: Read, W: Write>(
     let stdout = child.stdout.take().expect("piped");
     let stderr = child.stderr.take().expect("piped");
     let input = request.input();
-    let (tx, rx) = mpsc::channel();
+    // A few packets at most wait here: a slow client slows the child
+    // down instead of filling memory with the pack.
+    let (tx, rx) = mpsc::sync_channel(4);
     let tx_err = tx.clone();
     let feeder = std::thread::spawn(move || {
         // A child that fails early closes its input: not our error.

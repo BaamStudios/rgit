@@ -809,23 +809,371 @@ fn dashed_names_and_help_outside_a_repository() {
     }
 }
 
+/// Run rgit with only `path` as `PATH` (no other git in sight).
+fn run_with_path(fx: &Fixture, path: &Path, args: &[&str], protocol: Option<&str>) -> Output {
+    let mut cmd = Command::new(rgit());
+    isolated(fx, &mut cmd);
+    cmd.env("PATH", path).args(args).current_dir(fx.work_dir());
+    if let Some(p) = protocol {
+        cmd.env("GIT_PROTOCOL", p);
+    }
+    cmd.stdin(Stdio::null()).output().unwrap()
+}
+
 #[test]
-fn older_protocol_versions_are_refused() {
+fn older_protocol_versions() {
     let fx = fixture();
     if fx.is_skipped() {
         return;
     }
+    // Without another git-upload-pack the client is told what is missing.
+    let empty = fx.work_dir().join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
     for protocol in [None, Some("version=1"), Some("version=0")] {
-        let env: Vec<(&str, &str)> = protocol.map(|p| ("GIT_PROTOCOL", p)).into_iter().collect();
-        let out = run(&fx, &rgit(), &["upload-pack", "srv"], &env, &fx.work_dir(), b"");
+        let out = run_with_path(&fx, &empty, &["upload-pack", "srv"], protocol);
         assert_eq!(out.status.code(), Some(128));
         assert!(text(&out.stdout).contains("ERR rgit upload-pack: protocol version"));
         assert!(text(&out.stderr).starts_with("fatal: rgit upload-pack: protocol version"));
     }
     // The highest version asked for counts.
-    let env = [("GIT_PROTOCOL", "version=1:version=2:other=x")];
-    let out = run(&fx, &rgit(), &["upload-pack", "--advertise-refs", "srv"], &env, &fx.work_dir(), b"");
+    let out = run_with_path(
+        &fx,
+        &empty,
+        &["upload-pack", "--advertise-refs", "srv"],
+        Some("version=1:version=2:other=x"),
+    );
     assert!(text(&out.stdout).starts_with("000eversion 2\n"));
+
+    // With one, protocol v0 and v1 are its business (until rgit #174),
+    // like any command rgit does not have.
+    let other = fx.work_dir().join("other-git");
+    std::fs::create_dir_all(&other).unwrap();
+    rgit_difftest::write_executable(
+        other.join("git-upload-pack"),
+        "#!/bin/sh\necho \"other upload-pack: $* ($GIT_PROTOCOL)\"\n",
+    );
+    let out = run_with_path(&fx, &other, &["upload-pack", "--strict", "srv"], None);
+    assert_eq!(text(&out.stdout), "other upload-pack: --strict srv ()\n");
+    let out = run_with_path(&fx, &other, &["upload-pack", "srv"], Some("version=1"));
+    assert_eq!(text(&out.stdout), "other upload-pack: srv (version=1)\n");
+    // Protocol v2 is served here.
+    let out = run_with_path(&fx, &other, &["upload-pack", "--advertise-refs", "srv"], Some("version=2"));
+    assert!(text(&out.stdout).starts_with("000eversion 2\n"));
+    // A link to rgit under the dashed name is not "another" program.
+    #[cfg(unix)]
+    {
+        let links = fx.work_dir().join("links");
+        std::fs::create_dir_all(&links).unwrap();
+        std::os::unix::fs::symlink(rgit(), links.join("git-upload-pack")).unwrap();
+        let out = run_with_path(&fx, &links, &["upload-pack", "srv"], None);
+        assert_eq!(out.status.code(), Some(128));
+        assert!(text(&out.stderr).starts_with("fatal: rgit upload-pack: protocol version"));
+    }
+}
+
+#[test]
+fn namespaces_and_hidden_refs_equal_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx;
+    for (name, target) in [
+        ("refs/namespaces/ns/refs/heads/in-ns", "HEAD"),
+        ("refs/namespaces/ns/refs/heads/hidden", "HEAD~1"),
+        ("refs/namespaces/ns/refs/tags/t", "v1"),
+        ("refs/namespaces/ns/refs/namespaces/inner/refs/heads/deep", "HEAD~2"),
+        ("refs/heads/outside", "HEAD"),
+        ("refs/heads/hidden", "HEAD"),
+        ("refs/hidden/a", "HEAD"),
+        ("refs/hidden/b/c", "HEAD"),
+        ("refs/hiddenx", "HEAD"),
+    ] {
+        fx = fx.git(["-C", "srv", "update-ref", name, target]);
+    }
+    for (name, target) in [
+        ("refs/namespaces/ns/HEAD", "refs/namespaces/ns/refs/heads/in-ns"),
+        ("refs/namespaces/ns/refs/heads/sym", "refs/namespaces/ns/refs/heads/in-ns"),
+        (
+            "refs/namespaces/ns/refs/namespaces/inner/HEAD",
+            "refs/namespaces/ns/refs/namespaces/inner/refs/heads/unborn",
+        ),
+    ] {
+        fx = fx.git(["-C", "srv", "symbolic-ref", name, target]);
+    }
+    let both = |namespace: Option<&str>, config: &[&str], lines: &[&str]| {
+        let lines: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+        let serve = |program: &Path| {
+            let mut args: Vec<&str> = Vec::new();
+            for c in config {
+                args.extend(["-c", c]);
+            }
+            args.extend(["upload-pack", "--stateless-rpc", "srv"]);
+            let mut env = vec![("GIT_PROTOCOL", "version=2")];
+            if let Some(ns) = namespace {
+                env.push(("GIT_NAMESPACE", ns));
+            }
+            decode(&fx, &run(&fx, program, &args, &env, &fx.work_dir(), &request(&lines)))
+        };
+        let (git, ours) = (serve(fx.reference_git()), serve(&rgit()));
+        assert_eq!(git, ours, "{lines:?} in {namespace:?} with {config:?}");
+        ours
+    };
+    let list = ["command=ls-refs", "0001", "symrefs", "peel", "unborn", "0000"];
+    // Namespaces. (git lists the HEAD of a namespace twice.)
+    let plain = both(None, &[], &list);
+    let ns = both(Some("ns"), &[], &list);
+    assert!(ns.packets.len() < plain.packets.len());
+    assert!(ns.packets.iter().any(|p| p.contains(" refs/heads/in-ns\n")));
+    for namespace in ["ns/inner", "/ns//inner/", "nope"] {
+        both(Some(namespace), &[], &list);
+    }
+    // Hidden references.
+    let cases: &[(Option<&str>, &[&str])] = &[
+        (None, &["transfer.hideRefs=refs/hidden"]),
+        (None, &["transfer.hideRefs=refs/hidden/"]),
+        (None, &["transfer.hideRefs=refs/hidden", "transfer.hideRefs=!refs/hidden/b"]),
+        (None, &["transfer.hideRefs=!refs/hidden/b", "transfer.hideRefs=refs/hidden"]),
+        (
+            None,
+            &[
+                "uploadpack.hideRefs=refs/heads",
+                "transfer.hideRefs=!refs/heads/main",
+                "receive.hideRefs=refs/tags",
+            ],
+        ),
+        (None, &["transfer.hideRefs=HEAD"]),
+        (None, &["transfer.hideRefs=refs"]),
+        (None, &["transfer.hideRefs=refs/heads/main"]),
+        (None, &["transfer.hideRefs=^refs/heads/hidden"]),
+        (Some("ns"), &["transfer.hideRefs=refs/heads/hidden"]),
+        (Some("ns"), &["transfer.hideRefs=^refs/namespaces/ns/refs/heads/in-ns"]),
+        (Some("ns"), &["transfer.hideRefs=refs/namespaces/ns/refs/heads/in-ns"]),
+        (
+            Some("ns"),
+            &[
+                "transfer.hideRefs=refs/heads",
+                "transfer.hideRefs=!^refs/namespaces/ns/refs/heads/sym",
+            ],
+        ),
+    ];
+    for (namespace, config) in cases {
+        both(*namespace, config, &list);
+    }
+    // `want-ref` sees the same references.
+    let want = |name: &str| -> Vec<String> {
+        fetch_request(&[format!("want-ref {name}"), "done".into(), "no-progress".into()])
+    };
+    let on = "uploadpack.allowRefInWant=true";
+    let hide = "transfer.hideRefs=refs/heads/hidden";
+    let cases: &[(Option<&str>, &[&str], &str)] = &[
+        (Some("ns"), &[on], "refs/heads/in-ns"),
+        (Some("ns"), &[on], "refs/heads/outside"),
+        (Some("ns"), &[on], "HEAD"),
+        (None, &[on], "refs/namespaces/ns/refs/heads/in-ns"),
+        (Some("ns"), &[on, hide], "refs/heads/hidden"),
+        (None, &[on, hide], "refs/heads/hidden"),
+        (None, &[on, hide], "refs/namespaces/ns/refs/heads/hidden"),
+    ];
+    for (namespace, config, name) in cases {
+        let lines = want(name);
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        both(*namespace, config, &refs);
+    }
+    // An object can be asked for by id whatever hides its reference, and
+    // `deepen-not` names references of the repository as they are.
+    let hidden = rev(&fx, "srv", "refs/heads/hidden");
+    let lines = fetch_request(&[format!("want {hidden}"), "done".into(), "no-progress".into()]);
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    both(None, &["transfer.hideRefs=refs/heads"], &refs);
+    for (namespace, config, not) in [
+        (Some("ns"), &[][..], "refs/heads/hidden"),
+        (Some("ns"), &[][..], "refs/tags/v1"),
+        (None, &[hide][..], "side"),
+    ] {
+        let lines = fetch_request(&[
+            format!("want {hidden}"),
+            format!("deepen-not {not}"),
+            "done".into(),
+            "no-progress".into(),
+        ]);
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        both(namespace, config, &refs);
+    }
+}
+
+/// The trace2 events of a server besides the ones every command writes,
+/// without what differs from run to run.
+fn server_events(fx: &Fixture, program: &Path, config: &[&str], lines: &[String]) -> Vec<String> {
+    let trace = fx.work_dir().join("trace2.events");
+    let _ = std::fs::remove_file(&trace);
+    let mut args: Vec<&str> = Vec::new();
+    for c in config {
+        args.extend(["-c", c]);
+    }
+    args.extend(["upload-pack", "--stateless-rpc", "srv"]);
+    let env = [
+        ("GIT_PROTOCOL", "version=2"),
+        ("GIT_TRACE2_EVENT", trace.to_str().unwrap()),
+    ];
+    run(fx, program, &args, &env, &fx.work_dir(), &request(lines));
+    std::fs::read_to_string(&trace)
+        .unwrap_or_default()
+        .lines()
+        // The events of pack-objects have a session id with a slash.
+        .filter(|l| l.contains("\"event\":\"data") && !l.contains("/20"))
+        .map(|l| {
+            let from = l.find("\"category\"").unwrap_or(0);
+            l[from..].to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn trace2_events_equal_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let r = |name: &str| rev(&fx, "srv", name);
+    let (head, parent, root) = (r("HEAD"), r("HEAD~1"), r("HEAD~5"));
+    let tail = || vec!["done".to_owned(), "no-progress".to_owned()];
+    let cases: Vec<(&[&str], Vec<String>)> = vec![
+        (&[], [vec![format!("want {head}")], tail()].concat()),
+        (
+            &[],
+            vec![
+                format!("want {head}"),
+                format!("want {parent}"),
+                format!("have {root}"),
+                "have 1111111111111111111111111111111111111111".into(),
+                "no-progress".into(),
+            ],
+        ),
+        (
+            &[],
+            [
+                vec![format!("want {head}"), "deepen 2".into(), format!("shallow {parent}")],
+                tail(),
+            ]
+            .concat(),
+        ),
+        (
+            &[],
+            [
+                vec![
+                    format!("want {head}"),
+                    "deepen-since 1".into(),
+                    "deepen-not side".into(),
+                ],
+                tail(),
+            ]
+            .concat(),
+        ),
+        (
+            &[],
+            [
+                vec![format!("want {head}"), "deepen 1".into(), "deepen-relative".into()],
+                tail(),
+            ]
+            .concat(),
+        ),
+        (
+            &["uploadpack.allowFilter=true"],
+            [vec![format!("want {head}"), "filter blob:limit=1k".into()], tail()].concat(),
+        ),
+        (
+            &["uploadpack.allowRefInWant=true"],
+            [vec!["want-ref refs/heads/main".to_owned()], tail()].concat(),
+        ),
+        (&[], vec![format!("have {head}")]),
+    ];
+    for (config, args) in cases {
+        let lines = fetch_request(&args);
+        let git = server_events(&fx, fx.reference_git(), config, &lines);
+        let ours = server_events(&fx, &rgit(), config, &lines);
+        assert_eq!(git, ours, "{args:?}");
+        assert!(ours.iter().any(|l| l.contains("\"key\":\"fetch-info\"")), "{ours:?}");
+        assert!(ours[0].contains("\"key\":\"negotiated-version\",\"value\":\"2\""));
+    }
+    // The client's session id, when the server advertises its own.
+    let lines: Vec<String> = ["command=ls-refs", "session-id=client-1", "0000"]
+        .iter()
+        .map(|l| (*l).to_owned())
+        .collect();
+    let on: &[&str] = &["transfer.advertiseSID=true"];
+    let git = server_events(&fx, fx.reference_git(), on, &lines);
+    let ours = server_events(&fx, &rgit(), on, &lines);
+    assert_eq!(git, ours);
+    assert!(ours.iter().any(|l| l.contains("\"key\":\"client-sid\",\"value\":\"client-1\"")));
+}
+
+#[test]
+fn keep_alive_while_pack_objects_is_silent() {
+    let fx = fixture().write_executable("slow", "#!/bin/sh\nsleep 3\nexec \"$@\"\n");
+    if fx.is_skipped() {
+        return;
+    }
+    let dir = fx.work_dir();
+    let head = rev(&fx, "srv", "HEAD");
+    let hook = format!("uploadpack.packObjectsHook={}", dir.join("slow").display());
+    let lines = fetch_request(&[format!("want {head}"), "done".into(), "no-progress".into()]);
+    let serve = |keep_alive: &str| {
+        let args = [
+            "-c",
+            hook.as_str(),
+            "-c",
+            keep_alive,
+            "upload-pack",
+            "--stateless-rpc",
+            "srv",
+        ];
+        let env = [("GIT_PROTOCOL", "version=2")];
+        run(&fx, &rgit(), &args, &env, &dir, &request(&lines))
+    };
+    // An empty packet on sideband 1 while nothing else is to send.
+    let out = serve("uploadpack.keepAlive=1");
+    let raw = out.stdout.clone();
+    let keep_alives = raw.windows(5).filter(|w| w == b"0005\x01").count();
+    assert!(keep_alives >= 1, "no keep-alive packet in {} bytes", raw.len());
+    let reply = decode(&fx, &out);
+    assert_eq!(reply.code, Some(0));
+    assert_eq!(reply.packs.len(), 1, "{:?}", reply.packets);
+    // None when switched off.
+    let out = serve("uploadpack.keepAlive=0");
+    assert!(!out.stdout.windows(9).any(|w| w == b"0005\x010005"));
+    assert_eq!(decode(&fx, &out).packs.len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn timeout_ends_an_idle_connection() {
+    use std::os::unix::process::ExitStatusExt;
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    // A client that says nothing.
+    let silent = |program: &Path| {
+        let mut cmd = Command::new(program);
+        isolated(&fx, &mut cmd);
+        let mut child = cmd
+            .args(["upload-pack", "--timeout=1", "srv"])
+            .env("GIT_PROTOCOL", "version=2")
+            .current_dir(fx.work_dir())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = child.wait().unwrap();
+        (status.signal(), status.code(), started.elapsed())
+    };
+    let (git_signal, git_code, _) = silent(fx.reference_git());
+    let (signal, code, elapsed) = silent(&rgit());
+    assert_eq!((signal, code), (git_signal, git_code));
+    assert!(elapsed < std::time::Duration::from_secs(20), "{elapsed:?}");
 }
 
 #[test]

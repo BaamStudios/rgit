@@ -22,6 +22,7 @@ use rgit_pack::write::ObjectFilter;
 
 use super::graph::Graph;
 use super::pack::{self, PackRequest};
+use super::refs::RefView;
 use super::serve::{END_WITHOUT_FLUSH, Session};
 use super::shallow::{self, ShallowRequest};
 use super::{Error, Repository, Result, messages as msg};
@@ -50,7 +51,8 @@ fn oid(repo: &Repository<'_>, hex: &str) -> Option<ObjectId> {
 
 /// The reference a `deepen-not` argument names: the name itself or, like
 /// a short name on the command line, a tag, branch or remote-tracking
-/// branch of that name.
+/// branch of that name. As in git, this looks at the repository's
+/// references as they are: neither a namespace nor `hideRefs` applies.
 fn resolve_ref(repo: &Repository<'_>, name: &str) -> Option<ObjectId> {
     let candidates = [
         name.to_owned(),
@@ -65,10 +67,40 @@ fn resolve_ref(repo: &Repository<'_>, name: &str) -> Option<ObjectId> {
         .find_map(|c| repo.refs.resolve_oid(c).ok().flatten())
 }
 
+/// The order in which git lists the wanted references: that of its hash
+/// table of names. Observed from git 2.56 with sets of 2 to 180 names:
+/// the names go into 64 buckets by the 32-bit FNV-1 hash of the name,
+/// new entries in front of older ones of the same bucket; the table
+/// grows fourfold when it is more than 80% full; the listing goes
+/// through the buckets in order. Returns indexes into `names`.
+fn wanted_refs_order(names: &[&str]) -> Vec<usize> {
+    let bucket = |name: &str, size: usize| {
+        let hash = name
+            .bytes()
+            .fold(0x811c_9dc5_u32, |h, b| h.wrapping_mul(0x0100_0193) ^ u32::from(b));
+        hash as usize & (size - 1)
+    };
+    let mut size = 64;
+    let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); size];
+    for (i, name) in names.iter().enumerate() {
+        buckets[bucket(name, size)].insert(0, i);
+        if (i + 1) * 5 > size * 4 {
+            size *= 4;
+            let mut grown: Vec<Vec<usize>> = vec![Vec::new(); size];
+            for j in buckets.into_iter().flatten() {
+                grown[bucket(names[j], size)].insert(0, j);
+            }
+            buckets = grown;
+        }
+    }
+    buckets.into_iter().flatten().collect()
+}
+
 impl Request {
     fn parse<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]) -> Result<Request> {
         let repo = s.repo;
         let graph = Graph::new(repo.odb, repo.hash, &[]);
+        let refs = RefView::new(repo.refs, repo.config, s.opts.namespace.as_deref());
         let mut req = Request::default();
         let mut seen_wants = HashSet::new();
         let mut seen_haves = HashSet::new();
@@ -83,6 +115,8 @@ impl Request {
                     return Err(Error::fatal(msg::expected_flush_after("fetch")));
                 }
                 ("want", Some(hex)) => {
+                    // Like git, what follows the object id is not looked at.
+                    let hex = hex.get(..repo.hash.hex_len()).unwrap_or(hex);
                     let id = oid(repo, hex).ok_or_else(|| Error::fatal(msg::expected_oid(line)))?;
                     if !repo.odb.contains(&id) {
                         s.out.error(&msg::not_our_ref_packet(&id));
@@ -142,7 +176,7 @@ impl Request {
                     req.filter = Some(filter);
                 }
                 ("want-ref", Some(name)) if s.settings.allow_ref_in_want => {
-                    let Some(id) = repo.refs.resolve_oid(name).ok().flatten() else {
+                    let Some(id) = refs.resolve(name) else {
                         let m = msg::unknown_ref(name);
                         s.out.error(&m);
                         return Err(Error::fatal(m));
@@ -249,9 +283,36 @@ fn ready_to_send(graph: &mut Graph<'_>, wants: &[ObjectId], common: &[ObjectId])
     true
 }
 
+/// The trace2 event that tells what a request asked for (`data_json`,
+/// category `upload-pack`, key `fetch-info`), as git writes it.
+fn trace_request(repo: &Repository<'_>, req: &Request) {
+    if !rgit_trace::trace2::enabled() {
+        return;
+    }
+    let haves = req.haves.iter().filter(|id| repo.odb.contains(id)).count();
+    // The kind of filter, not its arguments.
+    let filter = match &req.filter {
+        Some(f) => format!("\"{}\"", f.config_name()),
+        None => "null".to_owned(),
+    };
+    let json = format!(
+        "{{\"haves\":{haves},\"wants\":{},\"want-refs\":{},\"depth\":{},\"shallows\":{},\
+         \"deepen-since\":{},\"deepen-not\":{},\"deepen-relative\":{},\"filter\":{filter}}}",
+        req.wants.len(),
+        req.wanted_refs.len(),
+        req.shallow.depth.unwrap_or(0),
+        req.shallow.client.len(),
+        req.shallow.since.is_some(),
+        req.shallow.not.len(),
+        req.shallow.relative,
+    );
+    rgit_trace::trace2::data_json("upload-pack", "fetch-info", &json);
+}
+
 pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]) -> Result<()> {
     let repo = s.repo;
     let req = Request::parse(s, lines)?;
+    trace_request(repo, &req);
     // Nothing wanted, nothing to say.
     if req.wants.is_empty() {
         return Ok(());
@@ -330,10 +391,9 @@ fn respond<R: Read, W: Write>(s: &mut Session<'_, R, W>, req: &Request) -> Resul
     }
     if !req.wanted_refs.is_empty() {
         s.out.line("wanted-refs")?;
-        // In name order, as git lists them.
-        let mut wanted: Vec<&(String, ObjectId)> = req.wanted_refs.iter().collect();
-        wanted.sort();
-        for (name, id) in wanted {
+        let names: Vec<&str> = req.wanted_refs.iter().map(|(n, _)| n.as_str()).collect();
+        for i in wanted_refs_order(&names) {
+            let (name, id) = &req.wanted_refs[i];
             s.out.line(&format!("{id} {name}"))?;
         }
         s.out.delim()?;
@@ -361,4 +421,53 @@ fn respond<R: Read, W: Write>(s: &mut Session<'_, R, W>, req: &Request) -> Resul
     };
     pack::send(s, &pack)?;
     s.out.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wanted_refs_order;
+
+    fn order(names: &[&str]) -> Vec<String> {
+        wanted_refs_order(names)
+            .into_iter()
+            .map(|i| names[i].to_owned())
+            .collect()
+    }
+
+    // Orders observed from `git upload-pack` 2.56.
+    #[test]
+    fn wanted_refs_are_listed_like_git() {
+        assert_eq!(
+            order(&["refs/heads/o/foo", "refs/heads/o/bar"]),
+            ["refs/heads/o/foo", "refs/heads/o/bar"]
+        );
+        assert_eq!(
+            order(&["refs/heads/main", "refs/tags/v1", "HEAD"]),
+            ["HEAD", "refs/heads/main", "refs/tags/v1"]
+        );
+        assert_eq!(
+            order(&["refs/heads/b72", "refs/heads/b58", "refs/heads/b54"]),
+            ["refs/heads/b58", "refs/heads/b54", "refs/heads/b72"]
+        );
+        assert_eq!(
+            order(&[
+                "refs/heads/b274",
+                "refs/heads/b261",
+                "refs/heads/b258",
+                "refs/heads/b182"
+            ]),
+            [
+                "refs/heads/b258",
+                "refs/heads/b182",
+                "refs/heads/b274",
+                "refs/heads/b261"
+            ]
+        );
+        // More names than the first table holds.
+        let many: Vec<String> = (0..300).map(|i| format!("refs/heads/n{i}")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let mut listed = wanted_refs_order(&refs);
+        listed.sort_unstable();
+        assert_eq!(listed, (0..300).collect::<Vec<_>>());
+    }
 }

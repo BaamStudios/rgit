@@ -5,10 +5,10 @@
 use std::io::{Read, Write};
 
 use rgit_hash::ObjectId;
-use rgit_object::ObjectKind;
-use rgit_refs::{IterItem, IterOptions, Peeled, Target};
+use rgit_refs::Peeled;
 
 use super::graph::Graph;
+use super::refs::{RefView, Visible};
 use super::serve::{END_WITHOUT_FLUSH, Session};
 use super::{Error, Result, Unborn, messages as msg};
 
@@ -51,24 +51,26 @@ pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]
     }
 
     let repo = s.repo;
+    let view = RefView::new(repo.refs, repo.config, s.opts.namespace.as_deref());
     let graph = Graph::new(repo.odb, repo.hash, &[]);
-    let peeled = |r: &rgit_refs::Reference, id: &ObjectId| -> Option<ObjectId> {
-        match r.peeled {
-            Peeled::Tag(p) => Some(p),
-            Peeled::NotTag => None,
-            Peeled::Unknown => match graph.peel(id) {
-                Some((p, _)) if p != *id => Some(p),
+    // The object a tag finally names, if `id` is a tag.
+    let peeled = |r: &Visible| -> Option<ObjectId> {
+        match r.reference.as_ref().map(|r| r.peeled) {
+            Some(Peeled::Tag(p)) => Some(p),
+            Some(Peeled::NotTag) => None,
+            _ => match graph.peel(&r.id) {
+                Some((p, _)) if p != r.id => Some(p),
                 _ => None,
             },
         }
     };
-    let line = |name: &str, id: &ObjectId, symref: Option<&str>, peeled: Option<ObjectId>| {
-        let mut line = format!("{id} {name}");
-        if let Some(target) = symref {
+    let line = |r: &Visible| {
+        let mut line = format!("{} {}", r.id, r.name);
+        if let Some(target) = r.symref_target.as_deref().filter(|_| args.symrefs) {
             line.push_str(" symref-target:");
             line.push_str(target);
         }
-        if let Some(p) = peeled {
+        if let Some(p) = Some(r).filter(|_| args.peel).and_then(peeled) {
             line.push_str(&format!(" peeled:{p}"));
         }
         line
@@ -76,64 +78,18 @@ pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]
 
     // HEAD first: it is no reference below `refs/`.
     if args.matches("HEAD") {
-        let direct = repo.refs.read_raw("HEAD").ok().flatten();
-        let resolved = repo.refs.resolve("HEAD").ok().flatten();
-        let target = match (&direct, &resolved) {
-            (Some(Target::Symbolic(_)), Some(r)) => Some(r.final_name().to_owned()),
-            _ => None,
-        };
-        match resolved.and_then(|r| r.oid) {
-            Some(id) => {
-                let peeled = if args.peel && is_tag(repo.odb, &id) {
-                    graph.peel(&id).map(|(p, _)| p).filter(|p| *p != id)
-                } else {
-                    None
-                };
-                let symref = target.as_deref().filter(|_| args.symrefs);
-                s.out.line(&line("HEAD", &id, symref, peeled))?;
+        match view.head() {
+            (Some(head), _) => s.out.line(&line(&head))?,
+            (None, Some(unborn)) if args.unborn => {
+                s.out
+                    .line(&format!("unborn HEAD symref-target:{}", unborn.target))?;
             }
-            None => {
-                if let (true, Some(target)) = (args.unborn, &target) {
-                    s.out
-                        .line(&format!("unborn HEAD symref-target:{target}"))?;
-                }
-            }
+            _ => {}
         }
     }
-
-    let all = IterOptions {
-        prefix: String::new(),
-        include_root_refs: false,
-    };
-    let items = repo
-        .refs
-        .iter(&all)
-        .map_err(|e| Error::fatal(e.to_string()))?;
-    for item in items {
-        let IterItem::Ref(r) = item else { continue };
-        if !args.matches(&r.name) {
-            continue;
-        }
-        // A symbolic reference to nothing is not listed.
-        let Some(id) = r.oid else { continue };
-        let target = match (&r.target, args.symrefs) {
-            (Target::Symbolic(_), true) => repo
-                .refs
-                .resolve(&r.name)
-                .ok()
-                .flatten()
-                .map(|res| res.final_name().to_owned()),
-            _ => None,
-        };
-        let peeled = if args.peel { peeled(&r, &id) } else { None };
-        s.out.line(&line(&r.name, &id, target.as_deref(), peeled))?;
+    let refs = view.list().map_err(|e| Error::fatal(e.to_string()))?;
+    for r in refs.iter().filter(|r| args.matches(&r.name)) {
+        s.out.line(&line(r))?;
     }
     s.out.flush()
-}
-
-fn is_tag(odb: &rgit_odb::ObjectDatabase, id: &ObjectId) -> bool {
-    odb.header(id)
-        .ok()
-        .flatten()
-        .is_some_and(|h| h.kind == ObjectKind::Tag)
 }

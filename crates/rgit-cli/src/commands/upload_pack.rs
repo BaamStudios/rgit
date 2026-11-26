@@ -13,7 +13,10 @@
 //! `<directory>.git` are tried in this order, and `~` and `~user` expand
 //! to home directories. With `--strict` only `<directory>` itself counts.
 //!
-//! Not yet: protocol v0/v1, hidden references and namespaces (rgit #174).
+//! Protocol v0 and v1 are not served yet (rgit #174). A client that does
+//! not ask for v2 is handed to another `git-upload-pack` program on the
+//! exec path or `PATH` if there is one, as for any command rgit does not
+//! have; else it is told that only protocol v2 is served.
 
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -111,6 +114,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Err(parser.usage_error().into());
     }
     drop(parser);
+    let protocol = requested_protocol();
+    if protocol != ProtocolVersion::V2 {
+        if let Some(result) = crate::external::run(ctx, argv) {
+            return result;
+        }
+    }
     let dir = &args[0];
     let Some(git_dir) = enter_repo(dir, strict.get()) else {
         return Err(Die::Fatal(msg::not_a_repository(dir)));
@@ -139,7 +148,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
     let mut opts = service::Options::new(vec![exe.into_os_string()]);
-    opts.protocol = requested_protocol();
+    opts.protocol = protocol;
     opts.stateless_rpc = stateless_rpc.get();
     opts.advertise_refs = advertise_refs.get();
     opts.pack_objects.env = ctx.child_env();
@@ -150,6 +159,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .env
             .push(("GIT_NO_LAZY_FETCH".into(), "1".into()));
     }
+    opts.namespace = ctx
+        .namespace
+        .clone()
+        .or_else(|| std::env::var("GIT_NAMESPACE").ok())
+        .filter(|n| !n.is_empty());
     opts.sideband_all = std::env::var("GIT_TEST_SIDEBAND_ALL")
         .ok()
         .and_then(|v| rgit_config::value::parse_bool(Some(v.as_bytes())));

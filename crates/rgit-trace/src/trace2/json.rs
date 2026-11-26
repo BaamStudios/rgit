@@ -62,6 +62,13 @@ impl Json {
         self
     }
 
+    /// A value that is JSON text already.
+    pub(crate) fn raw(&mut self, k: &str, json: &str) -> &mut Json {
+        self.key(k);
+        self.body.push_str(json);
+        self
+    }
+
     pub(crate) fn arr<S: AsRef<str>>(&mut self, k: &str, v: &[S]) -> &mut Json {
         self.key(k);
         self.body.push('[');

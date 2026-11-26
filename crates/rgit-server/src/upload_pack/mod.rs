@@ -3,7 +3,8 @@
 //!
 //! Protocol v2 (`Documentation/gitprotocol-v2.adoc`): the capability
 //! advertisement and the commands `ls-refs`, `fetch` and `object-info`
-//! (and `bundle-uri`, which answers with an empty list). The behaviour
+//! (and `bundle-uri`, which answers with an empty list), with namespaces
+//! and hidden references (`transfer.hideRefs`). The behaviour
 //! not written down there (messages, the order of sections, when `ready`
 //! is sent, what `pack-objects` is given) follows observations of the git
 //! 2.56 binary.
@@ -32,6 +33,7 @@ mod ls_refs;
 pub mod messages;
 mod object_info;
 mod pack;
+mod refs;
 mod serve;
 mod shallow;
 
@@ -96,6 +98,9 @@ pub struct Options {
     pub on_activity: Option<Activity>,
     /// Overrides `uploadpack.allowSidebandAll` (`GIT_TEST_SIDEBAND_ALL`).
     pub sideband_all: Option<bool>,
+    /// The namespace whose references are served (`GIT_NAMESPACE`,
+    /// gitnamespaces(7)).
+    pub namespace: Option<String>,
 }
 
 impl Options {
@@ -111,6 +116,7 @@ impl Options {
             },
             on_activity: None,
             sideband_all: None,
+            namespace: None,
         }
     }
 
