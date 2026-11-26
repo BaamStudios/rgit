@@ -1064,10 +1064,12 @@ fn data_impl(loc: Location, category: &str, key: &str, value: &str, repo: bool) 
     });
 }
 
-/// `data_json`: a key with a JSON value (`json` is JSON text). Like git,
-/// only the event and perf targets get it, and it names no repository.
+/// `data_json`: a key with a JSON value (`json` must be valid JSON, an
+/// object or an array). The perf format shows it as `key:json`. `repo` is
+/// the repository id of the event, if it names one (git reports 1 for
+/// the repository of the command and 0 for events outside of one).
 #[track_caller]
-pub fn data_json(category: &str, key: &str, json: &str) {
+pub fn data_json(category: &str, key: &str, json: &str, repo: Option<u32>) {
     let loc = Location::caller();
     emit(loc, |s| {
         let t_abs = s.start.elapsed().as_secs_f64();
@@ -1076,7 +1078,7 @@ pub fn data_json(category: &str, key: &str, json: &str) {
             .last()
             .map_or(t_abs, |r| r.start.elapsed().as_secs_f64());
         let mut ev = Ev::new("data_json");
-        ev.repo = Some(0);
+        ev.repo = repo;
         ev.t_abs = Some(t_abs);
         ev.t_rel = Some(t_rel);
         ev.category = category.to_string();

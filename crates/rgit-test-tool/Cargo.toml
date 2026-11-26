@@ -17,12 +17,15 @@ path = "src/main.rs"
 
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-commitgraph = { path = "../rgit-commitgraph" }
 rgit-config = { path = "../rgit-config" }
 rgit-date = { path = "../rgit-date" }
 rgit-hash = { path = "../rgit-hash" }
 rgit-options = { path = "../rgit-options" }
 rgit-ident = { path = "../rgit-ident" }
 rgit-messages = { path = "../rgit-messages" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
 rgit-pathspec = { path = "../rgit-pathspec" }
 rgit-protocol = { path = "../rgit-protocol" }
 rgit-progress = { path = "../rgit-progress" }

@@ -36,6 +36,21 @@ pub struct Objects {
     replacing: bool,
     /// Commits read last (a walk reads each one several times).
     recent: RefCell<crate::objects::Recent>,
+    /// How to load the commit-graph; `None`: not used (see
+    /// [`Objects::use_commit_graph`]).
+    graph_options: Option<rgit_commitgraph::LoadOptions>,
+    /// The commit-graph, loaded on first use.
+    graph: OnceCell<Option<rgit_commitgraph::Graph>>,
+    /// The extra-edges error was reported.
+    graph_edge_error: std::cell::Cell<bool>,
+}
+
+/// A commit as the commit-graph describes it.
+pub struct GraphCommit {
+    pub parents: Vec<ObjectId>,
+    pub time: i64,
+    pub tree: ObjectId,
+    pub generation: u64,
 }
 
 impl Objects {
@@ -157,7 +172,93 @@ impl Objects {
             replace: std::collections::HashMap::new(),
             replacing: false,
             recent: RefCell::new(crate::objects::Recent::new(1024, 4 << 20)),
+            graph_options: None,
+            graph: OnceCell::new(),
+            graph_edge_error: std::cell::Cell::new(false),
         }
+    }
+
+    /// Read commits through the commit-graph when `core.commitGraph`
+    /// allows it and nothing changes the history it describes (replace
+    /// refs in use, grafts, a shallow repository). Call after
+    /// [`Objects::use_replace_refs`].
+    pub fn use_commit_graph(&mut self, config: &ConfigSet, setup: &Setup) {
+        if !crate::commit_graph::enabled(config) {
+            return;
+        }
+        if self.replacing && !self.replace.is_empty() {
+            return;
+        }
+        if !self.shallow.is_empty()
+            || !crate::commit_graph::history_unchanged(
+                &setup.common_dir,
+                &setup.common_dir.join("shallow"),
+            )
+        {
+            return;
+        }
+        self.graph_options = Some(crate::commit_graph::load_options(
+            config,
+            self.odb.hash_kind(),
+        ));
+    }
+
+    /// The commit-graph, if it is used and exists.
+    pub fn commit_graph(&self) -> Option<&rgit_commitgraph::Graph> {
+        let opts = self.graph_options?;
+        self.graph
+            .get_or_init(|| crate::commit_graph::load(&self.dir, opts))
+            .as_ref()
+    }
+
+    /// Commit `id` as the commit-graph has it. `Ok(None)`: not in the
+    /// graph (or no graph). With `GIT_COMMIT_GRAPH_PARANOIA` a commit
+    /// missing from the object database is an error.
+    pub fn graph_commit(&self, id: &ObjectId) -> Result<Option<GraphCommit>, LookupError> {
+        let Some(g) = self.commit_graph() else {
+            return Ok(None);
+        };
+        let Some(pos) = g.lookup(id) else {
+            return Ok(None);
+        };
+        if crate::commit_graph::paranoid() && !self.odb.contains(id) {
+            return Err(LookupError::corrupt(vec![
+                crate::messages::commit_graph::exists_in_graph_only(&id.to_hex()),
+            ]));
+        }
+        let data = match g.commit_at(pos) {
+            Ok(d) => d,
+            Err(rgit_commitgraph::ReadError::ExtraEdgesOutOfBounds) => {
+                if !self.graph_edge_error.replace(true) {
+                    crate::commit_graph::print_diags(vec![rgit_commitgraph::Diag::Error(
+                        rgit_commitgraph::ReadError::ExtraEdgesOutOfBounds.to_string(),
+                    )]);
+                }
+                return Ok(None);
+            }
+            Err(e) => crate::commit_graph::die(&e.to_string()),
+        };
+        // Reading a commit reads its generation number too (git dies on a
+        // broken overflow table there).
+        let generation = match g.generation(pos) {
+            Ok(v) => v,
+            Err(e) => crate::commit_graph::die(&e.to_string()),
+        };
+        let mut parents = Vec::with_capacity(data.parents.len());
+        for p in &data.parents {
+            match g.id_at(*p) {
+                Some(id) => parents.push(id),
+                None => crate::commit_graph::die(
+                    &rgit_commitgraph::ReadError::InvalidParent(*p).to_string(),
+                ),
+            }
+        }
+        Ok(Some(GraphCommit {
+            parents,
+            time: i64::try_from(data.date).unwrap_or(i64::MAX),
+            tree: data.tree,
+            generation,
+        }))
     }
 }
 
@@ -198,9 +299,25 @@ impl ObjectLookup for Objects {
 
     fn kind(&self, oid: &ObjectId) -> Result<Option<ObjectKind>, LookupError> {
         match self.odb.header(self.replaced(oid)) {
-            Ok(h) => Ok(h.map(|h| h.kind)),
+            Ok(Some(h)) => Ok(Some(h.kind)),
+            // A commit the commit-graph knows (git does not look into the
+            // object database for those).
+            Ok(None) => Ok(self.graph_commit(oid)?.map(|_| ObjectKind::Commit)),
             Err(e) => Err(odb_error(e)),
         }
+    }
+
+    fn commit_summary(
+        &self,
+        oid: &ObjectId,
+    ) -> Result<Option<rgit_revwalk::revision::CommitSummary>, LookupError> {
+        Ok(self
+            .graph_commit(oid)?
+            .map(|c| rgit_revwalk::revision::CommitSummary {
+                parents: c.parents,
+                time: u64::try_from(c.time).unwrap_or(0),
+                generation: c.generation,
+            }))
     }
 
     fn prefix_matches(&self, prefix: &Prefix) -> Result<Vec<ObjectId>, LookupError> {

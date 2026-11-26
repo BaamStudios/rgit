@@ -37,8 +37,8 @@ use rgit_date::DateContext;
 use rgit_hash::ObjectId;
 
 pub use lookup::{
-    ConfigLookup, IndexLookup, LookupError, NoConfig, ObjectLookup, RefLookup, RefValue,
-    ReflogEntry, WorkTreeLookup,
+    CommitSummary, ConfigLookup, IndexLookup, LookupError, NoConfig, ObjectLookup, RefLookup,
+    RefValue, ReflogEntry, WorkTreeLookup,
 };
 pub use range::RevItem;
 pub use refname::{DwimRef, REF_RULES};
