@@ -12,6 +12,11 @@ use crate::Context;
 use crate::commands;
 use crate::messages::help as msg;
 
+/// Commands rgit has that are programs of their own in git (`git-daemon`,
+/// `git-shell`), not built into `git`: `--list-cmds=builtins` leaves them
+/// out, and they do not follow the conventions of the builtins (`-h`).
+pub const NOT_BUILTIN: &[&str] = &["daemon", "shell"];
+
 /// Command categories, in the order `git help -a` prints them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {

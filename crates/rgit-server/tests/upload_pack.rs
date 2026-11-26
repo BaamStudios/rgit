@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-//! `upload_pack` driven in memory: requests are byte strings, responses
-//! are read back as pkt-lines. The repository is made with the reference
+//! `upload_pack` with protocol v2 driven in memory (v0 and v1:
+//! `upload_pack_v0.rs`): requests are byte strings, responses are read
+//! back as pkt-lines. The repository is made with the reference
 //! git; everything that needs a pack (and so a `pack-objects` process) is
 //! tested through the binary in `rgit-cli/tests/upload_pack.rs`.
 
@@ -501,32 +502,4 @@ fn several_requests_on_one_connection() {
             "0000".to_owned()
         ]
     );
-}
-
-#[test]
-fn older_protocols_are_refused() {
-    let fx = fixture();
-    if fx.is_skipped() {
-        return;
-    }
-    let git_dir = fx.work_dir().join("srv/.git");
-    let odb = ObjectDatabase::open_with_packs(
-        git_dir.join("objects"),
-        HashKind::Sha1,
-        LooseOptions::default(),
-    );
-    let refs = FilesStore::new(&git_dir, HashKind::Sha1);
-    let config = ConfigSet::new();
-    let repo = Repository {
-        hash: HashKind::Sha1,
-        odb: &odb,
-        refs: &refs,
-        config: &config,
-        shallow: Vec::new(),
-    };
-    let opts = Options::new(vec!["git".into()]);
-    let mut output = Vec::new();
-    let result = upload_pack(&repo, &opts, &b""[..], &mut output);
-    assert!(matches!(result, Err(Error::Fatal(_))));
-    assert!(packets(&output)[0].starts_with("ERR rgit upload-pack: protocol version 0"));
 }

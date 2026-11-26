@@ -2,7 +2,7 @@
 //! `upload-pack` against the reference git.
 //!
 //! - Wire level: the same protocol v2 requests are sent to `git
-//!   upload-pack` and `rgit upload-pack`; the packets, standard error and
+//!   upload-pack` and `rgit upload-pack` (v0 and v1: upload_pack_v0.rs); the packets, standard error and
 //!   exit code must be equal (apart from `agent=` and the session id), and
 //!   packs must hold the same objects.
 //! - Clients: the reference git (and rgit) clone and fetch through both
@@ -543,6 +543,84 @@ fn object_info_equals_git() {
         same(&fx, on, "srv", &lines);
     }
     same(&fx, on, "srv", &["command=object-info", "0000"]);
+}
+
+/// `wait-for-done` without `want`: a client that only negotiates
+/// (`fetch --negotiate-only`, `push.negotiate`) gets its acknowledgments,
+/// and an empty pack when it says `done` or names nothing it has. A
+/// request without `have` lines is answered with the pack at once.
+#[test]
+fn negotiation_only_requests_equal_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let r = |name: &str| rev(&fx, "srv", name);
+    let have = |id: &str| format!("have {id}");
+    let unknown = "1".repeat(40);
+    let wait = || "wait-for-done".to_owned();
+    let cases: Vec<Vec<String>> = vec![
+        vec![wait(), have(&r("HEAD~4")), have(&unknown)],
+        vec![wait(), have(&unknown)],
+        vec![
+            wait(),
+            have(&r("HEAD~1")),
+            have(&r("HEAD~2")),
+            have(&r("side")),
+        ],
+        vec![wait()],
+        vec![wait(), have(&r("HEAD~4")), "done".to_owned()],
+        // Without it there is nothing to say.
+        vec![have(&r("HEAD~4")), have(&unknown)],
+        vec![have(&r("HEAD~4")), "done".to_owned()],
+        vec![],
+    ];
+    let head = format!("want {}", r("HEAD"));
+    for args in [
+        vec![head.clone(), "no-progress".to_owned()],
+        vec![head.clone(), wait(), "no-progress".to_owned()],
+    ] {
+        let reply = same_fetch(&fx, &[], "srv", &args);
+        assert_eq!(reply.packets[0], "packfile\n", "{args:?}");
+        assert_eq!(reply.packs.len(), 1, "{args:?}");
+    }
+    for (i, args) in cases.iter().enumerate() {
+        let reply = same_fetch(&fx, &[], "srv", args);
+        assert_eq!(reply.code, Some(0), "{args:?}");
+        assert_eq!(i < 5, !reply.packets.is_empty(), "{args:?}: {reply:?}");
+    }
+    let acked = same_fetch(&fx, &[], "srv", &cases[0]);
+    assert_eq!(
+        acked.packets,
+        [
+            "acknowledgments\n".to_owned(),
+            format!("ACK {}\n", r("HEAD~4")),
+            "0000".to_owned()
+        ]
+    );
+
+    // The clients: the common commits come back on standard output.
+    let fx = with_old_clone(fx);
+    let git = fx.reference_git().to_path_buf();
+    let work = fx.work_dir();
+    let tip = rev(&fx, "base/c", "HEAD");
+    for client in [git.clone(), rgit()] {
+        let mut answers = Vec::new();
+        for (_, up) in servers(&fx) {
+            let args = [
+                "fetch",
+                "--negotiate-only",
+                "--negotiation-tip=HEAD",
+                "--upload-pack",
+                &up,
+                "origin",
+            ];
+            let out = run(&fx, &client, &args, &[], &work.join("base/c"), b"");
+            answers.push((out.status.code(), text(&out.stdout)));
+        }
+        assert_eq!(answers[0], answers[1], "{}", client.display());
+        assert_eq!(answers[1], (Some(0), format!("{tip}\n")));
+    }
 }
 
 #[test]
@@ -1175,54 +1253,43 @@ fn older_protocol_versions() {
     if fx.is_skipped() {
         return;
     }
-    // Without another git-upload-pack the client is told what is missing.
-    let empty = fx.work_dir().join("empty-path");
-    std::fs::create_dir_all(&empty).unwrap();
-    for protocol in [None, Some("version=1"), Some("version=0")] {
-        let out = run_with_path(&fx, &empty, &["upload-pack", "srv"], protocol);
-        assert_eq!(out.status.code(), Some(128));
-        assert!(text(&out.stdout).contains("ERR rgit upload-pack: protocol version"));
-        assert!(text(&out.stderr).starts_with("fatal: rgit upload-pack: protocol version"));
-    }
-    // The highest version asked for counts.
-    let out = run_with_path(
-        &fx,
-        &empty,
-        &["upload-pack", "--advertise-refs", "srv"],
-        Some("version=1:version=2:other=x"),
-    );
-    assert!(text(&out.stdout).starts_with("000eversion 2\n"));
-
-    // With one, protocol v0 and v1 are its business (until rgit #174),
-    // like any command rgit does not have.
+    // Protocol v0 and v1 are served here as well (tests/upload_pack_v0.rs),
+    // also when another git-upload-pack is on PATH.
     let other = fx.work_dir().join("other-git");
     std::fs::create_dir_all(&other).unwrap();
     rgit_difftest::write_executable(
         other.join("git-upload-pack"),
         "#!/bin/sh\necho \"other upload-pack: $* ($GIT_PROTOCOL)\"\n",
     );
-    let out = run_with_path(&fx, &other, &["upload-pack", "--strict", "srv"], None);
-    assert_eq!(text(&out.stdout), "other upload-pack: --strict srv ()\n");
-    let out = run_with_path(&fx, &other, &["upload-pack", "srv"], Some("version=1"));
-    assert_eq!(text(&out.stdout), "other upload-pack: srv (version=1)\n");
-    // Protocol v2 is served here.
+    for protocol in [None, Some("version=0"), Some("version=7")] {
+        let out = run_with_path(
+            &fx,
+            &other,
+            &["upload-pack", "--advertise-refs", "srv"],
+            protocol,
+        );
+        assert_eq!(out.status.code(), Some(0));
+        assert!(
+            text(&out.stdout).contains(" HEAD\0multi_ack "),
+            "{protocol:?}"
+        );
+        assert!(!text(&out.stdout).contains("version "), "{protocol:?}");
+    }
     let out = run_with_path(
         &fx,
         &other,
         &["upload-pack", "--advertise-refs", "srv"],
-        Some("version=2"),
+        Some("version=1"),
+    );
+    assert!(text(&out.stdout).starts_with("000eversion 1\n"));
+    // The highest version asked for counts.
+    let out = run_with_path(
+        &fx,
+        &other,
+        &["upload-pack", "--advertise-refs", "srv"],
+        Some("version=1:version=2:other=x"),
     );
     assert!(text(&out.stdout).starts_with("000eversion 2\n"));
-    // A link to rgit under the dashed name is not "another" program.
-    #[cfg(unix)]
-    {
-        let links = fx.work_dir().join("links");
-        std::fs::create_dir_all(&links).unwrap();
-        std::os::unix::fs::symlink(rgit(), links.join("git-upload-pack")).unwrap();
-        let out = run_with_path(&fx, &links, &["upload-pack", "srv"], None);
-        assert_eq!(out.status.code(), Some(128));
-        assert!(text(&out.stderr).starts_with("fatal: rgit upload-pack: protocol version"));
-    }
 }
 
 #[test]

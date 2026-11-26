@@ -11,6 +11,10 @@ pub enum Error {
     /// sideband 3) has been sent already.
     #[error("{0}")]
     Fatal(String),
+    /// A request that is refused. The caller prints `error: <message>` and
+    /// exits with 128; the client got an `ERR` packet.
+    #[error("{0}")]
+    Refused(String),
     /// Reading the request or writing the response failed.
     #[error("{0}")]
     Io(#[from] io::Error),
