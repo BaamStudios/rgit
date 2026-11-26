@@ -123,3 +123,98 @@ pub fn write_options(config: &ConfigSet, index: &Index) -> Result<WriteOptions, 
         offset_table,
     })
 }
+
+/// `core.untrackedCache` (`feature.manyFiles` makes it true by default).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UntrackedSetting {
+    /// Add the cache when the index is read.
+    True,
+    /// Remove it when the index is read.
+    False,
+    /// Leave the index as it is (`keep`, unset or anything else).
+    Keep,
+}
+
+/// The value of `core.untrackedCache`.
+pub fn untracked_setting(config: &ConfigSet) -> UntrackedSetting {
+    match config.get("core.untrackedcache") {
+        Some(e) => match e.bool() {
+            Ok(true) => UntrackedSetting::True,
+            Ok(false) => UntrackedSetting::False,
+            Err(_) => UntrackedSetting::Keep,
+        },
+        None if bool_config(config, "feature.manyfiles").ok().flatten() == Some(true) => {
+            UntrackedSetting::True
+        }
+        None => UntrackedSetting::Keep,
+    }
+}
+
+/// The operating system name (`uname -s`).
+fn system_name() -> String {
+    #[cfg(unix)]
+    {
+        // SAFETY: `uname` fills the zeroed struct; `sysname` is then a
+        // NUL-terminated string inside it.
+        unsafe {
+            let mut u: libc::utsname = std::mem::zeroed();
+            if libc::uname(&mut u) == 0 {
+                return std::ffi::CStr::from_ptr(u.sysname.as_ptr())
+                    .to_string_lossy()
+                    .into_owned();
+            }
+        }
+    }
+    #[allow(unreachable_code)]
+    std::env::consts::OS.to_string()
+}
+
+/// Where an untracked cache can be used: the work tree and the system,
+/// as a NUL-terminated string.
+pub fn untracked_ident(work_tree: &std::path::Path) -> Vec<u8> {
+    let mut v = b"Location ".to_vec();
+    v.extend_from_slice(work_tree.as_os_str().as_encoded_bytes());
+    v.extend_from_slice(b", system ");
+    v.extend_from_slice(system_name().as_bytes());
+    v.push(0);
+    v
+}
+
+/// The walk flags of `status -unormal` (untracked directories as a whole,
+/// empty ones hidden).
+pub const UNTRACKED_FLAGS_NORMAL: u32 = 6;
+/// The walk flags of `status -uall`.
+pub const UNTRACKED_FLAGS_ALL: u32 = 0;
+
+/// A new, empty untracked cache for `work_tree`.
+pub fn new_untracked_cache(
+    index: &Index,
+    work_tree: &std::path::Path,
+) -> rgit_index::UntrackedCache {
+    rgit_index::UntrackedCache::new(
+        index.hash_kind(),
+        untracked_ident(work_tree),
+        UNTRACKED_FLAGS_NORMAL,
+    )
+}
+
+/// Adds or removes the untracked cache of a freshly read index as
+/// `core.untrackedCache` asks; true if that changed the index.
+pub fn apply_untracked_setting(
+    config: &ConfigSet,
+    work_tree: Option<&std::path::Path>,
+    index: &mut Index,
+) -> bool {
+    match untracked_setting(config) {
+        UntrackedSetting::True => {
+            if let (None, Some(wt)) = (index.untracked_cache(), work_tree) {
+                let uc = new_untracked_cache(index, wt);
+                index.set_untracked_cache(Some(uc));
+                return true;
+            }
+            false
+        }
+        UntrackedSetting::False => index.take_untracked_cache().is_some(),
+        UntrackedSetting::Keep => false,
+    }
+}

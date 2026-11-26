@@ -39,6 +39,8 @@ enum Event {
     ShowIndexVersion,
     ClearResolveUndo,
     Unresolve,
+    UntrackedCache(bool),
+    TestUntrackedCache,
     Unsupported(&'static str),
 }
 
@@ -97,6 +99,10 @@ struct State<'a> {
     chmod: Option<char>,
     mark: [Option<bool>; 2],
     index_version: Option<i64>,
+    /// `--[no-|force-]untracked-cache`.
+    untracked_cache: Option<bool>,
+    /// `--test-untracked-cache`.
+    test_untracked_cache: bool,
     out: Vec<u8>,
     /// A fatal conversion problem met while processing a path.
     pending: Option<Die>,
@@ -926,9 +932,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             None,
             msg::HELP_UNTRACKED_CACHE,
             |_, neg| {
-                if !neg {
-                    push(Event::Unsupported("--untracked-cache"));
-                }
+                push(Event::UntrackedCache(!neg));
                 Ok(())
             },
         )
@@ -940,7 +944,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             msg::HELP_TEST_UNTRACKED_CACHE,
             |_, neg| {
                 if !neg {
-                    push(Event::Unsupported("--test-untracked-cache"));
+                    push(Event::TestUntrackedCache);
                 }
                 Ok(())
             },
@@ -952,9 +956,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             None,
             msg::HELP_FORCE_UNTRACKED_CACHE,
             |_, neg| {
-                if !neg {
-                    push(Event::Unsupported("--force-untracked-cache"));
-                }
+                push(Event::UntrackedCache(!neg));
                 Ok(())
             },
         )
@@ -1045,6 +1047,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         chmod: None,
         mark: [None, None],
         index_version: None,
+        untracked_cache: None,
+        test_untracked_cache: false,
         out: Vec::new(),
         pending: None,
     };
@@ -1077,6 +1081,31 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Err(Stop::Die(d)) = result {
         st.flush();
         return Err(d);
+    }
+    if st.test_untracked_cache {
+        st.flush();
+        let root = repo.work_tree()?;
+        return Ok(crate::untracked_cache::test_mtime(&root));
+    }
+    if let Some(on) = st.untracked_cache {
+        use crate::index_config::{UntrackedSetting, untracked_setting};
+        let setting = untracked_setting(&repo.config);
+        if on {
+            if setting == UntrackedSetting::False {
+                eprintln!("warning: {}", msg::UNTRACKED_CACHE_SET_FALSE);
+            }
+            if st.index.untracked_cache().is_none() {
+                let root = repo.work_tree()?;
+                let uc = crate::index_config::new_untracked_cache(&st.index, &root);
+                st.index.set_untracked_cache(Some(uc));
+            }
+        } else {
+            if setting == UntrackedSetting::True {
+                eprintln!("warning: {}", msg::UNTRACKED_CACHE_SET_TRUE);
+            }
+            st.index.set_untracked_cache(None);
+        }
+        st.changed = true;
     }
     if let Some(v) = st.index_version {
         if !(2..=4).contains(&v) {
@@ -1181,6 +1210,8 @@ impl State<'_> {
                 let line = format!("{}\n", self.index.version());
                 self.out.extend_from_slice(line.as_bytes());
             }
+            Event::UntrackedCache(on) => self.untracked_cache = Some(on),
+            Event::TestUntrackedCache => self.test_untracked_cache = true,
             Event::Unresolve => {
                 // Every argument after it names a path to unresolve.
                 let args: Vec<String> = if last_in_batch {

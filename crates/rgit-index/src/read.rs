@@ -119,9 +119,13 @@ pub(crate) fn parse(data: &[u8], kind: HashKind, opts: &ReadOptions) -> Result<I
             b"sdir" => return Err(Error::SparseIndex),
             // Written anew from the entries when asked for.
             b"EOIE" | b"IEOT" => {}
-            // Known optional extensions that rgit does not keep yet: the
-            // untracked cache and fsmonitor data.
-            b"UNTR" | b"FSMN" => index.dropped.push(sig),
+            // Known optional extensions that rgit does not keep yet:
+            // fsmonitor data (and an untracked cache it cannot parse).
+            b"UNTR" => match crate::UntrackedCache::parse(ext, kind) {
+                Some(uc) => index.untracked = Some(uc),
+                None => index.dropped.push(sig),
+            },
+            b"FSMN" => index.dropped.push(sig),
             _ if sig[0].is_ascii_uppercase() => index.ignored.push(sig),
             _ => return Err(Error::UnknownExtension(sig)),
         }

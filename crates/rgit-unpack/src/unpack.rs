@@ -441,9 +441,13 @@ pub fn plan(
         skip_df_check: false,
         skip_path_check: true,
     };
+    // The untracked cache carries over; rebuilding entry by entry must
+    // not invalidate it (the work tree tells it what changed).
+    let untracked = out.take_untracked_cache();
     for e in u.result {
         out.add(e, add).map_err(|e| Error::Io(e.to_string()))?;
     }
+    out.set_untracked_cache(untracked);
     let tree = repair_cache_tree(&out, odb);
     out.set_cache_tree(Some(tree));
     Ok(Plan {
@@ -628,9 +632,13 @@ fn three_way(
         skip_df_check: true,
         skip_path_check: true,
     };
+    // The untracked cache carries over; rebuilding entry by entry must
+    // not invalidate it (the work tree tells it what changed).
+    let untracked = out.take_untracked_cache();
     for e in u.result {
         out.add(e, add).map_err(|e| Error::Io(e.to_string()))?;
     }
+    out.set_untracked_cache(untracked);
     if !out.has_conflicts() {
         let tree = repair_cache_tree(&out, odb);
         out.set_cache_tree(Some(tree));

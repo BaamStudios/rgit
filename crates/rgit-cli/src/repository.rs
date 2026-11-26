@@ -62,6 +62,9 @@ pub struct Repo {
     converter: OnceCell<Rc<Converter>>,
     /// Trees read last (see [`Repo::read_tree_data`]).
     trees: RefCell<crate::objects::Recent>,
+    /// [`Repo::read_index`] added or removed the untracked cache
+    /// (`core.untrackedCache`), so the index wants to be written.
+    pub untracked_toggled: std::cell::Cell<bool>,
 }
 
 impl Deref for Repo {
@@ -89,6 +92,7 @@ impl Repo {
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
+            untracked_toggled: std::cell::Cell::new(false),
         })
     }
 
@@ -102,6 +106,7 @@ impl Repo {
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
+            untracked_toggled: std::cell::Cell::new(false),
         })
     }
 
@@ -115,6 +120,7 @@ impl Repo {
             auto_abbrev: OnceCell::new(),
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
+            untracked_toggled: std::cell::Cell::new(false),
         }))
     }
 
@@ -283,7 +289,7 @@ impl Repo {
         let path = self.index_path();
         let mtime = index_mtime(&path).ok().flatten();
         let opts = crate::index_config::read_options(&self.config);
-        let index = Index::read_file(&path, self.hash, &opts).map_err(|e| {
+        let mut index = Index::read_file(&path, self.hash, &opts).map_err(|e| {
             // git's lines; the last one ends the command.
             let mut lines = e.report(&path.display().to_string());
             let last = lines.pop().unwrap_or_default();
@@ -298,6 +304,13 @@ impl Repo {
                 ),
             }
         })?;
+        if crate::index_config::apply_untracked_setting(
+            &self.config,
+            self.setup.work_tree.as_deref(),
+            &mut index,
+        ) {
+            self.untracked_toggled.set(true);
+        }
         Ok((index, mtime))
     }
 

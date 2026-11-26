@@ -10,7 +10,7 @@ use crate::entry::{Entry, Mode, Stage, verify_path};
 use crate::error::{AddError, OrderError};
 use crate::read::{self, ReadOptions};
 use crate::write::{self, WriteOptions};
-use crate::{CacheTree, Error};
+use crate::{CacheTree, Error, UntrackedCache};
 
 /// Options for [`Index::add`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -37,6 +37,7 @@ pub struct Index {
     pub(crate) entries: Vec<Entry>,
     pub(crate) tree: Option<CacheTree>,
     pub(crate) resolve_undo: Option<Vec<ResolveUndo>>,
+    pub(crate) untracked: Option<UntrackedCache>,
     pub(crate) ignored: Vec<[u8; 4]>,
     pub(crate) dropped: Vec<[u8; 4]>,
     pub(crate) checksum: Option<ObjectId>,
@@ -52,6 +53,7 @@ impl Index {
             entries: Vec::new(),
             tree: None,
             resolve_undo: None,
+            untracked: None,
             ignored: Vec::new(),
             dropped: Vec::new(),
             checksum: None,
@@ -240,7 +242,12 @@ impl Index {
         self.invalidate_path(&entry.path);
         match self.position(&entry.path, stage) {
             Ok(pos) => self.entries[pos] = entry,
-            Err(pos) => self.entries.insert(pos, entry),
+            Err(pos) => {
+                if self.path_range(&entry.path).is_empty() {
+                    self.untracked_changed(&entry.path);
+                }
+                self.entries.insert(pos, entry);
+            }
         }
         Ok(())
     }
@@ -396,6 +403,9 @@ impl Index {
     /// stage in the record of its path (other slots of an existing record
     /// stay), as git does whenever an unmerged entry leaves the index.
     pub(crate) fn note_removed(&mut self, e: &Entry) {
+        if self.untracked.is_some() && self.path_range(&e.path).is_empty() {
+            self.untracked_changed(&e.path);
+        }
         let slot = match e.stage.get() {
             0 => return,
             s => usize::from(s) - 1,
@@ -425,6 +435,35 @@ impl Index {
             .binary_search_by(|r| r.path.as_slice().cmp(path))
             .ok()?;
         Some(records.remove(i))
+    }
+
+    /// The untracked cache (`UNTR`), if the index has one.
+    pub fn untracked_cache(&self) -> Option<&UntrackedCache> {
+        self.untracked.as_ref()
+    }
+
+    /// The untracked cache, mutable.
+    pub fn untracked_cache_mut(&mut self) -> Option<&mut UntrackedCache> {
+        self.untracked.as_mut()
+    }
+
+    /// Replaces (or with `None` removes) the untracked cache.
+    pub fn set_untracked_cache(&mut self, cache: Option<UntrackedCache>) {
+        self.untracked = cache;
+    }
+
+    /// Takes the untracked cache out, e.g. while the entries are rebuilt
+    /// from trees (which must not invalidate it entry by entry).
+    pub fn take_untracked_cache(&mut self) -> Option<UntrackedCache> {
+        self.untracked.take()
+    }
+
+    /// A path appeared in or vanished from the index: the untracked cache
+    /// no longer knows the directories leading to it.
+    fn untracked_changed(&mut self, path: &[u8]) {
+        if let Some(uc) = &mut self.untracked {
+            uc.invalidate_path(path);
+        }
     }
 
     /// Drops the resolve undo extension.

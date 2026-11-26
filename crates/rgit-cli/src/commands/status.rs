@@ -136,6 +136,34 @@ fn untracked_excludes(repo: &Repo, index: &rgit_index::Index) -> Result<Excludes
     Ok(excludes)
 }
 
+/// The global exclude files the untracked cache watches.
+fn untracked_cache_files(repo: &Repo) -> crate::untracked_cache::GlobalFiles {
+    let env = rgit_config::SystemEnv::default();
+    let excludes_file = match repo.config.path("core.excludesfile", &env) {
+        Ok(Some(p)) => Some(p),
+        _ => rgit_worktree::ignore::default_excludes_file(|k| std::env::var_os(k)),
+    };
+    crate::untracked_cache::GlobalFiles {
+        info_exclude: repo.setup.common_dir.join("info").join("exclude"),
+        excludes_file,
+    }
+}
+
+/// The trace2 data of the untracked walk (the counters only when the
+/// untracked cache was used), as git reports them.
+fn trace_read_directory(stats: Option<crate::untracked_cache::Stats>) {
+    let _status = rgit_trace::trace2::region("status", "untracked", true);
+    let _dir = rgit_trace::trace2::region("dir", "read_directory", true);
+    let data = |k: &str, v: String| rgit_trace::trace2::data("read_directory", k, &v, true);
+    data("path", String::new());
+    if let Some(s) = stats {
+        data("node-creation", s.node_creation.to_string());
+        data("gitignore-invalidation", s.gitignore_invalidation.to_string());
+        data("directory-invalidation", s.directory_invalidation.to_string());
+        data("opendir", s.opendir.to_string());
+    }
+}
+
 /// [`untracked_and_ignored`] with the exclude rules already read (needs no
 /// repository, so it can run on a thread of its own).
 fn walk_untracked(
@@ -586,6 +614,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         "no" => Some(Untracked::No),
         _ => None,
     };
+    // The mode the configuration asks for (the untracked cache is kept for
+    // it; another mode on the command line bypasses the cache).
+    let config_mode = match repo.config.get("status.showuntrackedfiles") {
+        None => Some(Untracked::Normal),
+        Some(e) => match e.value.as_ref().map(|v| v.to_string()) {
+            None => Some(Untracked::Normal),
+            Some(m) => parse_mode(&m).or_else(|| {
+                rgit_config::value::parse_bool(Some(m.as_bytes()))
+                    .map(|b| if b { Untracked::Normal } else { Untracked::No })
+            }),
+        },
+    };
     let mode = match untracked.borrow().as_deref() {
         Some(m) => parse_mode(m)
             .or_else(|| {
@@ -671,6 +711,29 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(_) => Some(untracked_excludes(&repo, &index)?),
         None => None,
     };
+    // The untracked cache serves the plain listing in the configured mode.
+    let original_uc = index.untracked_cache().cloned();
+    let mut cache = None;
+    if walk_mode == Some(IgnoredMode::No)
+        && pathspec.is_empty()
+        && Some(mode) == config_mode
+        && let Some(uc) = index.untracked_cache()
+    {
+        if uc.ident != crate::index_config::untracked_ident(&work_tree) {
+            eprintln!("warning: {}", crate::messages::update_index::UNTRACKED_CACHE_DISABLED);
+        } else {
+            let flags = if mode == Untracked::All {
+                crate::index_config::UNTRACKED_FLAGS_ALL
+            } else {
+                crate::index_config::UNTRACKED_FLAGS_NORMAL
+            };
+            let mut uc = index.take_untracked_cache().expect("checked");
+            if uc.dir_flags != flags {
+                uc = rgit_index::UntrackedCache::new(repo.hash, uc.ident, flags);
+            }
+            cache = Some((uc, untracked_cache_files(&repo)));
+        }
+    }
     // With `attr:` magic the walk sees every path and the attributes
     // decide afterwards.
     let walk_pathspec = (!pathspec.is_empty() && attr_tree.is_none()).then_some(&pathspec);
@@ -679,11 +742,30 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let (metas, statuses, heads, walked) = std::thread::scope(|s| {
         let index = &index;
         let work_tree = &work_tree;
-        let walker = walk_mode.zip(excludes).map(|(ignored, excludes)| {
+        let walker = walk_mode.zip(excludes).map(|(ignored, mut excludes)| {
+            let cache = cache.take();
             s.spawn(move || {
                 let started = std::time::Instant::now();
-                let lists = walk_untracked(work_tree, index, excludes, walk_pathspec, mode, ignored);
-                (lists, started.elapsed().as_secs_f64())
+                let (lists, cache) = match cache {
+                    Some((mut uc, files)) => {
+                        let mut w = crate::untracked_cache::CachedWalk {
+                            root: work_tree,
+                            index,
+                            excludes: &mut excludes,
+                            all: mode == Untracked::All,
+                            stats: Default::default(),
+                            out: Vec::new(),
+                        };
+                        w.run(&mut uc, &files);
+                        let stats = w.stats;
+                        ((w.out, Vec::new()), Some((uc, stats)))
+                    }
+                    None => (
+                        walk_untracked(work_tree, index, excludes, walk_pathspec, mode, ignored),
+                        None,
+                    ),
+                };
+                (lists, started.elapsed().as_secs_f64(), cache)
             })
         });
         let metas = checker.preload(index.entries(), preload_threads(&repo));
@@ -701,6 +783,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     });
     // Like git, status refreshes the stat data of the index and writes it
     // back when that changed something or when entries are racily clean.
+    let (walked, cached) = match walked {
+        Some((lists, secs, cached)) => (Some((lists, secs)), cached),
+        None => (None, None),
+    };
+    if walk_mode.is_some() {
+        trace_read_directory(cached.as_ref().map(|c| c.1));
+    }
+    let mut uc_changed = repo.untracked_toggled.get();
+    if let Some((uc, _)) = cached {
+        uc_changed = original_uc.as_ref() != Some(&uc)
+            || std::env::var_os("GIT_FORCE_UNTRACKED_CACHE").is_some();
+        index.set_untracked_cache(Some(uc));
+    }
     for &pos in &statuses.refresh {
         if let (Some(meta), Some(entry)) = (metas[pos].as_ref(), index.entry_mut(pos)) {
             checker.refresh_stat(entry, meta);
@@ -713,7 +808,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
             }
         }
-        if racy || !statuses.refresh.is_empty() {
+        if racy || !statuses.refresh.is_empty() || uc_changed {
             let _ = crate::switch_branch::write_index(&repo, &index, lock);
         }
     }
