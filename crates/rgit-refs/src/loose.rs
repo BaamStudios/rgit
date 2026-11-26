@@ -9,7 +9,6 @@
 
 use rgit_hash::{HashKind, ObjectId};
 
-use crate::name::{RefNameFlags, is_valid_refname};
 use crate::target::Target;
 
 /// Parses the content of a loose reference file. `None` means the file is
@@ -25,7 +24,9 @@ pub fn parse(content: &[u8], kind: HashKind) -> Option<Target> {
             .rposition(|b| !is_space(*b))
             .map_or(start, |p| p + 1);
         let name = rest.get(start..end)?;
-        if !is_valid_refname(name, RefNameFlags::ONELEVEL) {
+        // A target that is no valid name still makes a symbolic reference
+        // (one that dangles), as git reads it.
+        if name.is_empty() {
             return None;
         }
         return Some(Target::Symbolic(rgit_bstr::from_bytes(name).into_owned()));
@@ -80,7 +81,10 @@ mod tests {
         assert_eq!(parse(b"ref: refs/heads/main\n", k), sym);
         assert_eq!(parse(b"ref:refs/heads/main", k), sym);
         assert_eq!(parse(b"ref:   refs/heads/main  \n", k), sym);
-        assert_eq!(parse(b"ref: refs/heads/main\textra\n", k), None);
+        assert_eq!(
+            parse(b"ref: refs/heads/main\textra\n", k),
+            Some(Target::Symbolic("refs/heads/main\textra".into()))
+        );
         assert_eq!(parse(b"ref: \n", k), None);
     }
 

@@ -105,6 +105,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let name = &args[0];
     let hash = setup.format.object_format;
     if delete.get() {
+        // Outside `refs/` only root references can be deleted: a file such
+        // as `$GIT_DIR/config` is refused.
+        if !name.starts_with("refs/") && !rgit_refs::name::is_root_ref_syntax(name) {
+            return Err(Die::Error(
+                rgit_refs::messages::bad_name(name),
+                1,
+            ));
+        }
         let old = match args.get(1) {
             None => None,
             Some(s) if s.is_empty() => None,
@@ -469,6 +477,9 @@ impl<R: BufRead> Session<'_, R> {
         field: &str,
     ) -> Result<String, Die> {
         match self.next_field(rest)? {
+            Field::Value(v) if !is_valid_refname(&crate::argv::bytes(&v), RefNameFlags::ONELEVEL) => {
+                Err(fatal(msg::invalid_ref_format(&v)))
+            }
             Field::Value(v) if !v.is_empty() => Ok(v),
             Field::Value(_) | Field::Missing => Err(fatal(msg::missing_field(cmd, name, field))),
             Field::Eof => Err(fatal(msg::unexpected_eof(cmd, name, field))),
@@ -514,7 +525,7 @@ impl<R: BufRead> Session<'_, R> {
             return Err(fatal(msg::missing_ref(cmd)));
         }
         if !is_valid_refname(name.as_bytes(), RefNameFlags::ONELEVEL) {
-            return Err(fatal(msg::invalid_ref_format(cmd, &name)));
+            return Err(fatal(msg::invalid_ref_format(&name)));
         }
         Ok((name, after))
     }

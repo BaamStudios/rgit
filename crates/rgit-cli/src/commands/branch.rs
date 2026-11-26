@@ -781,10 +781,19 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
             );
         }
         if !c.quiet {
-            let line = if remote {
-                msg::deleted_remote(name, &c.abbrev(&oid))
+            // A reference with a bad name is shown as "broken".
+            let was = if rgit_refs::name::is_valid_refname(
+                &rgit_bstr::to_bytes(&refname),
+                rgit_refs::name::RefNameFlags::STRICT,
+            ) {
+                c.abbrev(&oid)
             } else {
-                msg::deleted(name, &c.abbrev(&oid))
+                "broken".to_owned()
+            };
+            let line = if remote {
+                msg::deleted_remote(name, &was)
+            } else {
+                msg::deleted(name, &was)
             };
             crate::argv::outln(&line);
         }
@@ -1557,7 +1566,19 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
             .iter(&IterOptions::prefix(prefix))
             .map_err(|e| Die::Fatal(e.to_string()))?;
         for item in items {
-            let IterItem::Ref(r) = item else { continue };
+            let r = match item {
+                IterItem::Ref(r) => r,
+                IterItem::Broken(n) => {
+                    let w = rgit_refs::messages::ignoring_broken_ref(&n);
+                    crate::argv::errln(&format!("warning: {w}"));
+                    continue;
+                }
+                IterItem::BadName(n) => {
+                    let w = rgit_refs::messages::ignoring_broken_name(&n);
+                    crate::argv::errln(&format!("warning: {w}"));
+                    continue;
+                }
+            };
             // A symbolic ref pointing nowhere is not listed.
             if r.oid.is_none() {
                 continue;
