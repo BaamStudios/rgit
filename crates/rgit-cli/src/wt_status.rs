@@ -764,7 +764,7 @@ pub fn nothing_line(
 /// Render the long status.
 pub fn render(c: &Collected, header: &Header, r: &Render<'_>) -> Vec<u8> {
     let mut lines: Vec<Vec<u8>> = Vec::new();
-    let mut line = |s: &str| lines.push(s.as_bytes().to_vec());
+    let mut line = |s: &str| lines.push(rgit_bstr::to_bytes(s).into_owned());
     match &header.head {
         HeadState::Branch(b) => line(&msg::on_branch(b)),
         HeadState::Detached(_) if header.rebasing.is_some() => line(&rebasing_head_line(

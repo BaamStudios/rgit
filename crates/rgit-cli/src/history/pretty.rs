@@ -299,7 +299,7 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
         match e.reflog {
             // Under `-g` the reflog entry takes the place of the subject.
             Some(r) => {
-                out.extend_from_slice(r.selector.as_bytes());
+                out.extend_from_slice(&rgit_bstr::to_bytes(&r.selector));
                 out.extend_from_slice(b": ");
                 out.extend_from_slice(&r.message);
             }
@@ -327,7 +327,7 @@ pub fn write_entry(out: &mut Vec<u8>, style: &Style, e: &Entry<'_>, first: bool)
     out.extend_from_slice(e.signature);
     if let Some(r) = e.reflog {
         out.extend_from_slice(b"Reflog: ");
-        out.extend_from_slice(r.selector.as_bytes());
+        out.extend_from_slice(&rgit_bstr::to_bytes(&r.selector));
         out.extend_from_slice(b" (");
         out.extend_from_slice(&r.name);
         out.extend_from_slice(b" <");

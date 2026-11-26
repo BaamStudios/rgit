@@ -28,7 +28,7 @@ pub fn parse(content: &[u8], kind: HashKind) -> Option<Target> {
         if !is_valid_refname(name, RefNameFlags::ONELEVEL) {
             return None;
         }
-        return Some(Target::Symbolic(String::from_utf8(name.to_vec()).ok()?));
+        return Some(Target::Symbolic(rgit_bstr::from_bytes(name).into_owned()));
     }
     let hex_len = kind.hex_len();
     let hex = content.get(..hex_len)?;
@@ -44,7 +44,12 @@ pub fn parse(content: &[u8], kind: HashKind) -> Option<Target> {
 pub fn serialize(target: &Target) -> Vec<u8> {
     match target {
         Target::Object(id) => format!("{}\n", id.to_hex()).into_bytes(),
-        Target::Symbolic(name) => format!("ref: {name}\n").into_bytes(),
+        Target::Symbolic(name) => {
+            let mut out = b"ref: ".to_vec();
+            out.extend_from_slice(&rgit_bstr::to_bytes(name));
+            out.push(b'\n');
+            out
+        }
     }
 }
 

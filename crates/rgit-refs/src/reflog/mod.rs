@@ -88,7 +88,7 @@ impl RefHooks for ReflogWriter {
                 update.old,
                 update.new,
                 &self.committer,
-                update.message.as_bytes(),
+                &rgit_bstr::to_bytes(&update.message),
                 update.create,
             )
             .map(|_| ())

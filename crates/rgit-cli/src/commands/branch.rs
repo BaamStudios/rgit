@@ -154,7 +154,7 @@ impl Ctx<'_> {
 }
 
 fn not_valid_name(ctx: &Ctx<'_>, name: &str) -> Die {
-    eprintln!("fatal: {}", msg::not_valid_branch_name(name));
+    crate::argv::errln(&format!("fatal: {}", msg::not_valid_branch_name(name)));
     match ctx.advisor.advise(Advice::RefSyntax, msg::HINT_REF_SYNTAX) {
         Ok(()) => Die::Exit(128),
         Err(e) => Die::Fatal(e),
@@ -543,7 +543,7 @@ fn create(
                 let full = format!("{pattern}{lookup}{suffix}");
                 if let Ok(Some(Target::Symbolic(_))) = c.store.read_raw(&full) {
                     if c.revs.resolve(&full).is_none() {
-                        eprintln!("warning: {}", msg::ignoring_dangling_symref(&full));
+                        crate::argv::errln(&format!("warning: {}", msg::ignoring_dangling_symref(&full)));
                     }
                 }
             }
@@ -703,12 +703,12 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
             .then(|| crate::worktrees::busy_here(c.setup, &refname))
             .flatten();
         if busy == Some(crate::worktrees::Busy::Bisect) && c.current.as_deref() != Some(name.as_str()) {
-            eprintln!("error: {}", msg::cannot_delete_for_bisect(name, &c.worktree_path()));
+            crate::argv::errln(&format!("error: {}", msg::cannot_delete_for_bisect(name, &c.worktree_path())));
             code = 1;
             continue;
         }
         if !remote && ((c.current.as_deref() == Some(name.as_str()) && !c.setup.is_bare()) || busy.is_some()) {
-            eprintln!("error: {}", msg::cannot_delete_checked_out(name, &c.worktree_path()));
+            crate::argv::errln(&format!("error: {}", msg::cannot_delete_checked_out(name, &c.worktree_path())));
             code = 1;
             continue;
         }
@@ -722,18 +722,18 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
                     .push(RefUpdate::symref_delete(refname.as_str(), hash, None).no_deref(true))
                     .and_then(|()| tx.commit(&mut hooks));
                 if let Err(e) = r {
-                    eprintln!("error: {e}");
+                    crate::argv::errln(&format!("error: {e}"));
                     code = 1;
                 } else if !c.quiet {
-                    println!("{}", msg::deleted(name, &target));
+                    crate::argv::outln(&msg::deleted(name, &target));
                 }
                 continue;
             }
             _ => {
                 if remote {
-                    eprintln!("error: {}", msg::remote_not_found(name));
+                    crate::argv::errln(&format!("error: {}", msg::remote_not_found(name)));
                 } else {
-                    eprintln!("error: {}", msg::not_found(name));
+                    crate::argv::errln(&format!("error: {}", msg::not_found(name)));
                 }
                 code = 1;
                 continue;
@@ -746,16 +746,16 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
                         .is_ok_and(|s| s.trim_end() == name.as_str())
             });
             if bisecting {
-                eprintln!("error: {}", msg::cannot_delete_for_bisect(name, &path));
+                crate::argv::errln(&format!("error: {}", msg::cannot_delete_for_bisect(name, &path)));
                 code = 1;
                 continue;
             }
-            eprintln!("error: {}", msg::cannot_delete_checked_out(name, &path));
+            crate::argv::errln(&format!("error: {}", msg::cannot_delete_checked_out(name, &path)));
             code = 1;
             continue;
         }
         if !force && !remote && !merged_enough(c, name, &oid, head_oid.as_ref()) {
-            eprintln!("error: {}", msg::not_fully_merged(name));
+            crate::argv::errln(&format!("error: {}", msg::not_fully_merged(name)));
             c.advisor
                 .advise(Advice::ForceDeleteBranch, &msg::hint_force_delete(name))
                 .map_err(Die::Fatal)?;
@@ -768,7 +768,7 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
             .push(RefUpdate::delete(refname.as_str(), hash, Some(oid)).no_deref(true))
             .and_then(|()| tx.commit(&mut hooks));
         if let Err(e) = r {
-            eprintln!("error: {e}");
+            crate::argv::errln(&format!("error: {e}"));
             code = 1;
             continue;
         }
@@ -786,7 +786,7 @@ fn delete_branches(c: &Ctx<'_>, args: &[String], force: bool, remote: bool) -> C
             } else {
                 msg::deleted(name, &c.abbrev(&oid))
             };
-            println!("{line}");
+            crate::argv::outln(&line);
         }
     }
     Ok(code)
@@ -805,9 +805,9 @@ fn merged_enough(c: &Ctx<'_>, name: &str, oid: &ObjectId, head: Option<&ObjectId
     let merged = c.revs.is_ancestor(oid, &up_oid);
     if head.is_some() && merged != head_merged {
         if merged {
-            eprintln!("warning: {}", msg::merged_to_upstream_not_head(name, &up_name));
+            crate::argv::errln(&format!("warning: {}", msg::merged_to_upstream_not_head(name, &up_name)));
         } else {
-            eprintln!("warning: {}", msg::merged_to_head_not_upstream(name, &up_name));
+            crate::argv::errln(&format!("warning: {}", msg::merged_to_head_not_upstream(name, &up_name)));
         }
     }
     merged
@@ -900,7 +900,7 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
     // A reflog that is a symbolic link is neither moved nor copied.
     if let Some(l) = logs.as_ref().filter(|_| old != new) {
         if std::fs::symlink_metadata(l.path(&old_ref)).is_ok_and(|m| m.file_type().is_symlink()) {
-            eprintln!("error: {}", msg::reflog_is_symlink(&old_ref));
+            crate::argv::errln(&format!("error: {}", msg::reflog_is_symlink(&old_ref)));
             let failed = if is_copy { msg::COPY_FAILED } else { msg::RENAME_FAILED };
             return Err(Die::Fatal(failed.to_owned()));
         }
@@ -918,7 +918,7 @@ fn rename_or_copy(c: &Ctx<'_>, args: &[String], is_copy: bool, force: bool) -> C
             .store
             .rename_reftable(&old_ref, &new_ref, &committer, &message, is_copy)
         {
-            eprintln!("error: {e}");
+            crate::argv::errln(&format!("error: {e}"));
             let failed = if is_copy { msg::COPY_FAILED } else { msg::RENAME_FAILED };
             return Err(Die::Fatal(failed.to_owned()));
         }
@@ -1068,8 +1068,8 @@ fn move_other_heads(
         match written {
             Ok(()) => done(w),
             Err(e) => {
-                eprintln!("error: {e}");
-                eprintln!("error: {}", msg::head_of_worktree_not_updated(&w.path.display().to_string()));
+                crate::argv::errln(&format!("error: {e}"));
+                crate::argv::errln(&format!("error: {}", msg::head_of_worktree_not_updated(&w.path.display().to_string())));
                 ok = false;
             }
         }
@@ -1109,7 +1109,7 @@ fn set_upstream_to(c: &Ctx<'_>, upstream: &str, args: &[String]) -> CmdResult {
                     && c.store.resolve_oid(&format!("refs/remotes/{slip}")).ok().flatten().is_some()
                     && c.advisor.enabled(Advice::SetUpstreamFailure).map_err(Die::Fatal)?
                 {
-                    eprintln!("fatal: {}", msg::SET_UPSTREAM_SINGLE_ARGUMENT);
+                    crate::argv::errln(&format!("fatal: {}", msg::SET_UPSTREAM_SINGLE_ARGUMENT));
                     c.advisor
                         .advise(Advice::SetUpstreamFailure, &msg::hint_set_upstream_slip(&slip))
                         .map_err(Die::Fatal)?;
@@ -1129,7 +1129,7 @@ fn set_upstream_to(c: &Ctx<'_>, upstream: &str, args: &[String]) -> CmdResult {
         return Err(Die::Fatal(tmsg::not_a_branch(upstream)));
     };
     if plan.is_own_upstream(&branch) {
-        eprintln!("warning: {}", tmsg::own_upstream(&branch));
+        crate::argv::errln(&format!("warning: {}", tmsg::own_upstream(&branch)));
         return Ok(0);
     }
     plan.apply(&repo, &branch, &c.auto, c.quiet)?;
@@ -1324,7 +1324,7 @@ struct List {
 impl List {
     /// Writes `lines`, in columns when asked to.
     fn emit(&self, lines: Vec<String>) -> Result<(), Die> {
-        let mut out = std::io::stdout().lock();
+        let mut out = crate::argv::stdout();
         let lines = match self.columns {
             Some(mode) => crate::column::layout(&lines, mode, crate::column::list_width(), 1, ""),
             None => lines,
@@ -1576,7 +1576,7 @@ fn list_branches(c: &Ctx<'_>, patterns: &[String], head: &Option<Target>, list: 
             if !patterns.is_empty()
                 && !patterns
                     .iter()
-                    .any(|p| wildmatch(p.as_bytes(), shown.as_bytes(), flags))
+                    .any(|p| wildmatch(&rgit_bstr::to_bytes(p), &rgit_bstr::to_bytes(&shown), flags))
             {
                 continue;
             }

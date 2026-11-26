@@ -26,7 +26,7 @@ struct Show<'a> {
     hash_only: bool,
     abbrev: usize,
     quiet: bool,
-    out: std::io::StdoutLock<'static>,
+    out: rgit_bstr::Unescape<std::io::StdoutLock<'static>>,
 }
 
 impl Show<'_> {
@@ -170,7 +170,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         hash_only: hash_only.get(),
         abbrev: abbrev.get(),
         quiet: quiet.get(),
-        out: std::io::stdout().lock(),
+        out: crate::argv::stdout(),
     };
 
     if verify.get() {
@@ -273,7 +273,7 @@ fn exclude_existing_mode(store: &FilesStore, pattern: &str) -> CmdResult {
         }
     }
     let stdin = std::io::stdin();
-    let mut out = std::io::stdout().lock();
+    let mut out = crate::argv::stdout();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         let line = line.strip_suffix("^{}").unwrap_or(&line);
@@ -288,7 +288,7 @@ fn exclude_existing_mode(store: &FilesStore, pattern: &str) -> CmdResult {
             continue;
         }
         if !is_valid_refname(refname.as_bytes(), RefNameFlags::default()) {
-            eprintln!("{}", msg::bad_ref_format(refname));
+            crate::argv::errln(&msg::bad_ref_format(refname));
             continue;
         }
         let _ = writeln!(out, "{line}");

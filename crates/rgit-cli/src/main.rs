@@ -145,12 +145,12 @@ impl Die {
         match self {
             Die::Fatal(m) => {
                 rgit_trace::trace2::error(&m);
-                eprintln!("{}", prefixed(Level::Fatal, &m));
+                argv::errln(&prefixed(Level::Fatal, &m));
                 rgit_messages::EXIT_FATAL
             }
             Die::Error(m, code) => {
                 rgit_trace::trace2::error(&m);
-                eprintln!("{}", prefixed(Level::Error, &m));
+                argv::errln(&prefixed(Level::Error, &m));
                 code
             }
             Die::Output(e) => e.emit(),

@@ -155,10 +155,10 @@ type Step = Result<(), Die>;
 impl State<'_, '_> {
     fn emit(&mut self, s: &str) {
         if self.sq {
-            self.out.extend_from_slice(sq_quote(s).as_bytes());
+            self.out.extend_from_slice(&rgit_bstr::to_bytes(&sq_quote(s)));
             self.out.push(b' ');
         } else {
-            self.out.extend_from_slice(s.as_bytes());
+            self.out.extend_from_slice(&rgit_bstr::to_bytes(s));
             self.out.push(b'\n');
         }
     }

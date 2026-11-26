@@ -89,7 +89,7 @@ pub fn write_root_ref_file(
     if !reftable::backend::uses_reftable(git_dir) {
         return std::fs::write(git_dir.join(name), content);
     }
-    let text = String::from_utf8_lossy(content);
+    let text = rgit_bstr::from_bytes(content);
     let text = text.trim();
     let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidData);
     let update = match text.strip_prefix("ref:") {
@@ -124,9 +124,10 @@ fn root_ref_transaction(git_dir: &std::path::Path, update: RefUpdate) -> std::io
         .map_err(std::io::Error::other)
 }
 
-/// [`read_head_file`] as text.
+/// [`read_head_file`] as text (bytes that are not UTF-8 escaped as
+/// [`rgit_bstr`] does).
 pub fn read_head_text(git_dir: &std::path::Path) -> std::io::Result<String> {
-    String::from_utf8(read_head_file(git_dir)?).map_err(std::io::Error::other)
+    Ok(rgit_bstr::from_vec(read_head_file(git_dir)?))
 }
 
 /// Points `HEAD` of the reftable repository or worktree in `git_dir` at

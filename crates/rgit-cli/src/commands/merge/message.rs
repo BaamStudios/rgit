@@ -460,7 +460,7 @@ fn shortlog(
         credits(&commits, me, comment)
     };
     out.extend_from_slice(b"* ");
-    out.extend_from_slice(heading(head).as_bytes());
+    out.extend_from_slice(&rgit_bstr::to_bytes(&heading(head)));
     out.push(b':');
     if subjects.len() > limit {
         out.extend_from_slice(msg::commits_count(subjects.len()).as_bytes());
@@ -487,7 +487,8 @@ pub(crate) fn default_message(
     ours: Option<&ObjectId>,
     log: usize,
 ) -> Vec<u8> {
-    let mut out = title(repo, heads, into).into_bytes();
+    // Branch names that are not UTF-8 go into the message as their bytes.
+    let mut out = rgit_bstr::to_bytes(&title(repo, heads, into)).into_owned();
     out.push(b'\n');
     out.extend_from_slice(&tag_part(repo, heads));
     out.extend_from_slice(&log_part(repo, heads, ours, log));
@@ -515,7 +516,7 @@ pub(crate) fn tag_part(repo: &Repo, heads: &[Head]) -> Vec<u8> {
         if several {
             out.push(b'\n');
             out.extend_from_slice(&comment);
-            out.extend_from_slice(format!(" {}\n", heading(head)).as_bytes());
+            out.extend_from_slice(&rgit_bstr::to_bytes(&format!(" {}\n", heading(head))));
             out.extend_from_slice(&body);
         } else if !body.is_empty() {
             out.push(b'\n');

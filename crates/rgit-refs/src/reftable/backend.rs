@@ -81,11 +81,21 @@ fn write_error(e: StackError) -> TransactionError {
     }
 }
 
+/// The raw bytes of the reference name `name` (see [`rgit_bstr`]).
+fn raw(name: &str) -> Vec<u8> {
+    rgit_bstr::to_bytes(name).into_owned()
+}
+
+/// A reference name read from a table, as rgit carries it.
+fn text(raw: &[u8]) -> String {
+    rgit_bstr::from_bytes(raw).into_owned()
+}
+
 fn target_of(rec: &RefRecord) -> Option<Target> {
     match &rec.value {
         RefValue::Deletion => None,
         RefValue::Direct(id) | RefValue::Peeled(id, _) => Some(Target::Object(*id)),
-        RefValue::Symbolic(t) => Some(Target::Symbolic(String::from_utf8_lossy(t).into_owned())),
+        RefValue::Symbolic(t) => Some(Target::Symbolic(text(t))),
     }
 }
 
@@ -227,8 +237,8 @@ impl FilesStore {
     pub(crate) fn rt_read_raw(&self, name: &str) -> Result<Option<Target>, Error> {
         let (stack, rel) = self.rt_stack(name);
         let tables = self.rt_tables(&stack)?;
-        let rec = merged::read_ref(&tables, rel.as_bytes())
-            .map_err(|e| read_error(stack.dir(), e.into()))?;
+        let rec =
+            merged::read_ref(&tables, &raw(rel)).map_err(|e| read_error(stack.dir(), e.into()))?;
         if rec.as_ref().is_some_and(broken_symref) {
             return Err(Error::Broken(name.to_owned()));
         }
@@ -240,7 +250,7 @@ impl FilesStore {
 
     fn rt_item(&self, rec: RefRecord) -> Option<IterItem> {
         let broken = broken_symref(&rec);
-        let name = String::from_utf8(rec.name).ok()?;
+        let name = rgit_bstr::from_vec(rec.name);
         if !is_valid_refname(name.as_bytes(), RefNameFlags::ONELEVEL) {
             return Some(IterItem::BadName(name));
         }
@@ -257,7 +267,7 @@ impl FilesStore {
                     Ok(None) | Err(Error::TooDeep(_)) => None,
                     Err(_) => return Some(IterItem::Broken(name)),
                 };
-                let t = String::from_utf8_lossy(&t).into_owned();
+                let t = text(&t);
                 (Target::Symbolic(t), oid, Peeled::Unknown)
             }
         };
@@ -278,10 +288,10 @@ impl FilesStore {
         let own = self.rt_worktree_stack();
         let mut collect = |stack: &Arc<Stack>, from: &str, own_refs: bool| -> Result<(), Error> {
             let tables = self.rt_tables(stack)?;
-            let recs = merged::refs_with_prefix(&tables, from.as_bytes())
+            let recs = merged::refs_with_prefix(&tables, &raw(from))
                 .map_err(|e| read_error(stack.dir(), e.into()))?;
             for rec in recs {
-                let name = String::from_utf8_lossy(&rec.name).into_owned();
+                let name = text(&rec.name);
                 let below_refs = name.starts_with("refs/");
                 let keep = if !below_refs {
                     own_refs && options.include_root_refs && is_root_ref(&name)
@@ -436,7 +446,7 @@ impl<'s> Prepared<'s> {
         }
         let (stack, rel) = self.store.rt_stack(name);
         let i = self.stack_index(&stack)?;
-        let rec = merged::read_ref(self.stacks[i].1.tables(), rel.as_bytes())
+        let rec = merged::read_ref(self.stacks[i].1.tables(), &raw(rel))
             .map_err(|e| write_error(e.into()))?;
         // A broken record counts as absent, so that it can be replaced.
         if rec.as_ref().is_some_and(broken_symref) {
@@ -467,17 +477,15 @@ impl<'s> Prepared<'s> {
         let (stack, rel) = self.store.rt_stack(prefix);
         let outer = &prefix[..prefix.len() - rel.len()];
         let i = self.stack_index(&stack)?;
-        let mut it = merged::merged_refs(self.stacks[i].1.tables(), rel.as_bytes())
+        let rel_raw = raw(rel);
+        let mut it = merged::merged_refs(self.stacks[i].1.tables(), &rel_raw)
             .map_err(|e| write_error(e.into()))?;
         while let Some(rec) = it.next_record().map_err(|e| write_error(e.into()))? {
-            if !rec.name.starts_with(rel.as_bytes()) {
+            if !rec.name.starts_with(&rel_raw) {
                 break;
             }
             if !rec.is_deletion() {
-                return Ok(Some(format!(
-                    "{outer}{}",
-                    String::from_utf8_lossy(&rec.name)
-                )));
+                return Ok(Some(format!("{outer}{}", text(&rec.name))));
             }
         }
         Ok(None)
@@ -600,7 +608,7 @@ impl State<'_, '_> {
             ),
             NewValue::Symbolic(t) => (
                 self.prepared.resolve_oid(t).ok().flatten().unwrap_or(null),
-                RefValue::Symbolic(t.clone().into_bytes()),
+                RefValue::Symbolic(raw(t)),
             ),
         };
         let delete = value == RefValue::Deletion;
@@ -814,7 +822,7 @@ impl Prepared<'_> {
             let mut refs: BTreeMap<Vec<u8>, RefValue> = BTreeMap::new();
             for (stack, name, value) in &writes {
                 if *stack == i {
-                    refs.insert(name.clone().into_bytes(), value.clone());
+                    refs.insert(raw(name), value.clone());
                 }
             }
             let mut logs: BTreeMap<Vec<u8>, LogRecord> = BTreeMap::new();
@@ -824,7 +832,7 @@ impl Prepared<'_> {
             };
             for name in &capture.deletes {
                 let Some(rel) = of_stack(name) else { continue };
-                let old = merged::logs_of(locked.tables(), rel.as_bytes())
+                let old = merged::logs_of(locked.tables(), &raw(&rel))
                     .map_err(|e| write_error(e.into()))?;
                 for mut rec in old {
                     rec.update = None;
@@ -834,7 +842,7 @@ impl Prepared<'_> {
             for (name, entry, create) in &capture.appends {
                 let Some(rel) = of_stack(name) else { continue };
                 if !*create {
-                    let has = !merged::logs_of(locked.tables(), rel.as_bytes())
+                    let has = !merged::logs_of(locked.tables(), &raw(&rel))
                         .map_err(|e| write_error(e.into()))?
                         .is_empty();
                     if !has {
@@ -842,7 +850,7 @@ impl Prepared<'_> {
                     }
                 }
                 let rec = LogRecord {
-                    refname: rel.into_bytes(),
+                    refname: raw(&rel),
                     update_index: index,
                     update: Some(update_of(entry)),
                 };
@@ -938,7 +946,7 @@ impl Logs<'_> {
     fn records(&self, name: &str) -> io::Result<Vec<LogRecord>> {
         let (stack, rel) = self.stack(name);
         let tables = stack.tables().map_err(io_error)?;
-        merged::logs_of(&tables, rel.as_bytes()).map_err(io_error)
+        merged::logs_of(&tables, &raw(&rel)).map_err(io_error)
     }
 
     pub fn exists(&self, name: &str) -> bool {
@@ -972,7 +980,7 @@ impl Logs<'_> {
         let (stack, rel) = self.stack(name);
         let locked = stack.lock(self.shared).map_err(io_error)?;
         let index = locked.next_update_index();
-        let (mut records, max) = build(&locked, rel.as_bytes(), index)?;
+        let (mut records, max) = build(&locked, &raw(&rel), index)?;
         if records.is_empty() {
             return Ok(());
         }
@@ -1130,13 +1138,13 @@ impl Logs<'_> {
             let old = merged::logs_of(locked.tables(), rel).map_err(io_error)?;
             let mut out = Vec::new();
             // Entries the target still has would shine through.
-            for mut rec in merged::logs_of(locked.tables(), to_rel.as_bytes()).map_err(io_error)? {
+            for mut rec in merged::logs_of(locked.tables(), &raw(&to_rel)).map_err(io_error)? {
                 rec.update = None;
                 out.push(rec);
             }
             for rec in old {
                 let mut copy = rec.clone();
-                copy.refname = to_rel.clone().into_bytes();
+                copy.refname = raw(&to_rel);
                 out.retain(|r: &LogRecord| r.key() != copy.key());
                 out.push(copy);
                 if remove {
@@ -1156,7 +1164,7 @@ impl Logs<'_> {
         Ok(merged::log_names(&tables)
             .map_err(io_error)?
             .into_iter()
-            .filter_map(|n| String::from_utf8(n).ok())
+            .map(rgit_bstr::from_vec)
             .collect())
     }
 }
@@ -1193,7 +1201,7 @@ impl FilesStore {
             .map_err(write_error)?
             .fsync(self.options().fsync);
         let tables = locked.tables().to_vec();
-        let read = |name: &str| merged::read_ref(&tables, name.as_bytes());
+        let read = |name: &str| merged::read_ref(&tables, &raw(name));
         let fmt = |e: super::FormatError| write_error(e.into());
         let value = match read(old_rel).map_err(fmt)? {
             Some(RefRecord {
@@ -1219,8 +1227,8 @@ impl FilesStore {
             }
         }
         let below = format!("{new_rel}/");
-        for rec in merged::refs_with_prefix(&tables, below.as_bytes()).map_err(fmt)? {
-            let name = String::from_utf8_lossy(&rec.name).into_owned();
+        for rec in merged::refs_with_prefix(&tables, &raw(&below)).map_err(fmt)? {
+            let name = text(&rec.name);
             if counts(&name) {
                 return Err(TransactionError::NameConflict {
                     existing: name,
@@ -1233,13 +1241,13 @@ impl FilesStore {
         let last = if copy { first } else { first + 1 };
         let mut writer = Writer::new(locked.write_options(), first, last);
         let mut refs = vec![RefRecord {
-            name: new_rel.as_bytes().to_vec(),
+            name: raw(new_rel),
             update_index: last,
             value,
         }];
         if !copy {
             refs.push(RefRecord {
-                name: old_rel.as_bytes().to_vec(),
+                name: raw(old_rel),
                 update_index: first,
                 value: RefValue::Deletion,
             });
@@ -1249,7 +1257,7 @@ impl FilesStore {
             writer.add_ref(r).map_err(|e| write_error(e.into()))?;
         }
 
-        let old_logs = merged::logs_of(&tables, old_rel.as_bytes()).map_err(fmt)?;
+        let old_logs = merged::logs_of(&tables, &raw(old_rel)).map_err(fmt)?;
         let logging =
             !old_logs.is_empty() || self.options().log_all_ref_updates.should_autocreate(new);
         let mut logs: BTreeMap<Vec<u8>, LogRecord> = BTreeMap::new();
@@ -1257,13 +1265,13 @@ impl FilesStore {
             logs.insert(rec.key(), rec);
         };
         let entry = |name: &str, index: u64, from: ObjectId, to: ObjectId| LogRecord {
-            refname: name.as_bytes().to_vec(),
+            refname: raw(name),
             update_index: index,
             update: Some(update_of(&Entry::new(
                 from,
                 to,
                 committer,
-                message.as_bytes(),
+                &rgit_bstr::to_bytes(message),
             ))),
         };
         for rec in &old_logs {
@@ -1271,7 +1279,7 @@ impl FilesStore {
                 continue;
             }
             let mut moved = rec.clone();
-            moved.refname = new_rel.as_bytes().to_vec();
+            moved.refname = raw(new_rel);
             put(moved);
         }
         if !copy {
@@ -1381,7 +1389,7 @@ pub(crate) fn root_ref_content(git_dir: &Path, name: &str) -> io::Result<Vec<u8>
             Err(StackError::HashMismatch(_)) => continue,
             Err(e) => return Err(io_error(e)),
         };
-        return match merged::read_ref(&tables, name.as_bytes()).map_err(io_error)? {
+        return match merged::read_ref(&tables, &raw(name)).map_err(io_error)? {
             Some(rec) => Ok(match rec.value {
                 RefValue::Symbolic(t) => [b"ref: ".as_slice(), &t, b"\n"].concat(),
                 RefValue::Direct(id) | RefValue::Peeled(id, _) => {
@@ -1425,11 +1433,11 @@ pub fn import(
     let mut records: Vec<RefRecord> = refs
         .iter()
         .map(|(name, target)| RefRecord {
-            name: name.clone().into_bytes(),
+            name: raw(name),
             update_index: 1,
             value: match target {
                 Target::Object(id) => RefValue::Direct(*id),
-                Target::Symbolic(t) => RefValue::Symbolic(t.clone().into_bytes()),
+                Target::Symbolic(t) => RefValue::Symbolic(raw(t)),
             },
         })
         .collect();
@@ -1444,7 +1452,7 @@ pub fn import(
         for entry in entries {
             index += 1;
             log_records.push(LogRecord {
-                refname: name.clone().into_bytes(),
+                refname: raw(name),
                 update_index: index,
                 update: Some(update_of(entry)),
             });

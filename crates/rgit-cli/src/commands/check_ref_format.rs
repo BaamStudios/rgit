@@ -43,7 +43,7 @@ fn expand_previous(ctx: &Context, name: &str) -> Result<String, Die> {
     );
     let head = logs.read("HEAD").ok().flatten().unwrap_or_default();
     Ok(match rgit_refs::reflog::nth_prior_checkout(&head, n) {
-        Some(b) => format!("{}{tail}", String::from_utf8_lossy(b)),
+        Some(b) => format!("{}{tail}", rgit_bstr::from_bytes(b)),
         None => name.to_owned(),
     })
 }
@@ -58,9 +58,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return usage(false);
         }
         let name = &expand_previous(ctx, &args[1])?;
-        return match check_branch_name(name.as_bytes()) {
+        return match check_branch_name(&crate::argv::bytes(name)) {
             Ok(()) => {
-                println!("{name}");
+                let _ = writeln!(crate::argv::stdout(), "{name}");
                 Ok(0)
             }
             Err(_) => Err(Die::Fatal(invalid_branch_name(name))),
@@ -83,7 +83,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return usage(false);
     };
     if normalize {
-        match normalize_refname(name.as_bytes(), flags) {
+        match normalize_refname(&crate::argv::bytes(name), flags) {
             Ok(n) => {
                 let mut out = std::io::stdout().lock();
                 let _ = out.write_all(&n);
@@ -93,6 +93,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Err(_) => Ok(1),
         }
     } else {
-        Ok(i32::from(check_refname_format(name.as_bytes(), flags).is_err()))
+        Ok(i32::from(check_refname_format(&crate::argv::bytes(name), flags).is_err()))
     }
 }

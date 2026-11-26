@@ -368,7 +368,8 @@ impl Printer {
         self.out.push(if self.nul { 0 } else { b'\n' });
     }
     pub(crate) fn text(&mut self, s: &str) {
-        self.out.extend_from_slice(s.as_bytes());
+        // Branch names that are not UTF-8 are printed as their bytes.
+        self.out.extend_from_slice(&rgit_bstr::to_bytes(s));
     }
 }
 

@@ -597,7 +597,7 @@ fn show(ctx: &mut Context, args: &[String]) -> CmdResult {
             Some(c) => format!("{c}{id}{}", crate::color::RESET),
             None => id,
         };
-        let mut line = format!("{id} {display}@{{{label}}}: ").into_bytes();
+        let mut line = rgit_bstr::to_bytes(&format!("{id} {display}@{{{label}}}: ")).into_owned();
         line.extend_from_slice(&e.message);
         line.push(b'\n');
         if out.write_all(&line).is_err() {
