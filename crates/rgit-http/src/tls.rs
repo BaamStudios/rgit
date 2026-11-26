@@ -186,7 +186,11 @@ pub(crate) fn client_config(opts: &HttpOptions) -> Result<Arc<ClientConfig>, Tra
         }
         None => builder.with_no_client_auth(),
     };
-    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    cfg.alpn_protocols = if opts.version == crate::options::HttpVersion::Http11 {
+        vec![b"http/1.1".to_vec()]
+    } else {
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    };
     Ok(Arc::new(cfg))
 }
 

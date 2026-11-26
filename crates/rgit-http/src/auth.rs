@@ -119,6 +119,14 @@ pub fn base64(data: &[u8]) -> String {
     out
 }
 
+/// URL-safe base64 without padding (RFC 4648, 5), as in `HTTP2-Settings`.
+pub fn base64url(data: &[u8]) -> String {
+    base64(data)
+        .trim_end_matches('=')
+        .replace('+', "-")
+        .replace('/', "_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

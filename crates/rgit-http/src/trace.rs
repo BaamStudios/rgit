@@ -111,6 +111,12 @@ impl Tracer {
         self.count_line("<= Recv header", raw.len());
         let l = raw.strip_suffix(b"\n").unwrap_or(raw);
         let l = l.strip_suffix(b"\r").unwrap_or(l);
+        // libcurl hands HTTP/2 status lines over as `HTTP/2 200 \r\n`;
+        // git's trace shows them without the trailing blank.
+        let l = match l.strip_suffix(b" ") {
+            Some(t) if l.starts_with(b"HTTP/2 ") => t,
+            _ => l,
+        };
         self.header_line("<= Recv header:", l);
     }
 
