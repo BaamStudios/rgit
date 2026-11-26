@@ -916,7 +916,7 @@ impl<'c> Sequencer<'c> {
         base_label: &str,
         their_label: &str,
     ) -> Result<MergeResult, Fail> {
-        let labels = (base_label, their_label);
+        let labels = (base_label, "HEAD", their_label);
         // revert merges with the built-in strategy even when told to use
         // resolve (observed).
         let strategy = self
@@ -1347,7 +1347,7 @@ impl<'c> Sequencer<'c> {
 
 /// Merges `theirs` into `ours` with `base` as the merge base (strategy
 /// `ort`/`recursive` and the `-X` options); `labels` are the labels of
-/// the base and of `theirs` in conflict markers.
+/// the base, of `ours` and of `theirs` in conflict markers and messages.
 pub(crate) fn merge_with(
     repo: &Repo,
     strategy: Option<&str>,
@@ -1355,9 +1355,9 @@ pub(crate) fn merge_with(
     base: &ObjectId,
     ours: &ObjectId,
     theirs: &ObjectId,
-    labels: (&str, &str),
+    labels: (&str, &str, &str),
 ) -> Result<MergeResult, Fail> {
-    let (base_label, their_label) = labels;
+    let (base_label, our_label, their_label) = labels;
     let subtree = match strategy {
         None | Some("ort" | "recursive") => rgit_merge::Subtree::None,
         Some("subtree") => rgit_merge::Subtree::Guess,
@@ -1383,7 +1383,7 @@ pub(crate) fn merge_with(
         Some(s) => return Err(Fail::Die(Die::Fatal(msg::strategy_not_supported(s)))),
     };
     let mut opts = rgit_merge::Options {
-        branch1: b"HEAD".to_vec(),
+        branch1: our_label.as_bytes().to_vec(),
         branch2: their_label.as_bytes().to_vec(),
         ancestor: base_label.as_bytes().to_vec(),
         style: crate::commands::merge_file::config_style(&repo.config)?,

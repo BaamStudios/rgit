@@ -67,9 +67,13 @@ pub(crate) fn run_with(ctx: &mut Context, argv: &[String], strategy: Option<&str
         Some(b) => Some(commit(b)?),
         None => None,
     };
-    // The conflict markers name the heads as given (`GITHEAD_<id>` is
-    // not used here, observed).
-    let their_label = heads[1].clone();
+    // Conflict markers, messages and the names of files moved out of the
+    // way name the two heads as given; for a head given as an object id
+    // the environment may supply a name (`GITHEAD_<argument>`), as
+    // observed from git.
+    let label = |arg: &str| std::env::var(format!("GITHEAD_{arg}")).unwrap_or_else(|_| arg.to_owned());
+    let our_label = label(heads[0]);
+    let their_label = label(heads[1]);
     let fail = |f: Fail| match f {
         Fail::Die(d) => d,
         Fail::Error(m) => Die::Error(m, 2),
@@ -92,7 +96,7 @@ pub(crate) fn run_with(ctx: &mut Context, argv: &[String], strategy: Option<&str
         &base_tree,
         &head_tree,
         &remote_tree,
-        (&base_label, &their_label),
+        (&base_label, &our_label, &their_label),
     )
     .map_err(fail)?;
     sequencer::two_way(&repo, head_tree, result.tree, Some(&result), false).map_err(fail)?;
