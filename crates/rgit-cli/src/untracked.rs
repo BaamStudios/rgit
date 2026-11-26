@@ -193,8 +193,8 @@ impl Listing {
 fn read_sorted(dir: &Path) -> std::io::Result<Listing> {
     let mut out = Listing::default();
     for e in std::fs::read_dir(dir)?.flatten() {
-        let name = e.file_name();
-        let name = name.as_encoded_bytes();
+        let name = rgit_worktree::precompose::file_name(&e.file_name());
+        let name = name.as_slice();
         if name == b".git" {
             continue;
         }

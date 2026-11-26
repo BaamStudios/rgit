@@ -1688,7 +1688,7 @@ impl<'o> Unpacker<'_, 'o, '_> {
         };
         let mut names: Vec<Vec<u8>> = read
             .flatten()
-            .map(|e| e.file_name().as_encoded_bytes().to_vec())
+            .map(|e| rgit_worktree::precompose::file_name(&e.file_name()))
             .collect();
         names.sort();
         for name in names {

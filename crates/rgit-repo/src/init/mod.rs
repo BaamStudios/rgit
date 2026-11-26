@@ -693,6 +693,12 @@ fn write_config(path: &Path, config: &ConfigSet, v: &ConfigValues<'_>) -> Result
         if probe_ignorecase(path) {
             set("core.ignorecase", "true")?;
         }
+        if precompose_supported() {
+            set(
+                "core.precomposeunicode",
+                bool_str(probe_precompose(v.git_dir)),
+            )?;
+        }
     }
     if let Some(value) = v.shared.config_value() {
         set("core.sharedrepository", &value)?;
@@ -741,6 +747,26 @@ fn probe_symlinks(dir: &Path) -> bool {
         let _ = dir;
         false
     }
+}
+
+/// Whether `core.precomposeUnicode` exists on this platform (macOS; the
+/// test switch `RGIT_TEST_PRECOMPOSE_UNICODE=1` elsewhere).
+fn precompose_supported() -> bool {
+    cfg!(target_os = "macos")
+        || std::env::var_os("RGIT_TEST_PRECOMPOSE_UNICODE").is_some_and(|v| v == "1")
+}
+
+/// Whether the file system does not tell precomposed and decomposed names
+/// apart: a file created as `ä` (U+00E4) is also found as `a` + U+0308.
+fn probe_precompose(dir: &Path) -> bool {
+    let composed = dir.join("\u{e4}");
+    let decomposed = dir.join("a\u{308}");
+    if fs::File::create(&composed).is_err() {
+        return false;
+    }
+    let found = fs::metadata(&decomposed).is_ok();
+    let _ = fs::remove_file(&composed);
+    found
 }
 
 /// Whether the file system ignores case: `config` is also found under a

@@ -188,7 +188,25 @@ fn print_main_help() {
 
 /// Run a command; `argv[0]` is its name: a built-in, else an external
 /// `git-<name>` program, else an alias, else an unknown command.
+/// `core.precomposeUnicode`: arguments in decomposed form (as macOS hands
+/// out file names) are converted to the precomposed form the index uses.
+/// Only looks at the configuration when an argument is not ASCII.
+fn precompose_arguments(ctx: &Context, argv: &mut [String]) {
+    if !rgit_worktree::precompose::supported() || argv.iter().all(|a| a.is_ascii()) {
+        return;
+    }
+    let Ok(early) = alias::EarlyConfig::load(ctx) else {
+        return;
+    };
+    if early.config.bool("core.precomposeunicode").ok().flatten() == Some(true) {
+        for arg in argv.iter_mut() {
+            rgit_worktree::precompose::argument(arg);
+        }
+    }
+}
+
 fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
+    precompose_arguments(ctx, &mut argv);
     // `git <cmd> --help` is `git help <cmd>`, for commands only.
     if argv.get(1).map(String::as_str) == Some("--help") {
         argv = vec!["help".into(), "--exclude-guides".into(), argv[0].clone()];
