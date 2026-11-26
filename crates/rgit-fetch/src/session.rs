@@ -16,7 +16,7 @@ use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use bstr::ByteSlice;
 use rgit_config::{ConfigSet, Environment};
@@ -138,6 +138,37 @@ pub struct Session {
     options: ConnectOptions,
     program: &'static str,
     shallow_info: Option<ShallowInfo>,
+    /// For downloading the packs of a `packfile-uris` section.
+    config: ConfigSet,
+    base_env: Vec<(OsString, OsString)>,
+    ip: IpVersion,
+    /// `fetch.uriProtocols`, as sent in `packfile-uris`.
+    uri_protocols: Option<String>,
+    /// Ask for `sideband-all` (unless `GIT_TEST_SIDEBAND_ALL` is false).
+    sideband_all: bool,
+}
+
+/// `fetch.uriProtocols`: the protocols for `packfile-uris`. git keeps
+/// only `http` and `https` of the comma-separated list (exact names,
+/// duplicates kept; the last value of the variable counts); `None` if none
+/// is left.
+pub fn uri_protocols(config: &ConfigSet) -> Option<String> {
+    let value = config.string("fetch.uriprotocols").ok().flatten()?;
+    let value = value.to_str_lossy();
+    let kept: Vec<&str> = value
+        .split(',')
+        .filter(|p| matches!(*p, "http" | "https"))
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(","))
+}
+
+/// `GIT_TEST_SIDEBAND_ALL`: git asks for `sideband-all` whenever the
+/// server offers it, unless the variable is false.
+fn want_sideband_all(env: &dyn Environment) -> bool {
+    match env.var("GIT_TEST_SIDEBAND_ALL") {
+        None => true,
+        Some(v) => rgit_config::value::parse_bool(Some(v.as_encoded_bytes())).unwrap_or(true),
+    }
 }
 
 /// Open a connection and read up to the version line of the response.
@@ -306,6 +337,11 @@ impl Session {
             options,
             program,
             shallow_info: None,
+            config: settings.config.clone(),
+            base_env: settings.base_env.clone(),
+            ip: settings.ip,
+            uri_protocols: uri_protocols(settings.config),
+            sideband_all: want_sideband_all(settings.env),
         })
     }
 
@@ -343,6 +379,12 @@ impl Session {
             options: ConnectOptions::new(Service::UploadPack),
             program,
             shallow_info: None,
+            // A bundle has no `packfile-uris` section.
+            config: ConfigSet::default(),
+            base_env: Vec::new(),
+            ip: IpVersion::Any,
+            uri_protocols: None,
+            sideband_all: false,
         })
     }
 
@@ -522,6 +564,8 @@ impl Session {
             deepen_since: opts.deepen_since,
             deepen_not: opts.deepen_not.clone(),
             filter: opts.filter.clone(),
+            sideband_all: self.sideband_all,
+            packfile_uris: self.uri_protocols.clone(),
             ..FetchArgs::default()
         };
         args.server_options.clone_from(&opts.server_options);
@@ -640,9 +684,11 @@ impl Session {
             Some(check) => Some(FsckHook {
                 hash: repo.hash,
                 check: check.settings(repo.hash)?,
+                gitmodules: Mutex::new(Vec::new()),
             }),
             None => None,
         };
+        let hook_ref = fsck_hook.as_ref();
         let (outcome, indexed) = std::thread::scope(|s| {
             let worker = s.spawn(move || {
                 let mut meter =
@@ -660,7 +706,7 @@ impl Session {
                     },
                     &ip_opts,
                     Some(odb as &dyn ObjectDb),
-                    fsck_hook.as_ref().map(|h| h as &dyn ip::ObjectHook),
+                    hook_ref.map(|h| h as &dyn ip::ObjectHook),
                     Some(&mut meter),
                 )
             });
@@ -704,6 +750,8 @@ impl Session {
             }
             (outcome, _) => outcome?,
         };
+        let mut outcome = outcome;
+        let uris = std::mem::take(&mut outcome.packfile_uris);
         if let Some(info) = &outcome.shallow_info {
             let merged = self.shallow_info.get_or_insert_with(ShallowInfo::default);
             merged.shallow.extend(info.shallow.iter().copied());
@@ -735,11 +783,34 @@ impl Session {
             }
             r => r?,
         };
+        // `.gitmodules` blobs named by the pack's trees: those in the pack
+        // are checked now, the others once every pack is here.
+        let mut gitmodules_elsewhere = Vec::new();
+        if let Some(hook) = &fsck_hook {
+            let named = hook.take_gitmodules();
+            let failed = check_gitmodules_in_pack(
+                repo,
+                hook,
+                tmp.path(),
+                &indexed,
+                named,
+                &mut gitmodules_elsewhere,
+            )?;
+            if failed {
+                eprintln!("fatal: {}", messages::FSCK_ERROR);
+                let last = opts
+                    .fsck
+                    .as_ref()
+                    .map(|c| c.failed.clone())
+                    .unwrap_or_default();
+                return Err(Error::fatal(last));
+            }
+        }
         // An empty pack (e.g. deepening to the current depth) is not kept.
-        if indexed.objects().is_empty() {
+        if indexed.objects().is_empty() && uris.is_empty() {
             return Ok(None);
         }
-        let objects: HashSet<ObjectId> = indexed.objects().iter().map(|o| o.id).collect();
+        let mut objects: HashSet<ObjectId> = indexed.objects().iter().map(|o| o.id).collect();
         // A shallow v0/v1 server lists all its shallow commits up front;
         // those that came with the pack are shallow here too (v2 sends
         // them in its shallow-info).
@@ -763,6 +834,8 @@ impl Session {
         // pack): below the unpack limit they become loose objects.
         let sent = indexed.objects().len() as u64 - indexed.local_objects();
         if opts.promisor.is_none()
+            // With packfile URIs git keeps the inline pack as it is.
+            && uris.is_empty()
             && opts
                 .unpack_limit
                 .is_some_and(|limit| sent < u64::from(limit))
@@ -773,17 +846,156 @@ impl Session {
                 objects,
                 pack: None,
                 keep: None,
+                more_keeps: Vec::new(),
                 rounds: outcome.rounds,
             }));
         }
-        let stored = store_pack(repo, tmp, &indexed, opts.promisor.as_deref())?;
-        repo.rescan_packs();
-        Ok(Some(ReceivedPack {
-            objects,
-            pack: Some(stored.0),
-            keep: stored.1,
+        let mut received = ReceivedPack {
+            objects: HashSet::new(),
+            pack: None,
+            keep: None,
+            more_keeps: Vec::new(),
             rounds: outcome.rounds,
-        }))
+        };
+        if !indexed.objects().is_empty() {
+            let stored = store_pack(repo, tmp, &indexed, opts.promisor.as_deref())?;
+            received.pack = Some(stored.0);
+            received.keep = stored.1;
+        }
+        if !uris.is_empty() {
+            if let Err(e) = self.fetch_uris(
+                repo,
+                &uris,
+                fsck_hook.as_ref(),
+                opts.promisor.as_deref(),
+                &mut received,
+            ) {
+                received.release();
+                return Err(e);
+            }
+            if self.program == "clone" {
+                rgit_trace::trace2::region_leave();
+            }
+            objects.extend(received.objects.drain());
+            if let Some(hook) = &fsck_hook {
+                gitmodules_elsewhere.extend(hook.take_gitmodules());
+            }
+            // Observed from git 2.56.0: `git fetch` leaves the `.keep`
+            // file of the inline pack in place when packs came from URIs
+            // (clone removes it with the others).
+            if self.program != "clone" {
+                received.keep = None;
+            }
+        }
+        repo.rescan_packs();
+        // Observed from git 2.56.0: only clone checks the `.gitmodules`
+        // blobs that arrived in another pack than their tree.
+        let check_elsewhere = self.program == "clone";
+        if let Some(hook) = fsck_hook.as_ref().filter(|_| check_elsewhere) {
+            if check_gitmodules_elsewhere(repo, hook, gitmodules_elsewhere) {
+                received.release();
+                return Err(Error::fatal(messages::FSCK_FAILED));
+            }
+        }
+        received.objects = objects;
+        Ok(Some(received))
+    }
+
+    /// Download, index and keep the packs of a `packfile-uris` section,
+    /// in order, like git's `http-fetch --packfile`. Each is checked
+    /// against the hash the server sent. Their `.keep` files join
+    /// `received.more_keeps`, their objects `received.objects`; with
+    /// `hook`, the `.gitmodules` blobs their trees name and they do not
+    /// contain are left in it.
+    fn fetch_uris(
+        &self,
+        repo: &LocalRepo,
+        uris: &[(String, String)],
+        hook: Option<&FsckHook>,
+        promisor: Option<&str>,
+        received: &mut ReceivedPack,
+    ) -> Result<()> {
+        // Observed from git 2.56.0: only clone traces the region, and the
+        // caller leaves it on success (git does not when it dies).
+        if self.program == "clone" {
+            rgit_trace::trace2::region_enter("fetch-pack", "packfile-uris", None, true);
+            rgit_trace::trace2::data_int(
+                "fetch-pack",
+                "packfile-uris/count",
+                uris.len() as i64,
+                true,
+            );
+        }
+        let env = rgit_config::SystemEnv::default();
+        let settings = Settings {
+            env: &env,
+            config: &self.config,
+            ip: self.ip,
+            base_env: self.base_env.clone(),
+        };
+        let pack_dir = repo.objects_dir().join("pack");
+        for (hash, uri) in uris {
+            let mut body = rgit_http::download_stream(uri, &settings).map_err(|e| {
+                // git's `http-fetch` reports the failure, then fetch-pack
+                // finds no `pack\t<hash>` line in its output.
+                if redact() {
+                    let (scheme, host) = uri_scheme_host(uri);
+                    eprintln!("fatal: {}", messages::failed_to_get_url(scheme, host));
+                } else {
+                    eprintln!("fatal: {}", messages::unable_to_get_pack_file(uri));
+                }
+                match &e {
+                    rgit_http::Error::Access { reason, .. } => eprintln!("{reason}"),
+                    other => eprintln!("{other}"),
+                }
+                Error::fatal(messages::NO_HTTP_FETCH_OUTPUT)
+            })?;
+            let mut tmp = TempFile::with_mode(&pack_dir, rgit_fs::PACK_PREFIX, 0o444)?;
+            let tmp_path = tmp.path().to_path_buf();
+            let mut file = tmp.file_mut().try_clone()?;
+            let indexed = ip::index_pack(
+                Input::Stream {
+                    reader: &mut body,
+                    dest: &mut file,
+                    dest_path: &tmp_path,
+                },
+                &index_pack_options(repo),
+                Some(&repo.odb as &dyn ObjectDb),
+                hook.map(|h| h as &dyn ip::ObjectHook),
+                None,
+            );
+            let indexed = match indexed {
+                Err(ip::Error::Hook(msg)) => {
+                    eprintln!("fatal: {msg}");
+                    return Err(Error::fatal(messages::NO_HTTP_FETCH_OUTPUT));
+                }
+                r => r?,
+            };
+            if let Some(hook) = hook {
+                let named = hook.take_gitmodules();
+                let mut elsewhere = Vec::new();
+                if check_gitmodules_in_pack(repo, hook, &tmp_path, &indexed, named, &mut elsewhere)?
+                {
+                    eprintln!("fatal: {}", messages::FSCK_ERROR);
+                    return Err(Error::fatal(messages::NO_HTTP_FETCH_OUTPUT));
+                }
+                hook.gitmodules
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .extend(elsewhere);
+            }
+            let checksum = indexed.checksum().to_hex();
+            // From a promisor remote these are promisor packs too.
+            let stored = store_pack(repo, tmp, &indexed, promisor)?;
+            received.more_keeps.extend(stored.1);
+            received
+                .objects
+                .extend(indexed.objects().iter().map(|o| o.id));
+            if checksum != *hash {
+                return Err(Error::fatal(messages::pack_hash_mismatch(uri, hash)));
+            }
+        }
+        Ok(())
     }
 
     /// `fetch --negotiate-only` over protocol v2: negotiate from `tips`
@@ -892,6 +1104,12 @@ impl Session {
             options,
             program,
             shallow_info: None,
+            // Helpers without `connect` speak no pack protocol.
+            config: settings.config.clone(),
+            base_env: settings.base_env.clone(),
+            ip: settings.ip,
+            uri_protocols: None,
+            sideband_all: false,
         })
     }
 
@@ -1041,6 +1259,7 @@ fn helper_fetch(
     Ok(Some(ReceivedPack {
         pack: None,
         keep,
+        more_keeps: Vec::new(),
         objects: HashSet::new(),
         rounds: 0,
     }))
@@ -1207,6 +1426,122 @@ impl FsckSettings {
 struct FsckHook {
     hash: rgit_hash::HashKind,
     check: FsckSettings,
+    /// `.gitmodules` blobs named by the trees seen so far.
+    gitmodules: Mutex<Vec<ObjectId>>,
+}
+
+impl FsckHook {
+    /// The `.gitmodules` blobs named since the last call.
+    fn take_gitmodules(&self) -> Vec<ObjectId> {
+        std::mem::take(&mut *self.gitmodules.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Report the findings for `.gitmodules` blob `id` (git prints each
+    /// finding of a submodule name once per key of that submodule);
+    /// `true` if one is an error.
+    fn check_gitmodules(&self, id: &ObjectId, kind: rgit_object::ObjectKind, data: &[u8]) -> bool {
+        let findings = if kind == rgit_object::ObjectKind::Blob {
+            rgit_submodule::fsck::check(data)
+        } else {
+            vec![(MsgId::GitmodulesBlob, messages::GITMODULES_BLOB.to_owned())]
+        };
+        let mut failed = false;
+        for (msg_id, text) in findings {
+            let finding = format!("{}: {text}", msg_id.name());
+            match self.check.severity(msg_id) {
+                Severity::Ignore => {}
+                Severity::Warn | Severity::Info => {
+                    eprintln!("warning: {}", messages::fsck_finding(id, &finding));
+                }
+                Severity::Error | Severity::Fatal => {
+                    eprintln!("error: {}", messages::fsck_finding(id, &finding));
+                    failed = true;
+                }
+            }
+        }
+        failed
+    }
+}
+
+/// Check the `.gitmodules` blobs `named` that are in the pack just indexed
+/// (`pack_path`, not yet stored); the others go to `elsewhere`. `true` if
+/// one fails.
+fn check_gitmodules_in_pack(
+    repo: &LocalRepo,
+    hook: &FsckHook,
+    pack_path: &Path,
+    indexed: &ip::IndexedPack,
+    named: Vec<ObjectId>,
+    elsewhere: &mut Vec<ObjectId>,
+) -> Result<bool> {
+    let mut named: Vec<ObjectId> = named
+        .into_iter()
+        .filter(|id| !hook.check.skip.contains(id))
+        .collect();
+    named.sort();
+    named.dedup();
+    if named.is_empty() {
+        return Ok(false);
+    }
+    let in_pack: HashSet<ObjectId> = indexed.objects().iter().map(|o| o.id).collect();
+    let idx = indexed.index_bytes(IndexVersion::default())?;
+    let pack = rgit_pack::Pack::with_index(idx, pack_path, repo.hash)
+        .map_err(|e| Error::fatal(e.to_string()))?;
+    let mut cache = rgit_pack::DeltaBaseCache::default();
+    let mut failed = false;
+    for id in named {
+        if !in_pack.contains(&id) {
+            elsewhere.push(id);
+            continue;
+        }
+        match pack.read(&id, &mut cache) {
+            Ok(Some(obj)) => failed |= hook.check_gitmodules(&id, obj.kind, &obj.data),
+            _ => elsewhere.push(id),
+        }
+    }
+    Ok(failed)
+}
+
+/// Check the `.gitmodules` blobs that were not in the pack naming them,
+/// once every pack is stored (missing ones are skipped). `true` if one
+/// fails.
+fn check_gitmodules_elsewhere(repo: &LocalRepo, hook: &FsckHook, mut ids: Vec<ObjectId>) -> bool {
+    ids.sort();
+    ids.dedup();
+    let mut failed = false;
+    for id in ids {
+        if hook.check.skip.contains(&id) {
+            continue;
+        }
+        if let Ok(Some(obj)) = repo.odb.read(&id) {
+            failed |= hook.check_gitmodules(&id, obj.kind, &obj.data);
+        }
+    }
+    failed
+}
+
+/// `GIT_TRACE_REDACT` (default true).
+fn redact() -> bool {
+    match std::env::var_os("GIT_TRACE_REDACT") {
+        None => true,
+        Some(v) => rgit_config::value::parse_bool(Some(v.as_encoded_bytes())).unwrap_or(true),
+    }
+}
+
+/// The scheme and host (without port or user) of `uri`.
+fn uri_scheme_host(uri: &str) -> (&str, &str) {
+    let Some((scheme, rest)) = uri.split_once("://") else {
+        return ("", uri);
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if host.starts_with('[') {
+        host.split_once(']')
+            .map_or(host, |(h, _)| &host[..h.len() + 1])
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+    (scheme, host)
 }
 
 impl ip::ObjectHook for FsckHook {
@@ -1218,6 +1553,24 @@ impl ip::ObjectHook for FsckHook {
     ) -> std::result::Result<(), String> {
         if self.check.skip.contains(id) {
             return Ok(());
+        }
+        if kind == rgit_pack::ObjectKind::Tree {
+            let mut found = Vec::new();
+            for e in rgit_object::TreeIter::new(self.hash, data) {
+                let Ok(e) = e else { break };
+                if e.mode_bits & 0o170000 == 0o100000
+                    && rgit_object::fsck::special_file(e.name)
+                        == Some(rgit_object::fsck::SpecialFile::Gitmodules)
+                {
+                    found.push(e.oid);
+                }
+            }
+            if !found.is_empty() {
+                self.gitmodules
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .extend(found);
+            }
         }
         let okind = match kind {
             rgit_pack::ObjectKind::Commit => rgit_object::ObjectKind::Commit,
@@ -1323,6 +1676,9 @@ pub struct ReceivedPack {
     pub pack: Option<PathBuf>,
     /// The `.keep` file protecting it until the refs are written.
     pub keep: Option<PathBuf>,
+    /// The `.keep` files of the packs downloaded from the URIs of a
+    /// `packfile-uris` section (an existing `.keep` is left alone).
+    pub more_keeps: Vec<PathBuf>,
     /// Ids of every object in the pack.
     pub objects: HashSet<ObjectId>,
     /// Requests sent during negotiation.
@@ -1332,7 +1688,7 @@ pub struct ReceivedPack {
 impl ReceivedPack {
     /// Remove the `.keep` file.
     pub fn release(&self) {
-        if let Some(k) = &self.keep {
+        for k in self.keep.iter().chain(&self.more_keeps) {
             let _ = std::fs::remove_file(k);
         }
     }
@@ -1378,6 +1734,7 @@ pub(crate) fn index_stream(
         Some(check) => Some(FsckHook {
             hash: repo.hash,
             check: check.settings(repo.hash)?,
+            gitmodules: Mutex::new(Vec::new()),
         }),
         None => None,
     };
@@ -1407,6 +1764,7 @@ pub(crate) fn index_stream(
         objects: indexed.objects().iter().map(|o| o.id).collect(),
         pack: Some(stored.0),
         keep: stored.1,
+        more_keeps: Vec::new(),
         rounds: 0,
     })
 }
@@ -1589,5 +1947,21 @@ impl Read for ChannelReader {
         out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
         self.pos += n;
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheme_and_host_for_messages() {
+        // As in http-fetch's "failed to get 'http' url from '127.0.0.1'".
+        assert_eq!(
+            uri_scheme_host("http://u:pw@127.0.0.1:8080/a/b.pack"),
+            ("http", "127.0.0.1")
+        );
+        assert_eq!(uri_scheme_host("https://[::1]:1/x"), ("https", "[::1]"));
+        assert_eq!(uri_scheme_host("https://host"), ("https", "host"));
     }
 }

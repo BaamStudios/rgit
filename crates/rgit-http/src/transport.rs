@@ -82,6 +82,25 @@ pub fn download(url: &str, settings: &rgit_transport::Settings<'_>) -> TResult<V
     session.get_file().map_err(other)
 }
 
+/// Download the file at `url` (`http://` or `https://`, e.g. a pack of a
+/// `packfile-uris` section) with the `http.*` settings, proxies and
+/// credential helpers of `settings`. The body is read as it arrives.
+pub fn download_stream(
+    url: &str,
+    settings: &rgit_transport::Settings<'_>,
+) -> crate::Result<crate::RpcResponse> {
+    let parsed = Url::parse(url)?;
+    let opts = HttpOptions::load(settings.config, &parsed, settings.env)?;
+    let credentials = SystemCredentials {
+        config: settings.config.clone(),
+        base_env: settings.base_env.clone(),
+        helper_caps: (false, false),
+    };
+    SmartHttp::new(url, opts)?
+        .with_credentials(credentials)
+        .download()
+}
+
 /// `remote.<name>.proxy` and `remote.<name>.proxyAuthMethod` of the remote
 /// whose `url` or `pushurl` is `url` (they override `http.proxy` and
 /// `http.proxyAuthMethod`; `GIT_HTTP_PROXY_AUTHMETHOD` still wins).

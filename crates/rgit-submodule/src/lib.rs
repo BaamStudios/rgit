@@ -23,6 +23,7 @@
 
 mod active;
 mod config;
+pub mod fsck;
 pub mod gitdir;
 pub mod messages;
 mod name;
