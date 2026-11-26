@@ -2,14 +2,33 @@
 //! Minimum-cost assignment for `range-diff`: the shortest augmenting path
 //! algorithm of R. Jonker and A. Volgenant, "A shortest augmenting path
 //! algorithm for dense and sparse linear assignment problems", Computing
-//! 38 (1987), 325-340, written from the description in the paper.
+//! 38 (1987), 325-340, <https://doi.org/10.1007/BF02278710>, written from
+//! the description and pseudocode in the paper. A permissively licensed
+//! (BSD-2-Clause) implementation of the same published method is
+//! `lap` (<https://github.com/gatagat/lap>); no code was taken from it or
+//! from anywhere else.
 //!
-//! The four phases of the paper are kept as they are (column reduction
-//! scanning the columns from the last to the first, reduction transfer,
-//! two rounds of augmenting row reduction, augmentation by shortest
-//! paths), because the order in which they look at rows and columns
-//! decides which of several equally cheap assignments is found, and
-//! `range-diff` must pick the same one as git.
+//! The method works in four phases:
+//!
+//! 1. Column reduction: every column's dual value `v[j]` becomes the cost
+//!    of its cheapest row, and the column is assigned to that row if the
+//!    row is still free.
+//! 2. Reduction transfer: a row that got exactly one column lowers that
+//!    column's dual value by the reduced cost of its second best column.
+//! 3. Augmenting row reduction (two rounds): a free row takes its best
+//!    column, evicting the previous owner, and lowers that column's dual
+//!    value by the gap between its best and second best reduced cost.
+//! 4. Augmentation: each remaining free row is assigned along a shortest
+//!    alternating path (a Dijkstra-like search on reduced costs), and the
+//!    dual values are updated so the reduced costs stay non-negative.
+//!
+//! The phases and their scan orders (column reduction from the last
+//! column to the first, rows and columns in index order elsewhere) are
+//! kept exactly as published, because the order in which they look at
+//! rows and columns decides which of several equally cheap assignments
+//! is found, and `range-diff` must pair commits with tied costs the same
+//! way git does. Following the published phase structure is also why
+//! parts of this file resemble other implementations of the algorithm.
 
 /// Solves the square assignment problem for `cost` (`n * n` entries, row
 /// `i` at `cost[i * n..]`). Returns the column of every row.
