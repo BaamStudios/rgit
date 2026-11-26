@@ -561,16 +561,23 @@ impl<'c> Importer<'c> {
             self.out = Box::new(std::io::stdout());
             return Ok(());
         }
-        // SAFETY: fcntl(F_GETFD) only queries the descriptor.
-        if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
-            return Err(Die::Fatal(msg::not_non_negative("cat-blob-fd")));
+        #[cfg(unix)]
+        {
+            // SAFETY: fcntl(F_GETFD) only queries the descriptor.
+            if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+                return Err(Die::Fatal(msg::not_non_negative("cat-blob-fd")));
+            }
+            // SAFETY: the descriptor is open (checked above) and was handed
+            // to this process for writing responses; nothing else in the
+            // process uses it.
+            let file = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+            self.out = Box::new(file);
+            Ok(())
         }
-        // SAFETY: the descriptor is open (checked above) and was handed to
-        // this process for writing responses; nothing else in the process
-        // uses it.
-        let file = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-        self.out = Box::new(file);
-        Ok(())
+        // Inherited descriptors other than the standard ones are not
+        // reachable by number outside Unix yet (#682).
+        #[cfg(not(unix))]
+        Err(Die::Fatal(msg::not_non_negative("cat-blob-fd")))
     }
 
     fn parse_feature(&mut self, f: &str) -> Result<(), Die> {
@@ -1952,7 +1959,7 @@ impl<'c> Importer<'c> {
             .collect();
         let r = msg::crash_report_text(&msg::Crash {
             pid,
-            parent: std::os::unix::process::parent_id(),
+            parent: parent_pid(),
             at: rgit_date::format_raw(now, 0),
             message,
             history: &history,
@@ -2084,4 +2091,16 @@ fn parse_path<'a>(
         return Err(Die::Fatal(msg::missing_space_after_field(field, &text())));
     };
     Ok((s[..sp].to_vec(), &s[sp + 1..]))
+}
+
+/// The process id of the parent, for the crash report.
+#[cfg(unix)]
+fn parent_pid() -> u32 {
+    std::os::unix::process::parent_id()
+}
+
+/// std has no portable parent id; the crash report shows 0 (#682).
+#[cfg(not(unix))]
+fn parent_pid() -> u32 {
+    0
 }

@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
@@ -334,7 +335,59 @@ impl Store {
     }
 }
 
+#[cfg(unix)]
 fn set_read_only(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444));
+}
+
+#[cfg(not(unix))]
+fn set_read_only(path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_readonly(true);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+}
+
+/// Positioned reads and writes where std names them differently.
+#[cfg(windows)]
+trait FileExt {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()>;
+    fn write_all_at(&self, buf: &[u8], offset: u64) -> std::io::Result<()>;
+}
+
+#[cfg(windows)]
+impl FileExt for File {
+    fn read_exact_at(&self, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+        use std::os::windows::fs::FileExt as _;
+        while !buf.is_empty() {
+            match self.seek_read(buf, offset) {
+                Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => {
+                    buf = &mut buf[n..];
+                    offset += n as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn write_all_at(&self, mut buf: &[u8], mut offset: u64) -> std::io::Result<()> {
+        use std::os::windows::fs::FileExt as _;
+        while !buf.is_empty() {
+            match self.seek_write(buf, offset) {
+                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(n) => {
+                    buf = &buf[n..];
+                    offset += n as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
 }

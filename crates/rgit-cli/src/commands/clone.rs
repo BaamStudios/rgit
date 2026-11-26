@@ -1627,7 +1627,8 @@ fn report_collisions(
         }
         #[cfg(not(unix))]
         {
-            let _ = path;
+            // No stable file identity in std here; names are compared.
+            let _ = (root, path);
             None
         }
     };

@@ -25,6 +25,9 @@
 //!   the shell; a line of 4 MiB minus one byte or more (with its end of
 //!   line) is fatal.
 
+// `git shell` exists on Unix only so far (#682).
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use crate::prelude::*;
 
 #[cfg(not(unix))]
