@@ -291,6 +291,9 @@ struct Checks<'a> {
     /// `.gitmodules` / `.gitattributes` blobs named by trees, to check
     /// after indexing (with `fsck`).
     queued: Mutex<Vec<(ObjectId, fsck::SpecialFile)>>,
+    /// Shallow commits (`$GIT_SHALLOW_FILE` or `shallow`): their parents
+    /// are not links.
+    shallow: HashSet<ObjectId>,
 }
 
 impl Checks<'_> {
@@ -298,7 +301,13 @@ impl Checks<'_> {
         self.settings.severity(id)
     }
 
-    fn collect_links(&self, kind: ObjectKind, data: &[u8], out: &Mutex<Vec<ObjectId>>) {
+    fn collect_links(
+        &self,
+        id: &ObjectId,
+        kind: ObjectKind,
+        data: &[u8],
+        out: &Mutex<Vec<ObjectId>>,
+    ) {
         let mut found = Vec::new();
         match kind {
             ObjectKind::Tree => {
@@ -314,7 +323,9 @@ impl Checks<'_> {
                 if let Ok(c) = rgit_object::Commit::parse(self.hash, data) {
                     found.extend(c.tree());
                     if let Ok(p) = c.parents() {
-                        found.extend(p);
+                        if !self.shallow.contains(id) {
+                            found.extend(p);
+                        }
                     }
                 }
             }
@@ -334,7 +345,7 @@ impl Checks<'_> {
 impl ObjectHook for Checks<'_> {
     fn object(&self, id: &ObjectId, kind: ObjectKind, data: &[u8]) -> Result<(), String> {
         if let Some(links) = &self.links {
-            self.collect_links(kind, data, links);
+            self.collect_links(id, kind, data, links);
         }
         if !self.fsck || self.settings.skip.contains(id) {
             return Ok(());
@@ -617,6 +628,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         settings: &args.settings,
         links: (args.strict || args.self_contained).then(|| Mutex::new(Vec::new())),
         queued: Mutex::new(Vec::new()),
+        shallow: repo
+            .as_ref()
+            .map(|r| {
+                rgit_fetch::shallow::read(&rgit_fetch::shallow::file_for(&r.common_dir), hash)
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let hook: Option<&dyn ObjectHook> =
         (args.fsck || args.self_contained).then_some(&checks as &dyn ObjectHook);

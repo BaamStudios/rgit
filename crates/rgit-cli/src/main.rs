@@ -348,7 +348,12 @@ fn run(args: Vec<String>) -> CmdResult {
         exec_path: context::default_exec_path(&argv0),
         ..Default::default()
     };
-    if let Some(cmd) = prog.strip_prefix("git-") {
+    // `rgit-<cmd>` (e.g. `rgit-receive-pack`) only for built-ins, so that
+    // a binary renamed to `rgit-<something>` still works as rgit.
+    let rgit_dashed = prog
+        .strip_prefix("rgit-")
+        .filter(|cmd| commands::find(cmd).is_some());
+    if let Some(cmd) = prog.strip_prefix("git-").or(rgit_dashed) {
         // A dashed name runs the built-in; there is nothing else to look
         // up (a `git-<cmd>` link to rgit would find itself again).
         if commands::find(cmd).is_none() {
