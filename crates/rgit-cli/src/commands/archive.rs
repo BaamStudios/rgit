@@ -462,14 +462,29 @@ pub fn archive(ctx: &Context, argv: &[String], output: Option<String>, origin: O
         big_file_threshold,
         output,
     };
-    engine::run(&job, index.as_ref(), tree_source)?;
+    // What `process` filters are told, as observed from git: the ref the
+    // name stands for, and the commit (for a tree: the tree).
+    let meta_name = if name == "@" { "HEAD" } else { name };
+    crate::convert::set_checkout_meta(
+        ref_of(repo, meta_name),
+        Some(commit.as_ref().unwrap_or(&tree)),
+    );
+    let done = engine::run(&job, index.as_ref(), tree_source);
+    crate::convert::set_checkout_meta(None, None);
+    done?;
     Ok(0)
 }
 
 /// Whether `name` is a reference by git's lookup rules.
 fn is_ref(repo: &Repo, name: &str) -> bool {
+    ref_of(repo, name).is_some()
+}
+
+/// The reference `name` is by git's lookup rules (`HEAD`: the branch it
+/// points to).
+fn ref_of(repo: &Repo, name: &str) -> Option<String> {
     if name.is_empty() {
-        return false;
+        return None;
     }
     let candidates = [
         name.to_string(),
@@ -479,10 +494,14 @@ fn is_ref(repo: &Repo, name: &str) -> bool {
         format!("refs/remotes/{name}"),
         format!("refs/remotes/{name}/HEAD"),
     ];
-    candidates.iter().any(|c| {
+    let found = candidates.into_iter().find(|c| {
         rgit_refs::name::is_valid_refname(c.as_bytes(), rgit_refs::name::RefNameFlags::ONELEVEL)
             && repo.refs.resolve(c).is_some()
-    })
+    })?;
+    if found == "HEAD" {
+        return Some(repo.refs.head_target().unwrap_or(found));
+    }
+    Some(found)
 }
 
 fn commit_time(repo: &Repo, id: &rgit_hash::ObjectId) -> Option<u64> {

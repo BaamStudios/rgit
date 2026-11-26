@@ -429,3 +429,47 @@ fn delayed_checkout_failures() {
         fx.compare(["checkout", "--", "."]).checks(CHECKOUT).run();
     }
 }
+
+/// `archive` tells a `process` filter the ref its argument stands for and
+/// the commit (for a tree: the tree) it packs (`ref=`, `treeish=` in
+/// `filter.log`).
+#[test]
+fn archive_tells_ref_and_treeish() {
+    if !have_python() {
+        eprintln!("skipped: no python3");
+        return;
+    }
+    let mut fx = process_fixture("clean smudge")
+        .write("a.r", "hello\n")
+        .git(["add", "."])
+        .git(["commit", "-q", "-m", "one"])
+        .git(["tag", "-a", "-m", "t", "v1"])
+        .git(["branch", "other"]);
+    if fx.is_skipped() {
+        return;
+    }
+    for name in [
+        "HEAD",
+        "@",
+        "other",
+        "heads/other",
+        "v1",
+        "refs/tags/v1",
+        "HEAD~0",
+        "v1^{commit}",
+        "HEAD^{tree}",
+    ] {
+        for file in ["filter.log", "out.tar"] {
+            let _ = std::fs::remove_file(fx.work_dir().join(file));
+        }
+        fx.compare(["archive", "-o", "out.tar", name])
+            .checks(CHECKOUT)
+            .run();
+    }
+    // A detached HEAD is the ref `HEAD`.
+    let mut fx = fx.git(["checkout", "-q", "--detach"]);
+    let _ = std::fs::remove_file(fx.work_dir().join("filter.log"));
+    fx.compare(["archive", "-o", "out.tar", "HEAD"])
+        .checks(CHECKOUT)
+        .run();
+}
