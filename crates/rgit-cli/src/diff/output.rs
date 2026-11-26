@@ -1905,6 +1905,50 @@ impl<'a> Output<'a> {
     }
 
     /// `--output-indicator-*`: the signs of the lines of a plain patch.
+    /// Writes plain file patches made elsewhere (`log -L`) the way
+    /// patches are shown: word diff, colours (with moved lines) or custom
+    /// output indicators. Each item is a patch with its old and new
+    /// contents (for whitespace highlighting).
+    pub fn decorate(&self, items: &[(Vec<u8>, Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        if let Some((mode, regex)) = &self.word_diff {
+            let w = super::words::Words {
+                mode: *mode,
+                regex: regex.as_ref(),
+                colors: self.colors.as_ref(),
+                diff: &self.patch.diff,
+            };
+            for (plain, _, _) in items {
+                w.patch(&mut out, plain);
+            }
+        } else if let Some(c) = &self.colors {
+            let slots = if self.color_moved.0 != super::moved::Mode::No {
+                let plains: Vec<Vec<u8>> = items.iter().map(|i| i.0.clone()).collect();
+                super::moved::mark(&plains, self.color_moved.0, &self.color_moved.1)
+            } else {
+                Vec::new()
+            };
+            for (k, (plain, old, new)) in items.iter().enumerate() {
+                let moved = slots.get(k).map_or(&[][..], |m| &m[..]);
+                let ws = WsContext {
+                    rule: self.ws_rule,
+                    highlight: self.ws_highlight,
+                    old_data: old,
+                    new_data: new,
+                    new_symlink: false,
+                    old_symlink: false,
+                    indicators: self.indicators,
+                };
+                super::color::patch(&mut out, c, plain, &ws, moved);
+            }
+        } else {
+            for (plain, _, _) in items {
+                out.extend_from_slice(&self.with_indicators(plain.clone()));
+            }
+        }
+        out
+    }
+
     fn with_indicators(&self, mut plain: Vec<u8>) -> Vec<u8> {
         if self.indicators == *b"+- " {
             return plain;

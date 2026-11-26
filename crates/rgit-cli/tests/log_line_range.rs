@@ -107,6 +107,30 @@ fn line_log_functions_renames_and_merges() {
         &["log", "-L", "1,1:b.c", "--stat"],
         &["log", "-L", "1,1:b.c", "main", "side"],
         &["log", "-L"],
+        &["log", "-L", ":f:b.c", "--word-diff", "--format="],
+        &["log", "-L", ":f:b.c", "--word-diff=porcelain", "--format="],
+        &[
+            "log",
+            "-L",
+            ":f:b.c",
+            "--word-diff-regex=[a-z]+",
+            "--format=",
+        ],
+        &["log", "-L", ":f:b.c", "--color-words", "--color=always"],
+        &["log", "-L", ":f:b.c", "--color=always", "--format="],
+        &[
+            "log",
+            "-L",
+            ":f:b.c",
+            "--color=always",
+            "--color-moved=zebra",
+        ],
+        // (git asserts on -R for merges and root commits.)
+        &["log", "-L", ":f:b.c", "-R", "-1", "side"],
+        &["log", "-L", "13,15:b.c", "-R", "main~1"],
+        &["log", "-L", ":main:b.c", "--output=out.log"],
+        &["log", "--output=out.log", "-1"],
+        &["log", "--output=no/such/dir/x", "-1"],
     ]);
     compare_all(&mut fx, &cases);
 }
