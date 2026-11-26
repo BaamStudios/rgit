@@ -25,6 +25,7 @@ mimalloc = ["dep:mimalloc"]
 [dependencies]
 mimalloc = { version = "0.1.52", optional = true, default-features = false }
 bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-archive = { path = "../rgit-archive" }
 rgit-attr = { path = "../rgit-attr" }
 rgit-apply = { path = "../rgit-apply" }
 rgit-commit = { path = "../rgit-commit" }
