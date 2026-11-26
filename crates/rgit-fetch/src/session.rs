@@ -512,7 +512,21 @@ impl Session {
             };
             (outcome, indexed)
         });
-        let outcome = outcome?;
+        // An object that fsck rejects stops the indexing while the pack
+        // may still be coming in: that error is the one to report, not
+        // the failed write to the stopped indexer.
+        let outcome = match (outcome, &indexed) {
+            (Err(_), Err(ip::Error::Hook(msg))) => {
+                eprintln!("fatal: {msg}");
+                let failed = opts
+                    .fsck
+                    .as_ref()
+                    .map(|c| c.failed.clone())
+                    .unwrap_or_default();
+                return Err(Error::fatal(failed));
+            }
+            (outcome, _) => outcome?,
+        };
         if let Some(info) = &outcome.shallow_info {
             let merged = self.shallow_info.get_or_insert_with(ShallowInfo::default);
             merged.shallow.extend(info.shallow.iter().copied());

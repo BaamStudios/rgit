@@ -209,6 +209,13 @@ fn smudged_entry_survives_later_index_write() {
     set_mtime(&dir.join(".git/index"), t0);
 
     let (mut index, t) = read_index(&dir);
+    // Racily clean: the entry's stat data matches the changed file, its
+    // mtime is the index's. Taken from the file rather than left to the
+    // clock, which crosses a second (mtime or ctime) between the first
+    // write and the rewrite often enough under load.
+    let pos = index.position(b"foo", Stage::MERGED).unwrap();
+    index.entry_mut(pos).unwrap().stat =
+        stat_from_metadata(&std::fs::symlink_metadata(&foo).unwrap());
     let checker = Checker::new(&dir, HashKind::Sha1, StatOptions::default(), t);
     let n = smudge_racy_entries(&mut index, t.unwrap(), &checker).unwrap();
     assert_eq!(n, 1);

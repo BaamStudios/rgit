@@ -375,6 +375,7 @@ fn delayed_checkout() {
         fx.compare(args)
             .env("GIT_PROGRESS_DELAY", "0")
             .checks(CHECKOUT)
+            .normalize_stderr(throughput())
             .run();
     }
     // Branch checkout: git rewrites every entry with `-f` (its `Updating
@@ -403,6 +404,13 @@ fn delayed_checkout() {
             "{args:?}: {err}"
         );
     }
+}
+
+/// The rate in a throughput meter (`8 bytes | 8.00 KiB/s`) is the bytes
+/// over the time the command took, which differs from run to run; the
+/// byte count stays checked.
+fn throughput() -> rgit_difftest::Normalizer {
+    rgit_difftest::Normalizer::regex(r" \| [0-9.]+ (bytes|KiB|MiB|GiB)/s", " | <RATE>")
 }
 
 #[test]
