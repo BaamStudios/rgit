@@ -175,6 +175,63 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
+/// Signals that end the process and that the lock/temp file cleanup
+/// (`rgit_fs`) handles. SIGPIPE is not among them: it goes to the thread
+/// that wrote to the closed pipe anyway.
+#[cfg(unix)]
+const TERMINATING_SIGNALS: [libc::c_int; 4] =
+    [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+
+/// The calling thread's signal mask before [`block_terminating_signals`].
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct SignalMask(libc::sigset_t);
+
+#[cfg(not(unix))]
+#[derive(Clone, Copy)]
+struct SignalMask;
+
+/// Blocks [`TERMINATING_SIGNALS`] in the calling thread and returns the
+/// previous mask.
+///
+/// The main thread only waits for the command thread. A signal sent to
+/// the process (`kill -TERM $pid`) must be handled on the command thread:
+/// handled on the main thread, the command thread keeps running until the
+/// handler has killed the process, and can create a lock file (or finish
+/// a commit) after the handler removed the registered ones. A killed
+/// `merge --edit` then left `.git/HEAD.lock` behind (#586).
+#[cfg(unix)]
+fn block_terminating_signals() -> SignalMask {
+    // SAFETY: plain libc calls on stack-allocated, initialised sigsets.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for sig in TERMINATING_SIGNALS {
+            libc::sigaddset(&mut set, sig);
+        }
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
+        SignalMask(old)
+    }
+}
+
+#[cfg(not(unix))]
+fn block_terminating_signals() -> SignalMask {
+    SignalMask
+}
+
+/// Sets the calling thread's signal mask back to `mask`.
+#[cfg(unix)]
+fn restore_signal_mask(mask: &SignalMask) {
+    // SAFETY: `mask.0` is a mask pthread_sigmask returned.
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_SETMASK, &mask.0, std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_signal_mask(_: &SignalMask) {}
+
 fn program_name(argv0: &str) -> &str {
     let base = argv0.rsplit(['/', '\\']).next().unwrap_or(argv0);
     base.strip_suffix(".exe").unwrap_or(base)
@@ -407,17 +464,29 @@ fn main() {
     // git under a small stack limit (t5551/t5559 clone under
     // `ulimit -s 128`), which the main thread inherits.
     let cmd_args = args.clone();
+    // The main thread blocks the terminating signals while the command
+    // runs, so they are handled on the command thread (which inherits the
+    // blocked mask and restores the old one first thing).
+    let mask = block_terminating_signals();
+    let thread_mask = mask;
     let code = std::thread::Builder::new()
         .stack_size(64 << 20)
-        .spawn(move || match run(cmd_args) {
-            Ok(code) => code,
-            Err(die) => die.emit(),
+        .spawn(move || {
+            restore_signal_mask(&thread_mask);
+            match run(cmd_args) {
+                Ok(code) => code,
+                Err(die) => die.emit(),
+            }
         })
         .map(|t| t.join().unwrap_or(101))
-        .unwrap_or_else(|_| match run(args.clone()) {
-            Ok(code) => code,
-            Err(die) => die.emit(),
+        .unwrap_or_else(|_| {
+            restore_signal_mask(&mask);
+            match run(args.clone()) {
+                Ok(code) => code,
+                Err(die) => die.emit(),
+            }
         });
+    restore_signal_mask(&mask);
     rgit_trace::trace2::exit(code);
     // Filter processes see the end of their input and finish.
     rgit_convert::filter::finish_all();

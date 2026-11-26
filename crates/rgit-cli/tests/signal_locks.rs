@@ -135,3 +135,72 @@ fn ref_lock_of_prepared_transaction() {
         assert!(left.is_empty(), "{signal}: {left:?}");
     }
 }
+
+/// `kill -TERM` from the editor of `merge --edit` (t7600 "killed merge can
+/// be completed with --continue"): the merge stops while the editor runs.
+/// The signal used to be handled on the main thread, which only waits for
+/// the command thread; the command thread then went on with the commit
+/// until the process died and could leave `.git/HEAD.lock` behind (#586).
+#[test]
+fn signal_from_the_editor_stops_merge() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
+    let (dir, home, repo) = setup();
+    for args in [
+        &["checkout", "-q", "-b", "side"][..],
+        &["commit", "-q", "--allow-empty", "-m", "side"],
+        &["checkout", "-q", "-"],
+    ] {
+        assert!(command(&home, &repo, args).status().unwrap().success());
+    }
+    let masks = dir.path().join("masks");
+    let editor = dir.path().join("editor");
+    std::fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\n\
+             for t in /proc/$PPID/task/*; do grep SigBlk $t/status; done >'{}' 2>/dev/null\n\
+             kill -TERM $PPID\n",
+            masks.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let head = || {
+        let out = command(&home, &repo, &["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let before = head();
+    for _ in 0..20 {
+        let st = command(&home, &repo, &["merge", "--no-ff", "--edit", "side"])
+            .env("GIT_EDITOR", &editor)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(st.signal(), Some(libc::SIGTERM), "{st:?}");
+        let mut left = Vec::new();
+        locks(&repo.join(".git"), &mut left);
+        assert!(left.is_empty(), "{left:?}");
+        assert!(repo.join(".git/MERGE_HEAD").exists());
+        assert_eq!(head(), before, "the merge was committed");
+        let st = command(&home, &repo, &["merge", "--abort"])
+            .status()
+            .unwrap();
+        assert!(st.success());
+    }
+    // Linux: the main thread blocks SIGTERM, the command thread does not.
+    if let Ok(text) = std::fs::read_to_string(&masks) {
+        let blocked: Vec<bool> = text
+            .lines()
+            .filter_map(|l| u64::from_str_radix(l.split_whitespace().nth(1)?, 16).ok())
+            .map(|m| m & (1 << (libc::SIGTERM - 1)) != 0)
+            .collect();
+        if !blocked.is_empty() {
+            assert_eq!(blocked, [true, false], "{text}");
+        }
+    }
+}
