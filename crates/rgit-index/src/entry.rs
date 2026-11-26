@@ -245,10 +245,24 @@ impl fmt::Debug for Entry {
     }
 }
 
+/// The longest path [`verify_path`] accepts unless set otherwise.
+pub const DEFAULT_MAX_PATH_LEN: usize = 1_073_740_799;
+
+static MAX_PATH_LEN: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_PATH_LEN);
+
+/// Sets the longest path [`verify_path`] accepts (`index.maxPathLen`) for
+/// the whole process.
+pub fn set_max_path_len(len: usize) {
+    MAX_PATH_LEN.store(len, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Checks a path for the index: not empty, no leading or trailing `/`, no
-/// empty, `.`, `..` or `.git` (any case) component.
+/// empty, `.`, `..` or `.git` (any case) component, not longer than the
+/// limit of [`set_max_path_len`].
 pub fn verify_path(path: &[u8]) -> bool {
     !path.is_empty()
+        && path.len() <= MAX_PATH_LEN.load(std::sync::atomic::Ordering::Relaxed)
         && path
             .split(|&b| b == b'/')
             .all(|c| !c.is_empty() && c != b"." && c != b".." && !c.eq_ignore_ascii_case(b".git"))

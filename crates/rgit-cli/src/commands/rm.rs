@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rgit_hash::ObjectId;
-use rgit_index::{Stage, WriteOptions};
+use rgit_index::Stage;
 use rgit_object::{Object, ObjectKind};
 use rgit_pathspec::{MatchKind, ParseOptions, Pathspec};
 use rgit_worktree::stat::{Status, smudge_racy_entries};
@@ -337,17 +337,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(0);
     }
     for p in &chosen {
-        // Removing a conflict keeps its stages for `restore --merge`.
-        let entries = index.entries_for_path(p);
-        if entries.iter().any(|e| e.stage().is_conflict()) {
-            let mut stages = [None; 3];
-            for e in entries {
-                if e.stage().is_conflict() {
-                    stages[usize::from(e.stage().get()) - 1] = Some((e.mode.0, e.id));
-                }
-            }
-            index.record_resolve_undo(p, stages);
-        }
+        // Removing a conflict keeps its stages for `restore --merge` (the
+        // index records them in the resolve undo extension).
         index.remove_path(p);
     }
     let cwd = std::fs::canonicalize(os_path(&root, &repo.prefix())).ok();
@@ -410,9 +401,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let _ = smudge_racy_entries(&mut index, reference, &checker);
     }
     let path = repo.setup.cwd.join(repo.index_path());
-    let skip_hash = repo.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
+    let opts = crate::index_config::write_options(&repo.config, &index)?;
     index
-        .write_file(&path, &repo.index_lock_options(), &WriteOptions { skip_hash })
+        .write_file(&path, &repo.index_lock_options(), &opts)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     Ok(0)
 }

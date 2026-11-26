@@ -1880,9 +1880,9 @@ impl Session<'_> {
             }
         }
         let path = repo.setup.cwd.join(repo.index_path());
-        let skip_hash = repo.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
+        let opts = crate::index_config::write_options(&repo.config, &index)?;
         index
-            .write_file(&path, &repo.index_lock_options(), &rgit_index::WriteOptions { skip_hash })
+            .write_file(&path, &repo.index_lock_options(), &opts)
             .map_err(|e| fatal(e.to_string()))
     }
 

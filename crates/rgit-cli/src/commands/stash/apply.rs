@@ -433,7 +433,7 @@ fn reset_index_keep_new(repo: &Repo, c_tree: ObjectId) -> Result<(), Die> {
         .collect();
     // Keep the version and extensions of the merged index.
     let mut index: Index = merged.clone();
-    index.retain(|_| false);
+    index.clear_entries();
     for (path, mode, id) in old {
         let keep = merged
             .get(&path, Stage::MERGED)

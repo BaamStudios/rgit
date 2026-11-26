@@ -6,15 +6,19 @@
 //! - Reads versions 2, 3 and 4 (prefix-compressed paths) with SHA-1 or
 //!   SHA-256 ids. Like git, the trailing checksum is only verified on
 //!   request ([`ReadOptions::verified`]); a null trailer from
-//!   `index.skipHash` is always accepted.
+//!   `index.skipHash` is always accepted. An index with an offset table
+//!   (`IEOT`, found through `EOIE`) is parsed on several threads.
 //! - Writes version 2, or 3 when an entry has extended flags
-//!   (skip-worktree, intent-to-add), as git does; an index read as version
-//!   4 is written as version 4.
+//!   (skip-worktree, intent-to-add), as git does; version 4 when the index
+//!   is version 4 or, for a new index, when [`WriteOptions`] asks for it.
+//!   Optionally with the End Of Index Entries and Index Entry Offset Table
+//!   extensions laid out as git does.
 //! - Extensions: `TREE` (cache tree) is parsed, invalidated on edits and
-//!   written; `REUC` is kept as raw bytes. `UNTR`, `FSMN`, `EOIE`, `IEOT`
-//!   and unknown optional (uppercase) extensions are dropped on write.
-//!   `link` (split index), `sdir` (sparse index) and unknown required
-//!   (lowercase) extensions are refused.
+//!   written; `REUC` (resolve undo) is parsed, written, and filled whenever
+//!   a conflict stage leaves the index. `UNTR`, `FSMN` and unknown
+//!   optional (uppercase) extensions are dropped on write. `link` (split
+//!   index), `sdir` (sparse index) and unknown required (lowercase)
+//!   extensions are refused.
 //! - In-memory editing: lookup, add/replace with file/directory conflict
 //!   detection, removal, directory ranges, unmerged stages.
 //! - On disk: `$GIT_INDEX_FILE`, writing through `index.lock`.
@@ -44,10 +48,12 @@ mod tree;
 mod varint;
 mod write;
 
-pub use entry::{Entry, Flags, Mode, Stage, Stat, Time, verify_path};
+pub use entry::{
+    DEFAULT_MAX_PATH_LEN, Entry, Flags, Mode, Stage, Stat, Time, set_max_path_len, verify_path,
+};
 pub use error::{AddError, Error, OrderError};
 pub use file::{INDEX_FILE_ENV, WriteError, index_path, notify_written, set_write_observer};
 pub use index::{AddOptions, Index, ResolveUndo};
 pub use read::ReadOptions;
 pub use tree::{CacheTree, TreeNode};
-pub use write::WriteOptions;
+pub use write::{OffsetTable, WriteOptions};

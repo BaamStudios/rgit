@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use rgit_hash::ObjectId;
-use rgit_index::{AddError, AddOptions, Entry, Index, Mode as IndexMode, Stage, WriteOptions};
+use rgit_index::{AddError, AddOptions, Entry, Index, Mode as IndexMode, Stage};
 use rgit_object::{Object, ObjectKind};
 use rgit_options::ParseFlags;
 use rgit_pathspec::{ParseOptions, Pathspec};
@@ -38,6 +38,7 @@ enum Event {
     IndexVersion(Option<i64>),
     ShowIndexVersion,
     ClearResolveUndo,
+    Unresolve,
     Unsupported(&'static str),
 }
 
@@ -613,14 +614,7 @@ impl State<'_> {
             let _ = smudge_racy_entries(&mut self.index, reference, &checker);
         }
         let path = self.repo.setup.cwd.join(self.repo.index_path());
-        let skip_hash = self
-            .repo
-            .config
-            .bool("index.skiphash")
-            .ok()
-            .flatten()
-            .unwrap_or(false);
-        let opts = WriteOptions { skip_hash };
+        let opts = crate::index_config::write_options(&self.repo.config, &self.index).map_err(Stop::Die)?;
         crate::hooks::index_changes(crate::hooks::IndexChange::SkipWorktree);
         match self
             .index
@@ -852,7 +846,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .noarg()
         .noneg(),
         Opt::callback(None, "unresolve", None, msg::HELP_UNRESOLVE, |_, _| {
-            push(Event::Unsupported("--unresolve"));
+            push(Event::Unresolve);
             Ok(())
         })
         .noarg()
@@ -1187,8 +1181,27 @@ impl State<'_> {
                 let line = format!("{}\n", self.index.version());
                 self.out.extend_from_slice(line.as_bytes());
             }
+            Event::Unresolve => {
+                // Every argument after it names a path to unresolve.
+                let args: Vec<String> = if last_in_batch {
+                    std::mem::take(rest)
+                        .into_iter()
+                        .filter(|a| a != "--")
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                for arg in args {
+                    let Ok(path) = self.repo.prefix_path(arg.as_bytes()) else {
+                        continue;
+                    };
+                    if self.index.unresolve(&path) {
+                        self.changed = true;
+                    }
+                }
+            }
             Event::ClearResolveUndo => {
-                if self.index.resolve_undo_raw().is_some() {
+                if self.index.has_resolve_undo() {
                     self.index.clear_resolve_undo();
                     self.changed = true;
                 }

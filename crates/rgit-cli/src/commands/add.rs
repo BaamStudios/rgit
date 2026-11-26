@@ -34,7 +34,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rgit_index::{AddOptions, Entry, Index, Mode, Stage, WriteOptions};
+use rgit_index::{AddOptions, Entry, Index, Mode, Stage};
 use rgit_object::ObjectKind;
 use rgit_pathspec::{DirInterest, MatchKind, ParseOptions, Pathspec};
 use rgit_worktree::ignore::{Excludes, default_excludes_file};
@@ -333,7 +333,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let update = Cell::new(false);
     let renormalize = Cell::new(false);
     let intent = Cell::new(false);
-    let all = Cell::new(false);
+    // -A: 1, --no-all / --ignore-removal: 0, neither: -1.
+    let all = Cell::new(-1);
     let ignore_errors = Cell::new(-1);
     let ignore_missing = Cell::new(false);
     let sparse = Cell::new(false);
@@ -363,7 +364,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('u', "update", &update, msg::HELP_UPDATE),
             Opt::flag(None, "renormalize", &renormalize, msg::HELP_RENORMALIZE),
             Opt::flag('N', "intent-to-add", &intent, msg::HELP_INTENT_TO_ADD),
-            Opt::flag('A', "all", &all, msg::HELP_ALL),
+            Opt::bool('A', "all", &all, msg::HELP_ALL),
+            Opt::callback(None, "ignore-removal", None, msg::HELP_IGNORE_REMOVAL, |_, neg| {
+                all.set(i32::from(neg));
+                Ok(())
+            })
+            .noarg(),
             Opt::bool(None, "ignore-errors", &ignore_errors, msg::HELP_IGNORE_ERRORS),
             Opt::flag(None, "ignore-missing", &ignore_missing, msg::HELP_IGNORE_MISSING),
             Opt::flag(None, "sparse", &sparse, msg::HELP_SPARSE),
@@ -381,13 +387,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .map(String::into_bytes)
         .collect();
     drop(parser);
+    // --no-all: paths removed from the work tree stay in the index.
+    let ignore_removal = all.get() == 0;
     let (dry_run, verbose, force, update, intent, all) = (
         dry_run.get(),
         verbose.get(),
         force.get(),
         update.get() || renormalize.get(),
         intent.get(),
-        all.get(),
+        all.get() == 1,
     );
     let renormalize = renormalize.get();
     let chmod = chmod.into_inner();
@@ -660,6 +668,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 .find(|s| s.stage() == Stage::OURS)
                 .unwrap_or(e);
             if checker.lstat(path).ok().flatten().is_none() {
+                if ignore_removal && !update {
+                    return Err(Die::Fatal(msg::unable_to_stat(
+                        &lossy(path),
+                        // ENOENT
+                        &crate::global::strerror(&std::io::Error::from_raw_os_error(2)),
+                    )));
+                }
                 if show {
                     println!("{}", msg::remove(&lossy(path)));
                 }
@@ -805,6 +820,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             s => s,
         };
         match status {
+            Status::Deleted if ignore_removal && !update => {}
             Status::Deleted => {
                 if show {
                     println!("{}", msg::remove(&lossy(e.path())));
@@ -948,9 +964,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         for e in updates {
             let path = e.path().to_vec();
-            index
-                .add(e, AddOptions { ok_to_replace: true, ..Default::default() })
-                .map_err(|err| Die::Fatal(err.to_string()))?;
+            match index.add(e, AddOptions { ok_to_replace: true, ..Default::default() }) {
+                Ok(()) => {}
+                // A path the index refuses (e.g. longer than index.maxPathLen).
+                Err(rgit_index::AddError::InvalidPath(p)) => {
+                    eprintln!("error: {}", msg::invalid_path(&lossy(&p)));
+                    eprintln!("error: {}", msg::unable_to_add(&lossy(&p)));
+                    return Err(Die::Fatal(msg::ADDING_FAILED.to_string()));
+                }
+                Err(err) => return Err(Die::Fatal(err.to_string())),
+            }
             index.invalidate_path(&path);
         }
     }
@@ -989,9 +1012,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let _ = smudge_racy_entries(&mut index, reference, &checker);
         }
         let path = repo.setup.cwd.join(repo.index_path());
-        let skip_hash = repo.config.bool("index.skiphash").ok().flatten().unwrap_or(false);
+        let opts = crate::index_config::write_options(&repo.config, &index)?;
         index
-            .write_file(&path, &repo.index_lock_options(), &WriteOptions { skip_hash })
+            .write_file(&path, &repo.index_lock_options(), &opts)
             .map_err(|e| Die::Fatal(e.to_string()))?;
     }
     Ok(code)

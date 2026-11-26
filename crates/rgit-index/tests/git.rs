@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use rgit_difftest::{Fixture, assert_same_text};
 use rgit_fs::LockOptions;
 use rgit_hash::{HashKind, ObjectId};
-use rgit_index::{AddOptions, Entry, Index, Mode, ReadOptions, Stage, WriteOptions};
+use rgit_index::{AddOptions, Entry, Index, Mode, OffsetTable, ReadOptions, Stage, WriteOptions};
 
 /// C-style quoting as `git ls-files` does with the default `core.quotePath`.
 fn quote(path: &[u8]) -> String {
@@ -184,7 +184,7 @@ fn round_trip_versions(kind: HashKind) {
         .git(["rm", "-q", "--cached", "new"]);
     let index = check_round_trip(&fx, kind, "v2");
     assert_eq!(index.version(), 2);
-    assert_eq!(index.write_version(), 2);
+    assert_eq!(index.write_version(&WriteOptions::default()), 2);
 }
 
 /// git's own rewrite (`--force-write-index`) of an unchanged index equals
@@ -241,7 +241,7 @@ fn conflicts_and_resolve_undo() {
     // Resolving one path creates a REUC extension, which is kept.
     let fx = fx.write("a/g", "resolved\n").git(["add", "a/g"]);
     let index = check_round_trip(&fx, kind, "resolve undo");
-    assert!(index.resolve_undo_raw().is_some());
+    assert!(index.has_resolve_undo());
 }
 
 /// Edits made by rgit produce the same file as the same edits made by git
@@ -475,5 +475,99 @@ fn resolve_undo_records() {
     assert_eq!(back.resolve_undo_records().len(), 2);
     back.remove_resolve_undo(b"m");
     back.remove_resolve_undo(b"z");
-    assert!(back.resolve_undo_raw().is_none());
+    assert!(back.resolve_undo().is_empty());
+}
+
+/// git's rewrite of the same index with `index.threads=<n>` (EOIE and
+/// IEOT) equals rgit's, for versions 2 and 4; rgit reads git's tables
+/// with one and with several threads.
+#[test]
+fn offset_tables_match_git() {
+    let kind = HashKind::Sha1;
+    let Some(fx) = rich_index(kind) else { return };
+    let mut fx = fx
+        .git(["update-index", "--no-skip-worktree", "a/g"])
+        .git(["rm", "-q", "--cached", "new"]);
+    let path = index_file(&fx);
+    for version in ["2", "4"] {
+        for (threads, table) in [
+            ("2", OffsetTable::Threads(2)),
+            ("3", OffsetTable::Threads(3)),
+            ("64", OffsetTable::Threads(64)),
+        ] {
+            fx = fx.git([
+                "-c",
+                &format!("index.threads={threads}"),
+                "update-index",
+                "--index-version",
+                version,
+                "--force-write-index",
+            ]);
+            let theirs = std::fs::read(&path).unwrap();
+            for read_threads in [1, 4] {
+                let opts = ReadOptions {
+                    threads: read_threads,
+                    ..ReadOptions::verified()
+                };
+                let index = Index::from_bytes(&theirs, kind, &opts).unwrap();
+                assert_same_text("threads", &git_ls(&fx), &ls_files_debug(&index));
+                let ours = index.to_bytes(&WriteOptions {
+                    end_of_entries: true,
+                    offset_table: table,
+                    ..WriteOptions::default()
+                });
+                assert!(ours == theirs, "v{version} threads={threads}");
+            }
+        }
+    }
+}
+
+/// Resolving a conflict in rgit records its stages like git, and
+/// `unresolve` brings them back.
+#[test]
+fn resolve_undo_from_edits() {
+    let kind = HashKind::Sha1;
+    let fx = repo(kind);
+    if fx.is_skipped() {
+        return;
+    }
+    let path = index_file(&fx);
+    let mut index = read(&path, kind);
+    let top = index.get(b"top", Stage::MERGED).unwrap().clone();
+    let other = index.get(b"a/g", Stage::MERGED).unwrap().id;
+    index.remove_path(b"top");
+    for (stage, id) in [
+        (Stage::BASE, top.id),
+        (Stage::OURS, other),
+        (Stage::THEIRS, top.id),
+    ] {
+        index
+            .add(
+                Entry::new(b"top".to_vec(), stage, top.mode, id),
+                AddOptions::default(),
+            )
+            .unwrap();
+    }
+    assert!(index.resolve_undo().is_empty());
+    // Resolve: the stages go, stage 0 comes.
+    index.remove_path(b"top");
+    index.add(top.clone(), AddOptions::default()).unwrap();
+    index
+        .write_file(&path, &LockOptions::new(), &WriteOptions::default())
+        .unwrap();
+    let got = String::from_utf8(fx.git_stdout(["ls-files", "--resolve-undo"])).unwrap();
+    let (t, o) = (top.id, other);
+    assert_eq!(
+        got,
+        format!("100644 {t} 1\ttop\n100644 {o} 2\ttop\n100644 {t} 3\ttop\n")
+    );
+    // git's --unresolve and rgit's give the same file.
+    let fx = fx.git(["update-index", "--unresolve", "top"]);
+    let theirs = std::fs::read(&path).unwrap();
+    assert!(index.unresolve(b"top"));
+    assert!(!index.unresolve(b"top"));
+    let ours = index.to_bytes(&WriteOptions::default());
+    // Stat data of the re-created stages is zero in both.
+    assert_same_text("unresolve", &git_ls(&fx), &ls_files_debug(&index));
+    assert!(ours == theirs, "unresolve");
 }

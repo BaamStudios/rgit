@@ -14,7 +14,7 @@ use std::io::Write as _;
 
 use rgit_fs::{LockFile, LockOptions};
 use rgit_hash::ObjectId;
-use rgit_index::{Entry, Index, Stage, WriteOptions};
+use rgit_index::{Entry, Index, Stage};
 use rgit_object::ObjectKind;
 use rgit_refs::files::FilesStore;
 use rgit_refs::{RefStore, RefUpdate, Target as RefTarget, Transaction};
@@ -243,16 +243,9 @@ pub fn refresh_stat(index: &mut Index, checker: &Checker) {
 
 /// Writes `index` into the held `index.lock` and commits it.
 pub fn write_index(repo: &Repo, index: &Index, mut lock: LockFile) -> Result<(), Die> {
-    let skip_hash = repo
-        .config
-        .bool("index.skiphash")
-        .ok()
-        .flatten()
-        .unwrap_or(false);
+    let opts = crate::index_config::write_options(&repo.config, index)?;
     let fail = || Die::Fatal(crate::messages::read_tree::UNABLE_TO_WRITE_INDEX.into());
-    index
-        .write_locked(&mut lock, &WriteOptions { skip_hash })
-        .map_err(|_| fail())?;
+    index.write_locked(&mut lock, &opts).map_err(|_| fail())?;
     lock.commit().map_err(|_| fail())?;
     rgit_index::notify_written(&repo.setup.cwd.join(repo.index_path()));
     Ok(())

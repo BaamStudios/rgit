@@ -36,18 +36,19 @@ pub struct Index {
     pub(crate) version: u32,
     pub(crate) entries: Vec<Entry>,
     pub(crate) tree: Option<CacheTree>,
-    pub(crate) resolve_undo: Option<Vec<u8>>,
+    pub(crate) resolve_undo: Option<Vec<ResolveUndo>>,
     pub(crate) ignored: Vec<[u8; 4]>,
     pub(crate) dropped: Vec<[u8; 4]>,
     pub(crate) checksum: Option<ObjectId>,
 }
 
 impl Index {
-    /// An empty version 2 index.
+    /// An empty index without a format version: it is written in the
+    /// version [`WriteOptions::default_version`] names (`index.version`).
     pub fn new(kind: HashKind) -> Index {
         Index {
             kind,
-            version: 2,
+            version: 0,
             entries: Vec::new(),
             tree: None,
             resolve_undo: None,
@@ -72,7 +73,8 @@ impl Index {
         self.kind
     }
 
-    /// The format version as read (2, 3 or 4), or as set.
+    /// The format version as read (2, 3 or 4), or as set; 0 for a new
+    /// index (`git update-index --show-index-version` prints it).
     pub fn version(&self) -> u32 {
         self.version
     }
@@ -88,10 +90,15 @@ impl Index {
         }
     }
 
-    /// The version [`Index::to_bytes`] writes: 4 if the index is version 4,
-    /// otherwise 3 if any entry needs extended flags, else 2 (as git does).
-    pub fn write_version(&self) -> u32 {
-        if self.version == 4 {
+    /// The version [`Index::to_bytes`] writes: 4 if the index is version 4
+    /// (a new index: if `opts` asks for 4), otherwise 3 if any entry needs
+    /// extended flags, else 2 (as git does).
+    pub fn write_version(&self, opts: &WriteOptions) -> u32 {
+        let version = match self.version {
+            0 => opts.default_version,
+            v => v,
+        };
+        if version == 4 {
             4
         } else if self.entries.iter().any(|e| e.flags.needs_extended()) {
             3
@@ -113,7 +120,8 @@ impl Index {
     }
 
     /// Known optional extensions that were read but are not kept and will
-    /// not be written (`UNTR`, `FSMN`, `EOIE`, `IEOT`).
+    /// not be written (`UNTR`, `FSMN`; `EOIE` and `IEOT` are written anew
+    /// when [`WriteOptions`] asks for them).
     pub fn dropped_extensions(&self) -> &[[u8; 4]] {
         &self.dropped
     }
@@ -225,8 +233,7 @@ impl Index {
                 let mut doomed: Vec<usize> = files.into_iter().chain(below).collect();
                 doomed.sort_unstable();
                 for pos in doomed.into_iter().rev() {
-                    let old = self.entries.remove(pos);
-                    self.invalidate_path(&old.path);
+                    self.remove_at(pos);
                 }
             }
         }
@@ -249,10 +256,12 @@ impl Index {
         self.add(Entry::new(path, Stage::MERGED, mode, id), opts)
     }
 
-    /// Removes the entry at `pos`.
+    /// Removes the entry at `pos`. Removing a conflict stage records it in
+    /// the resolve undo extension, as every removal below does.
     pub fn remove_at(&mut self, pos: usize) -> Entry {
         let old = self.entries.remove(pos);
         self.invalidate_path(&old.path);
+        self.note_removed(&old);
         old
     }
 
@@ -268,7 +277,24 @@ impl Index {
         if !range.is_empty() {
             self.invalidate_path(path);
         }
-        self.entries.drain(range).collect()
+        let removed: Vec<Entry> = self.entries.drain(range).collect();
+        for e in &removed {
+            self.note_removed(e);
+        }
+        removed
+    }
+
+    /// Removes all entries, keeping the version and the extensions (the
+    /// cache tree is invalidated). Unlike [`Index::retain`] nothing is
+    /// recorded for resolve undo: this starts an index that is rebuilt
+    /// from scratch.
+    pub fn clear_entries(&mut self) {
+        let entries = std::mem::take(&mut self.entries);
+        if let Some(tree) = &mut self.tree {
+            for e in &entries {
+                tree.invalidate_path(&e.path);
+            }
+        }
     }
 
     /// Removes every entry for which `keep` returns false.
@@ -277,12 +303,13 @@ impl Index {
         self.entries.retain(|e| {
             let k = keep(e);
             if !k {
-                removed.push(e.path.clone());
+                removed.push(e.clone());
             }
             k
         });
-        for path in removed {
-            self.invalidate_path(&path);
+        for e in removed {
+            self.invalidate_path(&e.path);
+            self.note_removed(&e);
         }
     }
 
@@ -330,102 +357,105 @@ impl Index {
         }
     }
 
-    /// The raw `REUC` (resolve undo) extension, kept unchanged from the
-    /// file it was read from.
-    pub fn resolve_undo_raw(&self) -> Option<&[u8]> {
-        self.resolve_undo.as_deref()
+    /// True if the index has a resolve undo (`REUC`) extension, possibly
+    /// an empty one (git keeps an emptied extension until it is cleared).
+    pub fn has_resolve_undo(&self) -> bool {
+        self.resolve_undo.is_some()
     }
 
     /// The records of the resolve undo extension (gitformat-index(5),
     /// "Resolve undo"): per path the mode and id of stages 1-3 (`None` for
-    /// a missing stage), sorted by path. A damaged extension ends the list.
-    pub fn resolve_undo_records(&self) -> Vec<ResolveUndo> {
-        let kind = self.hash_kind();
-        let n = kind.byte_len();
-        let mut records = Vec::new();
-        let mut data = self.resolve_undo.as_deref().unwrap_or_default();
-        let take = |data: &mut &[u8]| -> Option<Vec<u8>> {
-            let nul = data.iter().position(|&b| b == 0)?;
-            let s = data[..nul].to_vec();
-            *data = &data[nul + 1..];
-            Some(s)
-        };
-        'parse: while !data.is_empty() {
-            let Some(path) = take(&mut data) else { break };
-            let mut modes = [0u32; 3];
-            for m in &mut modes {
-                let Some(v) = take(&mut data)
-                    .and_then(|s| String::from_utf8(s).ok())
-                    .and_then(|s| u32::from_str_radix(&s, 8).ok())
-                else {
-                    break 'parse;
-                };
-                *m = v;
-            }
-            let mut stages = [None; 3];
-            for (k, m) in modes.into_iter().enumerate() {
-                if m != 0 {
-                    let Some(id) = data
-                        .get(..n)
-                        .and_then(|b| ObjectId::from_bytes(kind, b).ok())
-                    else {
-                        break 'parse;
-                    };
-                    stages[k] = Some((m, id));
-                    data = &data[n..];
-                }
-            }
-            records.push(ResolveUndo { path, stages });
-        }
-        records
+    /// a missing stage), sorted by path.
+    pub fn resolve_undo(&self) -> &[ResolveUndo] {
+        self.resolve_undo.as_deref().unwrap_or_default()
     }
 
-    fn set_resolve_undo_records(&mut self, mut records: Vec<ResolveUndo>) {
-        if records.is_empty() {
-            self.resolve_undo = None;
-            return;
-        }
-        records.sort_by(|a, b| a.path.cmp(&b.path));
-        let mut out = Vec::new();
-        for r in &records {
-            out.extend_from_slice(&r.path);
-            out.push(0);
-            for s in &r.stages {
-                out.extend_from_slice(format!("{:o}", s.map_or(0, |s| s.0)).as_bytes());
-                out.push(0);
-            }
-            for (_, id) in r.stages.iter().flatten() {
-                out.extend_from_slice(id.as_bytes());
-            }
-        }
-        self.resolve_undo = Some(out);
+    /// A copy of [`Index::resolve_undo`], for callers that edit the index
+    /// while walking the records.
+    pub fn resolve_undo_records(&self) -> Vec<ResolveUndo> {
+        self.resolve_undo().to_vec()
     }
 
     /// Records the conflict stages 1-3 of `path` in the resolve undo
     /// extension, replacing an older record of the path.
     pub fn record_resolve_undo(&mut self, path: &[u8], stages: [Option<(u32, ObjectId)>; 3]) {
-        let mut records = self.resolve_undo_records();
-        records.retain(|r| r.path != path);
-        records.push(ResolveUndo {
-            path: path.to_vec(),
-            stages,
-        });
-        self.set_resolve_undo_records(records);
+        let records = self.resolve_undo.get_or_insert_with(Vec::new);
+        match records.binary_search_by(|r| r.path.as_slice().cmp(path)) {
+            Ok(i) => records[i].stages = stages,
+            Err(i) => records.insert(
+                i,
+                ResolveUndo {
+                    path: path.to_vec(),
+                    stages,
+                },
+            ),
+        }
     }
 
-    /// Drops the resolve undo record of `path`.
-    pub fn remove_resolve_undo(&mut self, path: &[u8]) {
-        let mut records = self.resolve_undo_records();
-        let before = records.len();
-        records.retain(|r| r.path != path);
-        if records.len() != before {
-            self.set_resolve_undo_records(records);
-        }
+    /// Notes a removed entry: a conflict stage goes into the slot of its
+    /// stage in the record of its path (other slots of an existing record
+    /// stay), as git does whenever an unmerged entry leaves the index.
+    pub(crate) fn note_removed(&mut self, e: &Entry) {
+        let slot = match e.stage.get() {
+            0 => return,
+            s => usize::from(s) - 1,
+        };
+        let records = self.resolve_undo.get_or_insert_with(Vec::new);
+        let i = match records.binary_search_by(|r| r.path.as_slice().cmp(&e.path)) {
+            Ok(i) => i,
+            Err(i) => {
+                records.insert(
+                    i,
+                    ResolveUndo {
+                        path: e.path.clone(),
+                        stages: [None; 3],
+                    },
+                );
+                i
+            }
+        };
+        records[i].stages[slot] = Some((e.mode.0, e.id));
+    }
+
+    /// Drops the resolve undo record of `path`; returns it if there was
+    /// one. The extension stays, possibly empty.
+    pub fn remove_resolve_undo(&mut self, path: &[u8]) -> Option<ResolveUndo> {
+        let records = self.resolve_undo.as_mut()?;
+        let i = records
+            .binary_search_by(|r| r.path.as_slice().cmp(path))
+            .ok()?;
+        Some(records.remove(i))
     }
 
     /// Drops the resolve undo extension.
     pub fn clear_resolve_undo(&mut self) {
         self.resolve_undo = None;
+    }
+
+    /// Recreates the conflict of `path` from its resolve undo record
+    /// (`git update-index --unresolve`): the stage-0 entry is removed, the
+    /// recorded stages are added and the record is dropped. Returns false
+    /// (and changes nothing) without a record.
+    pub fn unresolve(&mut self, path: &[u8]) -> bool {
+        let Some(record) = self.remove_resolve_undo(path) else {
+            return false;
+        };
+        let range = self.path_range(path);
+        if !range.is_empty() {
+            self.invalidate_path(path);
+        }
+        // Stage 0 goes; recorded stages replace what is there.
+        self.entries.drain(range.clone()).for_each(drop);
+        let mut pos = range.start;
+        for (k, s) in record.stages.iter().enumerate() {
+            if let Some((mode, id)) = s {
+                let stage = Stage::new(k as u8 + 1).expect("stage 1-3");
+                self.entries
+                    .insert(pos, Entry::new(path.to_vec(), stage, Mode(*mode), *id));
+                pos += 1;
+            }
+        }
+        true
     }
 }
 
@@ -436,4 +466,63 @@ pub struct ResolveUndo {
     pub path: Vec<u8>,
     /// Mode and id of stages 1, 2 and 3.
     pub stages: [Option<(u32, ObjectId)>; 3],
+}
+
+/// Parses a `REUC` extension: per path the NUL-terminated name, three
+/// NUL-terminated octal modes and one object name per non-zero mode. A
+/// damaged record ends the list.
+pub(crate) fn parse_resolve_undo(mut data: &[u8], kind: HashKind) -> Vec<ResolveUndo> {
+    let n = kind.byte_len();
+    let mut records = Vec::new();
+    let take = |data: &mut &[u8]| -> Option<Vec<u8>> {
+        let nul = data.iter().position(|&b| b == 0)?;
+        let s = data[..nul].to_vec();
+        *data = &data[nul + 1..];
+        Some(s)
+    };
+    'parse: while !data.is_empty() {
+        let Some(path) = take(&mut data) else { break };
+        let mut modes = [0u32; 3];
+        for m in &mut modes {
+            let Some(v) = take(&mut data)
+                .and_then(|s| String::from_utf8(s).ok())
+                .and_then(|s| u32::from_str_radix(&s, 8).ok())
+            else {
+                break 'parse;
+            };
+            *m = v;
+        }
+        let mut stages = [None; 3];
+        for (k, m) in modes.into_iter().enumerate() {
+            if m != 0 {
+                let Some(id) = data
+                    .get(..n)
+                    .and_then(|b| ObjectId::from_bytes(kind, b).ok())
+                else {
+                    break 'parse;
+                };
+                stages[k] = Some((m, id));
+                data = &data[n..];
+            }
+        }
+        records.push(ResolveUndo { path, stages });
+    }
+    // Lookups rely on the order git writes the records in.
+    records.sort_by(|a, b| a.path.cmp(&b.path));
+    records
+}
+
+/// Serializes resolve undo records (see [`parse_resolve_undo`]).
+pub(crate) fn write_resolve_undo(records: &[ResolveUndo], out: &mut Vec<u8>) {
+    for r in records {
+        out.extend_from_slice(&r.path);
+        out.push(0);
+        for s in &r.stages {
+            out.extend_from_slice(format!("{:o}", s.map_or(0, |s| s.0)).as_bytes());
+            out.push(0);
+        }
+        for (_, id) in r.stages.iter().flatten() {
+            out.extend_from_slice(id.as_bytes());
+        }
+    }
 }

@@ -31,6 +31,7 @@ mod grep;
 mod history;
 mod hooks;
 mod housekeeping;
+mod index_config;
 mod interactive;
 mod maintenance;
 mod messages;

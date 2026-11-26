@@ -4,8 +4,8 @@
 
 use rgit_hash::{HashKind, ObjectId};
 use rgit_index::{
-    AddError, AddOptions, CacheTree, Entry, Error, Flags, Index, Mode, OrderError, ReadOptions,
-    Stage, Stat, Time, TreeNode, WriteOptions,
+    AddError, AddOptions, CacheTree, Entry, Error, Flags, Index, Mode, OffsetTable, OrderError,
+    ReadOptions, Stage, Stat, Time, TreeNode, WriteOptions,
 };
 
 fn id(kind: HashKind, n: u8) -> ObjectId {
@@ -94,14 +94,14 @@ fn v2_entry_layout() {
 fn extended_flags_need_version_3() {
     let kind = HashKind::Sha1;
     let mut index = sample(kind);
-    assert_eq!(index.write_version(), 2);
+    assert_eq!(index.write_version(&WriteOptions::default()), 2);
     let pos = index.position(b"b", Stage::MERGED).unwrap();
     index.entry_mut(pos).unwrap().flags = Flags {
         assume_valid: true,
         skip_worktree: true,
         intent_to_add: true,
     };
-    assert_eq!(index.write_version(), 3);
+    assert_eq!(index.write_version(&WriteOptions::default()), 3);
     let bytes = index.to_bytes(&WriteOptions::default());
     let back = parse(&bytes, kind).unwrap();
     assert_eq!(back.version(), 3);
@@ -111,7 +111,7 @@ fn extended_flags_need_version_3() {
     // Back to version 2 once no entry needs extended flags.
     let mut back = back;
     back.entry_mut(pos).unwrap().flags = Flags::default();
-    assert_eq!(back.write_version(), 2);
+    assert_eq!(back.write_version(&WriteOptions::default()), 2);
 }
 
 #[test]
@@ -151,7 +151,10 @@ fn checksum() {
     assert!(Index::from_bytes(&bytes, kind, &ReadOptions::verified()).is_ok());
 
     // index.skipHash: null trailer written and accepted.
-    let skip = sample(kind).to_bytes(&WriteOptions { skip_hash: true });
+    let skip = sample(kind).to_bytes(&WriteOptions {
+        skip_hash: true,
+        ..WriteOptions::default()
+    });
     assert!(skip.ends_with(&[0; 20]));
     let read = Index::from_bytes(&skip, kind, &ReadOptions::verified()).unwrap();
     assert!(read.checksum().is_none());
@@ -246,17 +249,25 @@ fn extensions() {
     assert_eq!(read.to_bytes(&WriteOptions::default()), bytes);
 
     // Known optional extensions rgit does not keep.
-    for sig in [b"UNTR", b"FSMN", b"EOIE", b"IEOT"] {
+    for sig in [b"UNTR", b"FSMN"] {
         let read = parse(&append_ext(&bytes, kind, sig, b"x"), kind).unwrap();
         assert_eq!(read.dropped_extensions(), [*sig]);
         assert_eq!(read.to_bytes(&WriteOptions::default()), bytes);
     }
+    // The offset tables are written anew when asked for.
+    for sig in [b"EOIE", b"IEOT"] {
+        let read = parse(&append_ext(&bytes, kind, sig, b"x"), kind).unwrap();
+        assert!(read.dropped_extensions().is_empty());
+        assert_eq!(read.to_bytes(&WriteOptions::default()), bytes);
+    }
 
     // REUC is kept as is.
-    let reuc = b"path\x00100644\x000\x000\x00".to_vec();
+    let mut reuc = b"path\x00100644\x000\x000\x00".to_vec();
+    reuc.extend_from_slice(&[0x11; 20]);
     let with_reuc = append_ext(&bytes, kind, b"REUC", &reuc);
     let read = parse(&with_reuc, kind).unwrap();
-    assert_eq!(read.resolve_undo_raw(), Some(&reuc[..]));
+    assert_eq!(read.resolve_undo().len(), 1);
+    assert_eq!(read.resolve_undo()[0].path, b"path");
     assert_eq!(read.to_bytes(&WriteOptions::default()), with_reuc);
 
     // Required extensions.
@@ -474,4 +485,101 @@ fn file_io() {
     assert!(err.to_string().starts_with("Unable to create"), "{err}");
     drop(lock);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Removing conflict stages records them (slot by slot); rebuilding an
+/// index from scratch does not.
+#[test]
+fn resolve_undo_is_recorded_on_removal() {
+    let kind = HashKind::Sha1;
+    let mut index = sample(kind);
+    for s in 1..=3 {
+        let mut e = entry(kind, "u", s);
+        e.id = id(kind, 10 + s);
+        index.add(e, AddOptions::default()).unwrap();
+    }
+    index.remove(b"u", Stage::OURS).unwrap();
+    let r = &index.resolve_undo()[0];
+    assert_eq!(r.stages, [None, Some((0o100644, id(kind, 12))), None]);
+    index.remove_path(b"u");
+    assert_eq!(
+        index.resolve_undo()[0].stages,
+        [
+            Some((0o100644, id(kind, 11))),
+            Some((0o100644, id(kind, 12))),
+            Some((0o100644, id(kind, 13)))
+        ]
+    );
+    // Stage 0 entries are not recorded; an emptied extension is kept.
+    index.remove_path(b"b");
+    assert_eq!(index.resolve_undo().len(), 1);
+    assert!(index.unresolve(b"u"));
+    assert!(index.has_resolve_undo() && index.resolve_undo().is_empty());
+    assert_eq!(index.entries_for_path(b"u").len(), 3);
+    let mut fresh = index.clone();
+    fresh.clear_entries();
+    assert!(fresh.is_empty() && fresh.has_resolve_undo());
+    assert!(fresh.resolve_undo().is_empty());
+}
+
+/// A new index takes the configured version; one that was read keeps its.
+#[test]
+fn default_version_applies_to_new_index() {
+    let kind = HashKind::Sha1;
+    let index = sample(kind);
+    assert_eq!(index.version(), 0);
+    let v4 = WriteOptions {
+        default_version: 4,
+        ..WriteOptions::default()
+    };
+    assert_eq!(index.write_version(&v4), 4);
+    let back = parse(&index.to_bytes(&WriteOptions::default()), kind).unwrap();
+    assert_eq!(back.version(), 2);
+    assert_eq!(back.write_version(&v4), 2);
+}
+
+/// IEOT blocks: offsets point at entries, version 4 restarts the path
+/// compression at each block, and the tables are read back on threads.
+#[test]
+fn offset_table_layout() {
+    let kind = HashKind::Sha1;
+    for version in [2, 4] {
+        let mut index = sample(kind);
+        index.set_version(version);
+        let opts = WriteOptions {
+            end_of_entries: true,
+            offset_table: OffsetTable::Threads(4),
+            ..WriteOptions::default()
+        };
+        let bytes = index.to_bytes(&opts);
+        for threads in [0, 1, 3] {
+            let read = Index::from_bytes(
+                &bytes,
+                kind,
+                &ReadOptions {
+                    threads,
+                    ..ReadOptions::verified()
+                },
+            )
+            .unwrap();
+            assert_eq!(read.entries(), index.entries());
+            assert_eq!(read.to_bytes(&opts), bytes);
+        }
+        // Six entries, four threads: blocks of two.
+        let ieot = bytes.windows(4).position(|w| w == b"IEOT").unwrap();
+        let size = u32::from_be_bytes(bytes[ieot + 4..ieot + 8].try_into().unwrap());
+        assert_eq!(size, 4 + 3 * 8);
+        // No table for a single thread, or a single block.
+        for table in [
+            OffsetTable::Threads(1),
+            OffsetTable::Auto,
+            OffsetTable::None,
+        ] {
+            let b = index.to_bytes(&WriteOptions {
+                offset_table: table,
+                ..WriteOptions::default()
+            });
+            assert!(!b.windows(4).any(|w| w == b"IEOT"));
+        }
+    }
 }

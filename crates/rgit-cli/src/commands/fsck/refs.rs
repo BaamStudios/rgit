@@ -373,5 +373,19 @@ pub(crate) fn index_heads(f: &mut Fsck, repo: &Repo, heads: &mut Vec<(ObjectId, 
                 }
             }
         }
+        // The recorded stages of resolved conflicts are reachable too.
+        for r in index.resolve_undo() {
+            for (mode, id) in r.stages.iter().flatten() {
+                if mode & 0o170000 == 0o160000 {
+                    continue;
+                }
+                let o = f.obj(id);
+                o.used = true;
+                if o.kind.is_none() {
+                    o.kind = Some(ObjectKind::Blob);
+                }
+                heads.push((*id, format!("{label}:{}", String::from_utf8_lossy(&r.path))));
+            }
+        }
     }
 }

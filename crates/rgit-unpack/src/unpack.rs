@@ -432,7 +432,9 @@ pub fn plan(
         return Err(Error::Rejected(u.rejection));
     }
     let mut out = index.clone();
-    out.retain(|_| false);
+    out.clear_entries();
+    // Like git, a result of unpacking trees has no resolve undo records.
+    out.clear_resolve_undo();
     out.set_cache_tree(None);
     let add = AddOptions {
         ok_to_replace: true,
@@ -617,7 +619,9 @@ fn three_way(
         return Err(Error::Rejected(u.rejection));
     }
     let mut out = index.clone();
-    out.retain(|_| false);
+    out.clear_entries();
+    // Like git, a result of unpacking trees has no resolve undo records.
+    out.clear_resolve_undo();
     out.set_cache_tree(None);
     let add = AddOptions {
         ok_to_replace: true,
