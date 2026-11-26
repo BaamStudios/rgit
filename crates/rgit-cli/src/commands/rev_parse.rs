@@ -793,8 +793,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| setup.common_dir.join("shallow"));
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
-    objects.use_commit_graph(&config, &setup);
     let refs = Refs::new(&setup, kind);
+    objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.use_grafts(&setup.common_dir, &config);
+    objects.use_commit_graph(&config, &setup);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);

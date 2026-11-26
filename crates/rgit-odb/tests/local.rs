@@ -136,3 +136,45 @@ fn damaged_files_never_panic() {
     assert!(errors > 2000);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn reads_follow_replacements() {
+    let hash = HashKind::Sha1;
+    let dir = temp_objects("replace");
+    let mut odb = ObjectDatabase::open(&dir, hash, LooseOptions::default());
+    let a = odb.write(ObjectKind::Blob, b"original\n").unwrap();
+    let b = odb.write(ObjectKind::Blob, b"replacement\n").unwrap();
+    let c = odb.write(ObjectKind::Tree, b"").unwrap();
+    assert!(!odb.has_replacements());
+
+    odb.set_replacements(move || [(a, b)].into_iter().collect());
+    assert!(odb.has_replacements());
+    assert_eq!(odb.replaced(&a).unwrap(), b);
+    assert_eq!(odb.read(&a).unwrap().unwrap().data, b"replacement\n");
+    assert_eq!(
+        odb.read_unreplaced(&a).unwrap().unwrap().data,
+        b"original\n"
+    );
+    assert_eq!(odb.header(&a).unwrap().unwrap().size, 12);
+    assert_eq!(odb.header_unreplaced(&a).unwrap().unwrap().size, 9);
+
+    // A loop cannot be followed.
+    odb.set_replacements(move || [(a, b), (b, a)].into_iter().collect());
+    assert!(matches!(odb.read(&a), Err(rgit_odb::Error::ReplaceDepth(id)) if id == a));
+    // Chains are followed up to four times.
+    let ids: Vec<_> = (0..6)
+        .map(|i| {
+            odb.write(ObjectKind::Blob, format!("{i}\n").as_bytes())
+                .unwrap()
+        })
+        .collect();
+    let chain = ids.clone();
+    odb.set_replacements(move || chain.windows(2).map(|w| (w[0], w[1])).collect());
+    assert_eq!(odb.replaced(&ids[1]).unwrap(), ids[5]);
+    assert!(odb.replaced(&ids[0]).is_err());
+    assert_eq!(odb.replaced(&c).unwrap(), c);
+
+    odb.clear_replacements();
+    assert_eq!(odb.read(&a).unwrap().unwrap().data, b"original\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -729,10 +729,8 @@ fn config_variables() -> std::collections::BTreeSet<String> {
                 };
                 out.insert(format!("advice.{name}"));
             }
-            // Advice keys git lists that rgit never shows.
-            for name in ["graftFileDeprecated", "pushNonFastForward"] {
-                out.insert(format!("advice.{name}"));
-            }
+            // An advice key git lists that rgit never shows.
+            out.insert("advice.pushNonFastForward".to_owned());
         } else if let Some(section) = line.strip_suffix("<slot>") {
             if let Some((_, slots)) = COLOR_SLOTS.iter().find(|(s, _)| *s == section) {
                 out.extend(slots.iter().map(|slot| format!("{section}{slot}")));

@@ -996,6 +996,8 @@ fn show_object(
 /// `--batch-all-objects`: every object in the repository and its
 /// alternates, sorted by id, without replacements.
 fn batch_all(repo: &mut Repo, opts: &BatchOptions) -> CmdResult {
+    // Every stored object is shown as it is, replace refs play no part.
+    repo.no_replace();
     let ids = repo.odb.all_objects().map_err(|e| Die::Fatal(e.to_string()))?;
     let mut out = Out::new(if opts.output_nul { 0 } else { b'\n' }, opts.buffer);
     let contents = opts.kind == Batch::Contents;

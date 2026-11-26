@@ -34,7 +34,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Read when the first signature is checked (git does not complain
     // about the `gpg.*` settings before).
     let mut settings: Option<Settings> = None;
-    let objects = Objects::open(&setup);
+    let mut objects = Objects::open(&setup);
+    objects.use_replace_refs(&setup, &config);
     let revs = Revs::new(ctx, &setup)?;
     let mut failed = false;
     for name in &args {

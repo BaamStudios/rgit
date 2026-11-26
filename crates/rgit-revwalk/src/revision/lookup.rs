@@ -96,6 +96,12 @@ pub trait ObjectLookup {
     fn is_shallow(&self, _oid: &ObjectId) -> bool {
         false
     }
+
+    /// The parents `oid` has according to the legacy graft file
+    /// (`$GIT_DIR/info/grafts`), `None` when it has no entry there.
+    fn grafted_parents(&self, _oid: &ObjectId) -> Option<Vec<ObjectId>> {
+        None
+    }
 }
 
 /// The value of a reference after following symbolic references.

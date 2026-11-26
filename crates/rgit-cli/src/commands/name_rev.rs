@@ -101,6 +101,8 @@ impl CommitSource for Source<'_> {
         let commit = Commit::parse(self.objects.hash_kind(), &data).map_err(|_| *id)?;
         let parents = if self.objects.is_shallow(id) {
             Vec::new()
+        } else if let Some(grafted) = self.objects.grafted_parents(id) {
+            grafted
         } else {
             commit.parents().map_err(|_| *id)?
         };
