@@ -38,3 +38,4 @@ rgit-version = { path = "../rgit-version" }
 
 [dev-dependencies]
 rgit-difftest = { path = "../rgit-difftest" }
+tempfile = "3"

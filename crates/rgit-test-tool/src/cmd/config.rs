@@ -90,7 +90,7 @@ fn syntax_error() -> i32 {
     fatal(messages::CONFIG_SYNTAX)
 }
 
-fn facts(repo: &Repo, early: bool) -> StaticRepoFacts {
+pub(crate) fn facts(repo: &Repo, early: bool) -> StaticRepoFacts {
     StaticRepoFacts {
         git_dir: Some(repo.abs_git_dir.clone()),
         // During early reading the work tree and branch are not known yet.
