@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-bundle = { path = "../rgit-bundle" }
 rgit-config = { path = "../rgit-config" }
 rgit-fs = { path = "../rgit-fs" }
 rgit-hash = { path = "../rgit-hash" }
@@ -24,6 +25,7 @@ rgit-protocol = { path = "../rgit-protocol" }
 rgit-refs = { path = "../rgit-refs" }
 rgit-remote = { path = "../rgit-remote" }
 rgit-repo = { path = "../rgit-repo" }
+rgit-trace = { path = "../rgit-trace" }
 rgit-transport = { path = "../rgit-transport" }
 thiserror = "2"
 

@@ -29,6 +29,7 @@ rgit-archive = { path = "../rgit-archive" }
 rgit-attr = { path = "../rgit-attr" }
 rgit-apply = { path = "../rgit-apply" }
 rgit-commit = { path = "../rgit-commit" }
+rgit-bundle = { path = "../rgit-bundle" }
 rgit-commitgraph = { path = "../rgit-commitgraph" }
 rgit-config = { path = "../rgit-config" }
 rgit-convert = { path = "../rgit-convert" }

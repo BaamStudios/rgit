@@ -4,6 +4,7 @@
 
 pub mod advise;
 pub mod bloom;
+pub mod bundle_uri;
 pub mod config;
 pub mod date;
 pub mod parse_options;
