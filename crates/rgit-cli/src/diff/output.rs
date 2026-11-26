@@ -1668,7 +1668,8 @@ impl<'a> Output<'a> {
                 && !items.is_empty()
                 && (f.raw || f.numstat || f.stat || f.shortstat || f.summary)
             {
-                out.push(b'\n');
+                // The line terminator (NUL with `-z`, t4070).
+                out.push(if self.nul { 0 } else { b'\n' });
             }
             let abbrev = |id: &ObjectId| self.abbrev(id, self.index_abbrev);
             // The whitespace rules of each path (`core.whitespace`, the
