@@ -462,9 +462,15 @@ fn archive_tells_ref_and_treeish() {
         for file in ["filter.log", "out.tar"] {
             let _ = std::fs::remove_file(fx.work_dir().join(file));
         }
-        fx.compare(["archive", "-o", "out.tar", name])
-            .checks(CHECKOUT)
-            .run();
+        // A tree has no commit time: the entries get the current time,
+        // which differs between the git and rgit runs at a second
+        // boundary. Pin it there.
+        let mut args = vec!["archive", "-o", "out.tar"];
+        if name.ends_with("^{tree}") {
+            args.push("--mtime=2005-04-07 22:13:13 +0000");
+        }
+        args.push(name);
+        fx.compare(args).checks(CHECKOUT).run();
     }
     // A detached HEAD is the ref `HEAD`.
     let mut fx = fx.git(["checkout", "-q", "--detach"]);
