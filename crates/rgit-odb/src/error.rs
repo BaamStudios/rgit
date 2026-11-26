@@ -126,6 +126,10 @@ pub enum Error {
         /// The object directory, as the repository names it.
         dir: PathBuf,
     },
+    /// Replace refs chain more than [`crate::MAX_REPLACE_DEPTH`] times
+    /// (or loop) from this object (fatal in git).
+    #[error("{}", messages::replace_depth_too_high(.0))]
+    ReplaceDepth(ObjectId),
     /// An I/O error.
     #[error("{context}: {source}")]
     Io {
@@ -150,7 +154,10 @@ impl Error {
     pub fn is_corruption(&self) -> bool {
         !matches!(
             self,
-            Error::Config(_) | Error::Collision(_) | Error::InsufficientPermission { .. }
+            Error::Config(_)
+                | Error::Collision(_)
+                | Error::InsufficientPermission { .. }
+                | Error::ReplaceDepth(_)
         )
     }
 

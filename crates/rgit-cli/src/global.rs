@@ -95,7 +95,10 @@ pub fn parse(ctx: &mut Context, args: &[String]) -> Result<Action, Die> {
                     ctx.git_dir = Some(cwd.to_string_lossy().into_owned());
                 }
             }
-            "--no-replace-objects" => ctx.no_replace_objects = true,
+            "--no-replace-objects" => {
+                ctx.no_replace_objects = true;
+                crate::replace_objects::disable();
+            }
             "--no-lazy-fetch" => ctx.no_lazy_fetch = true,
             "--no-optional-locks" => ctx.no_optional_locks = true,
             "--no-advice" => {

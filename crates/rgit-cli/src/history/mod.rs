@@ -82,6 +82,9 @@ impl Repo<'_> {
         if self.objects.is_shallow(id) {
             return Vec::new();
         }
+        if let Some(grafted) = self.objects.grafted_parents(id) {
+            return grafted;
+        }
         commit.parents().unwrap_or_default()
     }
 
@@ -578,6 +581,7 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.use_grafts(&setup.common_dir, &config);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -722,6 +726,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.use_grafts(&setup.common_dir, &config);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -861,6 +866,7 @@ pub fn walk_formatted(
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.use_grafts(&setup.common_dir, &config);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);

@@ -56,8 +56,8 @@ pub use alternates::{
     resolve_reporting as resolve_alternates_reporting,
 };
 pub use db::{
-    OBJECT_DIRECTORY_ENV, ObjectDatabase, PrefixMatch, ReadObjectError, objects_dir,
-    print_error_to_stderr,
+    MAX_REPLACE_DEPTH, OBJECT_DIRECTORY_ENV, ObjectDatabase, PrefixMatch, ReadObjectError,
+    ReplaceLoader, follow_replacements, objects_dir, print_error_to_stderr,
 };
 pub use error::Error;
 pub use loose::{LooseReader, LooseStore};

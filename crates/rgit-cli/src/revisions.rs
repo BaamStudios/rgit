@@ -34,6 +34,8 @@ pub struct Objects {
     /// Replacements (`refs/replace/<id>`), see [`Objects::use_replace_refs`].
     replace: std::collections::HashMap<ObjectId, ObjectId>,
     replacing: bool,
+    /// The legacy graft file, see [`Objects::use_grafts`].
+    grafts: crate::grafts::Lazy,
     /// Commits read last (a walk reads each one several times).
     recent: RefCell<crate::objects::Recent>,
 }
@@ -44,17 +46,11 @@ impl Objects {
     /// `disabled` (`--no-replace-objects`), `$GIT_NO_REPLACE_OBJECTS` or
     /// `core.useReplaceRefs=false` turn that off.
     pub fn use_replace_refs(&mut self, refs: &Refs, config: &ConfigSet, disabled: bool) {
-        if disabled
-            || std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_some()
-            || config.bool("core.useReplaceRefs").ok().flatten() == Some(false)
-        {
+        if disabled || !crate::replace_objects::enabled(config) {
             return;
         }
         self.replacing = true;
-        let base = std::env::var("GIT_REPLACE_REF_BASE")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "refs/replace/".to_owned());
+        let base = crate::replace_objects::ref_base();
         let kind = self.odb.hash_kind();
         let mut map = std::collections::HashMap::new();
         let _ = refs.for_each_ref(&base, &mut |name, target| {
@@ -67,20 +63,29 @@ impl Objects {
         self.replace = map;
     }
 
+    /// Use the parents of the graft file (`$GIT_DIR/info/grafts`) of the
+    /// repository at `common_dir`, read when the first commit's parents
+    /// are asked for.
+    pub fn use_grafts(&mut self, common_dir: &std::path::Path, config: &ConfigSet) {
+        self.grafts = crate::grafts::Lazy::new(common_dir, self.odb.hash_kind(), config);
+    }
+
     /// Whether replace refs are in use (see [`Objects::use_replace_refs`]).
     pub fn replacing(&self) -> bool {
         self.replacing
     }
 
-    /// `oid` after following its replacements.
-    fn replaced<'a>(&'a self, mut oid: &'a ObjectId) -> &'a ObjectId {
-        for _ in 0..16 {
-            match self.replace.get(oid) {
-                Some(next) if next != oid => oid = next,
-                _ => break,
+    /// `oid` after following its replacements; a chain that is too long
+    /// or loops ends the command, as in git.
+    fn replaced<'a>(&'a self, oid: &'a ObjectId) -> &'a ObjectId {
+        let mut cur = oid;
+        for _ in 0..rgit_odb::MAX_REPLACE_DEPTH {
+            match self.replace.get(cur) {
+                Some(next) => cur = next,
+                None => return cur,
             }
         }
-        oid
+        crate::convert::die_now(&rgit_odb::messages::replace_depth_too_high(oid))
     }
 
     /// The objects in `dir`; `shallow` is the repository's `shallow` file.
@@ -98,6 +103,7 @@ impl Objects {
             shallow,
             replace: std::collections::HashMap::new(),
             replacing: false,
+            grafts: crate::grafts::Lazy::default(),
             recent: RefCell::new(crate::objects::Recent::new(1024, 4 << 20)),
         }
     }
@@ -157,6 +163,10 @@ impl ObjectLookup for Objects {
 
     fn is_shallow(&self, oid: &ObjectId) -> bool {
         self.shallow.contains(oid)
+    }
+
+    fn grafted_parents(&self, oid: &ObjectId) -> Option<Vec<ObjectId>> {
+        self.grafts.parents(oid).map(<[ObjectId]>::to_vec)
     }
 
     fn approximate_count(&self) -> u64 {

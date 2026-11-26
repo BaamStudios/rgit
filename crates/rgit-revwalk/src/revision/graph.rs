@@ -38,6 +38,8 @@ impl Resolver<'_> {
             .map_err(|e| Error::Fatal(format!("bad commit {}: {e}", oid.to_hex())))?;
         let parents = if self.repo.objects.is_shallow(oid) {
             Vec::new()
+        } else if let Some(grafted) = self.repo.objects.grafted_parents(oid) {
+            grafted
         } else {
             c.parents()
                 .map_err(|e| Error::Fatal(format!("bad commit {}: {e}", oid.to_hex())))?

@@ -3,10 +3,10 @@
 //! The object database: an ordered list of stores plus the loose store
 //! that new objects are written to.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rgit_hash::{HashKind, ObjectId, Prefix};
 use rgit_object::{Object, ObjectHeader, ObjectKind};
@@ -67,12 +67,37 @@ pub fn print_error_to_stderr(e: &Error) {
 ///
 /// Commands open the database of a repository with
 /// [`ObjectDatabase::open_for_repo`] (loose objects, packs and alternates).
+///
+/// Object replacement (`git-replace(1)`) is off until
+/// [`ObjectDatabase::set_replacements`] installs the replace refs; then
+/// [`ObjectDatabase::read`] and [`ObjectDatabase::header`] answer for the
+/// replacement of an object (the `_unreplaced` variants do not).
 pub struct ObjectDatabase {
     hash: HashKind,
     loose: Arc<LooseStore>,
     packs: Option<Arc<PackStore>>,
     stores: Vec<Arc<dyn ObjectStore>>,
     sink: Option<ErrorSink>,
+    replace: Option<Replacements>,
+}
+
+/// Replacements are followed at most this many times; an object whose
+/// chain is longer (or loops) cannot be read.
+pub const MAX_REPLACE_DEPTH: usize = 5;
+
+/// Loads the replace refs as `original -> replacement`.
+pub type ReplaceLoader = Box<dyn Fn() -> HashMap<ObjectId, ObjectId> + Send + Sync>;
+
+/// Replace refs, loaded on first use.
+struct Replacements {
+    load: ReplaceLoader,
+    map: OnceLock<HashMap<ObjectId, ObjectId>>,
+}
+
+impl Replacements {
+    fn map(&self) -> &HashMap<ObjectId, ObjectId> {
+        self.map.get_or_init(|| (self.load)())
+    }
 }
 
 impl std::fmt::Debug for ObjectDatabase {
@@ -98,6 +123,7 @@ impl ObjectDatabase {
             loose,
             packs: None,
             sink: Some(Box::new(print_error_to_stderr)),
+            replace: None,
         }
     }
 
@@ -198,6 +224,48 @@ impl ObjectDatabase {
         self.sink = None;
     }
 
+    /// Read objects through their replacements: `load` returns the
+    /// replace refs (`original -> replacement`). It runs once, when the
+    /// first object is read, so a command that reads no objects pays
+    /// nothing.
+    pub fn set_replacements(
+        &mut self,
+        load: impl Fn() -> HashMap<ObjectId, ObjectId> + Send + Sync + 'static,
+    ) {
+        self.replace = Some(Replacements {
+            load: Box::new(load),
+            map: OnceLock::new(),
+        });
+    }
+
+    /// Stop following replace refs (commands that look at the stored
+    /// objects themselves: `fsck`, pack transfer, `prune`).
+    pub fn clear_replacements(&mut self) {
+        self.replace = None;
+    }
+
+    /// The replace refs in use (`original -> replacement`), `None` when
+    /// replacement is off.
+    pub fn replacements(&self) -> Option<&HashMap<ObjectId, ObjectId>> {
+        self.replace.as_ref().map(Replacements::map)
+    }
+
+    /// Whether objects are replaced at all (replacement is on and there is
+    /// at least one replace ref).
+    pub fn has_replacements(&self) -> bool {
+        self.replacements().is_some_and(|m| !m.is_empty())
+    }
+
+    /// The object read in place of `oid`: its replacement, followed
+    /// through further replacements, or `oid` itself.
+    /// [`Error::ReplaceDepth`] when the chain is too long or loops.
+    pub fn replaced(&self, oid: &ObjectId) -> Result<ObjectId, Error> {
+        match self.replacements() {
+            Some(map) if !map.is_empty() => follow_replacements(map, oid),
+            _ => Ok(*oid),
+        }
+    }
+
     fn report(&self, e: &Error) {
         if let Some(sink) = &self.sink {
             sink(e);
@@ -254,11 +322,18 @@ impl ObjectDatabase {
     /// skipped on the way are not reported (git is silent there too, e.g.
     /// `git cat-file -t` with a corrupt loose and an intact packed copy);
     /// when no copy answers, the first error is returned.
+    /// Follows replace refs ([`ObjectDatabase::replaced`]).
     pub fn header(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
+        self.header_unreplaced(&self.replaced(oid)?)
+    }
+
+    /// [`ObjectDatabase::header`] of the stored object, ignoring replace
+    /// refs.
+    pub fn header_unreplaced(&self, oid: &ObjectId) -> Result<Option<ObjectHeader>, Error> {
         match self.first_in_stores(false, |s, r| s.header_reporting(oid, r)) {
             // A delta whose base is corrupt in its pack may still be
             // readable with a base from another store.
-            Err(e) if e.is_corruption() => match self.read(oid) {
+            Err(e) if e.is_corruption() => match self.read_unreplaced(oid) {
                 Ok(Some(o)) => Ok(Some(o.header())),
                 _ => Err(e),
             },
@@ -267,8 +342,14 @@ impl ObjectDatabase {
         }
     }
 
-    /// An object's type and content.
+    /// An object's type and content; follows replace refs
+    /// ([`ObjectDatabase::replaced`]).
     pub fn read(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
+        self.read_unreplaced(&self.replaced(oid)?)
+    }
+
+    /// The type and content of the stored object, ignoring replace refs.
+    pub fn read_unreplaced(&self, oid: &ObjectId) -> Result<Option<RawObject>, Error> {
         let found = self.first_in_stores(true, |s, r| {
             // A delta base that is corrupt in this store may have a good
             // copy in another one (git reads it from there).
@@ -361,21 +442,22 @@ pub enum ReadObjectError {
 }
 
 /// The pack writer reads objects through the database: packs, loose
-/// objects and alternates.
+/// objects and alternates. Packs hold the stored objects, never their
+/// replacements.
 impl rgit_pack::write::ObjectSource for ObjectDatabase {
     fn read(&self, id: &ObjectId) -> Result<Option<RawObject>, rgit_pack::write::SourceError> {
-        Ok(ObjectDatabase::read(self, id)?)
+        Ok(self.read_unreplaced(id)?)
     }
 
     fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, rgit_pack::write::SourceError> {
-        Ok(self.header(id)?.map(|h| h.kind))
+        Ok(self.header_unreplaced(id)?.map(|h| h.kind))
     }
 
     fn header(
         &self,
         id: &ObjectId,
     ) -> Result<Option<(ObjectKind, u64)>, rgit_pack::write::SourceError> {
-        Ok(ObjectDatabase::header(self, id)?.map(|h| (h.kind, h.size)))
+        Ok(self.header_unreplaced(id)?.map(|h| (h.kind, h.size)))
     }
 }
 
@@ -387,8 +469,23 @@ impl rgit_pack::index_pack::ObjectDb for ObjectDatabase {
     }
 
     fn read(&self, id: &ObjectId) -> Result<Option<RawObject>, String> {
-        ObjectDatabase::read(self, id).map_err(|e| e.to_string())
+        self.read_unreplaced(id).map_err(|e| e.to_string())
     }
+}
+
+/// `oid` after following its replacements in `map`.
+pub fn follow_replacements(
+    map: &HashMap<ObjectId, ObjectId>,
+    oid: &ObjectId,
+) -> Result<ObjectId, Error> {
+    let mut cur = *oid;
+    for _ in 0..MAX_REPLACE_DEPTH {
+        match map.get(&cur) {
+            Some(next) => cur = *next,
+            None => return Ok(cur),
+        }
+    }
+    Err(Error::ReplaceDepth(*oid))
 }
 
 /// git knows the empty tree without storing it: it can be read in every

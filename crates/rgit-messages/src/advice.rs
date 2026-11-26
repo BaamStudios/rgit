@@ -104,6 +104,8 @@ advice_table! {
     UpdateSparsePath => "updateSparsePath", // not emitted yet
     WaitingForEditor => "waitingForEditor", // branch, commit, merge, rebase, rgit-ident, tag
     WorktreeAddOrphan => "worktreeAddOrphan", // worktree
+    // Not in advice.adoc, but read by git (the `info/grafts` hint).
+    GraftFileDeprecated => "graftFileDeprecated", // grafts
 }
 
 impl Advice {

@@ -547,6 +547,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
 
     let mut repo = Repo::open(ctx, Mode::RequiredQuiet)?;
+    repo.read_grafts();
     let advisor = ctx.advisor(&repo.config)?;
     // column.ui and column.status, then --column (long format only).
     let mut columns = crate::column::Mode::from_config(&repo.config, Some("status"))?;
