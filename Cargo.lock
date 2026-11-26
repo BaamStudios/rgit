@@ -486,7 +486,9 @@ name = "rgit-cli"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "crc32fast",
  "fancy-regex",
+ "flate2",
  "libc",
  "mimalloc",
  "regex",
