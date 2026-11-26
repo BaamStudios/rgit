@@ -14,8 +14,13 @@ fn fixture() -> Fixture {
 
 /// A repository with `n` packs of one commit each (no MIDX).
 fn packs(n: usize) -> Fixture {
+    packs_with(n, "sha1")
+}
+
+/// [`packs`] in a repository using `format` (`sha1` or `sha256`).
+fn packs_with(n: usize, format: &str) -> Fixture {
     let mut fx = fixture()
-        .git(["init", "-q"])
+        .git(["init", "-q", &format!("--object-format={format}")])
         .git(["config", "maintenance.auto", "false"]);
     for c in 0..n {
         fx = fx
@@ -164,5 +169,29 @@ fn expire_and_repack() {
             Check::Stderr,
             Check::Objects,
         ])
+        .run();
+}
+
+#[test]
+fn sha256_repository() {
+    let mut fx = packs_with(3, "sha256");
+    compare_midx(&mut fx, &["multi-pack-index", "write"]);
+    let mut fx = fx.git(["multi-pack-index", "write"]);
+    fx.compare(["multi-pack-index", "verify"])
+        .checks(Check::OUTPUT)
+        .run();
+    fx.compare(["log", "--oneline"]).checks(Check::OUTPUT).run();
+    fx.compare(["cat-file", "--batch-all-objects", "--batch-check"])
+        .checks(Check::OUTPUT)
+        .run();
+    // A SHA-1 MIDX in a SHA-256 repository is ignored with an error.
+    let sha1 = packs(1).git(["multi-pack-index", "write"]);
+    let bytes = std::fs::read(sha1.work_dir().join(".git").join(MIDX)).unwrap();
+    let path = fx.work_dir().join(".git").join(MIDX);
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, bytes).unwrap();
+    fx.compare(["log", "--oneline"]).checks(Check::OUTPUT).run();
+    fx.compare(["multi-pack-index", "verify"])
+        .checks(Check::OUTPUT)
         .run();
 }
