@@ -2099,7 +2099,7 @@ impl<'c> Rebase<'c> {
             &parent_tree,
             &head_tree,
             &commit_tree,
-            (&parent_label, &label),
+            (&parent_label, "HEAD", &label),
         )?;
         if result.tree == empty_tree {
             repo.odb()

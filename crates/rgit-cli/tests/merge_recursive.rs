@@ -51,4 +51,23 @@ fn merges() {
                   git merge-recursive main~2 -- HEAD s";
     let mut fx = fixture();
     fx.compare(["-c", script, "t"]).run();
+    // Both heads are named as given: a head given as an object id takes
+    // its label from `GITHEAD_<id>` if that is set, a name stays.
+    for heads in [
+        "$(git rev-parse HEAD) $(git rev-parse s)",
+        "main s",
+        "refs/heads/main refs/heads/s",
+    ] {
+        for env in [
+            "",
+            "env GITHEAD_$(git rev-parse HEAD)=mine GITHEAD_$(git rev-parse s)=yours",
+        ] {
+            let script = format!(
+                "alias.t=!git update-index -q --refresh; printf '1\\n2\\n3x\\n' >f && \
+                 git commit -q -am X && {env} git merge-recursive main~2 -- {heads}"
+            );
+            let mut fx = fixture();
+            fx.compare(["-c", script.as_str(), "t"]).run();
+        }
+    }
 }
