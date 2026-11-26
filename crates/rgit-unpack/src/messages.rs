@@ -90,6 +90,40 @@ pub const MERGE_UNTRACKED_OVERWRITTEN: (&str, &str) = (
     "Please move or remove them before you merge.",
 );
 
+/// Porcelain sparse checkout warning: a modified file outside the sparse
+/// patterns stays (`warning: `, then the paths).
+pub const SPARSE_NOT_UPTODATE: &str =
+    "The following paths are not up to date and were left despite sparse patterns:\n";
+
+/// Porcelain sparse checkout warning: a conflicted path outside the
+/// sparse patterns stays.
+pub const SPARSE_UNMERGED: &str =
+    "The following paths are unmerged and were left despite sparse patterns:\n";
+
+/// Porcelain sparse checkout warning: a file in the way of a path that
+/// becomes present.
+pub const SPARSE_ALREADY_PRESENT: &str =
+    "The following paths were already present and thus not updated despite sparse patterns:\n";
+
+/// Printed after the sparse checkout warnings.
+pub const SPARSE_AFTER_FIXING: &str =
+    "After fixing the above paths, you may want to run `git sparse-checkout reapply`.";
+
+/// Plumbing (`read-tree`) form of [`SPARSE_NOT_UPTODATE`] (`error: `).
+pub fn sparse_not_uptodate(path: &str) -> String {
+    format!("Path '{path}' not uptodate; will not remove from working tree.")
+}
+
+/// Plumbing form of [`SPARSE_UNMERGED`] (`error: `).
+pub fn sparse_unmerged(path: &str) -> String {
+    format!("Path '{path}' unmerged; will not remove from working tree.")
+}
+
+/// Plumbing form of [`SPARSE_ALREADY_PRESENT`] (`error: `).
+pub fn sparse_already_present(path: &str) -> String {
+    format!("Path '{path}' already present; will not overwrite with sparse update.")
+}
+
 /// `checkout-index`: the path has no index entry.
 pub fn not_in_cache(path: &str) -> String {
     format!("git checkout-index: {path} is not in the cache")

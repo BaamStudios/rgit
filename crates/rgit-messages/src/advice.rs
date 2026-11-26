@@ -101,7 +101,7 @@ advice_table! {
     SubmoduleMergeConflict => "submoduleMergeConflict", // merge-tree
     SubmodulesNotUpdated => "submodulesNotUpdated", // not emitted yet
     SuggestDetachingHead => "suggestDetachingHead", // switch
-    UpdateSparsePath => "updateSparsePath", // not emitted yet
+    UpdateSparsePath => "updateSparsePath", // add, mv, rm
     WaitingForEditor => "waitingForEditor", // branch, commit, merge, rebase, rgit-ident, tag
     WorktreeAddOrphan => "worktreeAddOrphan", // worktree
     // Not in advice.adoc, but read by git (the `info/grafts` hint).

@@ -244,7 +244,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             (Some(r), true) => Some(super::add::build_excludes(&repo, r)),
             _ => None,
         };
+        let sparse_patterns = if no_sparse.get() && !sparse.get() {
+            None
+        } else {
+            crate::sparse::load(&repo)
+        };
         let mut opts = Options {
+            sparse: sparse_patterns.as_ref(),
             reset: mode == MODE_RESET,
             discard_unmerged: false,
             update,
@@ -255,6 +261,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             paths,
             excludes: excludes.as_mut(),
             submodules: None,
+            visible: &[],
         };
         let updater = if recurse {
             crate::recurse_submodules::Updater::new(&repo, super_prefix.as_deref())
@@ -298,6 +305,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     Some(u) => plan.apply_submodules(repo.odb(), wt, &conv, false, u, opts.reset),
                     None => plan.apply(repo.odb(), wt, &conv),
                 };
+                crate::sparse::print_warnings(&applied.sparse_warnings, false);
                 let mut index = applied.index;
                 repo.converter()?.use_index(&index);
                 if let (Some(reference), Some(checker)) = (old_mtime, &checker) {

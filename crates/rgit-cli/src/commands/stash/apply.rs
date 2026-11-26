@@ -337,7 +337,9 @@ fn checkout_result(
         root: &work_tree,
         checker: &checker,
     };
+    let sparse_patterns = crate::sparse::load(repo);
     let mut opts = UnpackOptions {
+        sparse: sparse_patterns.as_ref(),
         update: true,
         show_all_errors: true,
         paths: path_options(repo),
@@ -361,6 +363,7 @@ fn checkout_result(
     };
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
     let applied = plan.apply(repo.odb(), &wt, &conv);
+    crate::sparse::print_warnings(&applied.sparse_warnings, true);
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if !result.clean {
@@ -480,7 +483,9 @@ fn set_index(repo: &Repo, tree: ObjectId) -> Result<(), Die> {
     let lock = rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options())
         .map_err(lock_failed)?;
     let (index, mtime) = repo.read_index()?;
+    let sparse_patterns = crate::sparse::load(repo);
     let mut opts = UnpackOptions {
+        sparse: sparse_patterns.as_ref(),
         reset: true,
         ..UnpackOptions::default()
     };
