@@ -323,6 +323,14 @@ impl Repo {
         ) {
             self.untracked_toggled.set(true);
         }
+        // Skip-worktree entries whose files are present after all
+        // (config/sparse.adoc, sparse.expectFilesOutsideOfPatterns).
+        if let Some(wt) = &self.setup.work_tree {
+            if index.entries().iter().any(|e| e.flags.skip_worktree) {
+                let root = self.setup.cwd.join(wt);
+                crate::sparse::clear_present(&self.config, &root, &mut index);
+            }
+        }
         Ok((index, mtime))
     }
 

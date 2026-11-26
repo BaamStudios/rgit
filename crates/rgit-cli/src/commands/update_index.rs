@@ -260,9 +260,14 @@ impl State<'_> {
         let shown = lossy(path);
         let checker = self.checker().map_err(|_| None)?;
         let existing: Vec<Entry> = self.index.entries_for_path(path).to_vec();
-        if self.flag(Flag::IgnoreSkipWorktree)
-            && existing.iter().any(|e| e.flags.skip_worktree)
-        {
+        // A skip-worktree entry is not compared with the work tree: it is
+        // left alone, or removed with --remove.
+        if existing.iter().any(|e| e.flags.skip_worktree) {
+            if self.flag(Flag::Remove) && !self.flag(Flag::IgnoreSkipWorktree) {
+                if !self.index.remove_path(path).is_empty() {
+                    self.changed = true;
+                }
+            }
             return Ok(());
         }
         let beyond = beyond_symlink(&self.work_tree().map_err(|_| None)?, path);

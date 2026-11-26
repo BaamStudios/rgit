@@ -1088,6 +1088,10 @@ fn grep_index(
         {
             continue;
         }
+        // Outside the sparse checkout there is no file to search.
+        if root.is_some() && e.flags.skip_worktree && e.stage() == rgit_index::Stage::MERGED {
+            continue;
+        }
         let data = match root {
             Some(r) if !(e.flags.assume_valid || e.flags.skip_worktree) => {
                 match std::fs::symlink_metadata(os_path(r, e.path())) {

@@ -1701,7 +1701,15 @@ pub(crate) fn two_way(
         root: &work_tree,
         checker: &checker,
     };
+    let sparse_patterns = crate::sparse::load(repo);
+    // Conflicted paths are written even outside the sparse checkout.
+    let mut visible: Vec<Vec<u8>> = result
+        .map(|r| r.conflicts.iter().map(|c| c.path.clone()).collect())
+        .unwrap_or_default();
+    visible.sort();
     let mut opts = rgit_unpack::Options {
+        sparse: sparse_patterns.as_ref(),
+        visible: &visible,
         update: true,
         show_all_errors: true,
         paths: path_options(repo),
@@ -1724,6 +1732,7 @@ pub(crate) fn two_way(
     // `.gitattributes` the commit brings applies to its own files.
     let conv = crate::convert::Converter::checkout(repo, plan.index())?;
     let applied = plan.apply(repo.odb(), &wt, &conv);
+    crate::sparse::print_warnings(&applied.sparse_warnings, true);
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if let Some(result) = result {

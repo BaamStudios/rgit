@@ -10,8 +10,10 @@
 //! `$GIT_DIR/modules/<name>`), and its section in `.gitmodules` is removed
 //! and staged.
 //!
-//! `--pathspec-from-file`/`--pathspec-file-nul`; `--sparse` is accepted
-//! (sparse checkouts are not supported yet).
+//! `--pathspec-from-file`/`--pathspec-file-nul`. Without `--sparse`,
+//! paths outside the sparse checkout (skip-worktree entries, and paths
+//! outside the patterns) are left alone; pathspecs that only match such
+//! paths are reported with the `updateSparsePath` advice.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -146,6 +148,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let checker = repo.checker(index_mtime)?;
 
     let mut seen = vec![false; pathspec.items().len()];
+    // Paths outside the sparse checkout stay without --sparse.
+    let outside = crate::sparse::Outside::new(&repo, sparse.get());
+    let mut sparse_seen = vec![false; seen.len()];
     let mut chosen: Vec<Vec<u8>> = Vec::new();
     for e in index.entries() {
         let mut one = vec![false; seen.len()];
@@ -159,6 +164,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let Some(kind) = kind else {
             continue;
         };
+        if outside.entry(e) {
+            for (s, o) in sparse_seen.iter_mut().zip(one) {
+                *s |= o;
+            }
+            continue;
+        }
         if kind == MatchKind::Recursive && !recursive {
             let item = one
                 .iter()
@@ -174,8 +185,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             chosen.push(e.path().to_vec());
         }
     }
+    let refused: Vec<Vec<u8>> = pathspec
+        .items()
+        .iter()
+        .zip(seen.iter().zip(&sparse_seen))
+        .filter(|(_, (dense, sparse))| **sparse && !**dense)
+        .map(|(item, _)| item.original().to_vec())
+        .collect();
+    let any_seen: Vec<bool> = seen.iter().zip(&sparse_seen).map(|(a, b)| *a || *b).collect();
     if !ignore_unmatch {
-        if let Some(item) = pathspec.unmatched(&seen).next() {
+        if let Some(item) = pathspec.unmatched(&any_seen).next() {
             return Err(Die::Fatal(rgit_pathspec::messages::did_not_match_any_files(
                 item.original(),
             )));
@@ -325,6 +344,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
+    let code = if refused.is_empty() || ignore_unmatch {
+        0
+    } else {
+        crate::sparse::report_outside(&advisor, &refused)?;
+        1
+    };
     if !quiet {
         let mut out = String::new();
         for p in &chosen {
@@ -334,7 +359,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         print!("{out}");
     }
     if dry_run || chosen.is_empty() {
-        return Ok(0);
+        return Ok(code);
     }
     for p in &chosen {
         // Removing a conflict keeps its stages for `restore --merge` (the
@@ -405,5 +430,5 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     index
         .write_file(&path, &repo.index_lock_options(), &opts)
         .map_err(|e| Die::Fatal(e.to_string()))?;
-    Ok(0)
+    Ok(code)
 }
