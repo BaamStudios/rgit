@@ -422,8 +422,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         check_gitmodules(&sink, &held, &in_pack)?;
         // An object is good when every link is in the repository with the
         // right type, or a good object of the pack of the right type.
-        let link_lists: Vec<Vec<(ObjectId, Option<ObjectKind>)>> =
-            held.iter().map(|(_, k, d)| links(hash, *k, d)).collect();
+        // The parents of shallow commits (`$GIT_SHALLOW_FILE` or
+        // `shallow`) are not links.
+        let shallow: HashSet<ObjectId> = rgit_fetch::shallow::read(
+            &rgit_fetch::shallow::file_for(&repo.setup.common_dir),
+            hash,
+        )
+        .into_iter()
+        .collect();
+        let link_lists: Vec<Vec<(ObjectId, Option<ObjectKind>)>> = held
+            .iter()
+            .map(|(id, k, d)| {
+                let mut l = links(hash, *k, d);
+                if *k == ObjectKind::Commit && shallow.contains(id) {
+                    l.retain(|(_, want)| *want != Some(ObjectKind::Commit));
+                }
+                l
+            })
+            .collect();
         let mut good: Vec<bool> = link_lists
             .iter()
             .map(|ls| {
