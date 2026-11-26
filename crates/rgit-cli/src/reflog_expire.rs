@@ -315,18 +315,6 @@ impl Reachable<'_> {
     }
 }
 
-/// Prunes the reflog `log.name` of the worktree `log.git_dir`. Nothing
-/// happens if the reference has no log or the log is locked.
-pub fn expire(
-    repo: &Repo,
-    common_dir: &Path,
-    log: &Log,
-    cut: Cutoffs,
-    o: Options,
-) -> Result<(), Die> {
-    prune(repo, common_dir, log, Rule::Age(cut), o, None)
-}
-
 /// `--stale-fix`: finds commits that are not reachable from any reference
 /// and lead, through their parents and trees, to a missing object.
 pub struct StaleFix {
