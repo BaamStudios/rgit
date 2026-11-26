@@ -747,6 +747,7 @@ fn add_worktree(
         enable_relative_extension(ctx, repo)?;
     }
     copy_worktree_config(ctx, repo, &common, &admin)?;
+    copy_sparse_checkout(repo, &admin)?;
 
     let admin_real = worktrees::real(&admin);
     let wt_real = worktrees::real(&path);
@@ -809,6 +810,20 @@ fn copy_worktree_config(ctx: &Context, repo: &Repo, common: &Path, admin: &Path)
         let _ = child.output(&["config", "--file", &file, "--unset-all", key]);
     }
     Ok(())
+}
+
+/// In a sparse checkout the new worktree starts with the current
+/// worktree's sparse-checkout patterns (git-sparse-checkout(1), `set`).
+fn copy_sparse_checkout(repo: &Repo, admin: &Path) -> Result<(), Die> {
+    if !crate::sparse::enabled(&repo.config) {
+        return Ok(());
+    }
+    let Ok(data) = std::fs::read(crate::sparse::file_path(repo)) else {
+        return Ok(());
+    };
+    let info = admin.join("info");
+    std::fs::create_dir_all(&info).map_err(|e| Die::Fatal(e.to_string()))?;
+    write_file(&info.join("sparse-checkout"), &data)
 }
 
 /// `post-checkout` with `<null> <new> 1`, run in the new worktree.

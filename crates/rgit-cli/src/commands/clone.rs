@@ -45,6 +45,8 @@ use crate::repo::command_line;
 /// Parsed command line.
 #[derive(Default)]
 struct Options {
+    /// `--sparse`: a cone-mode sparse checkout of the top level files.
+    sparse: bool,
     quiet: bool,
     progress: Option<bool>,
     no_checkout: bool,
@@ -237,10 +239,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
 
     // Options rgit does not implement yet.
-    let unsupported: [(&str, bool); 4] = [
+    let unsupported: [(&str, bool); 3] = [
         ("--filter", filter.borrow().is_some()),
         ("--also-filter-submodules", also_filter_submodules.get()),
-        ("--sparse", sparse.get()),
         ("--bundle-uri", bundle_uri.borrow().is_some()),
     ];
     if let Some((name, _)) = unsupported.iter().find(|(_, used)| *used) {
@@ -257,6 +258,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
 
     let mut opts = Options {
+        sparse: sparse.get(),
         revision: revision.into_inner(),
         ref_format,
         separate_git_dir,
@@ -1298,7 +1300,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         drop(repo);
         // A filter that fails during the checkout ends the process.
         crate::convert::set_die_epilogue(Some(format!("warning: {}", msg::CHECKOUT_FAILED)));
-        let checked_out = initial_checkout(ctx, setup, oid);
+        let checked_out = initial_checkout(ctx, setup, oid, opts.sparse);
         crate::convert::set_die_epilogue(None);
         let checked_out = match checked_out {
             Ok(r) => r,
@@ -1380,6 +1382,7 @@ fn initial_checkout(
     ctx: &Context,
     setup: Setup,
     commit: ObjectId,
+    sparse: bool,
 ) -> Result<crate::repository::Repo, Die> {
     use crate::commands::read_tree::{path_options, unpack_failed};
     use rgit_unpack::{Merge, Options as UnpackOptions, Worktree};
@@ -1398,7 +1401,13 @@ fn initial_checkout(
         root: &root,
         checker: &checker,
     };
+    let sparse = if sparse {
+        Some(crate::commands::sparse_checkout::init_for_clone(&repo)?)
+    } else {
+        crate::sparse::load(&repo)
+    };
     let mut opts = UnpackOptions {
+        sparse: sparse.as_ref(),
         reset: true,
         update: true,
         initial_checkout: true,

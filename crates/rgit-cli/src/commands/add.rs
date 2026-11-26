@@ -585,11 +585,25 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .map_err(|e| Die::Fatal(e.to_string()))
     };
 
+    // Paths outside the sparse checkout are left alone without --sparse;
+    // pathspecs that only match such paths are reported.
+    let outside = crate::sparse::Outside::new(&repo, sparse.get());
+    let mut sparse_seen = vec![false; seen.len()];
+
     // Which pathspecs match tracked paths; checked together with the
     // untracked files before anything is updated or printed.
     if !pathspec.is_empty() {
         for e in index.entries() {
-            let _ = spec_match(&pathspec, attrs, e.path(), Some(&mut seen));
+            // With --sparse a skip-worktree entry (no file) matches nothing.
+            if e.flags.skip_worktree && e.stage() == Stage::MERGED && sparse.get() {
+                continue;
+            }
+            let slot = if outside.entry(e) {
+                &mut sparse_seen
+            } else {
+                &mut seen
+            };
+            let _ = spec_match(&pathspec, attrs, e.path(), Some(slot));
         }
     }
 
@@ -618,8 +632,37 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         found = walk.found;
         ignored = walk.ignored;
         excludes = walk.excludes;
+        // New files outside the sparse patterns are not added either.
+        if found.iter().any(|(p, _)| outside.path(p)) {
+            let (out, kept): (Vec<_>, Vec<_>) =
+                found.into_iter().partition(|(p, _)| outside.path(p));
+            found = kept;
+            let mut dense = vec![false; seen.len()];
+            for e in index.entries().iter().filter(|e| !outside.entry(e)) {
+                let _ = spec_match(&pathspec, attrs, e.path(), Some(&mut dense));
+            }
+            for p in found.iter().map(|(p, _)| p).chain(ignored.iter()) {
+                let _ = spec_match(&pathspec, attrs, p, Some(&mut dense));
+            }
+            for (p, _) in &out {
+                let mut one = vec![false; seen.len()];
+                let _ = spec_match(&pathspec, attrs, p, Some(&mut one));
+                for (i, hit) in one.into_iter().enumerate() {
+                    if hit && !dense[i] {
+                        seen[i] = false;
+                        sparse_seen[i] = true;
+                    }
+                }
+            }
+        }
     }
-    for item in pathspec.unmatched(&seen) {
+    // Only pathspecs that match nothing at all are an error.
+    let any_seen: Vec<bool> = seen
+        .iter()
+        .zip(&sparse_seen)
+        .map(|(a, b)| *a || *b)
+        .collect();
+    for item in pathspec.unmatched(&any_seen) {
         let pattern = item.pattern();
         let path = pattern.strip_suffix(b"/").unwrap_or(pattern);
         let meta = std::fs::symlink_metadata(os_path(&root, pattern)).ok();
@@ -645,7 +688,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if update {
         // With -u only tracked files count.
         let mut any = false;
-        for item in pathspec.unmatched(&seen) {
+        for item in pathspec.unmatched(&any_seen) {
             eprintln!(
                 "error: {}",
                 rgit_pathspec::messages::did_not_match_known_to_git(item.original())
@@ -676,6 +719,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             continue;
         }
         if pathspec.is_empty() && !prefix.is_empty() && !update && !all {
+            continue;
+        }
+        if outside.entry(e) || (e.flags.skip_worktree && e.stage() == Stage::MERGED) {
             continue;
         }
         if e.stage() != Stage::MERGED {
@@ -1016,7 +1062,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mode = if flip == '+' { Mode::EXECUTABLE } else { Mode::FILE };
         let mut flipped = Vec::new();
         for (pos, e) in index.entries().iter().enumerate() {
-            if spec_match(&pathspec, attrs, e.path(), None).is_none() {
+            if outside.entry(e) || spec_match(&pathspec, attrs, e.path(), None).is_none() {
                 continue;
             }
             if !e.mode.is_file() {
@@ -1036,6 +1082,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 }
             }
         }
+    }
+    let refused: Vec<Vec<u8>> = pathspec
+        .items()
+        .iter()
+        .zip(seen.iter().zip(&sparse_seen))
+        .filter(|(_, (dense, sparse))| **sparse && !**dense)
+        .map(|(item, _)| item.original().to_vec())
+        .collect();
+    if !refused.is_empty() {
+        crate::sparse::report_outside(&advisor, &refused)?;
+        code = 1;
     }
     if dry_run {
         return Ok(code);
