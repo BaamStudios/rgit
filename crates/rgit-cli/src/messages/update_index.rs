@@ -33,6 +33,13 @@ pub const HELP_INDEX_VERSION: &str = "write index in this format";
 pub const HELP_SHOW_INDEX_VERSION: &str = "report on-disk index format version";
 pub const HELP_SPLIT_INDEX: &str = "enable or disable split index";
 pub const HELP_UNTRACKED_CACHE: &str = "enable/disable untracked cache";
+pub const UNTRACKED_CACHE_SET_FALSE: &str = "core.untrackedCache is set to false; remove or change it, if you really want to enable the untracked cache";
+pub const UNTRACKED_CACHE_SET_TRUE: &str = "core.untrackedCache is set to true; remove or change it, if you really want to disable the untracked cache";
+pub const UNTRACKED_CACHE_DISABLED: &str = "untracked cache is disabled on this system or location";
+
+pub fn testing_mtime(dir: &str) -> String {
+    format!("Testing mtime in '{dir}' ")
+}
 pub const HELP_TEST_UNTRACKED_CACHE: &str = "test if the filesystem supports untracked cache";
 pub const HELP_FORCE_UNTRACKED_CACHE: &str =
     "enable untracked cache without testing the filesystem";

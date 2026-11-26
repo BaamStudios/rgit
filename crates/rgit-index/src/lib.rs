@@ -15,7 +15,9 @@
 //!   extensions laid out as git does.
 //! - Extensions: `TREE` (cache tree) is parsed, invalidated on edits and
 //!   written; `REUC` (resolve undo) is parsed, written, and filled whenever
-//!   a conflict stage leaves the index. `UNTR`, `FSMN` and unknown
+//!   a conflict stage leaves the index; `UNTR` (untracked cache) is parsed,
+//!   written and invalidated when paths appear in or vanish from the
+//!   index. `FSMN` and unknown
 //!   optional (uppercase) extensions are dropped on write. `link` (split
 //!   index), `sdir` (sparse index) and unknown required (lowercase)
 //!   extensions are refused.
@@ -40,11 +42,13 @@
 
 mod entry;
 mod error;
+mod ewah;
 mod file;
 mod index;
 pub mod messages;
 mod read;
 mod tree;
+mod untracked;
 mod varint;
 mod write;
 
@@ -56,4 +60,5 @@ pub use file::{INDEX_FILE_ENV, WriteError, index_path, notify_written, set_write
 pub use index::{AddOptions, Index, ResolveUndo};
 pub use read::ReadOptions;
 pub use tree::{CacheTree, TreeNode};
+pub use untracked::{CacheDir, CacheStat, ExcludeFile, UntrackedCache};
 pub use write::{OffsetTable, WriteOptions};

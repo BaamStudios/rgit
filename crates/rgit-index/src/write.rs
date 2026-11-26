@@ -163,6 +163,11 @@ pub(crate) fn serialize(index: &Index, opts: &WriteOptions) -> Vec<u8> {
         crate::index::write_resolve_undo(records, &mut data);
         push_extension(&mut out, &mut written, b"REUC", &data);
     }
+    if let Some(uc) = &index.untracked {
+        let mut data = Vec::new();
+        uc.write(&mut data);
+        push_extension(&mut out, &mut written, b"UNTR", &data);
+    }
     if opts.end_of_entries {
         let mut hasher = Hasher::new(kind);
         for (sig, size) in &written {

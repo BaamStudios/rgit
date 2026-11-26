@@ -404,11 +404,13 @@ fn read_overlay(
     index.clear_entries();
     index.clear_resolve_undo();
     index.set_cache_tree(None);
+    let untracked = index.take_untracked_cache();
     for tree in trees {
         for e in entries_of(repo, tree, b"", paths)? {
             bind(&mut index, e)?;
         }
     }
+    index.set_untracked_cache(untracked);
     // A directory is valid where its tree exists already.
     let cache = rgit_unpack::repair_cache_tree(&index, repo.odb());
     index.set_cache_tree(Some(cache));
@@ -535,9 +537,11 @@ fn read_plain(
         ..AddOptions::default()
     };
     let listed = entries.len();
+    let untracked = index.take_untracked_cache();
     for e in entries {
         index.add(e, add).map_err(|err| Die::Fatal(err.to_string()))?;
     }
+    index.set_untracked_cache(untracked);
     // git primes the cache tree from the tree object; a tree with duplicate
     // names then counts more entries than the index holds, which its cache
     // tree check (on in git's test suite) reports.

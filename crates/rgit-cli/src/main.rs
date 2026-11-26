@@ -58,6 +58,7 @@ mod telemetry;
 mod tracking;
 mod tree_changes;
 mod untracked;
+mod untracked_cache;
 mod worktrees;
 mod wt_status;
 
