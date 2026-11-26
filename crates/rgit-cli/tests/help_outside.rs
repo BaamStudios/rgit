@@ -34,9 +34,12 @@ fn help_outside_a_repository() {
             // (a known breakage in t1517).
             // `show` shares the usage of `log` (`usage: git log ...`, `or:
             // git show ...`), like git.
+            // `upload-archive--writer` prints the usage of
+            // `upload-archive`, like git.
             let shown = match cmd {
                 "init-db" => "init",
                 "show" => "log",
+                "upload-archive--writer" => "upload-archive",
                 _ => cmd,
             };
             let usage = format!("usage: git {shown}");

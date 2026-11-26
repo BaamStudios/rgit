@@ -116,11 +116,14 @@ fn remote_archive() {
         &mut fx,
         &["--remote=.", "--mtime=2002-02-02 02:02:02 +0000", "HEAD:d"],
     );
-    for args in [&["--remote=.", "HEAD^"][..], &["--remote=.", "--list"]] {
-        let mut argv = vec!["archive"];
-        argv.extend_from_slice(args);
-        fx.compare(&argv).checks(Check::OUTPUT).run();
-    }
+    fx.compare(["archive", "--remote=.", "--list"])
+        .checks(Check::OUTPUT)
+        .run();
+    // Client and server share standard error; the order of their last
+    // lines is a race in git too.
+    fx.compare(["archive", "--remote=.", "HEAD^"])
+        .checks([Check::ExitCode, Check::Stdout])
+        .run();
 }
 
 #[test]
