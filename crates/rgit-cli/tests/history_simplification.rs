@@ -264,3 +264,104 @@ fn log_merge_shows_commits_touching_conflicts() {
     fx = fx.git(["add", "a"]);
     fx.compare(["log", "--merge", "--format=%s"]).run();
 }
+
+/// Rare combinations: `--bisect*` when path limiting leaves no commit,
+/// `--bisect-all --parents`, `--remove-empty --boundary` (also with
+/// `--first-parent` across a merge that adds the path).
+#[test]
+fn bisect_and_remove_empty_edge_cases() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    for (file, content) in [("a", "1"), ("b", "1"), ("f", "1"), ("a", "2")] {
+        fx = commit(fx.write(file, content), &format!("{file}{content}"));
+    }
+    fx = fx.git(["checkout", "-q", "-b", "side"]);
+    for content in ["1", "2"] {
+        fx = commit(fx.write("s", content), &format!("s{content}"));
+    }
+    fx = fx.git(["checkout", "-q", "main"]);
+    for (file, content) in [("b", "2"), ("f", "2"), ("a", "3")] {
+        fx = commit(fx.write(file, content), &format!("{file}{content}"));
+    }
+    fx = fx.git(["merge", "-q", "--no-ff", "-m", "m", "side"]).tick();
+    fx = commit(fx.write("a", "4"), "a4");
+    for args in [
+        &["rev-list", "--bisect-vars", "HEAD", "--", "zz"][..],
+        &[
+            "rev-list",
+            "--bisect-vars",
+            "--bisect-all",
+            "HEAD",
+            "--",
+            "zz",
+        ],
+        &["rev-list", "--bisect-vars", "HEAD~2..HEAD", "--", "f"],
+        &["rev-list", "--bisect-vars", "HEAD", "^side", "--", "s"],
+        &["rev-list", "--bisect", "--count", "HEAD", "--", "zz"],
+        &["rev-list", "--bisect-vars", "HEAD..HEAD"],
+        &["rev-list", "--bisect-all", "--parents", "HEAD", "--", "f"],
+        &[
+            "rev-list",
+            "--bisect-all",
+            "--full-history",
+            "--parents",
+            "HEAD",
+            "--",
+            "f",
+        ],
+        &[
+            "rev-list",
+            "--remove-empty",
+            "--boundary",
+            "HEAD",
+            "--",
+            "f",
+        ],
+        &[
+            "rev-list",
+            "--remove-empty",
+            "--boundary",
+            "HEAD",
+            "--",
+            "b",
+        ],
+        &[
+            "rev-list",
+            "--remove-empty",
+            "--boundary",
+            "--parents",
+            "HEAD",
+            "--",
+            "f",
+        ],
+        &[
+            "rev-list",
+            "--remove-empty",
+            "--boundary",
+            "--full-history",
+            "HEAD",
+            "--",
+            "s",
+        ],
+        &[
+            "rev-list",
+            "--remove-empty",
+            "--boundary",
+            "--first-parent",
+            "HEAD",
+            "--",
+            "s",
+        ],
+        &[
+            "rev-list",
+            "--remove-empty",
+            "--first-parent",
+            "HEAD",
+            "--",
+            "s",
+        ],
+    ] {
+        same(&mut fx, args);
+    }
+}
