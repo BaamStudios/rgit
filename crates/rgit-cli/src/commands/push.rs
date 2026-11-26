@@ -1062,22 +1062,7 @@ impl Push<'_> {
                     if let Some(e) = &report.unpack_error {
                         eprintln!("error: remote unpack failed: {e}");
                     }
-                    // A report line answers the first command for its ref
-                    // (several updates of one ref: the later ones get none).
-                    let mut answered: Vec<String> = Vec::new();
-                    for r in list.iter_mut().filter(|r| r.status == Status::None) {
-                        let first = !answered.contains(&r.dst);
-                        answered.push(r.dst.clone());
-                        let line = report.refs.iter().find(|x| x.name == r.dst);
-                        match line.filter(|_| first) {
-                            Some(x) if x.error.is_none() => r.status = Status::Ok,
-                            Some(x) => {
-                                r.status = Status::RemoteReject;
-                                r.remote_msg = x.error.clone().filter(|m| !m.is_empty());
-                            }
-                            None => r.status = Status::RemoteFailure,
-                        }
-                    }
+                    apply_report(&mut list, &report.refs);
                 }
                 Ok(None) => {
                     for r in list.iter_mut().filter(|r| r.status == Status::None) {
@@ -1560,4 +1545,68 @@ pub fn run_send_pack(ctx: &mut Context, argv: &[String]) -> CmdResult {
         flags: &flags,
     };
     push.to_url(dest)
+}
+
+/// Take the server's report into the list. A report line answers the
+/// first command for its ref (several updates of one ref: the later ones
+/// get none). With `report-status-v2` one command can get several `ok`
+/// lines whose options name what was really updated (a `proc-receive`
+/// hook rewriting `refs/for/<branch>`): each becomes its own entry, in
+/// report order after the command, with the reported name and values.
+fn apply_report(list: &mut Vec<PushRef>, reports: &[rgit_protocol::push::RefReport]) {
+    let mut answered: Vec<String> = Vec::new();
+    let mut out = Vec::with_capacity(list.len());
+    for mut r in list.drain(..) {
+        if r.status != Status::None {
+            out.push(r);
+            continue;
+        }
+        let first = !answered.contains(&r.dst);
+        answered.push(r.dst.clone());
+        let lines: Vec<_> = if first {
+            reports.iter().filter(|x| x.name == r.dst).collect()
+        } else {
+            Vec::new()
+        };
+        let Some((head, rest)) = lines.split_first() else {
+            r.status = Status::RemoteFailure;
+            out.push(r);
+            continue;
+        };
+        let template = r.clone();
+        apply_report_line(&mut r, head);
+        out.push(r);
+        for x in rest {
+            let mut extra = template.clone();
+            apply_report_line(&mut extra, x);
+            out.push(extra);
+        }
+    }
+    *list = out;
+}
+
+/// One report line for `r`: its status and the `report-status-v2`
+/// options. With options the summary shows the reported values; the
+/// update counts as forced only when the server says so.
+fn apply_report_line(r: &mut PushRef, x: &rgit_protocol::push::RefReport) {
+    if let Some(e) = &x.error {
+        r.status = Status::RemoteReject;
+        r.remote_msg = Some(e.clone()).filter(|m| !m.is_empty());
+        return;
+    }
+    r.status = Status::Ok;
+    let o = &x.options;
+    if !o.any() {
+        return;
+    }
+    if let Some(name) = &o.refname {
+        r.dst = name.clone();
+    }
+    if let Some(old) = o.old_oid {
+        r.old = Some(old).filter(|id| !id.is_null());
+    }
+    if let Some(new) = o.new_oid {
+        r.new = Some(new).filter(|id| !id.is_null());
+    }
+    r.forced_update = o.forced_update;
 }
