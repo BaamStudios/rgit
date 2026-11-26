@@ -289,3 +289,6 @@ pub fn collision_attack(f: &mut fmt::Formatter<'_>, offset: u64) -> fmt::Result 
         "pack has bad object at offset {offset}: SHA-1 collision attack detected"
     )
 }
+
+/// `--promisor` given with a pack file name.
+pub const PROMISOR_WITH_PACK_NAME: &str = "--promisor cannot be used with a pack name";

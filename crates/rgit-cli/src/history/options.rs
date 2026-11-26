@@ -251,6 +251,33 @@ pub struct Options {
     pub disk_usage: Option<bool>,
     /// `--maximal-only`.
     pub maximal_only: bool,
+    /// `--filter=<spec>` (several combine; `--no-filter` clears them).
+    pub filters: Vec<String>,
+    /// `--filter-provided-objects`.
+    pub filter_provided: bool,
+    /// `--filter-print-omitted`.
+    pub filter_print_omitted: bool,
+    /// `--missing=<action>`.
+    pub missing: Option<Missing>,
+    /// `--missing-only`.
+    pub missing_only: bool,
+    /// `--exclude-promisor-objects`.
+    pub exclude_promisor: bool,
+}
+
+/// `--missing=<action>` (Documentation/rev-list-options.adoc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    /// `error`: a missing object is fatal (the default).
+    Error,
+    /// `allow-any`: missing objects are left out.
+    AllowAny,
+    /// `allow-promisor`: missing promisor objects are left out.
+    AllowPromisor,
+    /// `print`: missing objects are listed as `?<id>`.
+    Print,
+    /// `print-info`: `?<id> path=<path> type=<type>`.
+    PrintInfo,
 }
 
 fn parse_count(s: &str) -> Result<usize, Die> {
@@ -396,6 +423,12 @@ impl Options {
             no_kept: false,
             disk_usage: None,
             maximal_only: false,
+            filters: Vec::new(),
+            filter_provided: false,
+            filter_print_omitted: false,
+            missing: None,
+            missing_only: false,
+            exclude_promisor: false,
         }
     }
 
@@ -608,6 +641,13 @@ impl Options {
                 "--in-commit-order" if cmd == Command::RevList => o.in_commit_order = true,
                 "--single-worktree" => o.single_worktree = true,
                 "--ignore-missing" => o.ignore_missing = true,
+                "--no-filter" if cmd == Command::RevList => o.filters.clear(),
+                "--filter-provided-objects" if cmd == Command::RevList => o.filter_provided = true,
+                "--filter-print-omitted" if cmd == Command::RevList => {
+                    o.filter_print_omitted = true;
+                }
+                "--missing-only" if cmd == Command::RevList => o.missing_only = true,
+                "--exclude-promisor-objects" => o.exclude_promisor = true,
                 "--unpacked" => o.unpacked = true,
                 // Packs kept only in memory exist in pack-objects alone.
                 "--no-kept-objects" | "--no-kept-objects=on-disk" => o.no_kept = true,
@@ -775,7 +815,28 @@ impl Options {
                     }
                 }
                 _ => {
-                    if let Some(v) = long(a, "--since-as-filter", &mut i)? {
+                    if let Some(v) = a
+                        .strip_prefix("--filter=")
+                        .filter(|_| cmd == Command::RevList)
+                    {
+                        o.filters.push(v.to_owned());
+                    } else if let Some(v) = a
+                        .strip_prefix("--missing=")
+                        .filter(|_| cmd == Command::RevList)
+                    {
+                        // git 2.56 ignores an unknown action.
+                        let action = match v {
+                            "error" => Some(Missing::Error),
+                            "allow-any" => Some(Missing::AllowAny),
+                            "allow-promisor" => Some(Missing::AllowPromisor),
+                            "print" => Some(Missing::Print),
+                            "print-info" => Some(Missing::PrintInfo),
+                            _ => None,
+                        };
+                        if action.is_some() {
+                            o.missing = action;
+                        }
+                    } else if let Some(v) = long(a, "--since-as-filter", &mut i)? {
                         o.walk.max_age_filter = Some(date(&v));
                     } else if let Some(v) =
                         long(a, "--since", &mut i)?.or(long(a, "--after", &mut i)?)
@@ -932,6 +993,18 @@ impl Options {
                 "--parents",
                 "--children",
             )));
+        }
+        if self.exclude_promisor && self.missing.is_some() {
+            return Err(Die::Fatal(msg::cannot_be_used_together(
+                "--exclude_promisor_objects",
+                "--missing",
+            )));
+        }
+        if self.missing_only && !matches!(self.missing, Some(Missing::Print | Missing::PrintInfo)) {
+            return Err(Die::Fatal(msg::MISSING_ONLY_NEEDS_PRINT.to_string()));
+        }
+        if !self.filters.is_empty() && self.objects.is_none() {
+            return Err(Die::Fatal(msg::FILTER_NEEDS_OBJECTS.to_string()));
         }
         if self.count && self.left_right && self.objects.is_some() {
             return Err(Die::Fatal(msg::MARKED_COUNT_OBJECTS.to_string()));

@@ -56,6 +56,7 @@ pub mod pack_objects;
 pub mod pack_refs;
 pub mod pager;
 pub mod patch_id;
+pub mod promisor;
 pub mod pull;
 pub mod push;
 pub mod read_tree;

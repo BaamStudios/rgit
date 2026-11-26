@@ -12,6 +12,7 @@ pub mod graph;
 pub mod layout;
 mod line_log;
 pub mod mailmap;
+mod missing;
 mod options;
 mod paths;
 pub mod pretty;
@@ -31,7 +32,7 @@ use rgit_repo::Setup;
 use rgit_revwalk::bisect;
 use rgit_revwalk::revision::{self, ObjectLookup, RefLookup, Resolver};
 use rgit_revwalk::walk::grep::CommitGrep;
-use rgit_revwalk::walk::objects::{ItemKind, ObjectLister, TreeItem, TreeSource};
+use rgit_revwalk::walk::objects::ObjectLister;
 use rgit_revwalk::walk::{CommitInfo, CommitSource, Shown, Side, TraverseFailure, Walk};
 
 use crate::messages::rev_list as msg;
@@ -158,6 +159,8 @@ struct Commits<'r, 'a> {
     diff_limit: Option<DiffLimit>,
     /// `-L`: the line log decides what is TREESAME.
     line_log: Option<std::rc::Rc<line_log::LineLog>>,
+    /// `--missing`, `--exclude-promisor-objects`: commits passed over.
+    missing: Option<missing::Shared>,
 }
 
 /// `log -S/-G/--find-object/--diff-filter`: only commits whose diff keeps
@@ -258,6 +261,26 @@ impl DiffLimit {
 impl CommitSource for Commits<'_, '_> {
     type Error = ObjectId;
     fn load(&mut self, id: &ObjectId) -> Result<CommitInfo, ObjectId> {
+        if let Some(m) = &self.missing {
+            let mut m = m.borrow_mut();
+            let pass_over = if m.excludes(id) {
+                true
+            } else if !self.repo.objects.contains(id) && m.tolerates_commits(id) {
+                if m.missing(id, "commit", None).is_err() {
+                    return Err(*id);
+                }
+                true
+            } else {
+                false
+            };
+            if pass_over {
+                m.hide(id);
+                return Ok(CommitInfo {
+                    parents: Vec::new(),
+                    time: 0,
+                });
+            }
+        }
         let (commit, _) = self.repo.read_commit(id).ok_or(*id)?;
         let time = commit
             .committer()
@@ -275,6 +298,13 @@ impl CommitSource for Commits<'_, '_> {
     }
 
     fn include(&mut self, id: &ObjectId) -> Result<bool, ObjectId> {
+        if self
+            .missing
+            .as_ref()
+            .is_some_and(|m| m.borrow().is_hidden(id))
+        {
+            return Ok(false);
+        }
         if let Some(limit) = &self.diff_limit {
             match limit.keeps(self.repo, id) {
                 Ok(true) => {}
@@ -492,34 +522,6 @@ fn path_filter(
     walk.prune = true;
     walk.rewrite_parents |= opts.parents || opts.children || opts.graph;
     Ok(Some(paths::PathFilter::new(pathspec, decorations)))
-}
-
-/// Trees for `--objects`.
-struct Trees<'r, 'a>(&'r Repo<'a>);
-
-impl TreeSource for Trees<'_, '_> {
-    type Error = ObjectId;
-    fn tree(&mut self, id: &ObjectId) -> Result<Vec<TreeItem>, ObjectId> {
-        let (kind, data) = self.0.objects.read(id).ok().flatten().ok_or(*id)?;
-        if kind != ObjectKind::Tree {
-            return Err(*id);
-        }
-        let mut out = Vec::new();
-        for entry in TreeIter::new(self.0.objects.hash_kind(), &data) {
-            let entry = entry.map_err(|_| *id)?;
-            let kind = match entry.mode_bits & 0o170000 {
-                0o040000 => ItemKind::Tree,
-                0o160000 => ItemKind::Gitlink,
-                _ => ItemKind::Blob,
-            };
-            out.push(TreeItem {
-                kind,
-                name: entry.name.to_vec(),
-                id: entry.oid,
-            });
-        }
-        Ok(out)
-    }
 }
 
 /// `git show` (Documentation/git-show.adoc): `argv` without the command
@@ -815,6 +817,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
             mailmap: None,
             diff_limit: None,
             line_log: None,
+            missing: None,
         },
         walk_opts,
     );
@@ -913,6 +916,7 @@ pub fn walk_formatted(
             mailmap: None,
             diff_limit: None,
             line_log: None,
+            missing: None,
         },
         opts.walk.clone(),
     );
@@ -2528,6 +2532,7 @@ fn show_commit(
         mailmap: None,
         diff_limit: None,
         line_log: None,
+        missing: None,
     };
     let mut walk = Walk::new(commits, opts);
     walk.push(id, false).map_err(walk_error)?;
@@ -2821,6 +2826,11 @@ fn user_settings(
 
 /// Run the walk and print the result.
 fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i32, Die> {
+    // `--missing=<action>` other than `error` and
+    // `--exclude-promisor-objects` never fetch missing objects.
+    if opts.exclude_promisor || opts.missing.is_some_and(|m| m != options::Missing::Error) {
+        rgit_odb::lazy::set_enabled(false);
+    }
     let mut resolved = tips::resolve(repo, opts)?;
     if opts.merge {
         let given = if resolved.paths.is_empty() {
@@ -2960,6 +2970,10 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         // `-n` counts the commits shown.
         walk_opts.max_count = None;
     }
+    let tracker = missing::Tracker::new(repo, opts);
+    for (id, kind) in &resolved.missing {
+        tracker.borrow_mut().missing(id, kind, None)?;
+    }
     let mut walk = Walk::new(
         Commits {
             repo,
@@ -2969,6 +2983,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             mailmap: (use_mailmap && ident_grep).then(|| mailmap::Mailmap::load(repo)),
             diff_limit,
             line_log: line_log.clone(),
+            missing: Some(tracker.clone()),
         },
         walk_opts,
     );
@@ -3160,7 +3175,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         } else {
             Some(paths::parse_pathspec(ctx, repo, &resolved.paths)?)
         };
-        return run_objects(&mut p, &mut walk, &resolved, mode, pathspec);
+        return run_objects(&mut p, &mut walk, &resolved, mode, pathspec, &tracker);
     }
     // `show` walks only for ranges, exclusions and `-<n>`; ref sets such
     // as `--all` name single objects too.
@@ -3540,6 +3555,23 @@ fn run_objects(
     resolved: &Resolved,
     mode: ObjectsMode,
     pathspec: Option<rgit_pathspec::Pathspec>,
+    tracker: &missing::Shared,
+) -> Result<i32, Die> {
+    let r = list_objects(p, walk, resolved, mode, pathspec, tracker);
+    if r.is_err() {
+        // What was listed before the error is still printed.
+        p.flush();
+    }
+    r
+}
+
+fn list_objects(
+    p: &mut Printer<'_, '_>,
+    walk: &mut Walk<Commits<'_, '_>>,
+    resolved: &Resolved,
+    mode: ObjectsMode,
+    pathspec: Option<rgit_pathspec::Pathspec>,
+    tracker: &missing::Shared,
 ) -> Result<i32, Die> {
     let repo = p.repo;
     let walk_error = |id: ObjectId| Die::Fatal(msg::bad_object(&id.to_hex()));
@@ -3547,7 +3579,23 @@ fn run_objects(
     while let Some(s) = walk.next_shown().map_err(|id| walk_die(walk, id))? {
         shown.push(s);
     }
-    let mut lister = ObjectLister::new(Trees(repo));
+    let filter = missing::object_filter(repo, p.opts)?;
+    let filtered = filter.is_some();
+    let filter_provided = p.opts.filter_provided;
+    let mut lister = ObjectLister::new(missing::Trees {
+        repo,
+        missing: tracker.clone(),
+    });
+    if let Some(f) = filter {
+        lister.set_object_filter(f);
+        lister.set_skip_hook(Box::new(|path| {
+            rgit_trace::trace!(
+                rgit_trace::TRACE,
+                "{}",
+                msg::skipping_tree(&String::from_utf8_lossy(path))
+            );
+        }));
+    }
     if let Some(ps) = &pathspec {
         let ps = ps.clone();
         lister.set_filter(Box::new(move |path, tree| {
@@ -3558,20 +3606,25 @@ fn run_objects(
             }
         }));
     }
+    for id in tracker.borrow().excluded_objects() {
+        lister.exclude(&id);
+    }
     let edges = walk.edges();
     for e in &edges {
         if let Some(tree) = repo.tree_of(e) {
-            lister.exclude_tree(&tree).map_err(walk_error)?;
+            lister.exclude_tree(&tree)?;
         }
     }
     for (id, kind) in &resolved.excluded {
         match kind {
-            ObjectKind::Tree => lister.exclude_tree(id).map_err(walk_error)?,
+            ObjectKind::Tree => lister.exclude_tree(id)?,
             _ => lister.exclude(id),
         }
     }
     let mut count = 0usize;
     let counting = p.opts.count;
+    let missing_only = p.opts.missing_only;
+    let quiet_objects = counting || missing_only;
     if mode.edge && !counting {
         for e in &edges {
             p.out.push(b'-');
@@ -3579,29 +3632,50 @@ fn run_objects(
             p.out.push(b'\n');
         }
     }
+    // Commits named on the command line are shown whatever the filter
+    // says, unless `--filter-provided-objects`.
+    let tips: std::collections::HashSet<ObjectId> = resolved
+        .commits
+        .iter()
+        .filter(|(_, negative, _)| !negative)
+        .map(|(id, _, _)| *id)
+        .collect();
+    // A tree named on the command line that is also the root tree of a
+    // listed commit is filtered like that root tree (as observed).
+    let roots: std::collections::HashSet<ObjectId> = if filtered {
+        shown
+            .iter()
+            .filter(|s| !s.boundary)
+            .filter_map(|s| repo.tree_of(&s.id))
+            .collect()
+    } else {
+        Default::default()
+    };
     let mut pending_done = false;
     let list_pending = |p: &mut Printer<'_, '_>,
-                        lister: &mut ObjectLister<Trees<'_, '_>>,
+                        lister: &mut ObjectLister<missing::Trees<'_, '_>>,
                         count: &mut usize|
      -> Result<(), Die> {
         for obj in &resolved.pending {
+            let mut emit = |id: &ObjectId, name: &[u8]| {
+                *count += 1;
+                if !quiet_objects {
+                    p.object(id, name);
+                }
+            };
             match obj.kind {
                 ObjectKind::Tree => {
-                    lister
-                        .list_tree(&obj.id, &obj.name, &mut |id, name| {
-                            *count += 1;
-                            if !counting {
-                                p.object(id, name);
-                            }
-                        })
-                        .map_err(walk_error)?;
+                    let as_given = !filter_provided && !roots.contains(&obj.id);
+                    lister.list_provided_tree(&obj.id, &obj.name, &mut emit, as_given)?;
                 }
-                _ => {
-                    if lister.take(&obj.id) {
-                        *count += 1;
-                        if !counting {
-                            p.object(&obj.id, &obj.name);
-                        }
+                ObjectKind::Blob => {
+                    lister.list_provided_blob(&obj.id, &obj.name, &mut emit, filter_provided)?;
+                }
+                kind => {
+                    let passes =
+                        !filter_provided || lister.object_filter().is_none_or(|f| f.shows(kind));
+                    if passes && lister.take(&obj.id) {
+                        emit(&obj.id, &obj.name);
                     }
                 }
             }
@@ -3610,11 +3684,21 @@ fn run_objects(
     };
     let mut trees = Vec::new();
     for s in &shown {
-        count += 1;
-        if !counting {
-            p.commit(walk, s)?;
+        let show_commit = !filtered
+            || (tips.contains(&s.id) && !filter_provided)
+            || lister
+                .object_filter()
+                .is_none_or(|f| f.shows(ObjectKind::Commit));
+        if show_commit {
+            count += 1;
+            if !quiet_objects {
+                p.commit(walk, s)?;
+            }
         }
         if s.boundary {
+            continue;
+        }
+        if lister.object_filter().is_some_and(|f| !f.walks_trees()) {
             continue;
         }
         let tree = repo.tree_of(&s.id).ok_or_else(|| walk_error(s.id))?;
@@ -3623,14 +3707,12 @@ fn run_objects(
                 list_pending(p, &mut lister, &mut count)?;
                 pending_done = true;
             }
-            lister
-                .list_commit_tree(&tree, &mut |id, name| {
-                    count += 1;
-                    if !counting {
-                        p.object(id, name);
-                    }
-                })
-                .map_err(walk_error)?;
+            lister.list_commit_tree(&tree, &mut |id, name| {
+                count += 1;
+                if !quiet_objects {
+                    p.object(id, name);
+                }
+            })?;
         } else {
             trees.push(tree);
         }
@@ -3639,20 +3721,24 @@ fn run_objects(
         list_pending(p, &mut lister, &mut count)?;
     }
     for tree in trees {
-        lister
-            .list_commit_tree(&tree, &mut |id, name| {
-                count += 1;
-                if !counting {
-                    p.object(id, name);
-                }
-            })
-            .map_err(walk_error)?;
+        lister.list_commit_tree(&tree, &mut |id, name| {
+            count += 1;
+            if !quiet_objects {
+                p.object(id, name);
+            }
+        })?;
     }
     if counting {
         p.out.extend_from_slice(format!("{count}\n").as_bytes());
     }
     p.finish_usage();
     p.flush();
+    let omitted = if p.opts.filter_print_omitted {
+        lister.omitted()
+    } else {
+        Vec::new()
+    };
+    missing::print_tail(&omitted, &tracker.borrow(), missing_only);
     Ok(0)
 }
 

@@ -157,3 +157,4 @@ pub fn fetching_submodule(path: &str, at_commit: Option<&str>) -> String {
 /// After submodule fetches that failed; each path follows on its own line
 /// after a tab.
 pub const SUBMODULE_ERRORS: &str = "Errors during submodule fetch:";
+pub const HELP_FILTER: &str = "object filtering";

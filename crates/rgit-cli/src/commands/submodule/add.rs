@@ -249,6 +249,7 @@ fn clone_new(sup: &Super, path: &str, name: &str, url: &str, o: &CloneOpts) -> R
             reference: &o.reference,
             dissociate: o.dissociate,
             ref_format: o.ref_format.as_deref(),
+            filter: None,
         },
     )?;
     let dir = sup.work_tree.join(path);
