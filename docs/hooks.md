@@ -46,7 +46,7 @@ Every hook of `githooks(5)`, where git runs it, and where rgit stands.
 | `push-to-checkout` | `receive-pack` | not yet | #175 |
 | `pre-auto-gc` | `gc --auto` | not yet (no `gc`) | #92 |
 | `post-rewrite` | `commit --amend`, `rebase` | not yet; `commit --amend` warns when one is enabled | #154 |
-| `sendemail-validate` | `send-email` | out of scope | #186 |
+| `sendemail-validate` | `send-email` | `send-email` (via `hook run`) | #715 |
 | `fsmonitor-watchman` | `core.fsmonitor` | not yet | #118 |
 | `p4-changelist` | `git-p4` | out of scope | #186 |
 | `p4-prepare-changelist` | `git-p4` | out of scope | #186 |
