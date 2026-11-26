@@ -331,21 +331,20 @@ impl Mergetool<'_> {
             self.write_stage(path, 2, &local, &names.local);
             self.write_stage(path, 3, &remote, &names.remote);
         }
-        if submodule {
-            println!("{}", msg::submodule_conflict(path));
-        } else if symlink {
-            println!("{}", msg::symlink_conflict(path));
-        } else if local.is_none() || remote.is_none() {
-            println!("{}", msg::deleted_conflict(path));
-        } else {
-            println!("{}", msg::normal_conflict(path));
-        }
+        let deleted = local.is_none() || remote.is_none();
+        let header = match (submodule, symlink, deleted) {
+            (true, _, _) => msg::submodule_conflict(path),
+            (false, true, _) => msg::symlink_conflict(path),
+            (false, false, true) => msg::deleted_conflict(path),
+            (false, false, false) => msg::normal_conflict(path),
+        };
+        println!("{header}");
         println!("{}", msg::side_local(&self.describe(&local, base.is_some())));
         println!("{}", msg::side_remote(&self.describe(&remote, base.is_some())));
         if submodule || symlink {
             return self.choose_side(path, &names, &local, &remote, backup_made, submodule);
         }
-        if local.is_none() || remote.is_none() {
+        if deleted {
             return self.choose_deleted(path, &names, &local, &remote, backup_made);
         }
         if self.hide_resolved() {
