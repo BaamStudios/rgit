@@ -306,17 +306,19 @@ pub(crate) fn resolve(
                         }
                         Err(text::BinaryContent) => (ours, false),
                     };
-                    if !clean {
-                        lines.push(Line::err(msg::resolve_content_conflict(&name)));
-                    }
                     let mode_clean = hv.mode == rv.mode;
-                    if !mode_clean {
-                        lines.push(Line::err(msg::resolve_permissions(
-                            &name,
-                            &mode_str(b),
-                            &mode_str(h),
-                            &mode_str(r),
-                        )));
+                    let (bm, hm, rm) = (mode_str(b), mode_str(h), mode_str(r));
+                    match (clean, mode_clean) {
+                        (true, true) => {}
+                        (false, true) => {
+                            lines.push(Line::err(msg::resolve_content_conflict(&name)));
+                        }
+                        (true, false) => {
+                            lines.push(Line::err(msg::resolve_permissions(&name, &bm, &hm, &rm)));
+                        }
+                        (false, false) => lines.push(Line::err(
+                            msg::resolve_content_and_permissions(&name, &bm, &hm, &rm),
+                        )),
                     }
                     let oid = repo
                         .odb()
