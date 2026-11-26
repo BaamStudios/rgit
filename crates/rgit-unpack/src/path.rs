@@ -17,9 +17,13 @@
 
 use rgit_index::Mode;
 
-/// The `core.protect*` switches.
+/// The `core.protect*` switches and `core.ignoreCase`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PathOptions {
+    /// `core.ignoreCase`: a work tree file is tracked if the index has its
+    /// path in any case, so a file system that folds case does not make
+    /// tracked files look like untracked files in the way.
+    pub ignore_case: bool,
     /// `core.protectNTFS` (default true, as the reference git behaves).
     pub protect_ntfs: bool,
     /// `core.protectHFS` (default true on macOS only).
@@ -29,6 +33,7 @@ pub struct PathOptions {
 impl Default for PathOptions {
     fn default() -> Self {
         PathOptions {
+            ignore_case: false,
             protect_ntfs: true,
             protect_hfs: cfg!(target_os = "macos"),
         }
@@ -104,6 +109,7 @@ mod tests {
             p.as_bytes(),
             mode,
             PathOptions {
+                ignore_case: false,
                 protect_ntfs: true,
                 protect_hfs: false,
             },
@@ -137,6 +143,7 @@ mod tests {
         assert!(ok(".gitx", Mode::FILE));
         assert!(ok("x.gitmodules", Mode::SYMLINK));
         let hfs = PathOptions {
+            ignore_case: false,
             protect_ntfs: false,
             protect_hfs: true,
         };
@@ -149,8 +156,9 @@ mod tests {
             ".g\u{200c}it".as_bytes(),
             Mode::FILE,
             PathOptions {
+                ignore_case: false,
                 protect_ntfs: true,
-                protect_hfs: false
+                protect_hfs: false,
             }
         ));
     }

@@ -174,12 +174,14 @@ fn walk_untracked(
     mode: Untracked,
     ignored: IgnoredMode,
 ) -> untracked::StatusLists {
+    let ignore_case = excludes.ignore_case();
     let roots = untracked::Walker {
         root: work_tree,
         index,
         excludes: Some(&mut excludes),
         pathspec,
         scan_excluded: ignored != IgnoredMode::No,
+        ignore_case,
     }
     .walk();
     untracked::status_lists(&roots, mode == Untracked::All, ignored)

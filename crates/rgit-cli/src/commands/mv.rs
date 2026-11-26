@@ -167,6 +167,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Moving clean files out of the checkout makes them sparse (cone mode).
     let cone = patterns.as_ref().is_some_and(rgit_worktree::sparse::Sparse::is_cone);
     let advisor = ctx.advisor(&repo.config)?;
+    let ignore_case = repo.ignore_case();
 
     let root_shown = lossy(root.as_os_str().as_encoded_bytes());
     let normalize = |arg: &String| -> Result<Vec<u8>, Die> {
@@ -230,7 +231,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .is_some_and(|e| e.flags.skip_worktree)
             || out_of_patterns(&moves[i].src);
         let leaving = cone && dst_out && !src_out;
-        let problem = check_one(&root, &index, &mut moves, i, force, verbose, dst_out, leaving);
+        let problem = check_one(
+            &root,
+            &index,
+            &mut moves,
+            i,
+            force,
+            verbose,
+            dst_out,
+            leaving,
+            ignore_case,
+        );
         match problem {
             None => i += 1,
             Some(_) if keep_going => {
@@ -477,6 +488,7 @@ fn check_one(
     verbose: bool,
     dst_out: bool,
     leaving: bool,
+    ignore_case: bool,
 ) -> Option<&'static str> {
     let (src, dst, kind) = (moves[i].src.clone(), moves[i].dst.clone(), moves[i].kind);
     let meta = if src.is_empty() { None } else { lstat(root, &src) };
@@ -532,6 +544,9 @@ fn check_one(
         return Some(msg::CONFLICTED);
     }
     match lstat(root, &dst) {
+        // With core.ignoreCase a destination that differs from the source
+        // only in case is the source itself: the rename changes the case.
+        Some(_) if ignore_case && src.eq_ignore_ascii_case(&dst) => {}
         Some(d) => {
             if !force {
                 return Some(msg::DEST_EXISTS);

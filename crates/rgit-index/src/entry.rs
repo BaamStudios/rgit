@@ -236,6 +236,14 @@ impl Entry {
         &self.path
     }
 
+    /// The same entry under another path (`core.ignoreCase`: a new entry
+    /// takes the spelling the index already uses for its directory).
+    #[must_use]
+    pub fn with_path(mut self, path: impl Into<Vec<u8>>) -> Entry {
+        self.path = path.into();
+        self
+    }
+
     /// Merge stage.
     pub fn stage(&self) -> Stage {
         self.stage
