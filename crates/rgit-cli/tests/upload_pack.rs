@@ -545,6 +545,84 @@ fn object_info_equals_git() {
     same(&fx, on, "srv", &["command=object-info", "0000"]);
 }
 
+/// `wait-for-done` without `want`: a client that only negotiates
+/// (`fetch --negotiate-only`, `push.negotiate`) gets its acknowledgments,
+/// and an empty pack when it says `done` or names nothing it has. A
+/// request without `have` lines is answered with the pack at once.
+#[test]
+fn negotiation_only_requests_equal_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let r = |name: &str| rev(&fx, "srv", name);
+    let have = |id: &str| format!("have {id}");
+    let unknown = "1".repeat(40);
+    let wait = || "wait-for-done".to_owned();
+    let cases: Vec<Vec<String>> = vec![
+        vec![wait(), have(&r("HEAD~4")), have(&unknown)],
+        vec![wait(), have(&unknown)],
+        vec![
+            wait(),
+            have(&r("HEAD~1")),
+            have(&r("HEAD~2")),
+            have(&r("side")),
+        ],
+        vec![wait()],
+        vec![wait(), have(&r("HEAD~4")), "done".to_owned()],
+        // Without it there is nothing to say.
+        vec![have(&r("HEAD~4")), have(&unknown)],
+        vec![have(&r("HEAD~4")), "done".to_owned()],
+        vec![],
+    ];
+    let head = format!("want {}", r("HEAD"));
+    for args in [
+        vec![head.clone(), "no-progress".to_owned()],
+        vec![head.clone(), wait(), "no-progress".to_owned()],
+    ] {
+        let reply = same_fetch(&fx, &[], "srv", &args);
+        assert_eq!(reply.packets[0], "packfile\n", "{args:?}");
+        assert_eq!(reply.packs.len(), 1, "{args:?}");
+    }
+    for (i, args) in cases.iter().enumerate() {
+        let reply = same_fetch(&fx, &[], "srv", args);
+        assert_eq!(reply.code, Some(0), "{args:?}");
+        assert_eq!(i < 5, !reply.packets.is_empty(), "{args:?}: {reply:?}");
+    }
+    let acked = same_fetch(&fx, &[], "srv", &cases[0]);
+    assert_eq!(
+        acked.packets,
+        [
+            "acknowledgments\n".to_owned(),
+            format!("ACK {}\n", r("HEAD~4")),
+            "0000".to_owned()
+        ]
+    );
+
+    // The clients: the common commits come back on standard output.
+    let fx = with_old_clone(fx);
+    let git = fx.reference_git().to_path_buf();
+    let work = fx.work_dir();
+    let tip = rev(&fx, "base/c", "HEAD");
+    for client in [git.clone(), rgit()] {
+        let mut answers = Vec::new();
+        for (_, up) in servers(&fx) {
+            let args = [
+                "fetch",
+                "--negotiate-only",
+                "--negotiation-tip=HEAD",
+                "--upload-pack",
+                &up,
+                "origin",
+            ];
+            let out = run(&fx, &client, &args, &[], &work.join("base/c"), b"");
+            answers.push((out.status.code(), text(&out.stdout)));
+        }
+        assert_eq!(answers[0], answers[1], "{}", client.display());
+        assert_eq!(answers[1], (Some(0), format!("{tip}\n")));
+    }
+}
+
 #[test]
 fn negotiation_and_packs_equal_git() {
     let fx = fixture();
