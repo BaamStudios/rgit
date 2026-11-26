@@ -49,6 +49,9 @@ pub struct Resolved {
     pub tolerate_missing: bool,
     /// The missing objects passed over that way.
     pub missing: Vec<(ObjectId, &'static str)>,
+    /// Every starting point in command-line order as given (tags not
+    /// peeled): `(object, excluded, source)`.
+    pub tips: Vec<(ObjectId, bool, String)>,
 }
 
 fn print_diagnostics(resolver: &Resolver<'_>) {
@@ -150,6 +153,7 @@ impl Resolved {
         name: Vec<u8>,
         source: &str,
     ) -> Result<(), Die> {
+        self.tips.push((id, negative, source.to_string()));
         let mut name = name;
         let mut expected = "commit";
         for _ in 0..64 {
