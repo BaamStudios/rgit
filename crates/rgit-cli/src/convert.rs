@@ -268,6 +268,22 @@ impl Converter {
         Ok(c)
     }
 
+    /// For `archive`: `.gitattributes` from `files` (the contents of the
+    /// archived tree's `.gitattributes` by path) only.
+    ///
+    /// # Errors
+    /// Invalid configuration.
+    pub fn with_attribute_files(
+        repo: &Repo,
+        files: HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Converter, Die> {
+        let mut c = Converter::base(repo, Order::IndexFirst, IndexSource::Given)?;
+        c.root = None;
+        *c.snapshot.borrow_mut() = Some(files);
+        *c.index.borrow_mut() = Some(None);
+        Ok(c)
+    }
+
     fn with_index(repo: &Repo, index: &Index, order: Order) -> Result<Converter, Die> {
         let c = Converter::base(repo, order, IndexSource::Given)?;
         *c.snapshot.borrow_mut() = Some(rgit_attr::snapshot(index, &repo.odb));

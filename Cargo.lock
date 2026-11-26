@@ -470,6 +470,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-archive"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "rgit-protocol",
+]
+
+[[package]]
 name = "rgit-attr"
 version = "0.1.0"
 dependencies = [
@@ -494,6 +503,7 @@ dependencies = [
  "regex",
  "regex-automata",
  "rgit-apply",
+ "rgit-archive",
  "rgit-attr",
  "rgit-commit",
  "rgit-commitgraph",
