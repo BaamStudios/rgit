@@ -40,15 +40,18 @@ pub enum FollowRedirects {
     Always,
 }
 
-/// `http.version`. rgit speaks HTTP/1.1 only; `HTTP/2` is accepted and
-/// falls back to HTTP/1.1.
+/// `http.version`.
+///
+/// Like git with libcurl: by default HTTPS offers `h2` and `http/1.1` via
+/// ALPN and plain HTTP uses HTTP/1.1; `HTTP/2` additionally asks plain
+/// HTTP servers to upgrade (`Upgrade: h2c`); `HTTP/1.1` never uses HTTP/2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpVersion {
     /// Not configured.
     Default,
     /// `HTTP/1.1`.
     Http11,
-    /// `HTTP/2` (served as HTTP/1.1).
+    /// `HTTP/2`.
     Http2,
 }
 
@@ -72,6 +75,17 @@ pub enum ProactiveAuth {
     Basic,
     /// `auto`: let the helper pick the scheme up front.
     Auto,
+}
+
+/// `http.delegation`: GSS-API credential delegation for Negotiate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delegation {
+    /// `none` (default).
+    None,
+    /// `policy`: delegate if the ticket is OK-AS-DELEGATE.
+    Policy,
+    /// `always`.
+    Always,
 }
 
 /// `http.proxyAuthMethod`.
@@ -178,6 +192,8 @@ pub struct HttpOptions {
     pub empty_auth: EmptyAuth,
     /// `http.proactiveAuth`.
     pub proactive_auth: ProactiveAuth,
+    /// `http.delegation`.
+    pub delegation: Delegation,
     /// `http.proxyAuthMethod` / `GIT_HTTP_PROXY_AUTHMETHOD`.
     pub proxy_auth_method: ProxyAuthMethod,
     /// Warnings git prints for unusable values (`unsupported ssl version
@@ -241,6 +257,7 @@ impl Default for HttpOptions {
             ssl_backend: None,
             empty_auth: EmptyAuth::Auto,
             proactive_auth: ProactiveAuth::None,
+            delegation: Delegation::None,
             proxy_auth_method: ProxyAuthMethod::Any,
             warnings: Vec::new(),
         }
@@ -464,8 +481,11 @@ impl HttpOptions {
                 b"proxyauthmethod" => self.set_proxy_auth_method(&string(e)?),
                 b"delegation" => {
                     let v = string(e)?;
-                    if !matches!(v.as_str(), "none" | "policy" | "always") {
-                        self.warnings.push(messages::unknown_delegation(&v));
+                    match v.as_str() {
+                        "none" => self.delegation = Delegation::None,
+                        "policy" => self.delegation = Delegation::Policy,
+                        "always" => self.delegation = Delegation::Always,
+                        _ => self.warnings.push(messages::unknown_delegation(&v)),
                     }
                 }
                 // Checked like git, without an effect on this client (see

@@ -20,7 +20,17 @@
 //!
 //! A `401` asks the [`CredentialProvider`] (or uses the user name and
 //! password from the URL), retries once with Basic auth, and approves or
-//! rejects the credential. Header order and diagnostics match git 2.56.0
+//! rejects the credential.
+//!
+//! GSS-Negotiate (RFC 4559) follows git with libcurl and `http.emptyAuth`:
+//! with `true` empty credentials are in place from the start, with `auto`
+//! (the default) after a `401` that offers `Negotiate`, which is then
+//! retried once; with empty credentials, a `401` offering `Negotiate` is
+//! answered once with `Authorization: Negotiate <token>` from the
+//! [`Negotiator`] (resent without a token if none can be made, as libcurl
+//! does). Only then are the credential helpers asked. After a successful
+//! Negotiate exchange, later requests to the host carry a fresh token up
+//! front (a streamed body cannot be replayed after a `401`). Header order and diagnostics match git 2.56.0
 //! (see [`crate::client`] and [`crate::messages`]).
 
 use std::io::{self, Read};
@@ -28,6 +38,7 @@ use std::io::{self, Read};
 use crate::auth::{Credential, CredentialProvider};
 use crate::client::{Client, ReqBody, Request, Response};
 use crate::error::{Error, Result, Transport};
+use crate::gss::{self, Negotiator};
 use crate::messages;
 use crate::options::{EmptyAuth, FollowRedirects, HttpOptions, ProactiveAuth};
 use crate::url::Url;
@@ -131,6 +142,12 @@ pub struct SmartHttp<'a> {
     proactive_done: bool,
     proxy_cred: Option<Credential>,
     proxy_approved: bool,
+    negotiator: Box<dyn Negotiator + 'a>,
+    /// Empty credentials are in place (`http.emptyAuth`): Negotiate may
+    /// be answered.
+    empty_auth: bool,
+    /// The host (`host:port`) where Negotiate worked.
+    negotiate_host: Option<String>,
 }
 
 fn print_diagnostic(line: &str) {
@@ -154,10 +171,39 @@ impl<'a> SmartHttp<'a> {
             proactive_done: false,
             proxy_cred: None,
             proxy_approved: false,
+            negotiator: gss::system(),
+            empty_auth: false,
+            negotiate_host: None,
         })
     }
 
     /// Use `provider` to obtain credentials after a `401`.
+    /// Use `n` for GSS-Negotiate instead of the system GSS-API library.
+    pub fn with_negotiator(mut self, n: impl Negotiator + 'a) -> Self {
+        self.negotiator = Box::new(n);
+        self
+    }
+
+    /// An `Authorization: Negotiate` value for `url`, or `None` (with the
+    /// reason in the curl trace).
+    fn negotiate_token(&mut self, url: &Url) -> Option<String> {
+        match self
+            .negotiator
+            .token(&url.host, self.client.opts.delegation)
+        {
+            Ok(t) => {
+                self.client
+                    .tracer
+                    .info("Server auth using Negotiate with user ''");
+                Some(format!("Negotiate {}", crate::auth::base64(&t)))
+            }
+            Err(why) => {
+                self.client.tracer.info(&why);
+                None
+            }
+        }
+    }
+
     pub fn with_credentials(mut self, provider: impl CredentialProvider + Send + 'a) -> Self {
         self.provider = Some(Box::new(provider));
         self
@@ -731,9 +777,33 @@ impl<'a> SmartHttp<'a> {
         let mut auth_retried = false;
         let mut stages = 0;
         let mut attempts_429 = 0;
+        if self.client.opts.empty_auth == EmptyAuth::Always && self.url.user.is_none() {
+            self.empty_auth = true;
+        }
+        let mut negotiate_tried = false;
+        let mut negotiate_auth: Option<String> = None;
+        // The last 401 offered Negotiate only: like libcurl, do not send a
+        // user name and password (Basic) the server did not ask for.
+        let mut negotiate_only = false;
         loop {
-            let authorization = self.authorization_for(&url);
-            let sent_auth = authorization.is_some();
+            let mut sent_negotiate = false;
+            let mut authorization = negotiate_auth.take();
+            if authorization.is_some() {
+                sent_negotiate = true;
+            } else {
+                authorization = self.authorization_for(&url).filter(|_| {
+                    !negotiate_only || self.cred.as_ref().is_some_and(|c| c.credential.is_some())
+                });
+            }
+            if authorization.is_none()
+                && !negotiate_tried
+                && self.negotiate_host.as_deref() == Some(url.authority().as_str())
+            {
+                negotiate_tried = true;
+                authorization = self.negotiate_token(&url);
+                sent_negotiate = authorization.is_some();
+            }
+            let sent_auth = authorization.is_some() && !sent_negotiate;
             let body = match &mut payload {
                 Payload::None => ReqBody::None,
                 Payload::Bytes(b) => ReqBody::Bytes(b),
@@ -769,6 +839,42 @@ impl<'a> SmartHttp<'a> {
                             .map_err(|e| ExecError::Other(Error::Credential(e)))?;
                     }
                     continue;
+                }
+                // GSS-Negotiate with empty credentials (http.emptyAuth).
+                let offers_negotiate = wwwauth.iter().any(|v| {
+                    v.split_whitespace()
+                        .next()
+                        .is_some_and(|s| s.eq_ignore_ascii_case("negotiate"))
+                });
+                negotiate_only = offers_negotiate
+                    && wwwauth.iter().all(|v| {
+                        v.split_whitespace()
+                            .next()
+                            .is_some_and(|s| s.eq_ignore_ascii_case("negotiate"))
+                    });
+                if sent_negotiate {
+                    self.negotiate_host = None;
+                }
+                if offers_negotiate
+                    && !sent_auth
+                    && self.cred.is_none()
+                    && self.url.user.is_none()
+                    && payload.replayable()
+                    && self.client.opts.empty_auth != EmptyAuth::Never
+                {
+                    if self.empty_auth && !negotiate_tried {
+                        negotiate_tried = true;
+                        negotiate_auth = self.negotiate_token(&url);
+                        self.client.tracer.info(&format!(
+                            "Issue another request to this URL: '{}'",
+                            url.without_credentials()
+                        ));
+                        continue;
+                    }
+                    if !self.empty_auth {
+                        self.empty_auth = true;
+                        continue;
+                    }
                 }
                 if sent_auth || auth_retried || !payload.replayable() {
                     self.reject_credential(wwwauth);
@@ -837,6 +943,9 @@ impl<'a> SmartHttp<'a> {
                     url = url.resolve(&loc).map_err(ExecError::Other)?;
                     continue;
                 }
+            }
+            if (200..300).contains(&status) && sent_negotiate {
+                self.negotiate_host = Some(url.authority());
             }
             if (200..300).contains(&status) && sent_auth && !self.approved {
                 self.approved = true;

@@ -20,6 +20,13 @@
 //! - `/cookie/<rest>`: `/<rest>` plus `Set-Cookie: name=value`.
 //! - `/bearer/<rest>`: `401` with Bearer and Basic challenges unless the
 //!   request has `Authorization: Bearer s3cret`, then `/<rest>`.
+//! - `/negotiate/<rest>`: `401` with Negotiate and Basic challenges unless
+//!   the request has `Authorization: Negotiate dG9r` (base64 of `tok`) or
+//!   Basic `user:pass`, then `/<rest>`.
+//! - `/negotiate-only/<rest>`: the same with only a Negotiate challenge.
+//!
+//! `support/h2server.rs` (included by the HTTP/2 tests only, which have
+//! the `h2` and tokio dev-dependencies) serves the same routes over HTTP/2.
 //!
 //! Requests in absolute form (`GET http://host/path`) are accepted, so a
 //! [`Proxy`] can pass them through unchanged. Every request is recorded in
@@ -60,13 +67,13 @@ impl Logged {
     }
 }
 
-trait Stream: Read + Write + Send {}
+pub trait Stream: Read + Write + Send {}
 impl<T: Read + Write + Send> Stream for T {}
 
-struct Shared {
+pub struct Shared {
     root: PathBuf,
-    log: Mutex<Vec<Logged>>,
-    stop: AtomicBool,
+    pub log: Mutex<Vec<Logged>>,
+    pub stop: AtomicBool,
     hits: Mutex<HashMap<String, usize>>,
 }
 
@@ -75,38 +82,49 @@ pub struct Server {
     pub tls: bool,
     pub cert_pem: String,
     pub dir: tempfile::TempDir,
-    shared: Arc<Shared>,
+    pub shared: Arc<Shared>,
+}
+
+pub fn shared_in(dir: &tempfile::TempDir) -> Arc<Shared> {
+    let root = dir.path().join("www");
+    std::fs::create_dir_all(&root).unwrap();
+    Arc::new(Shared {
+        root,
+        log: Mutex::new(Vec::new()),
+        stop: AtomicBool::new(false),
+        hits: Mutex::new(HashMap::new()),
+    })
+}
+
+/// The test certificate and key.
+pub fn tls_config(alpn: &[&[u8]]) -> (String, Arc<rustls::ServerConfig>) {
+    // Self-signed P-256 certificate for localhost and 127.0.0.1,
+    // valid for 100 years (made with `openssl req -x509`).
+    const CERT: &str = include_str!("../fixtures/cert.pem");
+    const KEY: &str = include_str!("../fixtures/key.pem");
+    let cert_der = CertificateDer::from_pem_slice(CERT.as_bytes()).unwrap();
+    let key = PrivateKeyDer::from_pem_slice(KEY.as_bytes()).unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut cfg = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key)
+        .unwrap();
+    cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+    (CERT.to_string(), Arc::new(cfg))
 }
 
 impl Server {
     pub fn start(tls: bool) -> Server {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("www");
-        std::fs::create_dir_all(&root).unwrap();
-        let shared = Arc::new(Shared {
-            root,
-            log: Mutex::new(Vec::new()),
-            stop: AtomicBool::new(false),
-            hits: Mutex::new(HashMap::new()),
-        });
+        let shared = shared_in(&dir);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
 
         let (cert_pem, server_config) = if tls {
-            // Self-signed P-256 certificate for localhost and 127.0.0.1,
-            // valid for 100 years (made with `openssl req -x509`).
-            const CERT: &str = include_str!("../fixtures/cert.pem");
-            const KEY: &str = include_str!("../fixtures/key.pem");
-            let cert_der = CertificateDer::from_pem_slice(CERT.as_bytes()).unwrap();
-            let key = PrivateKeyDer::from_pem_slice(KEY.as_bytes()).unwrap();
-            let provider = Arc::new(rustls::crypto::ring::default_provider());
-            let cfg = rustls::ServerConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_no_client_auth()
-                .with_single_cert(vec![cert_der], key)
-                .unwrap();
-            (CERT.to_string(), Some(Arc::new(cfg)))
+            let (pem, cfg) = tls_config(&[]);
+            (pem, Some(cfg))
         } else {
             (String::new(), None)
         };
@@ -218,7 +236,7 @@ pub fn run(c: &mut Command) -> Vec<u8> {
     out.stdout
 }
 
-fn read_line(r: &mut impl BufRead) -> io::Result<Option<String>> {
+pub fn read_line(r: &mut impl BufRead) -> io::Result<Option<String>> {
     let mut buf = Vec::new();
     let n = r.read_until(b'\n', &mut buf)?;
     if n == 0 {
@@ -230,7 +248,10 @@ fn read_line(r: &mut impl BufRead) -> io::Result<Option<String>> {
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-fn read_body(r: &mut impl BufRead, headers: &[(String, String)]) -> io::Result<(Vec<u8>, bool)> {
+pub fn read_body(
+    r: &mut impl BufRead,
+    headers: &[(String, String)],
+) -> io::Result<(Vec<u8>, bool)> {
     let get = |n: &str| {
         headers
             .iter()
@@ -265,7 +286,7 @@ fn read_body(r: &mut impl BufRead, headers: &[(String, String)]) -> io::Result<(
     Ok((body, false))
 }
 
-fn serve_connection(sh: &Shared, stream: Box<dyn Stream>, port: u16) -> io::Result<()> {
+pub fn serve_connection(sh: &Shared, stream: Box<dyn Stream>, port: u16) -> io::Result<()> {
     let mut r = BufReader::new(stream);
     loop {
         let Some(line) = read_line(&mut r)? else {
@@ -446,9 +467,9 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
-type Reply = (u16, Vec<(String, String)>, Vec<u8>, bool);
+pub type Reply = (u16, Vec<(String, String)>, Vec<u8>, bool);
 
-fn handle(
+pub fn handle(
     sh: &Shared,
     method: &str,
     target: &str,
@@ -575,6 +596,36 @@ fn handle(
             format!("?{query}")
         };
         return handle(sh, method, &format!("/{rest}{q}"), headers, body, port);
+    }
+    if let Some((only, rest)) = path
+        .strip_prefix("/negotiate/")
+        .map(|r| (false, r))
+        .or_else(|| path.strip_prefix("/negotiate-only/").map(|r| (true, r)))
+    {
+        let auth = hdr("authorization");
+        let ok = auth.as_deref() == Some("Negotiate dG9r")
+            || auth.as_deref() == Some(format!("Basic {}", b64("user:pass")).as_str());
+        if !ok {
+            let mut h = vec![("WWW-Authenticate".into(), "Negotiate".into())];
+            if !only {
+                h.push(("WWW-Authenticate".into(), "Basic realm=\"t\"".into()));
+            }
+            h.push(("Content-Length".into(), "0".into()));
+            return (401, h, Vec::new(), false);
+        }
+        let q = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{query}")
+        };
+        let mut reply = handle(sh, method, &format!("/{rest}{q}"), headers, body, port);
+        if auth.as_deref().is_some_and(|a| a.starts_with("Negotiate")) {
+            // Mutual authentication token (ignored by the client).
+            reply
+                .1
+                .push(("WWW-Authenticate".into(), "Negotiate b2s=".into()));
+        }
+        return reply;
     }
     if let Some(rest) = path.strip_prefix("/status/") {
         let code: u16 = rest.split('/').next().unwrap().parse().unwrap();
