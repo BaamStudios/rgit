@@ -17,10 +17,13 @@
 //!   written; `REUC` (resolve undo) is parsed, written, and filled whenever
 //!   a conflict stage leaves the index; `UNTR` (untracked cache) is parsed,
 //!   written and invalidated when paths appear in or vanish from the
-//!   index. `FSMN` and unknown
-//!   optional (uppercase) extensions are dropped on write. `link` (split
-//!   index), `sdir` (sparse index) and unknown required (lowercase)
+//!   index. `FSMN` and unknown optional (uppercase) extensions are dropped
+//!   on write. `sdir` (sparse index) and unknown required (lowercase)
 //!   extensions are refused.
+//! - Split index (`link`): read together with its `sharedindex.<hash>`;
+//!   [`Index::write_file`] writes split as [`SplitOptions`] asks, with
+//!   replaced, added and deleted entries against the shared index it was
+//!   read with, or a new shared index.
 //! - In-memory editing: lookup, add/replace with file/directory conflict
 //!   detection, removal, directory ranges, unmerged stages.
 //! - On disk: `$GIT_INDEX_FILE`, writing through `index.lock`.
@@ -47,6 +50,7 @@ mod file;
 mod index;
 pub mod messages;
 mod read;
+mod split;
 mod tree;
 mod untracked;
 mod varint;
@@ -56,9 +60,12 @@ pub use entry::{
     DEFAULT_MAX_PATH_LEN, Entry, Flags, Mode, Stage, Stat, Time, set_max_path_len, verify_path,
 };
 pub use error::{AddError, Error, OrderError};
-pub use file::{INDEX_FILE_ENV, WriteError, index_path, notify_written, set_write_observer};
+pub use file::{
+    INDEX_FILE_ENV, WriteError, index_path, notify_written, set_write_observer, shared_index_name,
+};
 pub use index::{AddOptions, Index, ResolveUndo};
 pub use read::ReadOptions;
+pub use split::{SplitMode, SplitOptions};
 pub use tree::{CacheTree, TreeNode};
 pub use untracked::{CacheDir, CacheStat, ExcludeFile, UntrackedCache};
 pub use write::{OffsetTable, WriteOptions};

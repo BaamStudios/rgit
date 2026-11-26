@@ -44,6 +44,46 @@ fn be16(b: &[u8]) -> u16 {
 }
 
 pub(crate) fn parse(data: &[u8], kind: HashKind, opts: &ReadOptions) -> Result<Index, Error> {
+    parse_split(data, kind, opts, &mut |_| Err(Error::SplitIndex))
+}
+
+/// [`parse`] for an index that may be split: `shared` returns the bytes
+/// of the shared index with the given checksum.
+pub(crate) fn parse_split(
+    data: &[u8],
+    kind: HashKind,
+    opts: &ReadOptions,
+    shared: &mut dyn FnMut(&ObjectId) -> Result<Vec<u8>, Error>,
+) -> Result<Index, Error> {
+    let mut link = None;
+    let mut index = parse_one(data, kind, opts, &mut link)?;
+    if let Some(link) = link {
+        let base = if link.base_id.is_null() {
+            Vec::new()
+        } else {
+            let bytes = shared(&link.base_id)?;
+            let shared_index = parse_one(&bytes, kind, opts, &mut None)?;
+            if shared_index.checksum != Some(link.base_id) {
+                return Err(Error::Corrupt("shared index checksum"));
+            }
+            shared_index.entries
+        };
+        let own = std::mem::take(&mut index.entries);
+        index.entries = crate::split::merge(own, base.clone(), &link)?;
+        index.split = Some(crate::split::Split {
+            base_id: link.base_id,
+            base,
+        });
+    }
+    Ok(index)
+}
+
+fn parse_one(
+    data: &[u8],
+    kind: HashKind,
+    opts: &ReadOptions,
+    link: &mut Option<crate::split::Link>,
+) -> Result<Index, Error> {
     let hash_len = kind.byte_len();
     if data.len() < HEADER_LEN + hash_len {
         return Err(Error::TooSmall);
@@ -115,7 +155,11 @@ pub(crate) fn parse(data: &[u8], kind: HashKind, opts: &ReadOptions) -> Result<I
         match &sig {
             b"TREE" => index.tree = CacheTree::parse(ext, kind),
             b"REUC" => index.resolve_undo = Some(crate::index::parse_resolve_undo(ext, kind)),
-            b"link" => return Err(Error::SplitIndex),
+            b"link" => {
+                *link = Some(
+                    crate::split::Link::parse(ext, kind).ok_or(Error::Corrupt("link extension"))?,
+                );
+            }
             b"sdir" => return Err(Error::SparseIndex),
             // Written anew from the entries when asked for.
             b"EOIE" | b"IEOT" => {}
@@ -241,6 +285,7 @@ fn parse_entries(
             flags,
             stage,
             path,
+            base: 0,
         });
     }
     Ok((entries, pos))

@@ -29,7 +29,6 @@ const NOT_YET: &[&str] = &[
     "--path-format",
     "--local-env-vars",
     "--show-superproject-working-tree",
-    "--shared-index-path",
     "--exclude-hidden",
     "--output-object-format",
 ];
@@ -458,6 +457,23 @@ impl State<'_, '_> {
             "--git-dir" => git_dir(setup),
             "--absolute-git-dir" => setup.absolute_git_dir().display().to_string(),
             "--git-common-dir" => git_common_dir(setup),
+            // The shared index of a split index; nothing otherwise.
+            "--shared-index-path" => {
+                let path = setup.cwd.join(rgit_index::index_path(&setup.git_dir));
+                let index = rgit_index::Index::read_file_in(
+                    &path,
+                    setup.format.object_format,
+                    &rgit_index::ReadOptions::default(),
+                    Some(&setup.git_dir),
+                );
+                match index.ok().as_ref().and_then(|i| i.shared_index()) {
+                    Some(id) if !id.is_null() => from_original_cwd(
+                        setup,
+                        &setup.git_dir.join(rgit_index::shared_index_name(id)),
+                    ),
+                    _ => return Some(Ok(())),
+                }
+            }
             "--show-toplevel" => match &setup.work_tree {
                 Some(wt) => wt.display().to_string(),
                 None => {

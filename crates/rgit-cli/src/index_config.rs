@@ -7,7 +7,7 @@
 //! `index.recordOffsetTable`.
 
 use rgit_config::{BoolOrInt, ConfigSet};
-use rgit_index::{Index, OffsetTable, ReadOptions, WriteOptions};
+use rgit_index::{Index, OffsetTable, ReadOptions, SplitMode, SplitOptions, WriteOptions};
 
 use crate::Die;
 use crate::messages::index_files as msg;
@@ -121,6 +121,52 @@ pub fn write_options(config: &ConfigSet, index: &Index) -> Result<WriteOptions, 
         default_version,
         end_of_entries,
         offset_table,
+        split: split_options(config)?,
+    })
+}
+
+/// `core.splitIndex` (and `GIT_TEST_SPLIT_INDEX`): `Some(true)` to split,
+/// `Some(false)` to write whole indexes, `None` to keep what was read.
+pub fn split_setting(config: &ConfigSet) -> Option<bool> {
+    let test = std::env::var("GIT_TEST_SPLIT_INDEX")
+        .ok()
+        .and_then(|v| rgit_config::value::parse_bool(Some(v.as_bytes())));
+    if test == Some(true) {
+        return Some(true);
+    }
+    config.bool("core.splitindex").ok().flatten()
+}
+
+/// The split index settings (`core.splitIndex`, `splitIndex.*`).
+fn split_options(config: &ConfigSet) -> Result<SplitOptions, Die> {
+    let mode = match split_setting(config) {
+        Some(true) => SplitMode::On,
+        Some(false) => SplitMode::Off,
+        None => SplitMode::Keep,
+    };
+    let max_percent_change = match config
+        .int("splitindex.maxpercentchange")
+        .map_err(config_err)?
+    {
+        Some(n) if (0..=100).contains(&n) => n as u32,
+        Some(n) => {
+            eprintln!("warning: {}", msg::max_percent_change_range(n));
+            20
+        }
+        None => 20,
+    };
+    let date = rgit_date::DateContext::from_env();
+    let expire = config
+        .string("splitindex.sharedindexexpire")
+        .ok()
+        .flatten()
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "2.weeks.ago".to_string());
+    let expire_before = rgit_date::parse_expiry_date(&expire, &date).unwrap_or(0);
+    Ok(SplitOptions {
+        mode,
+        max_percent_change,
+        expire_before,
     })
 }
 
