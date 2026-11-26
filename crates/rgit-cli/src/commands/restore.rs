@@ -342,6 +342,16 @@ pub(crate) fn checkout_paths<S: AsRef<[u8]>>(
         return Err(Die::Exit(1));
     }
 
+    // `--recurse-submodules`: a submodule is never restored through a
+    // symbolic link; git ends here, before anything is written.
+    if let Some(u) = &updater {
+        for (path, action) in &actions {
+            if matches!(action, Action::Write(e) if restore_submodule(e)) {
+                u.refuse_symlinks(path);
+            }
+        }
+    }
+
     let symlinks = checker.options().symlinks;
     let mut failed = false;
     let mut count = 0usize;

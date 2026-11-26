@@ -31,6 +31,7 @@ use rgit_submodule::{Gitmodules, Mode, Origin};
 
 use crate::commands::submodule::common;
 use crate::messages::recurse_submodules as msg;
+use crate::messages::submodule_cmd as sub_msg;
 use crate::repository::Repo;
 
 /// What the running command said about recursing: 0 it has no
@@ -136,6 +137,27 @@ impl<'r> Updater<'r> {
         crate::diff::collect::os_path(&self.root, path)
     }
 
+    /// git does not work in a submodule whose path is, or leads through, a
+    /// symbolic link (the link may point into another repository): it
+    /// prints the error and ends, as observed with exit code 128.
+    pub fn refuse_symlinks(&self, path: &[u8]) {
+        let parts: Vec<&[u8]> = path.split(|&b| b == b'/').collect();
+        for i in 1..=parts.len() {
+            let leading = parts[..i].join(&b'/');
+            let is_link = std::fs::symlink_metadata(self.dir(&leading))
+                .is_ok_and(|m| m.file_type().is_symlink());
+            if is_link {
+                let shown = self.shown(path);
+                let text = if i == parts.len() {
+                    sub_msg::path_is_symlink(&shown)
+                } else {
+                    sub_msg::leading_symlink(&self.shown(&leading), &shown)
+                };
+                crate::convert::exit_after_error(&text);
+            }
+        }
+    }
+
     /// The name of the submodule at `path`: from the work tree's
     /// `.gitmodules` as it is now, else the path.
     fn name(&self, path: &[u8]) -> Vec<u8> {
@@ -155,6 +177,29 @@ impl<'r> Updater<'r> {
     /// `$GIT_COMMON_DIR/modules/<name>` of the submodule at `path`.
     fn modules_dir(&self, path: &[u8]) -> PathBuf {
         rgit_submodule::gitdir::modules_dir(&self.repo.setup.absolute_git_dir(), &self.name(path))
+    }
+
+    /// git does not use a submodule git directory that lies within the git
+    /// directory of another submodule (the name `a/b` next to a submodule
+    /// `a`): it reports both and ends.
+    fn refuse_nested_git_dir(&self, path: &[u8]) {
+        let name = self.name(path);
+        let git_dir = self.repo.setup.absolute_git_dir();
+        let shown = |dir: &Path| {
+            dir.strip_prefix(&self.root)
+                .unwrap_or(dir)
+                .to_string_lossy()
+                .into_owned()
+        };
+        for (i, _) in name.iter().enumerate().filter(|(_, b)| **b == b'/') {
+            let outer = rgit_submodule::gitdir::modules_dir(&git_dir, &name[..i]);
+            if crate::submodules::is_git_dir(&outer) {
+                let sub = shown(&rgit_submodule::gitdir::modules_dir(&git_dir, &name));
+                eprintln!("error: {}", msg::git_dir_inside(&sub, &shown(&outer)));
+                eprintln!("hint: {}", msg::HINT_PATH_CONFIG);
+                crate::convert::die_now(&msg::refusing_git_dir(&sub));
+            }
+        }
     }
 
     fn empty_tree(&self) -> String {
@@ -239,6 +284,7 @@ impl<'r> Updater<'r> {
         } else if modules.join("HEAD").is_file() {
             // (Re)connect: an appearing submodule, or a `.git` file that
             // leads elsewhere.
+            self.refuse_nested_git_dir(path);
             if !dir.is_dir() {
                 std::fs::create_dir_all(&dir).map_err(|_| fail())?;
             }
@@ -269,6 +315,7 @@ impl rgit_unpack::Submodules for Updater<'_> {
     }
 
     fn index_clean(&self, path: &[u8]) -> bool {
+        self.refuse_symlinks(path);
         if let Some(clean) = self.dirty.borrow().get(path) {
             return *clean;
         }
@@ -289,6 +336,7 @@ impl rgit_unpack::Submodules for Updater<'_> {
         new: Option<&ObjectId>,
         force: bool,
     ) -> bool {
+        self.refuse_symlinks(path);
         let dir = self.dir(path);
         if !rgit_submodule::gitdir::is_populated(&dir) {
             return true;
@@ -315,6 +363,7 @@ impl rgit_unpack::Submodules for Updater<'_> {
         new: Option<&ObjectId>,
         _force: bool,
     ) -> Result<(), String> {
+        self.refuse_symlinks(path);
         match new {
             None => self.remove(path),
             Some(id) => self.checkout(path, id),

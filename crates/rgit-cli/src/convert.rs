@@ -143,6 +143,15 @@ pub fn die_now(message: &str) -> ! {
     std::process::exit(rgit_messages::EXIT_FATAL);
 }
 
+/// Like [`die_now`] where git prints `error: ` and still ends with the
+/// exit code of a fatal error.
+pub fn exit_after_error(message: &str) -> ! {
+    eprintln!("error: {message}");
+    rgit_fs::remove_registered_files();
+    filter::finish_all();
+    std::process::exit(rgit_messages::EXIT_FATAL);
+}
+
 /// Prints a conversion message with git's prefix.
 pub fn print_notice(n: Notice) {
     match n {
