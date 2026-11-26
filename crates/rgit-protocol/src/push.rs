@@ -553,11 +553,10 @@ mod tests {
         ]);
         let mut r = Reader::new(&data[..], "push");
         let rep = read_report(&mut r).unwrap();
-        assert_eq!(rep.unpack_error, None);
-        assert_eq!(rep.refs.len(), 2);
-        assert_eq!(rep.refs[0].error, None);
-        assert!(rep.refs[0].options.forced_update);
-        assert_eq!(rep.refs[0].options.refname, None);
+        assert!(rep.unpack_error.is_none() && rep.refs.len() == 2);
+        let first = &rep.refs[0];
+        assert!(first.error.is_none() && first.options.forced_update);
+        assert!(first.options.refname.is_none());
         assert_eq!(
             rep.refs[1].error.as_deref(),
             Some("branch is currently checked out")
