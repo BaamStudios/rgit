@@ -297,13 +297,25 @@ pub fn write_pack(
     objects: &[ListedObject],
     opts: &PackOptions,
 ) -> Result<Option<ObjectId>, Die> {
+    write_pack_named(odb, pack_dir, "pack", objects, opts)
+}
+
+/// [`write_pack`] with the files named `<prefix>-<checksum>.*` (the base
+/// name of `pack-objects`, e.g. for `repack --filter-to`).
+pub fn write_pack_named(
+    odb: &ObjectDatabase,
+    pack_dir: &Path,
+    prefix: &str,
+    objects: &[ListedObject],
+    opts: &PackOptions,
+) -> Result<Option<ObjectId>, Die> {
     if objects.is_empty() {
         return Ok(None);
     }
     let hash = odb.hash_kind();
     std::fs::create_dir_all(pack_dir).map_err(|e| io_fatal(pack_dir, e))?;
-    let prefix = format!(".tmp-{}-pack-", std::process::id());
-    let mut tmp = rgit_fs::TempFile::with_mode(pack_dir, &prefix, 0o444)
+    let tmp_prefix = format!(".tmp-{}-pack-", std::process::id());
+    let mut tmp = rgit_fs::TempFile::with_mode(pack_dir, &tmp_prefix, 0o444)
         .map_err(|e| io_fatal(pack_dir, e))?;
     let tmp_path = tmp.path().to_path_buf();
     let packs: Vec<Arc<Pack>> = odb.packs().map(|p| p.set().packs()).unwrap_or_default();
@@ -317,8 +329,8 @@ pub fn write_pack(
     let indexed = ip::index_pack(Input::File(&tmp_path), &ip_opts, None, None, None)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     let checksum = indexed.checksum();
-    let base = pack_dir.join(format!("pack-{}", checksum.to_hex()));
-    let with = |ext: &str| base.with_extension(ext);
+    let base = format!("{prefix}-{}", checksum.to_hex());
+    let with = |ext: &str| pack_dir.join(format!("{base}.{ext}"));
     if with("pack").exists() && with("idx").exists() {
         // The same objects in the same order: nothing to replace, but a
         // missing `.rev` is added (`pack.writeReverseIndex`).

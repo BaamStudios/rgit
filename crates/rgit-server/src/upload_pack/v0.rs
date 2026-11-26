@@ -162,6 +162,7 @@ pub(crate) fn serve<R: Read, W: Write>(
             writer: Writer::new(output, "upload-pack"),
             sideband_all: false,
         },
+        promisor_accepted: false,
     };
     let view = RefView::new(repo.refs, repo.config, opts.namespace.as_deref());
     let tips = advertise(&mut s, &view, opts.advertise_refs || !opts.stateless_rpc)?;
@@ -321,6 +322,7 @@ fn request<R: Read, W: Write>(s: &mut Session<'_, R, W>, tips: &Tips) -> Result<
         include_tag: req.include_tag,
         progress: !req.no_progress,
         filter: req.filter.as_ref().map(ObjectFilter::to_spec),
+        allow_promisor: false,
         band: req.band,
     };
     pack::send(s, &pack)?;

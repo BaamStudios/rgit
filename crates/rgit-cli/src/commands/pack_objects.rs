@@ -68,6 +68,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let thin = Cell::new(false);
     let shallow = Cell::new(false);
     let filters: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let missing: RefCell<Option<String>> = RefCell::new(None);
     let include_tag = Cell::new(false);
     let reflog = Cell::new(false);
     let indexed_objects = Cell::new(false);
@@ -235,8 +236,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 }
                 Ok(())
             }),
-            Opt::callback(None, "missing", Some("action"), msg::H_MISSING, reject("missing"))
-                .noneg(),
+            Opt::string(None, "missing", &missing, "action", msg::H_MISSING).noneg(),
             Opt::callback(
                 None,
                 "exclude-promisor-objects",
@@ -375,6 +375,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     opts.reuse_delta = reuse_delta.get() && reuse_object.get();
 
     let odb = repo::odb_with_config(&setup, &config)?;
+    let missing_action = match missing.borrow().as_deref() {
+        None | Some("error") => Missing::Error,
+        Some("allow-any") => Missing::AllowAny,
+        Some("allow-promisor") => Missing::AllowPromisor,
+        Some(other) => return Err(Die::Fatal(msg::invalid_missing(other))),
+    };
+    // Allowing missing objects means not fetching them.
+    if missing_action != Missing::Error {
+        rgit_odb::lazy::set_enabled(false);
+    }
+    let allow_missing = |id: &ObjectId| match missing_action {
+        Missing::Error => false,
+        Missing::AllowAny => true,
+        Missing::AllowPromisor => odb.is_promisor_object(id),
+    };
     let repo = Repo {
         source: &odb,
         refs: Refs::new(&setup),
@@ -453,14 +468,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         // For a reader with a shallow history the edge also holds the
         // trees of the excluded tips (see `--shallow`).
         let aggressive = shallow.get() && thin.get();
+        let source = MissingOk {
+            inner: &source,
+            allow: &allow_missing,
+        };
         let walk = pw::EnumerateOptions {
             sparse: sparse && !aggressive,
             aggressive,
             filter: filter.as_ref(),
             unnamed_tips: &from_sets,
         };
-        let (listed, bases) = pw::enumerate_with(&source, hash, &tips, &walk)
+        let (mut listed, bases) = pw::enumerate_with(&source, hash, &tips, &walk)
             .map_err(|e| Die::Fatal(e.to_string()))?;
+        // `--missing=allow-*`: the missing objects allowed are left out.
+        if missing_action != Missing::Error {
+            listed.retain(|o| odb.contains(&o.id) || !allow_missing(&o.id));
+        }
         (listed, if thin.get() { bases } else { Vec::new() })
     } else {
         let (list, edges) = read_object_list(&mut input, hash)?;
@@ -1351,4 +1374,45 @@ mod tests {
         assert!(check_level(10).is_err());
     }
 
+}
+
+/// `--missing=<action>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    Error,
+    AllowAny,
+    AllowPromisor,
+}
+
+/// An object source on which the missing objects `allow` accepts look
+/// like blobs too large for any `blob:limit` filter, so that a filtered
+/// walk leaves them out instead of failing (`--missing=allow-*`).
+struct MissingOk<'a, S: pw::ObjectSource + ?Sized> {
+    inner: &'a S,
+    allow: &'a dyn Fn(&ObjectId) -> bool,
+}
+
+impl<S: pw::ObjectSource + ?Sized> pw::ObjectSource for MissingOk<'_, S> {
+    fn read(&self, id: &ObjectId) -> Result<Option<rgit_pack::Object>, pw::SourceError> {
+        self.inner.read(id)
+    }
+
+    fn stream(&self, id: &ObjectId) -> Result<Option<pw::SourceStream<'_>>, pw::SourceError> {
+        self.inner.stream(id)
+    }
+
+    fn kind(&self, id: &ObjectId) -> Result<Option<ObjectKind>, pw::SourceError> {
+        self.inner.kind(id)
+    }
+
+    fn header(&self, id: &ObjectId) -> Result<Option<(ObjectKind, u64)>, pw::SourceError> {
+        match self.inner.header(id)? {
+            None if (self.allow)(id) => Ok(Some((ObjectKind::Blob, u64::MAX))),
+            h => Ok(h),
+        }
+    }
+
+    fn is_shallow(&self, id: &ObjectId) -> bool {
+        self.inner.is_shallow(id)
+    }
 }

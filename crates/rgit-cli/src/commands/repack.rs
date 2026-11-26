@@ -48,7 +48,13 @@
 //! writes a reachability bitmap for the pack of everything reachable, or
 //! for the multi-pack index with `--write-midx`.
 //!
-//! Not yet: `--filter`, `--max-pack-size` for the reachable pack.
+//! `--filter=<spec>` (`blob:none`, `blob:limit=<n>`, `object:type=<type>`
+//! and their combinations) moves the objects the filter leaves out of the
+//! new pack into a second pack, written with the base name `--filter-to`
+//! (else next to the new pack).
+//!
+//! Not yet: `--filter=tree:<depth>`, `--filter=sparse:oid=...`,
+//! `--drop-filtered`, `--max-pack-size` for the reachable pack.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -91,6 +97,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let path_walk = Cell::new(false);
     let name_hash_version: RefCell<Option<String>> = RefCell::new(None);
     let write_midx: RefCell<Option<String>> = RefCell::new(None);
+    let filters: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let filter_to: RefCell<Option<String>> = RefCell::new(None);
     // Options that change the result and are not implemented yet: the
     // first one given is refused.
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
@@ -158,7 +166,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string(None, "depth", &depth, "n", msg::REPACK_H_DEPTH),
             Opt::string(None, "threads", &threads, "n", msg::REPACK_H_THREADS),
             Opt::unsigned(None, "max-pack-size", &max_pack_size, msg::REPACK_H_MAX_PACK_SIZE),
-            Opt::callback(None, "filter", Some("args"), msg::REPACK_H_FILTER, reject("filter")),
+            Opt::callback(
+                None,
+                "filter",
+                Some("args"),
+                msg::REPACK_H_FILTER,
+                |v: Option<&str>, unset: bool| -> Result<(), CallbackError> {
+                    match v {
+                        Some(spec) if !unset => filters.borrow_mut().push(spec.to_owned()),
+                        _ => filters.borrow_mut().clear(),
+                    }
+                    Ok(())
+                },
+            ),
             Opt::flag(None, "pack-kept-objects", &pack_kept, msg::REPACK_H_PACK_KEPT),
             Opt::string_list(None, "keep-pack", &keep_packs, "name", msg::REPACK_H_KEEP_PACK),
             Opt::integer('g', "geometric", &geometric, msg::REPACK_H_GEOMETRIC),
@@ -174,7 +194,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             )
             .optional(None),
             Opt::string(None, "expire-to", &expire_to, "dir", msg::REPACK_H_EXPIRE_TO),
-            Opt::callback(None, "filter-to", Some("dir"), msg::REPACK_H_FILTER_TO, reject("filter-to")),
+            Opt::string(None, "filter-to", &filter_to, "dir", msg::REPACK_H_FILTER_TO),
             Opt::callback(
                 None,
                 "drop-filtered",
@@ -356,6 +376,39 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if partial && write_bitmaps && write_midx.borrow().is_none() && pack_everything {
         check_closure(&odb, &chosen)?;
     }
+    // `--filter`: what the filter leaves out goes into a pack of its own
+    // (named by `--filter-to`, else next to the new pack).
+    let mut filtered_name = None;
+    if let Some((filter, _)) = crate::promisor::parse_filters(&filters.borrow())? {
+        if !filter_supported(&filter) {
+            return Err(Die::Fatal(msg::not_supported("--filter")));
+        }
+        let (keep, out): (Vec<ListedObject>, Vec<ListedObject>) = chosen
+            .into_iter()
+            .partition(|o| !filtered_out(&odb, &filter, o));
+        chosen = keep;
+        let ordered = rgit_pack::write::pack_order(&out);
+        let (dir, prefix) = match filter_to.borrow().as_deref() {
+            Some(base) => {
+                let base = std::path::Path::new(base);
+                let prefix = base
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "pack".to_owned());
+                let dir = match base.parent() {
+                    Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+                    _ => std::path::PathBuf::from("."),
+                };
+                (dir, prefix)
+            }
+            None => (pack_dir.clone(), "pack".to_owned()),
+        };
+        if let Some(c) = store::write_pack_named(&odb, &dir, &prefix, &ordered, &opts)?
+            && filter_to.borrow().is_none()
+        {
+            filtered_name = Some(format!("pack-{}.pack", c.to_hex()));
+        }
+    }
     let ordered = rgit_pack::write::pack_order(&chosen);
     let new_pack = store::write_pack(&odb, &pack_dir, &ordered, &opts)?;
     // A pack that leaves out reachable objects (kept or non-local ones)
@@ -390,6 +443,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .into_iter()
         .collect();
     new_names.extend(promisor_name);
+    new_names.extend(filtered_name);
     let new_ids: HashSet<ObjectId> = ordered.iter().map(|o| o.id).collect();
 
     // The packs to replace: all but the kept ones (and, with
@@ -925,6 +979,40 @@ fn check_closure(odb: &rgit_odb::ObjectDatabase, chosen: &[ListedObject]) -> Res
         }
     }
     Ok(())
+}
+
+/// Whether `filter` (of `repack --filter`) leaves the object out.
+fn filtered_out(
+    odb: &rgit_odb::ObjectDatabase,
+    filter: &rgit_pack::write::ObjectFilter,
+    o: &ListedObject,
+) -> bool {
+    use rgit_object::ObjectKind;
+    use rgit_pack::write::ObjectFilter as F;
+    match filter {
+        F::BlobNone => o.kind == ObjectKind::Blob,
+        F::BlobLimit(limit) => {
+            o.kind == ObjectKind::Blob
+                && odb
+                    .header(&o.id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|h| h.size >= *limit)
+        }
+        F::ObjectType(k) => o.kind != *k,
+        F::Combine(parts) => parts.iter().any(|f| filtered_out(odb, f, o)),
+        F::TreeDepth(_) | F::SparseOid(_) => false,
+    }
+}
+
+/// The filters `repack --filter` implements.
+fn filter_supported(filter: &rgit_pack::write::ObjectFilter) -> bool {
+    use rgit_pack::write::ObjectFilter as F;
+    match filter {
+        F::TreeDepth(_) | F::SparseOid(_) => false,
+        F::Combine(parts) => parts.iter().all(filter_supported),
+        _ => true,
+    }
 }
 
 #[cfg(test)]

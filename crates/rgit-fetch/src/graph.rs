@@ -155,7 +155,9 @@ pub fn check_connected(
             continue;
         }
         if !received.contains(&id) {
-            if odb.contains(&id) {
+            // An object a promisor pack refers to may be missing: a
+            // promisor remote has it.
+            if odb.contains(&id) || odb.is_promisor_object(&id) {
                 continue;
             }
             return Err(id);

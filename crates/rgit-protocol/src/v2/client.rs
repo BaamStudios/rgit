@@ -166,6 +166,16 @@ pub struct RemoteRef {
     pub peeled: Option<ObjectId>,
 }
 
+/// One object of an `object-info` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectInfo {
+    /// The object id as the server sent it.
+    pub id: String,
+    /// `(attribute, value)` pairs in the order of the response; `None`
+    /// when the server does not know the object.
+    pub values: Option<Vec<(String, String)>>,
+}
+
 /// Arguments of `fetch`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FetchArgs {
@@ -296,6 +306,8 @@ pub struct Client<C> {
     pending: Vec<Vec<u8>>,
     /// An error message (sideband 3) met there, not yet shown.
     pending_error: Option<Vec<u8>>,
+    /// The `promisor-remote=<names>` line for the next request.
+    promisor_reply: Option<String>,
 }
 
 impl<C: Duplex> Client<C> {
@@ -343,7 +355,14 @@ impl<C: Duplex> Client<C> {
             sideband_all: false,
             pending: Vec::new(),
             pending_error: None,
+            promisor_reply: None,
         })
+    }
+
+    /// Name the advertised promisor remotes the client accepts (encoded
+    /// and `;`-separated) in the next request (`promisor-remote`).
+    pub fn set_promisor_reply(&mut self, names: Option<String>) {
+        self.promisor_reply = names;
     }
 
     /// The server's capabilities.
@@ -430,6 +449,9 @@ impl<C: Duplex> Client<C> {
         if self.caps.contains("object-format") {
             let format = format!("object-format={}", self.format.name());
             self.line(&format)?;
+        }
+        if let Some(names) = self.promisor_reply.take() {
+            self.line(&format!("promisor-remote={names}"))?;
         }
         if self.caps.contains("server-option") {
             for o in server_options {
@@ -535,6 +557,61 @@ impl<C: Duplex> Client<C> {
     /// Whether the server advertises the `bundle-uri` command.
     pub fn supports_bundle_uri(&self) -> bool {
         self.caps.contains("bundle-uri")
+    }
+
+    /// Whether the server offers the `object-info` command.
+    pub fn supports_object_info(&self) -> bool {
+        self.caps.contains("object-info")
+    }
+
+    /// Run `object-info` (`gitprotocol-v2.adoc`) asking for the attributes
+    /// `attrs` (`size`, `type`) of `ids`. The answer has one entry per
+    /// object line: the id as sent and its values by attribute name;
+    /// `None` for an object the server does not know.
+    pub fn object_info(&mut self, attrs: &[&str], ids: &[ObjectId]) -> Result<Vec<ObjectInfo>> {
+        self.begin("object-info", &[])?;
+        for a in attrs {
+            self.line(a)?;
+        }
+        for id in ids {
+            self.line(&format!("oid {id}"))?;
+        }
+        self.end_request()?;
+        let mut echoed: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        let mut pkt = self.first()?;
+        loop {
+            match pkt {
+                Pkt::Flush => return Ok(out),
+                Pkt::Data(line) => {
+                    let line = line.strip_suffix(b"\n").unwrap_or(&line);
+                    let text = String::from_utf8_lossy(line).into_owned();
+                    if out.is_empty() && attrs.contains(&text.as_str()) {
+                        echoed.push(text);
+                    } else {
+                        let (id, rest) = match text.split_once(' ') {
+                            Some((id, rest)) => (id.to_owned(), Some(rest)),
+                            None => (text.clone(), None),
+                        };
+                        // `<oid> SP` alone: an object the server lacks.
+                        let values = match rest {
+                            Some("") => None,
+                            Some(rest) => Some(
+                                echoed
+                                    .iter()
+                                    .cloned()
+                                    .zip(rest.split(' ').map(str::to_owned))
+                                    .collect(),
+                            ),
+                            None => Some(Vec::new()),
+                        };
+                        out.push(ObjectInfo { id, values });
+                    }
+                }
+                other => return Err(Error::Unexpected(other.describe())),
+            }
+            pkt = self.next()?;
+        }
     }
 
     /// Run `bundle-uri` (`gitprotocol-v2.adoc`): the `key=value` lines of

@@ -301,6 +301,16 @@ pub fn fetch(
     };
     let mut session = Session::connect_with(&url, connect, "fetch", &helper_ctx)?;
     session.check_server_options(&opts.server_options)?;
+    // Promisor remotes the server offers; `--filter=auto` takes their
+    // filters.
+    let accepted = session.accept_promisor_remotes(&repo.config);
+    if let Some(a) = &accepted {
+        a.write(&repo.common_dir.join("config"));
+    }
+    let filter = match opts.filter.as_deref() {
+        Some("auto") => accepted.as_ref().and_then(|a| a.auto_filter()),
+        f => f.map(str::to_owned),
+    };
     // `-o` replaces `remote.<name>.serverOption`.
     let server_options: Vec<String> = if opts.server_options.is_empty() {
         remote
@@ -534,7 +544,7 @@ pub fn fetch(
             repo.hash,
             crate::messages::INDEX_PACK_FAILED,
         ),
-        filter: opts.filter.clone(),
+        filter: filter.clone(),
         promisor: opts.promisor.then(String::new),
     };
     let mut packs: Vec<ReceivedPack> = Vec::new();

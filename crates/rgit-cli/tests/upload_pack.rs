@@ -306,6 +306,23 @@ fn advertisement_equals_git() {
         &["lsrefs.unborn=allow"],
         &["lsrefs.unborn=ignore"],
         &["uploadpack.advertiseBundleURIs=true"],
+        &["promisor.advertise=true"],
+        &[
+            "promisor.advertise=true",
+            "remote.lop.promisor=true",
+            "remote.lop.url=file:///a b/l%o,p;q=r",
+            "remote.nourl.promisor=true",
+            "remote.other.partialCloneFilter=blob:none",
+            "remote.other.url=https://o",
+            "remote.other.token=t k",
+            "promisor.sendFields=token, partialCloneFilter",
+            "transfer.advertiseObjectInfo=true",
+        ],
+        &[
+            "promisor.advertise=false",
+            "remote.lop.promisor=true",
+            "remote.lop.url=https://l",
+        ],
         &[
             "uploadpack.allowFilter=true",
             "uploadpack.allowRefInWant=true",

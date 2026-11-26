@@ -405,6 +405,37 @@ impl Session {
         }
     }
 
+    /// Accept promisor remotes the server advertises (`promisor-remote`,
+    /// see [`crate::promisor`]); the next request names the accepted
+    /// ones. The caller writes the configuration they need
+    /// ([`crate::promisor::Accepted::write`]). `None` without an
+    /// advertisement.
+    pub fn accept_promisor_remotes(
+        &mut self,
+        config: &ConfigSet,
+    ) -> Option<crate::promisor::Accepted> {
+        let Proto::V2(c) = &mut self.proto else {
+            return None;
+        };
+        let advertised = c.capabilities().value("promisor-remote")?.to_owned();
+        let accepted = crate::promisor::accept(config, &advertised);
+        c.set_promisor_reply(accepted.reply());
+        Some(accepted)
+    }
+
+    /// Protocol v2 `object-info` for `ids` (`attrs`: `size`, `type`);
+    /// `None` when the server does not offer the command.
+    pub fn object_info(
+        &mut self,
+        attrs: &[&str],
+        ids: &[ObjectId],
+    ) -> Result<Option<Vec<rgit_protocol::v2::ObjectInfo>>> {
+        match &mut self.proto {
+            Proto::V2(c) if c.supports_object_info() => Ok(Some(c.object_info(attrs, ids)?)),
+            _ => Ok(None),
+        }
+    }
+
     /// The `shallow-info` sections received so far (merged), taken out.
     pub fn take_shallow_info(&mut self) -> Option<ShallowInfo> {
         self.shallow_info.take()
