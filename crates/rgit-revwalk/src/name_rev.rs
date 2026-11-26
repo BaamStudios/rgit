@@ -89,13 +89,14 @@ impl RevName {
 
     /// Whether `self` beats the name `old`.
     pub fn better_than(&self, old: &RevName) -> bool {
-        // A reference's own name beats a name its commit got as the
-        // parent of another reference's merge.
-        if self.distance == 0 && !self.via_merge && old.distance == 0 && old.via_merge {
-            return true;
-        }
         if self.from_tag != old.from_tag {
             return self.from_tag;
+        }
+        // A reference's own name beats a name its commit got as the
+        // parent of another reference's merge (a tag's still beats a
+        // branch's).
+        if self.distance == 0 && !self.via_merge && old.distance == 0 && old.via_merge {
+            return true;
         }
         if self.distance != old.distance {
             return self.distance < old.distance;

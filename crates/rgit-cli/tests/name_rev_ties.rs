@@ -77,3 +77,69 @@ fn competing_names() {
             .run();
     }
 }
+
+/// A random history (`seed`): 60 commits with merges, 25 branches and 10
+/// annotated tags with dates older and newer than the branches.
+fn random_history(seed: u64) -> Fixture {
+    let mut state = seed;
+    let mut next = move |n: usize| -> usize {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((state >> 33) as usize) % n
+    };
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    if fx.is_skipped() {
+        return fx;
+    }
+    let tree = String::from_utf8(fx.git_stdout(["write-tree"])).unwrap();
+    let tree = tree.trim().to_owned();
+    let mut commits: Vec<String> = Vec::new();
+    for i in 0..60 {
+        let mut args = vec!["commit-tree".to_owned(), tree.clone()];
+        args.extend(["-m".to_owned(), format!("c{i}")]);
+        if !commits.is_empty() {
+            let p = commits[next(commits.len())].clone();
+            args.extend(["-p".to_owned(), p.clone()]);
+            if commits.len() > 2 && next(10) < 3 {
+                let q = commits[next(commits.len())].clone();
+                if q != p {
+                    args.extend(["-p".to_owned(), q]);
+                }
+            }
+        }
+        fx = fx.tick();
+        let id = String::from_utf8(fx.git_stdout(&args)).unwrap();
+        commits.push(id.trim().to_owned());
+    }
+    for b in 0..25 {
+        let c = commits[next(commits.len())].clone();
+        fx = fx.git(["update-ref", &format!("refs/heads/b{b}"), &c]);
+    }
+    let base = fx.time();
+    for t in 0..10 {
+        let c = commits[next(commits.len())].clone();
+        let date = format!("{} +0000", base - 4000 + 100 * next(60) as i64);
+        fx =
+            fx.env("GIT_COMMITTER_DATE", &date)
+                .git(["tag", "-a", "-m", "t", &format!("v{t}"), &c]);
+    }
+    fx
+}
+
+/// `name-rev --all` lists the commits in the order of git's object table,
+/// which depends on when each object was looked up (#409).
+#[test]
+fn all_order_on_random_histories() {
+    for seed in 1..=30 {
+        let mut fx = random_history(seed);
+        if fx.is_skipped() {
+            return;
+        }
+        fx.compare(["name-rev", "--all"])
+            .checks(Check::OUTPUT)
+            .run();
+    }
+}
