@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-bundle = { path = "../rgit-bundle" }
 rgit-commitgraph = { path = "../rgit-commitgraph" }
 rgit-config = { path = "../rgit-config" }
 rgit-date = { path = "../rgit-date" }

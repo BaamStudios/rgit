@@ -835,6 +835,9 @@ fn fetch_main(ctx: &mut Context, argv: &[String], action: Option<&str>) -> CmdRe
     } else {
         Vec::new()
     };
+    if !args.dry_run {
+        fetch_bundle_uri_once(&repo, &connect)?;
+    }
     let mut result =
         rgit_fetch::fetch(&repo, &remote, &opts, &connect).map_err(|e| Die::Fatal(e.to_string()))?;
     let new_tips: Vec<rgit_hash::ObjectId> = result
@@ -1214,6 +1217,43 @@ fn set_upstream(
         config_set(&path, &key, value)?;
     }
     Ok(0)
+}
+
+/// Bundles of `fetch.bundleURI` were looked at already (`--all` fetches
+/// several remotes in one process; the bundles are fetched once).
+static BUNDLE_URI_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `fetch.bundleURI` (set by a clone from a bundle list with the
+/// `creationToken` heuristic): fetch the bundles newer than
+/// `fetch.bundleCreationToken` first, and remember the newest one.
+fn fetch_bundle_uri_once(repo: &LocalRepo, connect: &ConnectSettings<'_>) -> Result<(), Die> {
+    let Some(uri) = repo
+        .config
+        .string("fetch.bundleuri")
+        .ok()
+        .flatten()
+        .map(|v| v.to_str_lossy().into_owned())
+    else {
+        return Ok(());
+    };
+    if BUNDLE_URI_DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    let stored = repo
+        .config
+        .int64("fetch.bundlecreationtoken")
+        .ok()
+        .flatten()
+        .map_or(0, |v| v.max(0) as u64);
+    let o = rgit_fetch::bundle_uri::fetch_bundle_uri(repo, connect, &uri, Some(stored));
+    if let Some(t) = o.token.filter(|t| *t > stored) {
+        config_set(
+            &repo.common_dir.join("config"),
+            "fetch.bundleCreationToken",
+            &t.to_string(),
+        )?;
+    }
+    Ok(())
 }
 
 fn config_set(path: &std::path::Path, key: &str, value: &str) -> Result<(), Die> {

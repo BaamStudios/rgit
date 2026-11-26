@@ -259,13 +259,13 @@ fn full_pattern(pattern: &str) -> String {
 /// matching pattern unless that starts with `!`; patterns match a ref name
 /// or the directory it is in, after the `GIT_NAMESPACE` prefix was
 /// removed, or the full name with `^`.
-struct Hidden {
+pub(super) struct Hidden {
     patterns: Vec<String>,
     namespace: Option<String>,
 }
 
 impl Hidden {
-    fn new(repo: &Repo<'_>, section: &str) -> Hidden {
+    pub(super) fn new(repo: &Repo<'_>, section: &str) -> Hidden {
         let own = format!("{section}.hiderefs");
         let patterns = repo
             .config
@@ -377,7 +377,7 @@ pub(super) fn named_refs(
 }
 
 /// The refs of a ref set, in order.
-fn ref_set(
+pub(super) fn ref_set(
     repo: &Repo<'_>,
     opts: &Options,
     set: &RefSet,

@@ -118,10 +118,6 @@ pub fn detached_head_advice(name: &str) -> String {
     )
 }
 
-/// rgit-only: an option that is parsed but not implemented yet.
-pub fn unsupported(option: &str) -> String {
-    format!("rgit: clone {option} is not supported yet")
-}
 pub const REMOTE_DID_NOT_SEND_ALL: &str = "remote did not send all necessary objects";
 pub const UNABLE_TO_CHECKOUT: &str = "unable to checkout working tree";
 /// After `warning: `; ends with an empty line.
@@ -199,3 +195,6 @@ pub fn failed_to_create_directory(path: &str) -> String {
 pub fn option_requires(option: &str, needed: &str) -> String {
     format!("the option '{option}' requires '{needed}'")
 }
+
+/// `fatal:` for a clone from a bundle with an object filter.
+pub const CLONE_FILTERED_BUNDLE: &str = "cannot clone from filtered bundle";

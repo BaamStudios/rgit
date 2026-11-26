@@ -523,8 +523,18 @@ impl Strict {
                 sc.pos += used;
                 return;
             }
-            // An invalid numeric date is ignored as a whole.
+            // An invalid numeric date is ignored as a whole, except a
+            // year followed by one other number (`2005.15:16:00`, as in
+            // `7.Apr.2005.15:16:00.-0700`): that is a year, and the rest
+            // is read on its own.
             let sep = sc.s[pos + len];
+            let second = pos + len + 1 + sc.digits_at(pos + len + 1);
+            let three_parts = sc.s.get(second) == Some(&sep) && sc.digits_at(second + 1) > 0;
+            if len == 4 && !three_parts && (1970..2100).contains(&n) {
+                self.f.year = Some(n);
+                sc.pos += len;
+                return;
+            }
             let mut at = pos + len;
             for _ in 0..2 {
                 if sc.s.get(at) != Some(&sep) || sc.digits_at(at + 1) == 0 {

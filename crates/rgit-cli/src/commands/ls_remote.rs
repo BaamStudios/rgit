@@ -217,6 +217,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(0);
     }
 
+    let refs: Vec<RemoteRef> = if let Some(path) = rgit_fetch::bundle::bundle_path(&url) {
+        match rgit_fetch::bundle::open(&path) {
+            Ok(b) => rgit_fetch::bundle::remote_refs(&b.header),
+            Err(e) => return Err(bundle_open_error(&url, e)),
+        }
+    } else {
     let vcs = remote.vcs.as_ref().map(|v| v.to_str_lossy().into_owned());
     let protocol = vcs.clone().unwrap_or_else(|| rgit_fetch::protocol_name(&url));
     rgit_remote::check_allowed(protocol.as_bytes(), &config, &env)
@@ -319,6 +325,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
     };
+    refs
+    };
     if dest.is_none() && !quiet.get() {
         eprintln!("From {url}");
     }
@@ -374,6 +382,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let _ = writeln!(out, "{}\t{}", e.oid.to_hex(), e.name);
     }
     Ok(if exit_code.get() && !found { 2 } else { 0 })
+}
+
+/// The error for a bundle file that cannot be read.
+pub(crate) fn bundle_open_error(url: &str, e: rgit_fetch::bundle::OpenError) -> Die {
+    use rgit_bundle::HeaderError;
+    match e {
+        rgit_fetch::bundle::OpenError::CannotOpen(e) => Die::Fatal(e.to_string()),
+        rgit_fetch::bundle::OpenError::Header(HeaderError::NotABundle) => {
+            Die::Fatal(rgit_bundle::messages::not_a_bundle(url))
+        }
+        rgit_fetch::bundle::OpenError::Header(HeaderError::Error(m) | HeaderError::Fatal(m)) => {
+            Die::Fatal(m)
+        }
+        rgit_fetch::bundle::OpenError::Header(HeaderError::Io(e)) => Die::Fatal(e.to_string()),
+    }
 }
 
 /// One line of the listing (with its `ref:` line for `--symref`).

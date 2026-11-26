@@ -36,6 +36,8 @@
 //!   message `<action>: <what>`.
 //! - [`display::fetch_head`], [`display::display_url`].
 
+pub mod bundle;
+pub mod bundle_uri;
 pub mod display;
 mod error;
 mod fetch;

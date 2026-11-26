@@ -52,6 +52,8 @@ fn approxidate_utc() {
         ("1500000000", 1500000000),
         ("@1500000000 +0200", 1500000000),
         ("2015-03-03 10:11:12 +0100", 1425373872),
+        // A year followed by the time with `.` between (t5607).
+        ("7.Apr.2005.15:16:00.-0700", 1112912160),
         ("garbage", 1600000000),
     ] {
         assert_eq!(approxidate(input, &utc()), want, "{input:?}");

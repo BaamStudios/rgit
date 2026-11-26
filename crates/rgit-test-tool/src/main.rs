@@ -28,6 +28,7 @@ type Tool = (&'static str, fn(&[String]) -> i32);
 const TOOLS: &[Tool] = &[
     ("advise", cmd::advise::advise),
     ("bloom", cmd::bloom::bloom),
+    ("bundle-uri", cmd::bundle_uri::bundle_uri),
     ("config", cmd::config::config),
     ("date", cmd::date::date),
     ("parse-options", cmd::parse_options::parse_options),

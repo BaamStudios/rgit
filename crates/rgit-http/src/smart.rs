@@ -201,6 +201,47 @@ impl<'a> SmartHttp<'a> {
             .collect()
     }
 
+    /// GET the URL of this session as a plain file (a bundle or bundle
+    /// list of a bundle URI) and return the body of a `2xx` answer.
+    pub fn get_file(&mut self) -> Result<Vec<u8>> {
+        let url = self.url.clone();
+        let headers = self.common_headers();
+        let follow = self.client.opts.follow_redirects != FollowRedirects::Never;
+        let disp = self.url.without_credentials().to_string();
+        let (mut resp, _) = match self.execute("GET", url, headers, true, Payload::None, follow, "")
+        {
+            Ok(r) => r,
+            Err(ExecError::Transport(t)) => {
+                return Err(Error::Access {
+                    url: disp,
+                    status: None,
+                    reason: t.reason,
+                    remote: Vec::new(),
+                });
+            }
+            Err(ExecError::Other(e)) => return Err(e),
+        };
+        match resp.status {
+            200..=299 => {}
+            404 => return Err(Error::RepositoryNotFound { url: disp }),
+            s => {
+                let remote = remote_lines(&mut resp);
+                return Err(Error::Access {
+                    url: disp,
+                    status: Some(s),
+                    reason: messages::returned_error(s),
+                    remote,
+                });
+            }
+        }
+        resp.read_all().map_err(|t| Error::Access {
+            url: disp,
+            status: None,
+            reason: t.reason,
+            remote: Vec::new(),
+        })
+    }
+
     /// Discover the refs (and capabilities) of `service`.
     pub fn discover(&mut self, service: Service) -> Result<Advertisement> {
         let svc = service.name();

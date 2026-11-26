@@ -491,6 +491,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgit-bundle"
+version = "0.1.0"
+dependencies = [
+ "rgit-config",
+ "rgit-hash",
+]
+
+[[package]]
 name = "rgit-cli"
 version = "0.1.0"
 dependencies = [
@@ -505,6 +513,7 @@ dependencies = [
  "rgit-apply",
  "rgit-archive",
  "rgit-attr",
+ "rgit-bundle",
  "rgit-commit",
  "rgit-commitgraph",
  "rgit-config",
@@ -625,6 +634,7 @@ name = "rgit-fetch"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "rgit-bundle",
  "rgit-config",
  "rgit-fs",
  "rgit-hash",
@@ -637,6 +647,7 @@ dependencies = [
  "rgit-refs",
  "rgit-remote",
  "rgit-repo",
+ "rgit-trace",
  "rgit-transport",
  "tempfile",
  "thiserror",
@@ -932,6 +943,7 @@ name = "rgit-test-tool"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "rgit-bundle",
  "rgit-commitgraph",
  "rgit-config",
  "rgit-date",
