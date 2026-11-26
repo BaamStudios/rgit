@@ -3,7 +3,7 @@
 //!
 //! Protocol v2 (`Documentation/gitprotocol-v2.adoc`): the capability
 //! advertisement and the commands `ls-refs`, `fetch` and `object-info`
-//! (and `bundle-uri`, which answers with an empty list). Protocol v0 and
+//! (and `bundle-uri`, the `bundle.*` configuration). Protocol v0 and
 //! v1 (`Documentation/gitprotocol-pack.adoc`): the reference
 //! advertisement, `want`/`have` negotiation in all three acknowledgment
 //! modes, shallow and filtered requests. Both with namespaces and hidden
@@ -26,6 +26,7 @@
 //! # }
 //! ```
 
+mod bundle_uri;
 mod error;
 mod fetch;
 mod graph;
