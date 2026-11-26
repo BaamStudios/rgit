@@ -915,11 +915,9 @@ fn fetch_main(ctx: &mut Context, argv: &[String], action: Option<&str>) -> CmdRe
     Ok(code)
 }
 
-/// The automatic maintenance after fetching (git runs it as a child
-/// process, which `GIT_TRACE` shows).
+/// The automatic maintenance after fetching (a `maintenance run --auto`
+/// child process).
 fn maintenance(ctx: &Context, quiet: bool) {
-    let q = if quiet { "--quiet" } else { "--no-quiet" };
-    rgit_trace::trace_builtin(&["maintenance", "run", "--auto", q, "--detach"]);
     crate::maintenance::run_auto_quiet(ctx, quiet);
 }
 

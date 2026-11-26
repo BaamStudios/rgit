@@ -368,7 +368,7 @@ fn shown_path(setup: &Setup, path: &Path) -> String {
 }
 
 /// Local packs without a `.keep` file.
-fn count_packs(objects: &Path) -> i64 {
+pub(crate) fn count_packs(objects: &Path) -> i64 {
     let Ok(rd) = std::fs::read_dir(objects.join("pack")) else {
         return 0;
     };
@@ -384,7 +384,7 @@ fn count_packs(objects: &Path) -> i64 {
 
 /// git's estimate: more than `(gc.auto + 255) / 256` loose objects in
 /// `objects/17`.
-fn too_many_loose(objects: &Path, gc_auto: i64, hash: rgit_hash::HashKind) -> bool {
+pub(crate) fn too_many_loose(objects: &Path, gc_auto: i64, hash: rgit_hash::HashKind) -> bool {
     let limit = (gc_auto + 255) / 256;
     let n = store::fan_entries(objects, 0x17, hash)
         .iter()
