@@ -523,25 +523,15 @@ fn fsck_config(repo: &Repo) -> Result<Config, Die> {
             cfg.skip = read_skiplist(repo, &value)?;
             continue;
         }
-        let Some(id) = MsgId::from_name(key) else {
-            if crate::commands::mktag::is_known_id(key) {
-                continue;
-            }
-            return Err(Die::Fatal(msg::unhandled_fsck_id(key)));
-        };
+        let large = MsgId::from_name(key) == Some(MsgId::LargePathname);
         let (sev_name, limit) = match value.split_once(':') {
-            Some((s, n)) if id == MsgId::LargePathname => (s, n.parse::<usize>().ok()),
+            Some((s, n)) if large => (s, n.parse::<usize>().ok()),
             _ => (value.as_str(), None),
         };
-        let sev = match sev_name.to_ascii_lowercase().as_str() {
-            "error" => Severity::Error,
-            "warn" => Severity::Warn,
-            "ignore" => Severity::Ignore,
-            _ => return Err(Die::Fatal(msg::unknown_severity(&value))),
+        let key = key.to_ascii_lowercase();
+        let Some((id, sev)) = rgit_object::fsck::check_setting(&key, sev_name).map_err(Die::Fatal)? else {
+            continue;
         };
-        if id.default_severity() == Severity::Fatal && sev != Severity::Error {
-            return Err(Die::Fatal(msg::cannot_demote(key, &value)));
-        }
         if let Some(n) = limit {
             cfg.max_pathname_len = n;
         }
@@ -551,23 +541,52 @@ fn fsck_config(repo: &Repo) -> Result<Config, Die> {
 }
 
 fn read_skiplist(repo: &Repo, path: &str) -> Result<HashSet<ObjectId>, Die> {
+    read_skiplist_file(repo.hash, path)
+}
+
+/// The ids of the skip list file `path` (relative to the current
+/// directory), with git's messages for a missing file or a bad line.
+pub(crate) fn read_skiplist_file(hash: HashKind, path: &str) -> Result<HashSet<ObjectId>, Die> {
     let data = std::fs::read(path).map_err(|_| Die::Fatal(msg::could_not_open_skiplist(path)))?;
-    let mut skip = HashSet::new();
-    for line in data.split(|&b| b == b'\n') {
-        let line = line.split(|&b| b == b'#').next().unwrap_or(&[]).trim_ascii();
-        if line.is_empty() {
-            continue;
-        }
-        match ObjectId::from_hex(repo.hash, line) {
-            Ok(oid) => {
-                skip.insert(oid);
+    let ids = rgit_object::fsck::parse_skiplist(hash, &data).map_err(Die::Fatal)?;
+    Ok(ids.into_iter().collect())
+}
+
+/// The settings of `--strict=<list>` / `--fsck-objects=<list>` of
+/// index-pack and unpack-objects (what receive-pack and fetch pass on from
+/// `receive.fsck.*` / `fetch.fsck.*`; `fsck.*` does not apply).
+#[derive(Default, Debug)]
+pub(crate) struct StrictSettings {
+    /// The raw lists in command-line order, checked by [`Self::resolve`].
+    pub lists: Vec<String>,
+    pub severities: HashMap<MsgId, Severity>,
+    pub skip: HashSet<ObjectId>,
+}
+
+impl StrictSettings {
+    /// Check the lists in order like git (the first bad item ends the
+    /// command) and read the skip lists.
+    pub(crate) fn resolve(&mut self, hash: HashKind) -> Result<(), Die> {
+        for list in std::mem::take(&mut self.lists) {
+            for item in rgit_object::fsck::split_settings(&list) {
+                let (key, value) = item.map_err(Die::Fatal)?;
+                if key == "skiplist" {
+                    self.skip.extend(read_skiplist_file(hash, value)?);
+                    continue;
+                }
+                if let Some((id, sev)) = rgit_object::fsck::check_setting(&key, value).map_err(Die::Fatal)? {
+                    self.severities.insert(id, sev);
+                }
             }
-            Err(_) => {
-                return Err(Die::Fatal(msg::invalid_skiplist_line(&String::from_utf8_lossy(
-                    line,
-                ))));
-            }
         }
+        Ok(())
     }
-    Ok(skip)
+
+    /// The severity of `id` after the settings.
+    pub(crate) fn severity(&self, id: MsgId) -> Severity {
+        self.severities
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| id.default_severity())
+    }
 }

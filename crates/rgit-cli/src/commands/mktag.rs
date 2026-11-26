@@ -14,37 +14,6 @@ use crate::repo_objects::Repo;
 use crate::prelude::*;
 use crate::repo::{self, Mode};
 
-/// Every message id `fsck.<msg-id>` may name (`fsck-msgids(5)`), lower
-/// case. Ids outside rgit-object's object checks are accepted and have no
-/// effect here.
-const KNOWN_IDS: &[&str] = &[
-    "baddate", "baddateoverflow", "bademail", "badfilemode", "badgpgsig", "badheadtarget",
-    "badheadercontinuation", "badname", "badobjectsha1", "badpackedrefentry",
-    "badpackedrefheader", "badparentsha1", "badrefcontent", "badreffiletype", "badrefname",
-    "badrefoid", "badreferentname", "badreftabletablename", "badtagname", "badtimezone",
-    "badtree", "badtreesha1", "badtype", "duplicateentries", "emptyname",
-    "emptypackedrefsfile", "extraheaderentry", "fullpathname", "gitattributesblob",
-    "gitattributeslarge", "gitattributeslinelength", "gitattributesmissing",
-    "gitattributessymlink", "gitignoresymlink", "gitmodulesblob", "gitmoduleslarge",
-    "gitmodulesmissing", "gitmodulesname", "gitmodulesparse", "gitmodulespath",
-    "gitmodulessymlink", "gitmodulesupdate", "gitmodulesurl", "hasdot", "hasdotdot",
-    "hasdotgit", "largepathname", "mailmapsymlink", "missingauthor", "missingcommitter",
-    "missingemail", "missingnamebeforeemail", "missingobject", "missingspacebeforedate",
-    "missingspacebeforeemail", "missingtag", "missingtagentry", "missingtaggerentry",
-    "missingtree", "missingtype", "missingtypeentry", "multipleauthors", "nulincommit",
-    "nulinheader", "nullsha1", "packedrefentrynotterminated", "packedrefunsorted",
-    "refmissingnewline", "symlinkref", "symreftargetisnotaref", "trailingrefcontent",
-    "treenotsorted", "unknowntype", "unterminatedheader", "zeropaddeddate",
-    "zeropaddedfilemode",
-];
-
-/// Whether `id` (lower case) is a message id of `fsck-msgids(5)`.
-pub(crate) fn is_known_id(id: &str) -> bool {
-    KNOWN_IDS.contains(&id)
-}
-
-/// Ids whose findings cannot be made less severe than an error.
-const FATAL_IDS: &[&str] = &["nulinheader", "unterminatedheader"];
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let strict = Cell::new(true);
@@ -156,18 +125,8 @@ pub(crate) fn fsck_levels(config: &rgit_config::ConfigSet) -> Result<HashMap<Str
             }
             continue;
         }
-        if !KNOWN_IDS.contains(&key) {
-            return Err(Die::Fatal(msg::unhandled_fsck_id(key)));
-        }
-        let sev = match value.as_str() {
-            "error" => Severity::Error,
-            "warn" => Severity::Warn,
-            "ignore" => Severity::Ignore,
-            _ => return Err(Die::Fatal(msg::unknown_fsck_severity(&value))),
-        };
-        if FATAL_IDS.contains(&key) && sev != Severity::Error {
-            return Err(Die::Fatal(msg::cannot_demote(key, &value)));
-        }
+        fsck::check_setting(key, &value).map_err(Die::Fatal)?;
+        let sev = fsck::parse_severity(&value).expect("checked");
         out.insert(key.to_owned(), sev);
     }
     Ok(out)

@@ -20,18 +20,6 @@ pub fn tagged_type_mismatch(oid: &str, tagged: &str, actual: &str) -> String {
     format!("object '{oid}' tagged as '{tagged}', but is a '{actual}' type")
 }
 
-pub fn unknown_fsck_severity(value: &str) -> String {
-    format!("Unknown fsck message type: '{value}'")
-}
-
-pub fn unhandled_fsck_id(id: &str) -> String {
-    format!("Unhandled message id: {id}")
-}
-
-pub fn cannot_demote(id: &str, to: &str) -> String {
-    format!("Cannot demote {id} to {to}")
-}
-
 pub fn could_not_open_skiplist(path: &str) -> String {
     format!("could not open object name list: {path}")
 }

@@ -8,8 +8,12 @@
 //! `--verify-stat` / `--verify-stat-only` (used by `verify-pack`) print the
 //! object list and the histogram of delta chain lengths after verifying.
 //!
-//! Not supported yet: `--promisor` (#24), `fsck.<msg-id>` configuration
-//! (#95), `core.sharedRepository` file modes.
+//! `--strict=<msg-id>=<severity>,skiplist=<file>,...` takes the settings
+//! that receive-pack and fetch pass on (`fsck.*` configuration does not
+//! apply here, as observed from git).
+//!
+//! Not supported yet: `--promisor` (#24),
+//! `core.sharedRepository` file modes.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -28,6 +32,7 @@ use rgit_pack::index_pack::{
 use rgit_odb::{LooseOptions, ObjectDatabase};
 use rgit_pack::ObjectKind;
 
+use crate::commands::fsck::StrictSettings;
 use crate::prelude::*;
 
 /// What the command line asked for.
@@ -40,8 +45,8 @@ struct Args {
     strict: bool,
     /// `--fsck-objects` or `--strict`.
     fsck: bool,
-    /// `<msg-id>=<severity>` overrides.
-    fsck_msgs: Vec<(String, String)>,
+    /// `<msg-id>=<severity>` overrides and skip lists.
+    settings: StrictSettings,
     self_contained: bool,
     verify: bool,
     /// `--verify-stat` (`Some(false)`) / `--verify-stat-only` (`Some(true)`).
@@ -141,11 +146,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
                 }
                 a.fsck = true;
                 if let Some(v) = v {
-                    for item in v.split([',', ' ']).filter(|s| !s.is_empty()) {
-                        if let Some((id, sev)) = item.split_once(['=', ':']) {
-                            a.fsck_msgs.push((id.to_string(), sev.to_string()));
-                        }
-                    }
+                    a.settings.lists.push(v.to_string());
                 }
             }
             ("--check-self-contained-and-connected", None) => a.self_contained = true,
@@ -281,10 +282,10 @@ fn load_config(ctx: &Context, repo: Option<&Repo>) -> ConfigSet {
 }
 
 /// `--strict` / `--fsck-objects` / `--check-self-contained-and-connected`.
-struct Checks {
+struct Checks<'a> {
     hash: HashKind,
     fsck: bool,
-    severities: HashMap<MsgId, Severity>,
+    settings: &'a StrictSettings,
     /// Collected links, when connectivity is checked.
     links: Option<Mutex<Vec<ObjectId>>>,
     /// `.gitmodules` / `.gitattributes` blobs named by trees, to check
@@ -292,12 +293,9 @@ struct Checks {
     queued: Mutex<Vec<(ObjectId, fsck::SpecialFile)>>,
 }
 
-impl Checks {
+impl Checks<'_> {
     fn severity(&self, id: MsgId) -> Severity {
-        self.severities
-            .get(&id)
-            .copied()
-            .unwrap_or_else(|| id.default_severity())
+        self.settings.severity(id)
     }
 
     fn collect_links(&self, kind: ObjectKind, data: &[u8], out: &Mutex<Vec<ObjectId>>) {
@@ -333,12 +331,12 @@ impl Checks {
     }
 }
 
-impl ObjectHook for Checks {
+impl ObjectHook for Checks<'_> {
     fn object(&self, id: &ObjectId, kind: ObjectKind, data: &[u8]) -> Result<(), String> {
         if let Some(links) = &self.links {
             self.collect_links(kind, data, links);
         }
-        if !self.fsck {
+        if !self.fsck || self.settings.skip.contains(id) {
             return Ok(());
         }
         if kind == ObjectKind::Tree {
@@ -408,7 +406,7 @@ impl ObjectHook for Checks {
 
 /// `.gitmodules` blobs of the pack (`--strict` / `--fsck-objects`).
 fn check_gitmodules(
-    checks: &Checks,
+    checks: &Checks<'_>,
     pack_file: &Path,
     hash: HashKind,
     indexed: &IndexedPack,
@@ -419,7 +417,7 @@ fn check_gitmodules(
     let pack = rgit_pack::Pack::from_bytes(idx, data, pack_file, hash).map_err(|e| Die::Fatal(e.to_string()))?;
     let mut cache = rgit_pack::DeltaBaseCache::default();
     let mut failed = false;
-    for id in ids {
+    for id in ids.iter().filter(|id| !checks.settings.skip.contains(id)) {
         let Ok(Some(obj)) = pack.read(id, &mut cache) else {
             continue;
         };
@@ -516,8 +514,13 @@ fn config_bool(cfg: &ConfigSet, key: &str) -> Option<bool> {
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
-    let args = parse_args(argv)?;
+    let mut args = parse_args(argv)?;
     let repo = discover(ctx)?;
+    args.settings.resolve(
+        args.object_format
+            .or(repo.as_ref().map(|r| r.hash))
+            .unwrap_or(HashKind::Sha1),
+    )?;
     let cfg = load_config(ctx, repo.as_ref());
 
     if args.fix_thin && !args.stdin {
@@ -611,20 +614,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let checks = Checks {
         hash,
         fsck: args.fsck,
-        severities: args
-            .fsck_msgs
-            .iter()
-            .filter_map(|(id, sev)| {
-                let id = MsgId::from_name(id)?;
-                let sev = match sev.to_ascii_lowercase().as_str() {
-                    "error" => Severity::Error,
-                    "warn" => Severity::Warn,
-                    "ignore" => Severity::Ignore,
-                    _ => return None,
-                };
-                Some((id, sev))
-            })
-            .collect(),
+        settings: &args.settings,
         links: (args.strict || args.self_contained).then(|| Mutex::new(Vec::new())),
         queued: Mutex::new(Vec::new()),
     };

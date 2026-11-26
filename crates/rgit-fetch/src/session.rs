@@ -464,10 +464,13 @@ impl Session {
         let proto = &mut self.proto;
         let show_progress = !opts.no_progress;
         let unpack_limit = u64::from(opts.unpack_limit.unwrap_or(0));
-        let fsck_hook = opts.fsck.as_ref().map(|check| FsckHook {
-            hash: repo.hash,
-            check,
-        });
+        let fsck_hook = match &opts.fsck {
+            Some(check) => Some(FsckHook {
+                hash: repo.hash,
+                check: check.settings(repo.hash)?,
+            }),
+            None => None,
+        };
         let (outcome, indexed) = std::thread::scope(|s| {
             let worker = s.spawn(move || {
                 let mut meter =
@@ -718,13 +721,22 @@ pub struct PackOptions {
 /// as observed from git).
 #[derive(Debug, Clone)]
 pub struct FsckCheck {
-    /// Severities set by `fetch.fsck.<msg-id>`.
-    pub severities: Vec<(MsgId, Severity)>,
-    /// Objects not checked (`fetch.fsck.skipList`).
-    pub skip: HashSet<ObjectId>,
+    /// The `fetch.fsck.*` entries in config order: key (lower case) and
+    /// value. git checks them only when a pack arrives
+    /// ([`FsckCheck::settings`]).
+    pub entries: Vec<(String, Option<String>)>,
     /// The last fatal line when an object fails (it differs between
     /// fetch and clone).
     pub failed: String,
+}
+
+/// [`FsckCheck`] after its entries were checked.
+#[derive(Debug, Default)]
+struct FsckSettings {
+    /// Severities set by `fetch.fsck.<msg-id>`.
+    severities: Vec<(MsgId, Severity)>,
+    /// Objects not checked (`fetch.fsck.skipList`).
+    skip: HashSet<ObjectId>,
 }
 
 impl FsckCheck {
@@ -732,7 +744,7 @@ impl FsckCheck {
     /// [`FsckCheck::failed`].
     pub fn from_config(
         config: &rgit_config::ConfigSet,
-        hash: HashKind,
+        _hash: HashKind,
         failed: &str,
     ) -> Option<FsckCheck> {
         let on = config
@@ -744,50 +756,75 @@ impl FsckCheck {
         if !on {
             return None;
         }
-        let mut severities = Vec::new();
-        let mut skip = HashSet::new();
-        for entry in config.entries() {
-            let name = String::from_utf8_lossy(&entry.name).into_owned();
-            let Some(key) = name.strip_prefix("fetch.fsck.") else {
-                continue;
-            };
-            if key == "skiplist" {
-                let path = entry.value.as_ref().map(|v| v.to_str_lossy().into_owned());
-                let data = path.and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
-                for line in data.split(|&b| b == b'\n') {
-                    let line = line
-                        .split(|&b| b == b'#')
-                        .next()
-                        .unwrap_or(&[])
-                        .trim_ascii();
-                    if let Ok(id) = ObjectId::from_hex(hash, line) {
-                        skip.insert(id);
-                    }
+        let entries = config
+            .entries()
+            .iter()
+            .filter_map(|entry| {
+                let name = String::from_utf8_lossy(&entry.name);
+                let key = name.strip_prefix("fetch.fsck.")?;
+                if key.contains('.') {
+                    return None;
                 }
-                continue;
-            }
-            let Some(id) = MsgId::from_name(key) else {
-                continue;
-            };
-            let value = entry
-                .value
-                .as_ref()
-                .map(|v| String::from_utf8_lossy(v).to_ascii_lowercase());
-            let sev = match value.as_deref() {
-                Some("error") => Severity::Error,
-                Some("warn") => Severity::Warn,
-                Some("ignore") => Severity::Ignore,
-                _ => continue,
-            };
-            severities.push((id, sev));
-        }
+                let value = entry.value.as_ref().map(|v| v.to_str_lossy().into_owned());
+                Some((key.to_ascii_lowercase(), value))
+            })
+            .collect();
         Some(FsckCheck {
-            severities,
-            skip,
+            entries,
             failed: failed.to_owned(),
         })
     }
 
+    /// Check the entries like git when a pack arrives. git's fetch checks
+    /// the values itself (a missing value or an unknown severity ends it,
+    /// unknown ids are skipped with a warning) and hands the rest to
+    /// index-pack, which reads the skip lists and refuses to demote the ids
+    /// that stop a check; its failures end with [`FsckCheck::failed`].
+    fn settings(&self, hash: HashKind) -> Result<FsckSettings> {
+        let mut passed = Vec::new();
+        for (key, value) in &self.entries {
+            let Some(value) = value else {
+                let name = format!("fetch.fsck.{key}");
+                eprintln!("error: {}", messages::missing_config_value(&name));
+                return Err(Error::fatal(messages::unable_to_parse_config(&name)));
+            };
+            if key != "skiplist" {
+                if !rgit_object::fsck::is_known_id(key) {
+                    eprintln!("warning: {}", messages::skipping_unknown_msg_id(key));
+                    continue;
+                }
+                if rgit_object::fsck::parse_severity(value).is_none() {
+                    return Err(Error::fatal(rgit_object::messages::fsck::unknown_severity(
+                        value,
+                    )));
+                }
+            }
+            passed.push((key, value));
+        }
+        let child_failed = |msg: String| {
+            eprintln!("fatal: {msg}");
+            Error::fatal(self.failed.clone())
+        };
+        let mut out = FsckSettings::default();
+        for (key, value) in passed {
+            if key == "skiplist" {
+                let data = std::fs::read(value)
+                    .map_err(|_| child_failed(messages::could_not_open_skiplist(value)))?;
+                let ids = rgit_object::fsck::parse_skiplist(hash, &data).map_err(child_failed)?;
+                out.skip.extend(ids);
+                continue;
+            }
+            if let Some(setting) =
+                rgit_object::fsck::check_setting(key, value).map_err(child_failed)?
+            {
+                out.severities.push(setting);
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl FsckSettings {
     fn severity(&self, id: MsgId) -> Severity {
         self.severities
             .iter()
@@ -798,12 +835,12 @@ impl FsckCheck {
 }
 
 /// Runs [`FsckCheck`] on each object index-pack resolves.
-struct FsckHook<'a> {
+struct FsckHook {
     hash: rgit_hash::HashKind,
-    check: &'a FsckCheck,
+    check: FsckSettings,
 }
 
-impl ip::ObjectHook for FsckHook<'_> {
+impl ip::ObjectHook for FsckHook {
     fn object(
         &self,
         id: &ObjectId,

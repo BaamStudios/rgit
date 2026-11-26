@@ -143,28 +143,12 @@ pub fn could_not_open_skiplist(path: &str) -> String {
     format!("could not open object name list: {path}")
 }
 
-pub fn invalid_skiplist_line(line: &str) -> String {
-    format!("invalid object name: {line}")
-}
-
 pub fn missing_config_value(name: &str) -> String {
     format!("missing value for '{name}'")
 }
 
 pub fn unable_to_parse_config(name: &str) -> String {
     format!("unable to parse '{name}' from command-line config")
-}
-
-pub fn unhandled_fsck_id(id: &str) -> String {
-    format!("Unhandled message id: {id}")
-}
-
-pub fn unknown_severity(value: &str) -> String {
-    format!("Unknown fsck message type: '{value}'")
-}
-
-pub fn cannot_demote(id: &str, to: &str) -> String {
-    format!("Cannot demote {id} to {to}")
 }
 
 pub fn type_mismatch(oid: &str, is: &str, not: &str) -> String {
