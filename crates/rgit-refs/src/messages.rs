@@ -11,6 +11,11 @@ use std::fmt::Display;
 /// files written by the reference git; readers and tests depend on it).
 pub const PACKED_REFS_HEADER: &str = "# pack-refs with: peeled fully-peeled sorted \n";
 
+/// Content of the file `refs/heads` in a git directory whose references
+/// live elsewhere (`extensions.refStorage = <format>://<directory>`;
+/// on-disk text, observed in repositories written by the reference git).
+pub const ALTERNATE_REFS_STAND_IN: &str = "repository uses alternate refs storage\n";
+
 /// `refusing to update ref with bad name '<name>'`
 pub fn bad_name(name: &str) -> String {
     format!("refusing to update ref with bad name '{name}'")

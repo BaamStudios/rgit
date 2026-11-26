@@ -20,7 +20,7 @@ static DIRS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
 
 /// Content of the file `refs/heads` in a git directory whose references
 /// are elsewhere.
-pub const HEADS_STAND_IN: &str = "repository uses alternate refs storage\n";
+pub const HEADS_STAND_IN: &str = crate::messages::ALTERNATE_REFS_STAND_IN;
 
 fn normalize(dir: &Path) -> PathBuf {
     if let Ok(p) = dir.canonicalize() {
