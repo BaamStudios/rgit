@@ -100,6 +100,16 @@ fn read_head(
     let store = FilesStore::new(common, kind).with_worktree(admin);
     match store.read_raw("HEAD") {
         Ok(Some(Target::Object(oid))) => (Some(oid), None, false),
+        // A HEAD that points at something that is no reference name is
+        // broken, not on a branch.
+        Ok(Some(Target::Symbolic(name)))
+            if !rgit_refs::name::is_valid_refname(
+                &rgit_bstr::to_bytes(&name),
+                rgit_refs::name::RefNameFlags::ONELEVEL,
+            ) =>
+        {
+            (None, None, true)
+        }
         Ok(Some(Target::Symbolic(name))) => {
             let oid = store.resolve(&name).ok().flatten().and_then(|r| r.oid);
             (oid, Some(name), false)

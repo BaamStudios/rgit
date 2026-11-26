@@ -140,6 +140,19 @@ fn list() {
     }
 }
 
+/// A main worktree whose HEAD points at something that is no reference
+/// name is listed as broken, without a branch (t2402).
+#[test]
+fn list_with_broken_main_head() {
+    let mut fx = with_worktrees().write("main/.git/HEAD", "ref: .broken\n");
+    for args in [
+        &["worktree", "list"][..],
+        &["worktree", "list", "--porcelain"],
+    ] {
+        fx.compare(args).in_dir("w1").output_only().run();
+    }
+}
+
 #[test]
 fn lock_unlock() {
     let cases: &[&[&str]] = &[
