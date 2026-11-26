@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT
+# Steps of m5-gitea-server.sh that are known to fail with rgit as Gitea's
+# server-side git (issue #71). One step per line: name, issue, reason.
+# A listed step that passes is reported as "newly passing"; remove it then.
+#
+# Gitea's conflict check runs `git unpack-file <blob>` (legacy merge plumbing).
+git:pr-conflict             #158  unpack-file missing (PR #691)
+rgit:pr-conflict            #158  unpack-file missing (PR #691)
+# Clients that do not ask for protocol v2 (no GIT_PROTOCOL): Gitea runs
+# `upload-pack --stateless-rpc --advertise-refs` without it.
+git:protocol-v0-https       #174  upload-pack serves protocol v2 only (PR #700)
+git:protocol-v0-ssh         #174  upload-pack serves protocol v2 only (PR #700)
+rgit:protocol-v0-https      #174  upload-pack serves protocol v2 only (PR #700)
+rgit:protocol-v0-ssh        #174  upload-pack serves protocol v2 only (PR #700)
