@@ -26,10 +26,11 @@ const MODE_MERGE: u8 = 1;
 const MODE_RESET: u8 = 2;
 const MODE_PREFIX: u8 = 3;
 
-/// `core.protectNTFS` and `core.protectHFS`.
+/// `core.ignoreCase`, `core.protectNTFS` and `core.protectHFS`.
 pub fn path_options(repo: &Repo) -> PathOptions {
     let d = PathOptions::default();
     PathOptions {
+        ignore_case: repo.ignore_case(),
         protect_ntfs: repo
             .config
             .bool("core.protectntfs")
@@ -251,6 +252,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             index_only,
             show_all_errors: false,
             initial_checkout: old.is_empty() && old_mtime.is_none(),
+            report_collisions: false,
             aggressive: aggressive.get(),
             paths,
             excludes: excludes.as_mut(),

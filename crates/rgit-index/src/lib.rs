@@ -49,6 +49,7 @@ mod ewah;
 mod file;
 mod index;
 pub mod messages;
+mod name_hash;
 mod read;
 mod split;
 mod tree;
@@ -64,6 +65,7 @@ pub use file::{
     INDEX_FILE_ENV, WriteError, index_path, notify_written, set_write_observer, shared_index_name,
 };
 pub use index::{AddOptions, Index, ResolveUndo};
+pub use name_hash::NameHash;
 pub use read::ReadOptions;
 pub use split::{SplitMode, SplitOptions};
 pub use tree::{CacheTree, TreeNode};

@@ -549,6 +549,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             excludes: Some(&mut ex),
             pathspec: (!pathspec.is_empty()).then_some(&pathspec),
             scan_excluded: false,
+            ignore_case: repo.ignore_case(),
         };
         walker.walk()
     };

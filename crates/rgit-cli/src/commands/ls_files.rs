@@ -837,6 +837,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             excludes: ex.as_mut(),
             pathspec: spec,
             scan_excluded: lister.show.ignored,
+            ignore_case: repo.ignore_case(),
         }
         .walk();
         let found = untracked::ls_files_others(
