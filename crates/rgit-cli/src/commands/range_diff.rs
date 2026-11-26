@@ -23,13 +23,13 @@ use crate::repository::Repo;
 /// `fatal: <message>` followed by the usage, exit 129.
 fn fatal_usage(message: &str) -> Die {
     let mut err = std::io::stderr().lock();
-    let _ = write!(err, "fatal: {message}\n\n{}", msg::USAGE);
+    let _ = write!(err, "fatal: {message}\n\n{}", msg::usage());
     Die::Exit(rgit_options::EXIT_USAGE)
 }
 
 fn error_usage(message: &str) -> Die {
     let mut err = std::io::stderr().lock();
-    let _ = write!(err, "error: {message}\n{}", msg::USAGE);
+    let _ = write!(err, "error: {message}\n{}", msg::usage());
     Die::Exit(rgit_options::EXIT_USAGE)
 }
 
@@ -258,7 +258,7 @@ fn ranges(repo: &mut Repo, a: &Args) -> Result<(String, String, Vec<String>), Di
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if argv.len() == 2 && matches!(argv[1].as_str(), "-h" | "--help-all") {
-        let _ = std::io::stdout().write_all(msg::USAGE.as_bytes());
+        let _ = std::io::stdout().write_all(msg::usage().as_bytes());
         return Ok(0);
     }
     let a = parse(&argv[1..])?;

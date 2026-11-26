@@ -19,7 +19,8 @@ use crate::repository::Repo;
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let help = format!("usage: {}\n", msg::USAGE);
-    if let Some(code) = diff::help(argv, &help) {
+    let full_help = format!("{help}\n{}", crate::messages::diff::OPTIONS_GROUP);
+    if let Some(code) = diff::help(argv, &full_help) {
         return Ok(code);
     }
     // `--abbrev` has no effect on the pairs read (observed with git 2.56.1).
@@ -30,7 +31,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .chain(argv[1..].iter().skip_while(|a| *a != "--"))
         .cloned()
         .collect();
-    let parsed = diff::parse_args(&args, |_| Ok(false), |_| usage_exit(help.clone()))?;
+    let parsed = diff::parse_args(&args, |_| Ok(false), |a| {
+        usage_exit(format!("error: {}\n{full_help}", msg::unknown_option(a)))
+    })?;
     if !parsed.args.is_empty() {
         return Err(usage_exit(format!("usage: {}\n", msg::PATHSPEC_NOT_SUPPORTED)));
     }

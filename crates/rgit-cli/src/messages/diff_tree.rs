@@ -8,7 +8,7 @@ pub const USAGE: &[&str] = &[
 
 /// The options listed by `-h` before the common diff options.
 pub const OPTIONS: &str = "\
-  -r            diff recursively
+\x20 -r            diff recursively
   -c            show combined diff for merge commits
   --cc          show combined diff for merge commits removing uninteresting hunks
   --combined-all-paths
