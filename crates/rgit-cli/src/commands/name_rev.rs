@@ -485,7 +485,8 @@ fn print_name(
             return Err(Die::Fatal(msg::cannot_describe(&id.to_hex())));
         }
     };
-    let _ = writeln!(out, "{text}");
+    let _ = out.write_all(&rgit_bstr::to_bytes(&text));
+    let _ = out.write_all(b"\n");
     Ok(())
 }
 
@@ -517,11 +518,11 @@ fn annotate_line(
             .flatten()
             .and_then(|id| name_of(&id));
         match name {
-            Some(n) if name_only => out.extend_from_slice(n.as_bytes()),
+            Some(n) if name_only => out.extend_from_slice(&rgit_bstr::to_bytes(&n)),
             Some(n) => {
                 out.extend_from_slice(run);
                 out.extend_from_slice(b" (");
-                out.extend_from_slice(n.as_bytes());
+                out.extend_from_slice(&rgit_bstr::to_bytes(&n));
                 out.push(b')');
             }
             None => out.extend_from_slice(run),

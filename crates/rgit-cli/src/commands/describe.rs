@@ -195,7 +195,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             names: &names,
             s: &settings,
         };
-        let mut out = std::io::stdout().lock();
+        let mut out = crate::argv::stdout();
         for arg in &args {
             let line = d.describe_arg(arg)?;
             let _ = writeln!(out, "{line}{suffix}");

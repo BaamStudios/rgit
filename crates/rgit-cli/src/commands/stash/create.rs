@@ -490,7 +490,7 @@ pub(crate) fn create_stash(
             return Err(Failed);
         }
     };
-    let i_commit = write_commit(repo, i_tree, &[head.commit], msg::index_on(&base).as_bytes())
+    let i_commit = write_commit(repo, i_tree, &[head.commit], &rgit_bstr::to_bytes(&msg::index_on(&base)))
         .map_err(report)?;
 
     // With -u/-a the untracked commit is written even when there is
@@ -526,7 +526,7 @@ pub(crate) fn create_stash(
             return Err(Failed);
         };
         u_commit = Some(
-            write_commit(repo, tree, &[], msg::untracked_on(&base).as_bytes()).map_err(report)?,
+            write_commit(repo, tree, &[], &rgit_bstr::to_bytes(&msg::untracked_on(&base))).map_err(report)?,
         );
     }
 
@@ -549,7 +549,7 @@ pub(crate) fn create_stash(
     };
     let mut parents = vec![head.commit, i_commit];
     parents.extend(u_commit);
-    let w = write_commit(repo, w_tree, &parents, message.as_bytes()).map_err(report)?;
+    let w = write_commit(repo, w_tree, &parents, &rgit_bstr::to_bytes(&message)).map_err(report)?;
     Ok(Some(Created {
         w,
         i: i_commit,

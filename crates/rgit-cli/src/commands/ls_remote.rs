@@ -346,12 +346,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if !tail_match(patterns, name) {
             continue;
         }
-        let name = String::from_utf8_lossy(name).into_owned();
+        let name = rgit_bstr::from_bytes(name).into_owned();
         let target = r
             .symref_target
             .as_ref()
             .filter(|_| symref.get())
-            .map(|t| String::from_utf8_lossy(t).into_owned());
+            .map(|t| rgit_bstr::from_bytes(t).into_owned());
         let peeled = r.peeled.filter(|_| !refs_only.get());
         entries.push(Entry {
             name: name.clone(),
@@ -374,7 +374,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         entries = sort_entries(entries, &sort_keys, setup.as_ref(), &config)?;
     }
 
-    let mut out = std::io::stdout().lock();
+    let mut out = crate::argv::stdout();
     for e in &entries {
         if let Some(t) = &e.symref {
             let _ = writeln!(out, "ref: {t}\t{}", e.name);

@@ -316,7 +316,7 @@ impl Decorations {
             if n.kind == Kind::Tag {
                 paint(&mut out, kind_color(Kind::Tag), &parts.tag);
             }
-            paint(&mut out, kind_color(n.kind), n.shown.as_bytes());
+            paint(&mut out, kind_color(n.kind), &rgit_bstr::to_bytes(&n.shown));
             if n.kind == Kind::Head
                 && let Some(p) = pointed
             {
@@ -324,7 +324,7 @@ impl Decorations {
                 paint(
                     &mut out,
                     kind_color(names[p].kind),
-                    names[p].shown.as_bytes(),
+                    &rgit_bstr::to_bytes(&names[p].shown),
                 );
             }
         }

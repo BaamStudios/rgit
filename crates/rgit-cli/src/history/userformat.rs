@@ -586,8 +586,8 @@ impl<L: Lookup> Expander<'_, L> {
                 }
                 if let Some(r) = item.reflog {
                     match k {
-                        b'd' => out.extend_from_slice(r.short_selector.as_bytes()),
-                        b'D' => out.extend_from_slice(r.selector.as_bytes()),
+                        b'd' => out.extend_from_slice(&rgit_bstr::to_bytes(&r.short_selector)),
+                        b'D' => out.extend_from_slice(&rgit_bstr::to_bytes(&r.selector)),
                         b's' => out.extend_from_slice(&r.message),
                         b'n' | b'e' => {
                             out.extend_from_slice(if k == b'n' { &r.name } else { &r.email })

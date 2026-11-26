@@ -221,14 +221,14 @@ fn find_ref_below(dir: &Path, rel: &str) -> Option<String> {
         .flatten()
         .filter_map(|e| {
             let is_dir = e.file_type().ok()?.is_dir();
-            Some((e.file_name().into_string().ok()?, is_dir))
+            Some((rgit_bstr::from_os_string(e.file_name()), is_dir))
         })
         .collect();
-    names.sort();
+    names.sort_by(|a, b| rgit_bstr::cmp(&a.0, &b.0));
     for (n, is_dir) in names {
         let child_rel = format!("{rel}/{n}");
         if is_dir {
-            if let Some(found) = find_ref_below(&dir.join(&n), &child_rel) {
+            if let Some(found) = find_ref_below(&dir.join(rgit_bstr::to_os(&n)), &child_rel) {
                 return Some(found);
             }
         } else if !n.ends_with(".lock") {
@@ -428,7 +428,7 @@ impl State<'_, '_> {
             .next()
             .map(|p| p.name.clone());
         let existing = match (loose, packed) {
-            (Some(a), Some(b)) => Some(if a.as_bytes() <= b.as_bytes() { a } else { b }),
+            (Some(a), Some(b)) => Some(if rgit_bstr::cmp(&a, &b).is_le() { a } else { b }),
             (a, b) => a.or(b),
         };
         if let Some(existing) = existing {

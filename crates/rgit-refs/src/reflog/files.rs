@@ -88,7 +88,7 @@ impl FilesReflog {
     /// repository has no such file).
     pub fn path(&self, name: &str) -> PathBuf {
         let (dir, rel) = self.locate(name);
-        dir.join("logs").join(rel)
+        dir.join("logs").join(rgit_bstr::to_os(&rel))
     }
 
     /// Whether the logs are kept in the reftable format.
@@ -384,7 +384,7 @@ impl FilesReflog {
                     }
                 }
             }
-            out.sort();
+            out.sort_by(|a, b| rgit_bstr::cmp(a, b));
             out.dedup();
             return Ok(out);
         }
@@ -400,7 +400,7 @@ impl FilesReflog {
                 }
             })?;
         }
-        out.sort();
+        out.sort_by(|a, b| rgit_bstr::cmp(a, b));
         out.dedup();
         Ok(out)
     }
@@ -456,9 +456,7 @@ fn walk(dir: &Path, prefix: &str, f: &mut dyn FnMut(&str)) -> io::Result<()> {
     let mut entries: Vec<_> = rd.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
-        let Some(fname) = e.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
+        let fname = rgit_bstr::from_os_string(e.file_name());
         let name = format!("{prefix}{fname}");
         let Ok(t) = e.file_type() else { continue };
         if t.is_dir() {

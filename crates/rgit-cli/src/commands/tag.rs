@@ -369,7 +369,7 @@ pub(crate) fn resolve_filters(
         let kind = objects.kind(&peeled);
         if kind != Some(ObjectKind::Commit) {
             if let Some(k) = kind {
-                eprintln!("error: {}", msg::not_a_commit(&id.to_hex(), k.name()));
+                crate::argv::errln(&format!("error: {}", msg::not_a_commit(&id.to_hex(), k.name())));
             }
             return Err(usage_error(match which {
                 2 => msg::must_point_to_commit("merged"),
@@ -509,7 +509,7 @@ impl List<'_> {
         values.choose_bases(items.iter().map(|it| (it.name.as_str(), it.oid)));
         let items = self.sort(&values, items)?;
 
-        let mut out = std::io::stdout().lock();
+        let mut out = crate::argv::stdout();
         let mut cells = Vec::new();
         for it in &items {
             let short = &it.name[TAG_PREFIX.len()..];
@@ -546,7 +546,7 @@ impl List<'_> {
         };
         self.patterns
             .iter()
-            .any(|p| wildmatch(p.as_bytes(), short.as_bytes(), flags))
+            .any(|p| wildmatch(&rgit_bstr::to_bytes(p), &rgit_bstr::to_bytes(short), flags))
     }
 
     /// The tag or one of the tags it points to (in a chain of tags) names
@@ -693,7 +693,7 @@ fn delete(
         match store.read_raw(&refname) {
             Ok(Some(Target::Object(oid))) => found.push((name, refname, oid)),
             _ => {
-                eprintln!("error: {}", msg::not_found(name));
+                crate::argv::errln(&format!("error: {}", msg::not_found(name)));
                 code = 1;
             }
         }
@@ -708,10 +708,10 @@ fn delete(
             .map_err(|e| fatal(e.to_string()))?;
     }
     if let Err(e) = tx.commit(&mut hooks) {
-        eprintln!("error: {e}");
+        crate::argv::errln(&format!("error: {e}"));
         return Ok(1);
     }
-    let mut out = std::io::stdout().lock();
+    let mut out = crate::argv::stdout();
     for (name, _, oid) in &found {
         let _ = writeln!(out, "{}", msg::deleted(name, &repo.abbrev(oid, repo.default_abbrev())));
     }
@@ -736,7 +736,7 @@ fn verify(values: &RefValues<'_>, objects: &Objects, config: &rgit_config::Confi
         let oid = match store.read_raw(&format!("{TAG_PREFIX}{name}")) {
             Ok(Some(Target::Object(oid))) => oid,
             _ => {
-                eprintln!("error: {}", msg::not_found(name));
+                crate::argv::errln(&format!("error: {}", msg::not_found(name)));
                 code = 1;
                 continue;
             }
@@ -933,7 +933,7 @@ impl Create<'_> {
             };
             if let Err(e) = rgit_ident::editor::launch(editor.as_deref(), editmsg, &opts) {
                 e.print();
-                eprintln!("{}", msg::SUPPLY_MESSAGE);
+                crate::argv::errln(msg::SUPPLY_MESSAGE);
                 return Err(Die::Exit(1));
             }
             message = std::fs::read(editmsg).map_err(|e| fatal(e.to_string()))?;
@@ -972,8 +972,8 @@ impl Create<'_> {
                 Ok(sig) => data.extend_from_slice(&sig),
                 Err(crate::signing::SignError::Die(d)) => return Err(d),
                 Err(crate::signing::SignError::Failed) => {
-                    eprintln!("error: {}", crate::messages::signing::UNABLE_TO_SIGN_TAG);
-                    eprintln!("{}", msg::message_left_in(&editmsg_shown(repo)));
+                    crate::argv::errln(&format!("error: {}", crate::messages::signing::UNABLE_TO_SIGN_TAG));
+                    crate::argv::errln(&msg::message_left_in(&editmsg_shown(repo)));
                     return Err(Die::Exit(128));
                 }
             }

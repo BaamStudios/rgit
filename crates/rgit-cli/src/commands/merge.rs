@@ -2293,6 +2293,15 @@ impl Session<'_> {
             .and_then(|e| e.value.as_ref())
             .map(|v| v.to_vec())
             .filter(|e| !e.eq_ignore_ascii_case(b"utf-8") && !e.eq_ignore_ascii_case(b"utf8"));
+        // A message that is not UTF-8 (a branch name in Latin-1) is
+        // warned about and stored with its bytes read as Latin-1, as
+        // `commit` does.
+        let cleaned = if encoding.is_none() && !rgit_commit::message::is_utf8(&cleaned) {
+            eprintln!("{}", rgit_commit::messages::NOT_UTF8_WARNING);
+            rgit_commit::message::fix_utf8(&cleaned)
+        } else {
+            cleaned
+        };
         let mut new = rgit_object::Commit::new(
             tree,
             parents,

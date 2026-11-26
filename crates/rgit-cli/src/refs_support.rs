@@ -525,9 +525,14 @@ impl<'a> UpdateHooks<'a> {
     /// with `create`, a missing log is created.
     pub fn log(&self, name: &str, old: ObjectId, new: ObjectId, message: &str, create: bool) {
         if let Some(w) = &self.writer {
-            let _ = w
-                .store
-                .log_update(name, old, new, &w.committer, message.as_bytes(), create);
+            let _ = w.store.log_update(
+                name,
+                old,
+                new,
+                &w.committer,
+                &rgit_bstr::to_bytes(message),
+                create,
+            );
         }
     }
 

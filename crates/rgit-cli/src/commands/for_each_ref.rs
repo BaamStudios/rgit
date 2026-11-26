@@ -239,7 +239,7 @@ pub fn run_with_usage(ctx: &mut Context, argv: &[String], usage: &[&str]) -> Cmd
             IterItem::Ref(r) => r,
             IterItem::Broken(n) | IterItem::BadName(n) => {
                 if patterns.is_empty() || matches_any(&patterns, &n, icase) {
-                    eprintln!("warning: {}", msg::ignoring_broken_ref(&n));
+                    crate::argv::errln(&format!("warning: {}", msg::ignoring_broken_ref(&n)));
                 }
                 continue;
             }
@@ -251,7 +251,7 @@ pub fn run_with_usage(ctx: &mut Context, argv: &[String], usage: &[&str]) -> Cmd
         }
         if oid.is_null() {
             if patterns.is_empty() || matches_any(&patterns, &r.name, icase) {
-                eprintln!("warning: {}", msg::ignoring_broken_ref(&r.name));
+                crate::argv::errln(&format!("warning: {}", msg::ignoring_broken_ref(&r.name)));
             }
             continue;
         }
@@ -342,7 +342,7 @@ fn resolve_filters(
         let kind = objects.kind(&peeled);
         if kind != Some(ObjectKind::Commit) {
             if let Some(k) = kind {
-                eprintln!("error: {}", rmsg::not_a_commit(&id.to_hex(), k.name()));
+                crate::argv::errln(&format!("error: {}", rmsg::not_a_commit(&id.to_hex(), k.name())));
             }
             return Err(Die::Error(
                 match which {
@@ -490,8 +490,8 @@ impl<'a> Reach<'a> {
         }
         let objects = self.objects;
         let failed = |id: ObjectId| {
-            eprintln!("error: {}", rmsg::could_not_read(&id.to_hex()));
-            eprintln!("error: {}", rmsg::could_not_parse_commit(&id.to_hex()));
+            crate::argv::errln(&format!("error: {}", rmsg::could_not_read(&id.to_hex())));
+            crate::argv::errln(&format!("error: {}", rmsg::could_not_parse_commit(&id.to_hex())));
             Die::Fatal(rmsg::REACHABILITY_FAILED.to_owned())
         };
         if !self.contains.targets.is_empty()
@@ -528,6 +528,10 @@ fn matches_any(patterns: &[String], name: &str, icase: bool) -> bool {
             }
         }
         p.contains(['*', '?', '[', '\\'])
-            && wildmatch(p.as_bytes(), n.as_bytes(), WildmatchFlags::PATHNAME)
+            && wildmatch(
+                &rgit_bstr::to_bytes(&p),
+                &rgit_bstr::to_bytes(&n),
+                WildmatchFlags::PATHNAME,
+            )
     })
 }

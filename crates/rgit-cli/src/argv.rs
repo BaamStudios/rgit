@@ -19,6 +19,29 @@ pub fn bytes(arg: &str) -> Vec<u8> {
     rgit_bstr::to_bytes(arg).into_owned()
 }
 
+/// Locked stdout that prints escaped names as their raw bytes, for output
+/// made of names and fixed text ([`rgit_bstr::Unescape`]).
+pub fn stdout() -> rgit_bstr::Unescape<std::io::StdoutLock<'static>> {
+    rgit_bstr::Unescape::new(std::io::stdout().lock())
+}
+
+/// `println!` for a line that may hold escaped names: they are printed
+/// as their raw bytes.
+pub fn outln(line: &str) {
+    use std::io::Write as _;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(&rgit_bstr::to_bytes(line));
+    let _ = out.write_all(b"\n");
+}
+
+/// `eprintln!` for a message that may hold escaped names.
+pub fn errln(line: &str) {
+    use std::io::Write as _;
+    let mut err = std::io::stderr().lock();
+    let _ = err.write_all(&rgit_bstr::to_bytes(line));
+    let _ = err.write_all(b"\n");
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
