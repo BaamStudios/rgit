@@ -187,6 +187,7 @@ pub(crate) fn run_action(ctx: &mut Context, argv: &[String], action: Action) -> 
     o.allow_empty = allow_empty.get() == 1;
     o.allow_empty_message = allow_empty_message.get() == 1;
     o.cleanup = cleanup.borrow().clone();
+    o.allow_rerere_auto = crate::rerere::flag(rerere.get());
     match empty.borrow().as_deref() {
         Some("keep") => o.keep_redundant = true,
         Some("drop") => o.drop_redundant = true,

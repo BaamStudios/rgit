@@ -24,7 +24,8 @@
 //! `--interactive` asks before each patch (not kept in the state, like
 //! git).
 //!
-//! Not done yet (#136): rerere.
+//! rerere runs after a three-way merge with conflicts, before the commit
+//! of `--continue` and is cleared by `--skip` and `--abort`.
 
 use std::ffi::OsString;
 use std::io::{IsTerminal as _, Read, Write};
@@ -78,6 +79,8 @@ struct Settings {
     scissors: Option<bool>,
     quoted_cr: Option<QuotedCr>,
     apply_opts: Vec<String>,
+    /// `--[no-]rerere-autoupdate` (`rerere-autoupdate`: `t`, `f`).
+    rerere: Option<bool>,
 }
 
 /// Options given on the command line (`None`: not given).
@@ -92,6 +95,7 @@ struct Given {
     scissors: Option<bool>,
     quoted_cr: Option<QuotedCr>,
     apply_opts: Option<Vec<String>>,
+    rerere: Option<bool>,
 }
 
 impl Settings {
@@ -122,6 +126,9 @@ impl Settings {
         }
         if let Some(v) = &g.apply_opts {
             self.apply_opts.clone_from(v);
+        }
+        if let Some(v) = g.rerere {
+            self.rerere = Some(v);
         }
     }
 }
@@ -446,6 +453,9 @@ impl<'c> Am<'c> {
             opts.push_str(&sq(o));
         }
         self.write("apply-opt", opts)?;
+        if let Some(r) = s.rerere {
+            self.write("rerere-autoupdate", format!("{}\n", tf(r)))?;
+        }
         Ok(())
     }
 
@@ -471,6 +481,11 @@ impl<'c> Am<'c> {
                 .read("quoted-cr")
                 .and_then(|s| QuotedCr::parse(s.trim())),
             apply_opts: sq_dequote_words(&self.read("apply-opt").unwrap_or_default()),
+            rerere: match self.read("rerere-autoupdate").as_deref().map(str::trim) {
+                Some("t") => Some(true),
+                Some("f") => Some(false),
+                _ => None,
+            },
         };
         self.saved = s.clone();
         self.cur = s;
@@ -925,6 +940,7 @@ impl<'c> Am<'c> {
             let _ = o.flush();
         }
         if !result.clean {
+            crate::rerere::auto(self.ctx, self.cur.rerere)?;
             eprintln!("error: {}", msg::FAILED_TO_MERGE);
             return Ok(Applied::No);
         }
@@ -1197,6 +1213,8 @@ impl<'c> Am<'c> {
             out(msg::RECORDED_EMPTY);
         }
         drop(index);
+        drop(repo);
+        crate::rerere::auto(self.ctx, None)?;
         if self.cur.sign {
             message = self.signoff(&message)?;
         }
@@ -1301,6 +1319,7 @@ impl<'c> Am<'c> {
     }
 
     fn skip(&mut self) -> CmdResult {
+        crate::rerere::clear(self.ctx)?;
         let code = self.reset_to_head()?;
         if code != 0 {
             return Ok(code);
@@ -1331,6 +1350,7 @@ impl<'c> Am<'c> {
             .and_then(|d| String::from_utf8(d).ok())
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty());
+        crate::rerere::clear(self.ctx)?;
         if !self.safe_to_reset()? {
             return Ok(128);
         }
@@ -1829,6 +1849,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         scissors: (scissors.get() != -1).then(|| scissors.get() == 1),
         quoted_cr: quoted_cr.get(),
         apply_opts: apply_given.get().then(|| apply_opts.borrow().clone()),
+        rerere: crate::rerere::flag(rerere.get()),
     };
     let defaults = Settings {
         threeway: threeway_default || rebasing.get() == 1,
@@ -1840,6 +1861,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         scissors: None,
         quoted_cr: None,
         apply_opts: Vec::new(),
+        rerere: None,
     };
     let mut am = Am {
         ctx,

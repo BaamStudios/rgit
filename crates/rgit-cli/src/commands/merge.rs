@@ -46,7 +46,7 @@
 //! `-S`/`commit.gpgSign` sign the merge commit and `--verify-signatures`
 //! checks the merged commits ([`crate::signing`]).
 //!
-//! Not yet: `-X renormalize` and merge attributes (#153), rerere (#156).
+//! Not yet: `-X renormalize` and merge attributes (#153).
 //! The octopus messages are rgit's own approximation.
 
 #[path = "merge/attrs.rs"]
@@ -116,6 +116,8 @@ struct Args {
     /// The resolved signing request (with `commit.gpgSign`).
     sign: Option<crate::signing::Sign>,
     verify_signatures: i32,
+    /// `--[no-]rerere-autoupdate`.
+    rerere: Option<bool>,
     autostash: i32,
     overwrite_ignore: bool,
     signoff: bool,
@@ -258,6 +260,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
         gpg_sign: gpg_sign.into_inner(),
         sign: None,
         verify_signatures: verify_signatures.get(),
+        rerere: crate::rerere::flag(rerere.get()),
         autostash: autostash.get(),
         overwrite_ignore: overwrite_ignore.get() != 0,
         signoff: signoff.get(),
@@ -1665,6 +1668,7 @@ impl Session<'_> {
                 m.extend_from_slice(&block);
                 self.write_merge_state(&parents[1..], &m)?;
             }
+            crate::rerere::auto(self.ctx, self.args.rerere)?;
             println!("{}", msg::AUTOMATIC_FAILED);
             self.autostash_pending();
             return Ok(1);

@@ -4,8 +4,8 @@
 //! Runs, as separate commands like git: `pack-refs --all --prune`
 //! (`gc.packRefs`), `reflog expire --all` (unless both reflog expiries
 //! are `never`),
-//! `worktree prune --expire <gc.worktreePruneExpire>`, `rerere gc` (once
-//! rgit has `rerere`), `repack -d -l` with `-A --unpack-unreachable=<date>`
+//! `worktree prune --expire <gc.worktreePruneExpire>`, `rerere gc`,
+//! `repack -d -l` with `-A --unpack-unreachable=<date>`
 //! (`-a` for `--prune=now`), and `prune --expire <date>`. `gc.pid` keeps
 //! two runs apart (`--force` overrides it).
 //!
@@ -232,9 +232,7 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if worktree_expire != "never" {
         children.run(&["worktree", "prune", "--expire", &worktree_expire])?;
     }
-    if crate::commands::find("rerere").is_some() {
-        children.run(&["rerere", "gc"])?;
-    }
+    children.run(&["rerere", "gc"])?;
 
     // extensions.preciousObjects: nothing may be deleted, so neither
     // repack nor prune runs.

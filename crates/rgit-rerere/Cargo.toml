@@ -1,0 +1,18 @@
+[package]
+name = "rgit-rerere"
+description = "Reuse recorded conflict resolutions (git rerere) for rgit: conflict normalisation, conflict ids, the rr-cache and MERGE_RR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rgit-diff = { path = "../rgit-diff" }
+rgit-hash = { path = "../rgit-hash" }
+
+[dev-dependencies]
+tempfile = "3"
