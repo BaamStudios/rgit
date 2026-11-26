@@ -480,8 +480,8 @@ pub fn write(
     }
     // With a bitmap the pack with the oldest `.pack` is preferred, unless
     // one is given.
-    // Ties go to the pack listed first by the directory (git scans the
-    // directory in its own order).
+    // Only whole seconds count; ties go to the pack listed first by the
+    // directory (git scans the directory in its own order).
     if opts.bitmap && preferred.is_none() && !opts.incremental {
         let scan: Vec<String> = std::fs::read_dir(pack_dir)
             .into_iter()
@@ -495,7 +495,7 @@ pub fn write(
             .iter()
             .enumerate()
             .filter(|(_, f)| !f.index.is_empty())
-            .min_by_key(|(_, f)| (f.mtime, rank(&f.name)))
+            .min_by_key(|(_, f)| (f.mtime.div_euclid(1_000_000_000), rank(&f.name)))
             .map(|(i, _)| i);
     }
     if let Some(i) = preferred
