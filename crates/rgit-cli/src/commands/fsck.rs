@@ -43,6 +43,7 @@ pub(crate) const ERROR_OBJECT: i32 = 1;
 pub(crate) const ERROR_REACHABLE: i32 = 2;
 pub(crate) const ERROR_PACK: i32 = 4;
 pub(crate) const ERROR_REFS: i32 = 8;
+pub(crate) const ERROR_COMMIT_GRAPH: i32 = 16;
 
 /// What the command line asked for.
 #[derive(Clone, Debug, Default)]
@@ -390,7 +391,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     print!("{broken}");
 
     report(&mut f, &repo)?;
+
+    // The commit-graph of the repository and of each alternate.
+    if crate::commit_graph::enabled(&repo.config) {
+        let objects = crate::commit_graph::DbObjects { odb: &repo.odb };
+        let opts = crate::commit_graph::load_options(&repo.config, repo.hash);
+        let local = crate::revisions::objects_dir(&repo.setup);
+        for dir in crate::commit_graph::object_dirs(&local) {
+            let code = super::commit_graph::verify_graph(&objects, &dir, opts, false, opts_progress(&f));
+            if code != 0 {
+                f.errors |= ERROR_COMMIT_GRAPH;
+            }
+        }
+    }
     Ok(f.errors)
+}
+
+fn opts_progress(f: &Fsck) -> bool {
+    f.opts.progress
 }
 
 /// The name of a link target of an object named `name`.

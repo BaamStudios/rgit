@@ -18,8 +18,9 @@
 //! Unreachable objects go into a cruft pack (`repack --cruft
 //! --cruft-expiration=<date>`, with `--max-cruft-size` /
 //! `gc.maxCruftSize` and `--expire-to`) unless `--no-cruft` or
-//! `gc.cruftPacks=false`, then they are kept loose (`repack -A`). The
-//! commit-graph (#22) is not written.
+//! `gc.cruftPacks=false`, then they are kept loose (`repack -A`).
+//! With `gc.writeCommitGraph` (default true) the commit-graph of all
+//! reachable commits is written last, as one file.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -324,6 +325,15 @@ fn gc(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if e != "never" {
             children.run(&["prune", "--expire", e])?;
         }
+    }
+
+    if config
+        .bool("gc.writecommitgraph")
+        .ok()
+        .flatten()
+        .unwrap_or(true)
+    {
+        crate::commit_graph::write_reachable(&setup, &config, None);
     }
 
     if auto.get() && too_many_loose(&objects, gc_auto, setup.format.object_format) {

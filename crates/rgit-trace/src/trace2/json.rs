@@ -75,6 +75,13 @@ impl Json {
         self
     }
 
+    /// A value that is JSON already (an object or array).
+    pub(crate) fn raw(&mut self, k: &str, v: &str) -> &mut Json {
+        self.key(k);
+        self.body.push_str(v);
+        self
+    }
+
     /// Append the fields of `other`.
     pub(crate) fn append(&mut self, other: &Json) -> &mut Json {
         if !other.body.is_empty() {

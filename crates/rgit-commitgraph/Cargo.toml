@@ -1,0 +1,21 @@
+[package]
+name = "rgit-commitgraph"
+description = "rgit: commit-graph files (reading, writing, verifying, split chains, changed-path Bloom filters)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rgit-hash = { path = "../rgit-hash" }
+rgit-object = { path = "../rgit-object" }
+rgit-progress = { path = "../rgit-progress" }
+rgit-trace = { path = "../rgit-trace" }
+memmap2 = "0.9.10"
+
+[dev-dependencies]
+tempfile = "3"

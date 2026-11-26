@@ -258,6 +258,21 @@ impl DiffLimit {
 impl CommitSource for Commits<'_, '_> {
     type Error = ObjectId;
     fn load(&mut self, id: &ObjectId) -> Result<CommitInfo, ObjectId> {
+        match self.repo.objects.graph_commit(id) {
+            Ok(Some(c)) => {
+                return Ok(CommitInfo {
+                    parents: c.parents,
+                    time: c.time,
+                });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                for l in &e.errors {
+                    let _ = writeln!(std::io::stderr(), "error: {l}");
+                }
+                return Err(*id);
+            }
+        }
         let (commit, _) = self.repo.read_commit(id).ok_or(*id)?;
         let time = commit
             .committer()
@@ -491,7 +506,9 @@ fn path_filter(
     });
     walk.prune = true;
     walk.rewrite_parents |= opts.parents || opts.children || opts.graph;
-    Ok(Some(paths::PathFilter::new(pathspec, decorations)))
+    let mut filter = paths::PathFilter::new(pathspec, decorations);
+    filter.use_bloom = !opts.walk_reflogs;
+    Ok(Some(filter))
 }
 
 /// Trees for `--objects`.
@@ -582,6 +599,7 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
         rgit_odb::LargeObjectOptions::from_config(&config)
             .map_err(|e| Die::Fatal(e.to_string()))?,
     );
+    objects.use_commit_graph(&config, &setup);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -730,6 +748,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
         rgit_odb::LargeObjectOptions::from_config(&config)
             .map_err(|e| Die::Fatal(e.to_string()))?,
     );
+    objects.use_commit_graph(&config, &setup);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);
@@ -873,6 +892,7 @@ pub fn walk_formatted(
         rgit_odb::LargeObjectOptions::from_config(&config)
             .map_err(|e| Die::Fatal(e.to_string()))?,
     );
+    objects.use_commit_graph(&config, &setup);
     let cfg = Config(&config);
     let index = IndexFile::new(&setup, kind);
     let work_tree = setup.work_tree.clone().map(WorkTree);

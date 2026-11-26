@@ -146,6 +146,22 @@ impl Resolved {
     ) -> Result<(), Die> {
         let mut name = name;
         for _ in 0..64 {
+            // Commits of the commit-graph are not read (git does not look
+            // for them in the object database either).
+            match repo.objects.graph_commit(&id) {
+                Ok(Some(_)) => {
+                    self.commits.push((id, negative, side));
+                    self.sources.push(source.to_string());
+                    return Ok(());
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    for l in &e.errors {
+                        let _ = writeln!(std::io::stderr(), "error: {l}");
+                    }
+                    return Err(Die::Fatal(msg::bad_object(&id.to_hex())));
+                }
+            }
             // Blobs are not read (they may be large).
             if repo.objects.kind_of(&id) == Some(ObjectKind::Blob) {
                 if negative {

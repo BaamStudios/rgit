@@ -1064,6 +1064,36 @@ fn data_impl(loc: Location, category: &str, key: &str, value: &str, repo: bool) 
     });
 }
 
+/// `data_json`: a key with a JSON value (`json` must be valid JSON, an
+/// object or an array). The perf format shows it as `key:json`.
+#[track_caller]
+pub fn data_json(category: &str, key: &str, json: &str, repo: bool) {
+    let loc = Location::caller();
+    emit(loc, |s| {
+        let t_abs = s.start.elapsed().as_secs_f64();
+        let t_rel = s
+            .regions
+            .last()
+            .map_or(t_abs, |r| r.start.elapsed().as_secs_f64());
+        let mut ev = Ev::new("data_json");
+        ev.repo = repo.then_some(1);
+        ev.t_abs = Some(t_abs);
+        ev.t_rel = Some(t_rel);
+        ev.category = category.to_string();
+        ev.dots = s.regions.len();
+        ev.nesting = Some(s.regions.len() + 1);
+        ev.perf = format!("{key}:{json}");
+        ev.json
+            .float("t_abs", t_abs)
+            .float("t_rel", t_rel)
+            .int("nesting", (s.regions.len() + 1) as i64)
+            .str("category", category)
+            .str("key", key)
+            .raw("value", json);
+        ev
+    });
+}
+
 /// [`data`] with an integer value.
 #[track_caller]
 pub fn data_int(category: &str, key: &str, value: i64, repo: bool) {

@@ -43,6 +43,7 @@ mod color;
 mod column;
 mod commands;
 mod comment;
+mod commit_graph;
 mod compare_branches;
 mod context;
 mod convert;

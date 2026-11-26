@@ -19,6 +19,7 @@ pub mod clone;
 pub mod column;
 pub mod comment;
 pub mod commit;
+pub mod commit_graph;
 pub mod config;
 pub mod describe;
 pub mod diff;

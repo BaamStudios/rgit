@@ -12,7 +12,8 @@ dispatches.
 | `rgit-hash` | Object ids, SHA-1 (collision detecting), SHA-256 |
 | `rgit-object` | Parse/serialize blob, tree, commit, tag |
 | `rgit-odb` | Object database: loose objects, alternates, lookup across packs |
-| `rgit-pack` | Pack/idx read and write, deltas, midx, bitmaps, commit-graph |
+| `rgit-pack` | Pack/idx read and write, deltas, midx, bitmaps |
+| `rgit-commitgraph` | Commit-graph files and chains, changed-path Bloom filters (#22; split from `rgit-pack` because writing needs commit and tree parsing) |
 | `rgit-config` | Config files, includes, scopes |
 | `rgit-refs` | Loose/packed refs, reftable, reflog, transactions |
 | `rgit-repo` | Repository discovery, layout, extensions; ties the above together |

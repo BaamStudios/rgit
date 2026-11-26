@@ -15,7 +15,7 @@
 //! `--[no-]auto-maintenance` / `--[no-]auto-gc`, `-j` / `fetch.parallel`
 //! (the remotes are still fetched one after another),
 //! `--[no-]show-forced-updates` / `fetch.showForcedUpdates`. Accepted and
-//! ignored: `-k`, `--write-commit-graph`.
+//! ignored: `-k`.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
@@ -43,6 +43,8 @@ fn columns() -> usize {
 /// The parsed command line.
 #[derive(Default, Clone)]
 struct Args {
+    /// `--[no-]write-commit-graph` (-1: `fetch.writeCommitGraph`).
+    write_commit_graph: i32,
     verbose: i32,
     quiet: i32,
     all: Option<bool>,
@@ -229,7 +231,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
     let refetch = Cell::new(false);
     let stdin = Cell::new(false);
     let jobs = Cell::new(-1);
-    let ignored_i = Cell::new(0);
+    let write_commit_graph = Cell::new(-1);
     let show_forced = Cell::new(-1);
     let upload_pack: RefCell<Option<String>> = RefCell::new(None);
     let recurse_submodules: Cell<Option<FetchRecurse>> = Cell::new(None);
@@ -347,7 +349,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
             Opt::flag(None, "auto-maintenance", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
             Opt::flag(None, "auto-gc", &auto_maintenance, msg::HELP_AUTO_MAINTENANCE),
             Opt::bool(None, "show-forced-updates", &show_forced, msg::HELP_SHOW_FORCED),
-            Opt::bool(None, "write-commit-graph", &ignored_i, msg::HELP_WRITE_COMMIT_GRAPH),
+            Opt::bool(None, "write-commit-graph", &write_commit_graph, msg::HELP_WRITE_COMMIT_GRAPH),
             Opt::flag(None, "stdin", &stdin, msg::HELP_STDIN),
             Opt::string(None, "recurse-submodules-default", &recurse_default, "on-demand", "")
                 .hidden(),
@@ -371,6 +373,7 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
         ),
     };
     let args = Args {
+        write_commit_graph: write_commit_graph.get(),
         verbose: verbose.get(),
         quiet: quiet.get(),
         all: (all.get() >= 0).then(|| all.get() > 0),
@@ -459,6 +462,44 @@ pub fn run_with_reflog_action(
     argv: &[String],
     action: Option<&str>,
 ) -> CmdResult {
+    let code = fetch_main(ctx, argv, action)?;
+    if code == 0 {
+        write_commit_graph_after(ctx, argv);
+    }
+    Ok(code)
+}
+
+/// `--write-commit-graph` / `fetch.writeCommitGraph`: a new split layer of
+/// the commit-graph after the fetch.
+fn write_commit_graph_after(ctx: &Context, argv: &[String]) {
+    let Ok((args, _)) = parse(argv) else {
+        return;
+    };
+    if args.dry_run || args.negotiate_only {
+        return;
+    }
+    let Ok(setup) = repo::setup(ctx, Mode::Required) else {
+        return;
+    };
+    let config = repo::config(ctx, &setup);
+    let want = match args.write_commit_graph {
+        -1 => config
+            .bool("fetch.writecommitgraph")
+            .ok()
+            .flatten()
+            .unwrap_or(false),
+        v => v > 0,
+    };
+    if want {
+        crate::commit_graph::write_reachable(
+            &setup,
+            &config,
+            Some(rgit_commitgraph::write::Split::Merge),
+        );
+    }
+}
+
+fn fetch_main(ctx: &mut Context, argv: &[String], action: Option<&str>) -> CmdResult {
     let (args, mut rest) = parse(argv)?;
 
     // Shallow options (fetch-options.adoc).

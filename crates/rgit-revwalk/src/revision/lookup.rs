@@ -52,6 +52,18 @@ impl std::fmt::Display for LookupError {
 
 impl std::error::Error for LookupError {}
 
+/// A commit as a commit-graph describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitSummary {
+    /// Parents in header order.
+    pub parents: Vec<ObjectId>,
+    /// Committer time in seconds since the epoch.
+    pub time: u64,
+    /// Generation number (Documentation/technical/commit-graph.adoc): a
+    /// commit cannot reach one with a higher generation.
+    pub generation: u64,
+}
+
 /// Read access to the object database.
 pub trait ObjectLookup {
     /// The hash algorithm of the repository.
@@ -63,6 +75,13 @@ pub trait ObjectLookup {
     /// The type of an object; `Ok(None)` if it does not exist.
     fn kind(&self, oid: &ObjectId) -> Result<Option<ObjectKind>, LookupError> {
         Ok(self.read(oid)?.map(|(k, _)| k))
+    }
+
+    /// What a walk needs to know about commit `oid`, from a source faster
+    /// than the object itself (a commit-graph). `Ok(None)`: not known
+    /// there, read the object.
+    fn commit_summary(&self, _oid: &ObjectId) -> Result<Option<CommitSummary>, LookupError> {
+        Ok(None)
     }
 
     /// Every object id that starts with `prefix` (any order, duplicates
