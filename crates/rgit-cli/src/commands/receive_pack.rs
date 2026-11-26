@@ -876,6 +876,7 @@ impl Backend for CliBackend {
             stdout,
             stderr,
             closed: std::io::sink(),
+            _sigpipe: rgit_transport::sigpipe::IgnoreSigpipe::new(),
         }))
     }
 
@@ -1110,6 +1111,10 @@ struct ProcHook {
     stderr: Option<Box<dyn Read + Send>>,
     /// Stands in for the standard input once it is closed.
     closed: std::io::Sink,
+    /// A hook that exits without reading its input (`--die-read-commands`)
+    /// must not kill us with SIGPIPE: the write fails and the commands
+    /// are rejected with "fail to run proc-receive hook", like git.
+    _sigpipe: rgit_transport::sigpipe::IgnoreSigpipe,
 }
 
 impl ProcReceive for ProcHook {

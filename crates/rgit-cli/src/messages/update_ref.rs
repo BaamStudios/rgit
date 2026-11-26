@@ -117,3 +117,8 @@ pub fn option_unknown(rest: &str) -> String {
 pub fn ok(cmd: &str) -> String {
     format!("{cmd}: ok")
 }
+
+/// `--stdin`: the transaction step `cmd` (`prepare`, `commit`) failed.
+pub fn step_failed(cmd: &str, reason: &str) -> String {
+    format!("{cmd}: {reason}")
+}

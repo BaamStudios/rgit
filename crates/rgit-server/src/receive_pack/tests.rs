@@ -30,6 +30,47 @@ struct Fake {
     hook_calls: Vec<HookRun>,
     ingested: Option<IngestOptions>,
     quarantined: bool,
+    /// A `proc-receive` hook: what it writes to standard output and,
+    /// late, to standard error.
+    proc_receive: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+/// A `proc-receive` hook with canned output.
+struct FakeProc {
+    input: Vec<u8>,
+    output: std::io::Cursor<Vec<u8>>,
+    stderr: Option<Vec<u8>>,
+}
+
+/// Standard error that arrives only after a while, as when the relay
+/// thread is scheduled late.
+struct LateStderr(std::io::Cursor<Vec<u8>>, bool);
+
+impl Read for LateStderr {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if !self.1 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            self.1 = true;
+        }
+        self.0.read(buf)
+    }
+}
+
+impl ProcReceive for FakeProc {
+    fn input(&mut self) -> &mut dyn std::io::Write {
+        &mut self.input
+    }
+    fn output(&mut self) -> &mut dyn Read {
+        &mut self.output
+    }
+    fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.stderr
+            .take()
+            .map(|e| Box::new(LateStderr(std::io::Cursor::new(e), false)) as Box<dyn Read + Send>)
+    }
+    fn finish(&mut self) -> i32 {
+        0
+    }
 }
 
 impl Backend for Fake {
@@ -81,6 +122,18 @@ impl Backend for Fake {
             .push((name.to_string(), call.args.clone(), stdin, call.env.clone()));
         sink.write(format!("{name} ran\n").as_bytes());
         Some(code)
+    }
+    fn start_proc_receive(
+        &mut self,
+        _env: &[(String, String)],
+        sink: &dyn Sink,
+    ) -> Option<Box<dyn ProcReceive>> {
+        let (out, err) = self.proc_receive.clone()?;
+        Some(Box::new(FakeProc {
+            input: Vec::new(),
+            output: std::io::Cursor::new(out),
+            stderr: sink.is_sideband().then_some(err),
+        }))
     }
     fn migrate_quarantine(&mut self) -> Result<(), String> {
         self.quarantined = false;
@@ -420,4 +473,61 @@ fn bad_input() {
     let out = text(&run(&mut r, &settings(), &opts(), &input).unwrap());
     assert!(out.contains(&format!("unpack {}\n", m::EOF_BEFORE_HEADER)));
     assert!(out.contains("ng refs/heads/main unpacker error\n"));
+}
+
+/// Complaints about the `proc-receive` report come after everything the
+/// hook wrote to standard error, however late the relay delivers it
+/// (t5411 failed now and then under load, #741).
+#[test]
+fn proc_receive_errors_follow_the_hook_output() {
+    let cases: [(&[&str], &str); 3] = [
+        (
+            &["xx refs/for/main/topic"],
+            "error: proc-receive reported bad status \"xx\" on ref \"refs/for/main/topic\"",
+        ),
+        (
+            &["ok refs/heads/main"],
+            "error: proc-receive reported status on unexpected ref: refs/heads/main",
+        ),
+        (
+            &["option refname refs/pull/1/head", "option old-oid 0"],
+            "error: proc-receive reported \"option\" without a matching \"ok/ng\" directive",
+        ),
+    ];
+    for (report, error) in cases {
+        let mut r = repo();
+        let mut out = pkt("version=1\n");
+        out.extend_from_slice(b"0000");
+        let mut err = Vec::new();
+        for l in report {
+            out.extend(pkt(&format!("{l}\n")));
+            err.extend_from_slice(format!("proc-receive> {l}\n").as_bytes());
+        }
+        out.extend_from_slice(b"0000");
+        r.proc_receive = Some((out, err));
+        let mut s = settings();
+        s.proc_receive_refs.push(settings::ProcReceiveRef {
+            prefix: "refs/for".to_string(),
+            negated: false,
+            create: true,
+            modify: true,
+            delete: true,
+        });
+        let input = request(
+            "report-status side-band-64k",
+            &[
+                &format!("{A} {B} refs/heads/main"),
+                &format!("{Z} {B} refs/for/main/topic"),
+            ],
+            None,
+            true,
+        );
+        let got = text(&run(&mut r, &s, &opts(), &input).unwrap());
+        let last_hook_line = got
+            .rfind("proc-receive> ")
+            .unwrap_or_else(|| panic!("{got:?}"));
+        let error_at = got.find(error).unwrap_or_else(|| panic!("{got:?}"));
+        assert!(last_hook_line < error_at, "{got:?}");
+        assert_eq!(got.matches("error: proc-receive").count(), 1, "{got:?}");
+    }
 }

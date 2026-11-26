@@ -466,3 +466,50 @@ fn push_to_rgit_receive_pack(format: &str) {
         results[1]
     );
 }
+
+/// Inside the quarantine of a push (`GIT_QUARANTINE_PATH` set, as for a
+/// `pre-receive` hook) every reference update is refused like git does
+/// (git-receive-pack(1), t5547 "updating a ref from quarantine is
+/// forbidden", #741).
+#[test]
+fn ref_updates_are_refused_in_quarantine() {
+    let mut fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let quarantine = fx.work_dir().join("srv.git/objects/incoming");
+    let q = quarantine.to_string_lossy().into_owned();
+    let main = rev(&fx, "HEAD~2");
+    let cases: Vec<(Vec<&str>, Option<String>)> = vec![
+        (vec!["update-ref", "refs/heads/x", &main], None),
+        (vec!["update-ref", "-d", "refs/heads/other"], None),
+        (vec!["symbolic-ref", "HEAD", "refs/heads/other"], None),
+        (vec!["branch", "y", "main"], None),
+        (vec!["tag", "t1", "main"], None),
+        (vec!["pack-refs", "--all"], None),
+        (
+            vec!["update-ref", "--stdin"],
+            Some(format!(
+                "start\ncreate refs/heads/s {main}\nprepare\ncommit\n"
+            )),
+        ),
+        (
+            vec!["update-ref", "--stdin"],
+            Some(format!("start\ncreate refs/heads/s {main}\ncommit\n")),
+        ),
+    ];
+    for (args, stdin) in cases {
+        for value in [q.as_str(), ""] {
+            let mut cmp = fx
+                .compare(&args)
+                .env("GIT_QUARANTINE_PATH", value)
+                .in_dir("srv.git")
+                .repo("srv.git")
+                .checks(CHECKS);
+            if let Some(input) = &stdin {
+                cmp = cmp.stdin(input.clone().into_bytes());
+            }
+            cmp.run();
+        }
+    }
+}
