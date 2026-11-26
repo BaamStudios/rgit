@@ -3,8 +3,10 @@
 //!
 //! Formats follow `Documentation/technical/api-trace2.adoc` (the "Trace2
 //! Target Formats" section) and the output of the git 2.56.1 binary;
-//! settings follow `Documentation/config/trace2.adoc`. Only the main thread
-//! writes events.
+//! settings follow `Documentation/config/trace2.adoc`. Threads that want
+//! their own name in the events (and per-thread timer and counter
+//! summaries) announce themselves with [`thread_start`] and [`thread_exit`];
+//! every other thread writes as `main`.
 //!
 //! The process calls [`init`] once with its argument vector and a lookup
 //! for the system/global `trace2.*` configuration, then reports what it
@@ -14,6 +16,7 @@
 
 mod dest;
 mod json;
+mod stats;
 
 use std::ffi::OsStr;
 use std::sync::Mutex;
@@ -27,6 +30,7 @@ use crate::key::Location;
 use crate::quote::quote_argv;
 use dest::{Dest, Opened, Spec};
 use json::Json;
+pub use stats::{Counter, Timer, thread_exit, thread_start};
 
 /// The EVENT format version written in the `version` event.
 const EVENT_FORMAT_VERSION: &str = "4";
@@ -71,6 +75,11 @@ struct State {
     params_done: bool,
     /// `def_repo` was written.
     repo_done: bool,
+    /// Process-wide timer and counter totals, in order of first use.
+    timers: Vec<stats::TimerSlot>,
+    counters: Vec<stats::CounterSlot>,
+    /// Number of threads announced with [`thread_start`] so far.
+    threads: u32,
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -290,6 +299,9 @@ pub fn init<S: AsRef<OsStr>>(argv: &[S], version: &str, config: &dyn Fn(&str) ->
         exit_code: None,
         params_done: false,
         repo_done: false,
+        timers: Vec::new(),
+        counters: Vec::new(),
+        threads: 0,
     });
     ENABLED.store(true, Ordering::Relaxed);
 
@@ -317,16 +329,28 @@ pub fn init<S: AsRef<OsStr>>(argv: &[S], version: &str, config: &dyn Fn(&str) ->
             let _ = t.dest.write_event(&line);
         }
     });
-    let args: Vec<String> = argv
-        .iter()
-        .map(|a| a.as_ref().to_string_lossy().into_owned())
-        .collect();
+    start_event(loc, argv);
+    if let Some(chain) = ancestry() {
+        emit(loc, |_| {
+            let mut ev = Ev::new("cmd_ancestry");
+            ev.normal = Some(chain.join(" <- "));
+            ev.perf = format!("ancestry:[{}]", chain.join(" "));
+            ev.json.arr("ancestry", &chain);
+            ev
+        });
+    }
+}
+
+/// `start`: the command line of the process. [`init`] writes it; this is
+/// for a process that reports a further one (an exec emulation).
+#[track_caller]
+pub fn start<S: AsRef<OsStr>>(argv: &[S]) {
+    start_event(Location::caller(), argv);
+}
+
+fn start_event<S: AsRef<OsStr>>(loc: Location, argv: &[S]) {
     emit(loc, |s| {
-        let args: Vec<String> = if s.redact {
-            args.iter().map(|a| redact_url(a)).collect()
-        } else {
-            args.clone()
-        };
+        let args = redacted(s, argv);
         let mut ev = Ev::new("start");
         ev.t_abs = Some(s.start.elapsed().as_secs_f64());
         let q = String::from_utf8_lossy(&quote_argv(&args)).into_owned();
@@ -337,15 +361,21 @@ pub fn init<S: AsRef<OsStr>>(argv: &[S], version: &str, config: &dyn Fn(&str) ->
             .arr("argv", &args);
         ev
     });
-    if let Some(chain) = ancestry() {
-        emit(loc, |_| {
-            let mut ev = Ev::new("cmd_ancestry");
-            ev.normal = Some(chain.join(" <- "));
-            ev.perf = format!("ancestry:[{}]", chain.join(" "));
-            ev.json.arr("ancestry", &chain);
-            ev
-        });
-    }
+}
+
+/// `argv` as strings, with the passwords in URLs redacted unless
+/// `GIT_TRACE2_REDACT` is off.
+fn redacted<S: AsRef<OsStr>>(s: &State, argv: &[S]) -> Vec<String> {
+    argv.iter()
+        .map(|a| {
+            let a = a.as_ref().to_string_lossy();
+            if s.redact {
+                redact_url(&a)
+            } else {
+                a.into_owned()
+            }
+        })
+        .collect()
 }
 
 /// The names of the parent processes, nearest first (Linux only).
@@ -370,23 +400,28 @@ fn parent_of(pid: u32) -> Option<u32> {
     rest.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// Replace the password of a URL (`scheme://user:pass@host`) by
-/// `<redacted>`, as git does with `GIT_TRACE2_REDACT` (default on).
+/// Replace the password of an `http://` or `https://` URL
+/// (`scheme://user:pass@host`) by `<REDACTED>`, as git does with
+/// `GIT_TRACE2_REDACT` (default on). Observed from git 2.56.1: only these two
+/// (lower-case) schemes, the authority ends at the first `/`, the user
+/// information at the first `@` in it and the user name at its first `:`;
+/// the user name stays.
 pub fn redact_url(s: &str) -> String {
-    let Some(scheme_end) = s.find("://") else {
+    let Some(rest) = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+    else {
         return s.to_string();
     };
-    let rest = &s[scheme_end + 3..];
-    let host_end = rest.find('/').unwrap_or(rest.len());
-    let auth = &rest[..host_end];
-    let Some(at) = auth.rfind('@') else {
+    let start = s.len() - rest.len();
+    let authority = &rest[..rest.find('/').unwrap_or(rest.len())];
+    let Some(at) = authority.find('@') else {
         return s.to_string();
     };
-    format!(
-        "{}<redacted>{}",
-        &s[..scheme_end + 3],
-        &s[scheme_end + 3 + at..]
-    )
+    let Some(colon) = authority[..at].find(':') else {
+        return s.to_string();
+    };
+    format!("{}<REDACTED>{}", &s[..start + colon + 1], &s[start + at..])
 }
 
 /// One event, prepared for every format.
@@ -486,13 +521,14 @@ fn render(s: &State, t: &Target, loc: Location, ev: &Ev) -> Vec<u8> {
             if !t.brief {
                 out.push_str(&format!("{} {:<28} | ", local_time(), loc.to_string()));
             }
+            let thread: String = stats::thread_name().chars().take(24).collect();
             let repo = ev.repo.map(|r| format!("r{r}")).unwrap_or_default();
             let opt = |v: Option<f64>| v.map(|v| format!("{v:9.6}")).unwrap_or(" ".repeat(9));
             let category: String = ev.category.chars().take(12).collect();
             out.push_str(&format!(
                 "d{} | {:<24} | {:<12} | {:<3} | {} | {} | {:<12} | {}{}\n",
                 s.depth,
-                "main",
+                thread,
                 ev.name,
                 repo,
                 opt(ev.t_abs),
@@ -507,7 +543,7 @@ fn render(s: &State, t: &Target, loc: Location, ev: &Ev) -> Vec<u8> {
             let mut j = Json::default();
             j.str("event", ev.name)
                 .str("sid", &s.sid)
-                .str("thread", "main");
+                .str("thread", &stats::thread_name());
             if !t.brief || ev.time_in_brief {
                 j.str("time", &utc_time());
             }
@@ -655,16 +691,26 @@ pub fn def_params(params: &[(String, String, String)]) {
         return;
     }
     for (key, value, scope) in params {
-        def_param(loc, scope, key, value, redact);
+        def_param_at(loc, scope, key, value, redact);
     }
     for name in env_vars {
         if let Some(v) = std::env::var_os(&name) {
-            def_param(loc, "command", &name, &v.to_string_lossy(), redact);
+            def_param_at(loc, "command", &name, &v.to_string_lossy(), redact);
         }
     }
 }
 
-fn def_param(loc: Location, scope: &str, key: &str, value: &str, redact: bool) {
+/// One `def_param` event (`scope` is a config scope name, `command` or
+/// `unknown`), independent of [`def_params`].
+#[track_caller]
+pub fn def_param(scope: &str, key: &str, value: &str) {
+    let Some(redact) = with_state(|s| s.redact) else {
+        return;
+    };
+    def_param_at(Location::caller(), scope, key, value, redact);
+}
+
+fn def_param_at(loc: Location, scope: &str, key: &str, value: &str, redact: bool) {
     let value = if redact {
         redact_url(value)
     } else {
@@ -700,42 +746,58 @@ pub fn alias<S: AsRef<str>>(alias: &str, argv: &[S]) {
 /// `error`: a message printed with `fatal:`, `error:` and the like.
 #[track_caller]
 pub fn error(msg: &str) {
-    emit(Location::caller(), |_| {
+    error_at(Location::caller(), msg, msg);
+}
+
+/// [`error`] for a message made from a format: the event format also
+/// lists the format string (`fmt`), e.g. `cannot run %s: %s`.
+#[track_caller]
+pub fn error_fmt(msg: &str, fmt: &str) {
+    error_at(Location::caller(), msg, fmt);
+}
+
+fn error_at(loc: Location, msg: &str, fmt: &str) {
+    emit(loc, |_| {
         let mut ev = Ev::new("error");
         ev.normal = Some(msg.to_string());
         ev.perf = msg.to_string();
-        ev.json.str("msg", msg).str("fmt", msg);
+        ev.json.str("msg", msg).str("fmt", fmt);
         ev
     });
 }
 
-/// `exec`: the process is about to replace itself by `exe`.
+/// `exec`: the process is about to replace itself by `exe` with the
+/// arguments `argv` (git lists `exe` in front of `argv` in the normal and
+/// perf formats, and separately in the event format).
 #[track_caller]
-pub fn exec<S: AsRef<str>>(exe: &str, argv: &[S]) -> Option<u32> {
+pub fn exec<S: AsRef<OsStr>>(exe: &str, argv: &[S]) -> Option<u32> {
     let id = with_state(|s| {
         let id = s.next_exec;
         s.next_exec += 1;
         id
     })?;
     emit(Location::caller(), |s| {
-        let args: Vec<String> = argv
-            .iter()
-            .map(|a| {
-                if s.redact {
-                    redact_url(a.as_ref())
-                } else {
-                    a.as_ref().to_string()
-                }
-            })
+        let exe = if s.redact {
+            redact_url(exe)
+        } else {
+            exe.to_string()
+        };
+        let args = redacted(s, argv);
+        let line: Vec<&str> = std::iter::once(exe.as_str())
+            .chain(args.iter().map(String::as_str))
             .collect();
-        let q = String::from_utf8_lossy(&quote_argv(&args)).into_owned();
+        let q = String::from_utf8_lossy(&quote_argv(&line)).into_owned();
+        // The normal format quotes `exe` and `argv` separately (a space
+        // follows `exe` even without arguments).
+        let q_exe = String::from_utf8_lossy(&quote_argv([exe.as_str()])).into_owned();
+        let q_args = String::from_utf8_lossy(&quote_argv(&args)).into_owned();
         let mut ev = Ev::new("exec");
         ev.t_abs = Some(s.start.elapsed().as_secs_f64());
-        ev.normal = Some(format!("[{id}] {q}"));
+        ev.normal = Some(format!("[{id}] {q_exe} {q_args}"));
         ev.perf = format!("id:{id} argv:[{q}]");
         ev.json
             .int("exec_id", i64::from(id))
-            .str("exe", exe)
+            .str("exe", &exe)
             .arr("argv", &args);
         ev
     });
@@ -784,17 +846,7 @@ pub fn child_start<S: AsRef<OsStr>>(info: ChildInfo<'_>, argv: &[S]) -> Option<C
         id
     })?;
     emit(Location::caller(), |s| {
-        let args: Vec<String> = argv
-            .iter()
-            .map(|a| {
-                let a = a.as_ref().to_string_lossy();
-                if s.redact {
-                    redact_url(&a)
-                } else {
-                    a.into_owned()
-                }
-            })
-            .collect();
+        let args = redacted(s, argv);
         let q = String::from_utf8_lossy(&quote_argv(&args)).into_owned();
         let mut ev = Ev::new("child_start");
         ev.t_abs = Some(s.start.elapsed().as_secs_f64());
@@ -1035,10 +1087,17 @@ pub fn region(category: &str, label: &str, repo: bool) -> RegionGuard {
 /// `data`: a key/value pair in the current region.
 #[track_caller]
 pub fn data(category: &str, key: &str, value: &str, repo: bool) {
+    data_impl(Location::caller(), category, key, value, repo.then_some(1));
+}
+
+/// [`data`] for the repository with the trace2 id `repo` (`0` for a
+/// repository structure that was never set up).
+#[track_caller]
+pub fn data_repo_id(category: &str, key: &str, value: &str, repo: Option<u32>) {
     data_impl(Location::caller(), category, key, value, repo);
 }
 
-fn data_impl(loc: Location, category: &str, key: &str, value: &str, repo: bool) {
+fn data_impl(loc: Location, category: &str, key: &str, value: &str, repo: Option<u32>) {
     emit(loc, |s| {
         let t_abs = s.start.elapsed().as_secs_f64();
         let t_rel = s
@@ -1046,7 +1105,7 @@ fn data_impl(loc: Location, category: &str, key: &str, value: &str, repo: bool) 
             .last()
             .map_or(t_abs, |r| r.start.elapsed().as_secs_f64());
         let mut ev = Ev::new("data");
-        ev.repo = repo.then_some(1);
+        ev.repo = repo;
         ev.t_abs = Some(t_abs);
         ev.t_rel = Some(t_rel);
         ev.category = category.to_string();
@@ -1099,7 +1158,13 @@ pub fn data_json(category: &str, key: &str, json: &str, repo: Option<u32>) {
 /// [`data`] with an integer value.
 #[track_caller]
 pub fn data_int(category: &str, key: &str, value: i64, repo: bool) {
-    data_impl(Location::caller(), category, key, &value.to_string(), repo);
+    data_impl(
+        Location::caller(),
+        category,
+        key,
+        &value.to_string(),
+        repo.then_some(1),
+    );
 }
 
 /// `exit`: the process is about to end with `code`. [`atexit`] follows
@@ -1121,6 +1186,7 @@ pub fn atexit() {
     let Some(code) = with_state(|s| s.exit_code.unwrap_or(0)) else {
         return;
     };
+    stats::summaries(loc);
     emit(loc, |s| exit_event(s, "atexit", code));
     ENABLED.store(false, Ordering::Relaxed);
 }
@@ -1151,15 +1217,30 @@ mod tests {
 
     #[test]
     fn redaction() {
-        assert_eq!(
-            redact_url("https://user:pwd@example.com/x"),
-            "https://<redacted>@example.com/x"
-        );
-        assert_eq!(
-            redact_url("https://example.com/a@b"),
-            "https://example.com/a@b"
-        );
-        assert_eq!(redact_url("plain"), "plain");
+        // Observed from git 2.56.1 (`test-tool trace2 303redact_def_param`).
+        for (url, want) in [
+            (
+                "https://user:pwd@example.com/x",
+                "https://user:<REDACTED>@example.com/x",
+            ),
+            ("http://u:p@h/", "http://u:<REDACTED>@h/"),
+            ("https://:p@h/", "https://:<REDACTED>@h/"),
+            ("https://u:@h/", "https://u:<REDACTED>@h/"),
+            ("https://u:p:q@h/", "https://u:<REDACTED>@h/"),
+            ("https://u:p@h", "https://u:<REDACTED>@h"),
+            ("https://h?x:y@z", "https://h?x:<REDACTED>@z"),
+            ("https://u:p@h#a@b", "https://u:<REDACTED>@h#a@b"),
+            ("https://user@h/x", "https://user@h/x"),
+            ("https://a@b:p@h/", "https://a@b:p@h/"),
+            ("https://u:p/x@h/", "https://u:p/x@h/"),
+            ("https://example.com/a@b", "https://example.com/a@b"),
+            ("ssh://u:p@h/", "ssh://u:p@h/"),
+            ("HTTP://u:p@h/", "HTTP://u:p@h/"),
+            ("x https://u:p@h/", "x https://u:p@h/"),
+            ("plain", "plain"),
+        ] {
+            assert_eq!(redact_url(url), want, "{url}");
+        }
     }
 
     #[test]

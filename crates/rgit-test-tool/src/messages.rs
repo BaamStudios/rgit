@@ -337,3 +337,75 @@ pub const PROGRESS_USAGE: &str = "usage: test-tool progress <stdin";
 pub fn progress_invalid_input(line: &str) -> String {
     format!("fatal: invalid input: '{line}'")
 }
+
+// ----- trace2 -------------------------------------------------------------
+
+/// `trace2` without a known verb: the usage, one line per verb (the
+/// trailing spaces of the `bug` verbs are the reference's).
+pub const TRACE2_USAGE: &str = "usage:
+\ttest-tool trace2 001return <exit_code>
+\ttest-tool trace2 002exit <exit_code>
+\ttest-tool trace2 003error <error_message>+
+\ttest-tool trace2 004child [<child_command_line>]
+\ttest-tool trace2 005exec <git_command_args>
+\ttest-tool trace2 006data [<category> <key> <value>]+
+\ttest-tool trace2 007bug\x20
+\ttest-tool trace2 008bug\x20
+\ttest-tool trace2 009bug_BUG\x20
+\ttest-tool trace2 010bug_BUG\x20
+\ttest-tool trace2 100timer <count> <ms_delay>
+\ttest-tool trace2 101timer <count> <ms_delay> <threads>
+\ttest-tool trace2 200counter <v1> [<v2> [<v3> [...]]]
+\ttest-tool trace2 201counter <v1> <v2> <threads>
+\ttest-tool trace2 300redact_start <argv...>
+\ttest-tool trace2 301redact_child_start <argv...>
+\ttest-tool trace2 302redact_exec <exe> <argv...>
+\ttest-tool trace2 303redact_def_param <key> <value>
+\ttest-tool trace2 400ancestry <target> <output_file> [<child_command_line>]
+";
+
+/// The argument lists the verbs complain about (`fatal: expect <...>`).
+pub const TRACE2_EXPECT_EXIT_CODE: &str = "expect <exit_code>";
+pub const TRACE2_EXPECT_ERROR: &str = "expect <error_message>";
+pub const TRACE2_EXPECT_DATA: &str = "expect <cat0> <k0> <v0> [<cat1> <k1> <v1> [...]]";
+pub const TRACE2_EXPECT_TIMER: &str = "expect <count> <ms_delay>";
+pub const TRACE2_EXPECT_TH_TIMER: &str = "expect <count> <ms_delay> <threads>";
+pub const TRACE2_EXPECT_COUNTER: &str = "expect <v1> [<v2> [...]]";
+pub const TRACE2_EXPECT_TH_COUNTER: &str = "expect <v1> <v2> <threads>";
+pub const TRACE2_EXPECT_ARGV: &str = "expect <argv...>";
+pub const TRACE2_EXPECT_EXEC: &str = "expect <exe> <argv...>";
+pub const TRACE2_EXPECT_PARAM: &str = "expect <key> <value>";
+pub const TRACE2_EXPECT_ANCESTRY: &str = "expect <target> <output_file> <child_command_line>";
+
+/// `200counter` with a value that is not a number (and its format).
+pub fn trace2_invalid_value(value: &str) -> String {
+    format!("invalid value[{value}] -- {TRACE2_EXPECT_COUNTER}")
+}
+pub const TRACE2_INVALID_VALUE_FMT: &str = "invalid value[%s] -- %s";
+
+/// `400ancestry` with an unknown target.
+pub fn trace2_invalid_target(target: &str) -> String {
+    format!("invalid target '{target}', expected: normal, perf, event")
+}
+pub const TRACE2_INVALID_TARGET_FMT: &str = "invalid target '%s', expected: normal, perf, event";
+
+/// A child process that could not be started; `reason` is the system's
+/// error text. The trace2 format string has the reason filled in.
+pub fn trace2_cannot_run(cmd: &str, reason: &str) -> (String, String) {
+    (
+        format!("cannot run {cmd}: {reason}"),
+        format!("cannot run %s: {reason}"),
+    )
+}
+
+/// The `bug()` / `BUG()` messages of the `bug` verbs.
+pub const TRACE2_BUG_007: &str = "the bug message";
+pub const TRACE2_BUG_A: &str = "a bug message";
+pub const TRACE2_BUG_ANOTHER: &str = "another bug message";
+pub const TRACE2_BUG_008_LAST: &str =
+    "an explicit BUG_if_bug() following bug() call(s) is nice, but not required";
+/// Format of the `010bug_BUG` messages (`a bug message`, `a BUG message`).
+pub const TRACE2_BUG_010_FMT: &str = "a %s message";
+/// At exit after `bug()` without `BUG_if_bug()`.
+pub const TRACE2_BUG_UNCHECKED: &str =
+    "on exit(): had bug() call(s) in this process without explicit BUG_if_bug()";

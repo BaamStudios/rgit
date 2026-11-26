@@ -13,4 +13,5 @@ pub mod progress;
 pub mod ref_store;
 pub mod sha;
 pub mod submodule;
+pub mod trace2;
 pub mod wildmatch;
