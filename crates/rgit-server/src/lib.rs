@@ -12,7 +12,10 @@
 //! - [`receive_pack`]: the server side of push (`git-receive-pack`).
 //! - [`upload_pack`]: serve fetches and clones (`git-upload-pack`),
 //!   protocol v0, v1 and v2.
+//! - [`http_backend`]: the CGI program for smart and dumb HTTP
+//!   (`git-http-backend`).
 
 pub mod daemon;
+pub mod http_backend;
 pub mod receive_pack;
 pub mod upload_pack;

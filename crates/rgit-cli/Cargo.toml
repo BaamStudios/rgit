@@ -83,6 +83,7 @@ libc = "0.2.186"
 socket2 = "0.6"
 
 [dev-dependencies]
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 rgit-difftest = { path = "../rgit-difftest" }
 tempfile = "3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
