@@ -223,3 +223,44 @@ fn pack_redundant() {
         .checks(Check::OUTPUT)
         .run();
 }
+
+/// `--merge-base` with commit dates that run backwards along a line
+/// (t6010): the walk reaches `E` from both tips before it knows that `B`,
+/// a descendant of `E`, is common too. Only `B` is a merge base.
+#[test]
+fn merge_base_with_dates_out_of_order() {
+    let at = |fx: Fixture, offset: u32| {
+        fx.env(
+            "GIT_COMMITTER_DATE",
+            format!("{} +0000", 1_130_000_000 + offset),
+        )
+    };
+    let empty = |fx: Fixture, offset: u32, msg: &str| {
+        at(fx, offset).git(["commit", "-q", "--allow-empty", "-m", msg])
+    };
+    let join = |fx: Fixture, offset: u32, msg: &str, other: &str| {
+        at(fx, offset).git(["merge", "-q", "--no-ff", "-s", "ours", "-m", msg, other])
+    };
+    let fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"]);
+    let fx = empty(fx, 5, "E").git(["tag", "E"]);
+    let fx = empty(empty(fx, 4, "D"), 3, "C");
+    let fx = empty(fx, 2, "B").git(["tag", "B"]);
+    let fx = empty(fx, 1, "A").git(["checkout", "-q", "-b", "h", "E"]);
+    let fx = join(empty(fx, 6, "F"), 8, "H", "main").git(["checkout", "-q", "-b", "g", "E"]);
+    let mut fx = join(empty(fx, 7, "G0"), 7, "G", "B");
+    if fx.is_skipped() {
+        return;
+    }
+    let cases: &[&[&str]] = &[
+        &["show-branch", "--merge-base", "g", "h"],
+        &["show-branch", "--merge-base", "h", "g"],
+        &["show-branch", "--merge-base", "g", "h", "main"],
+        &["show-branch", "--independent", "g", "h", "main"],
+        &["show-branch", "--more=9", "g", "h", "main"],
+    ];
+    for args in cases {
+        fx.compare(*args).checks(Check::OUTPUT).run();
+    }
+}

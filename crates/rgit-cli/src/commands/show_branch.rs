@@ -951,6 +951,7 @@ impl<'a> Graph<'a> {
                 pn.flags |= flags;
                 if poison {
                     pn.poisoned = true;
+                    self.poison_known_ancestors(p);
                 }
                 self.insert_by_date(&mut queue, p);
             }
@@ -958,6 +959,22 @@ impl<'a> Graph<'a> {
         order.reverse();
         order.sort_by_key(|&c| std::cmp::Reverse(self.nodes[c].date));
         Ok(order)
+    }
+
+    /// The ancestors of `c` that the walk knows already are no merge
+    /// bases either: a commit below a common one is not shown as a merge
+    /// base even when the walk reached it first (commit dates out of
+    /// order, t6010).
+    fn poison_known_ancestors(&mut self, c: usize) {
+        let mut stack = vec![c];
+        while let Some(n) = stack.pop() {
+            for p in self.known_parents(n).into_iter().flatten() {
+                if !self.nodes[p].poisoned {
+                    self.nodes[p].poisoned = true;
+                    stack.push(p);
+                }
+            }
+        }
     }
 
     /// Add `c` to `seen` unless it is there; whether it was added.
