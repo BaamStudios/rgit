@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! End-to-end tests of the `rgit` binary's front end.
 
+// Most cases here need a POSIX system; their helpers are unused elsewhere.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 

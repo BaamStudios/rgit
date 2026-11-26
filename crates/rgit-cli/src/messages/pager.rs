@@ -6,6 +6,7 @@ pub fn cannot_run(program: &str, reason: &str) -> String {
     format!("cannot run {program}: {reason}")
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn unable_to_execute_pager(pager: &str) -> String {
     format!("unable to execute pager '{pager}'")
 }

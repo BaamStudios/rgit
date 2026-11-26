@@ -3,7 +3,6 @@
 //! Small platform helpers: byte paths and reading a file without following
 //! a symbolic link in its last component.
 
-use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -11,7 +10,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     use std::os::unix::ffi::OsStrExt;
-    PathBuf::from(OsStr::from_bytes(bytes))
+    PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
 }
 
 #[cfg(not(unix))]

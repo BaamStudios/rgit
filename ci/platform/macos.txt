@@ -1,0 +1,1 @@
+# Test targets known to fail on macOS (format: scripts/platform-tests.sh).
