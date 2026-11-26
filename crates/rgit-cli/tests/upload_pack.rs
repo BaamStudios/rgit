@@ -2,7 +2,7 @@
 //! `upload-pack` against the reference git.
 //!
 //! - Wire level: the same protocol v2 requests are sent to `git
-//!   upload-pack` and `rgit upload-pack`; the packets, standard error and
+//!   upload-pack` and `rgit upload-pack` (v0 and v1: upload_pack_v0.rs); the packets, standard error and
 //!   exit code must be equal (apart from `agent=` and the session id), and
 //!   packs must hold the same objects.
 //! - Clients: the reference git (and rgit) clone and fetch through both
@@ -1175,54 +1175,43 @@ fn older_protocol_versions() {
     if fx.is_skipped() {
         return;
     }
-    // Without another git-upload-pack the client is told what is missing.
-    let empty = fx.work_dir().join("empty-path");
-    std::fs::create_dir_all(&empty).unwrap();
-    for protocol in [None, Some("version=1"), Some("version=0")] {
-        let out = run_with_path(&fx, &empty, &["upload-pack", "srv"], protocol);
-        assert_eq!(out.status.code(), Some(128));
-        assert!(text(&out.stdout).contains("ERR rgit upload-pack: protocol version"));
-        assert!(text(&out.stderr).starts_with("fatal: rgit upload-pack: protocol version"));
-    }
-    // The highest version asked for counts.
-    let out = run_with_path(
-        &fx,
-        &empty,
-        &["upload-pack", "--advertise-refs", "srv"],
-        Some("version=1:version=2:other=x"),
-    );
-    assert!(text(&out.stdout).starts_with("000eversion 2\n"));
-
-    // With one, protocol v0 and v1 are its business (until rgit #174),
-    // like any command rgit does not have.
+    // Protocol v0 and v1 are served here as well (tests/upload_pack_v0.rs),
+    // also when another git-upload-pack is on PATH.
     let other = fx.work_dir().join("other-git");
     std::fs::create_dir_all(&other).unwrap();
     rgit_difftest::write_executable(
         other.join("git-upload-pack"),
         "#!/bin/sh\necho \"other upload-pack: $* ($GIT_PROTOCOL)\"\n",
     );
-    let out = run_with_path(&fx, &other, &["upload-pack", "--strict", "srv"], None);
-    assert_eq!(text(&out.stdout), "other upload-pack: --strict srv ()\n");
-    let out = run_with_path(&fx, &other, &["upload-pack", "srv"], Some("version=1"));
-    assert_eq!(text(&out.stdout), "other upload-pack: srv (version=1)\n");
-    // Protocol v2 is served here.
+    for protocol in [None, Some("version=0"), Some("version=7")] {
+        let out = run_with_path(
+            &fx,
+            &other,
+            &["upload-pack", "--advertise-refs", "srv"],
+            protocol,
+        );
+        assert_eq!(out.status.code(), Some(0));
+        assert!(
+            text(&out.stdout).contains(" HEAD\0multi_ack "),
+            "{protocol:?}"
+        );
+        assert!(!text(&out.stdout).contains("version "), "{protocol:?}");
+    }
     let out = run_with_path(
         &fx,
         &other,
         &["upload-pack", "--advertise-refs", "srv"],
-        Some("version=2"),
+        Some("version=1"),
+    );
+    assert!(text(&out.stdout).starts_with("000eversion 1\n"));
+    // The highest version asked for counts.
+    let out = run_with_path(
+        &fx,
+        &other,
+        &["upload-pack", "--advertise-refs", "srv"],
+        Some("version=1:version=2:other=x"),
     );
     assert!(text(&out.stdout).starts_with("000eversion 2\n"));
-    // A link to rgit under the dashed name is not "another" program.
-    #[cfg(unix)]
-    {
-        let links = fx.work_dir().join("links");
-        std::fs::create_dir_all(&links).unwrap();
-        std::os::unix::fs::symlink(rgit(), links.join("git-upload-pack")).unwrap();
-        let out = run_with_path(&fx, &links, &["upload-pack", "srv"], None);
-        assert_eq!(out.status.code(), Some(128));
-        assert!(text(&out.stderr).starts_with("fatal: rgit upload-pack: protocol version"));
-    }
 }
 
 #[test]

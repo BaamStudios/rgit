@@ -83,6 +83,7 @@ pub mod restore;
 pub mod rev_list;
 pub mod rm;
 pub mod sequencer;
+pub mod shell;
 pub mod shortlog;
 pub mod show_ref;
 pub mod signing;

@@ -46,7 +46,7 @@ struct Request {
     filter: Option<ObjectFilter>,
 }
 
-fn oid(repo: &Repository<'_>, hex: &str) -> Option<ObjectId> {
+pub(crate) fn oid(repo: &Repository<'_>, hex: &str) -> Option<ObjectId> {
     ObjectId::from_hex(repo.hash, hex.as_bytes()).ok()
 }
 
@@ -54,7 +54,7 @@ fn oid(repo: &Repository<'_>, hex: &str) -> Option<ObjectId> {
 /// a short name on the command line, a tag, branch or remote-tracking
 /// branch of that name. As in git, this looks at the repository's
 /// references as they are: neither a namespace nor `hideRefs` applies.
-fn resolve_ref(repo: &Repository<'_>, name: &str) -> Option<ObjectId> {
+pub(crate) fn resolve_ref(repo: &Repository<'_>, name: &str) -> Option<ObjectId> {
     let candidates = [
         name.to_owned(),
         format!("refs/{name}"),
@@ -198,7 +198,10 @@ impl Request {
 
 /// Whether `uploadpackfilter.*` allows `filter`; the error is the message
 /// for the client.
-fn check_filter(repo: &Repository<'_>, filter: &ObjectFilter) -> std::result::Result<(), String> {
+pub(crate) fn check_filter(
+    repo: &Repository<'_>,
+    filter: &ObjectFilter,
+) -> std::result::Result<(), String> {
     let config = repo.config;
     let default = config
         .bool("uploadpackfilter.allow")
@@ -242,10 +245,11 @@ fn check_filter(repo: &Repository<'_>, filter: &ObjectFilter) -> std::result::Re
 }
 
 /// What the `have` lines of a request say about the client.
-struct Common {
+#[derive(Default)]
+pub(crate) struct Common {
     /// The `have`s this repository has too, in the client's order,
     /// without those that counted as had already.
-    objects: Vec<ObjectId>,
+    pub objects: Vec<ObjectId>,
     /// What the client is known to have: every common object and the
     /// parents of the common commits.
     they_have: HashSet<ObjectId>,
@@ -253,30 +257,46 @@ struct Common {
     oldest: Option<i64>,
 }
 
+/// What a `have` line told, see [`Common::add`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Have {
+    /// This repository does not have the object.
+    Missing,
+    /// A common object that is new to the list.
+    New,
+    /// A common object that counted as had already.
+    Known,
+}
+
 impl Common {
-    /// Go through the `have` lines as git does: an object this repository
-    /// has is common unless it counts as had already (an earlier `have`,
-    /// or the parent of an earlier common commit); the parents of a
-    /// common commit count as had from then on. Objects of any type can
-    /// be common; only commits tell about history.
+    /// Take in one `have` line as git does: an object this repository
+    /// has is common; it is new to the list unless it counts as had
+    /// already (an earlier `have`, or the parent of an earlier common
+    /// commit); the parents of a common commit count as had from then on.
+    /// Objects of any type can be common; only commits tell about
+    /// history.
+    pub fn add(&mut self, repo: &Repository<'_>, graph: &mut Graph<'_>, id: &ObjectId) -> Have {
+        if !repo.odb.contains(id) {
+            return Have::Missing;
+        }
+        let known = !self.they_have.insert(*id);
+        if let Some(c) = graph.commit(id) {
+            self.oldest = Some(self.oldest.map_or(c.time, |t| t.min(c.time)));
+            self.they_have.extend(c.parents.iter().copied());
+        }
+        if known {
+            Have::Known
+        } else {
+            self.objects.push(*id);
+            Have::New
+        }
+    }
+
+    /// Go through the `have` lines of a request.
     fn find(repo: &Repository<'_>, graph: &mut Graph<'_>, haves: &[ObjectId]) -> Common {
-        let mut common = Common {
-            objects: Vec::new(),
-            they_have: HashSet::new(),
-            oldest: None,
-        };
+        let mut common = Common::default();
         for id in haves {
-            if !repo.odb.contains(id) {
-                continue;
-            }
-            let known = !common.they_have.insert(*id);
-            if let Some(c) = graph.commit(id) {
-                common.oldest = Some(common.oldest.map_or(c.time, |t| t.min(c.time)));
-                common.they_have.extend(c.parents.iter().copied());
-            }
-            if !known {
-                common.objects.push(*id);
-            }
+            common.add(repo, graph, id);
         }
         common
     }
@@ -284,7 +304,7 @@ impl Common {
 
 /// Whether the pack can be made: at least one common object, and every
 /// wanted commit reaches a commit the client is known to have.
-fn ready_to_send(graph: &mut Graph<'_>, wants: &[ObjectId], common: &Common) -> bool {
+pub(crate) fn ready_to_send(graph: &mut Graph<'_>, wants: &[ObjectId], common: &Common) -> bool {
     if common.objects.is_empty() {
         return false;
     }
@@ -455,6 +475,7 @@ fn respond<R: Read, W: Write>(
         include_tag: req.include_tag,
         progress: !req.no_progress,
         filter: req.filter.as_ref().map(ObjectFilter::to_spec),
+        band: Some(rgit_protocol::sideband::SidebandMode::Large),
     };
     pack::send(s, &pack)?;
     s.out.flush()

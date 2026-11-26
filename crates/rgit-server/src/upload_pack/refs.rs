@@ -131,6 +131,11 @@ impl<'a> RefView<'a> {
         if self.hidden("HEAD") {
             return (None, None);
         }
+        self.head_even_if_hidden()
+    }
+
+    /// [`RefView::head`] without looking at `hideRefs`.
+    pub fn head_even_if_hidden(&self) -> (Option<Visible>, Option<Unborn>) {
         let full = format!("{}HEAD", self.prefix);
         let direct = self.store.read_raw(&full).ok().flatten();
         let resolved = self.store.resolve(&full).ok().flatten();
@@ -158,6 +163,16 @@ impl<'a> RefView<'a> {
     /// In a namespace these are all references below the namespace, so its
     /// `HEAD` is among them: git lists it a second time there.
     pub fn list(&self) -> Result<Vec<Visible>, rgit_refs::Error> {
+        let all = self.list_with_hidden()?;
+        Ok(all
+            .into_iter()
+            .filter_map(|(r, hidden)| (!hidden).then_some(r))
+            .collect())
+    }
+
+    /// [`RefView::list`] with the hidden references too; the flag tells
+    /// which ones are hidden.
+    pub fn list_with_hidden(&self) -> Result<Vec<(Visible, bool)>, rgit_refs::Error> {
         let all = IterOptions {
             prefix: if self.prefix.is_empty() {
                 "refs/".to_owned()
@@ -173,9 +188,7 @@ impl<'a> RefView<'a> {
                 continue;
             };
             let Some(id) = r.oid else { continue };
-            if self.hidden(name) {
-                continue;
-            }
+            let hidden = self.hidden(name);
             let symref_target = match &r.target {
                 Target::Symbolic(_) => self
                     .store
@@ -185,12 +198,13 @@ impl<'a> RefView<'a> {
                     .and_then(|res| self.strip(res.final_name()).map(str::to_owned)),
                 Target::Object(_) => None,
             };
-            out.push(Visible {
+            let visible = Visible {
                 name: name.to_owned(),
                 id,
                 symref_target,
                 reference: Some(r),
-            });
+            };
+            out.push((visible, hidden));
         }
         Ok(out)
     }

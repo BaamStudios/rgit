@@ -140,11 +140,25 @@ pub fn cannot_run_pack_objects(err: &std::io::Error) -> String {
     format!("git upload-pack: unable to fork git-pack-objects: {err}")
 }
 
-/// rgit: the client did not ask for protocol v2 (v0 and v1 are not
-/// served yet, rgit #174).
-pub fn protocol_not_supported(version: u8) -> String {
-    format!(
-        "rgit upload-pack: protocol version {version} is not supported yet, \
-         use protocol version 2 (git -c protocol.version=2)"
-    )
+/// Protocol v0: a line of the `want` list that is none of the known
+/// requests, or `want` without an object id.
+pub fn expected_object_id(line: &str) -> String {
+    format!("git upload-pack: protocol error, expected to get object ID, not '{line}'")
 }
+
+/// Protocol v0: a line of the negotiation that is neither `have` nor
+/// `done`.
+pub fn expected_list(line: &str) -> String {
+    format!("git upload-pack: expected SHA1 list, got '{line}'")
+}
+
+/// Protocol v0: `shallow` names an object that is no commit.
+pub fn invalid_shallow_object(id: &ObjectId) -> String {
+    format!("invalid shallow object {id}")
+}
+
+/// Protocol v0: a `filter` line without the `filter` capability.
+pub const FILTER_NOT_NEGOTIATED: &str = "git upload-pack: filtering capability not negotiated";
+
+/// Protocol v0: a second `filter` line.
+pub const MULTIPLE_FILTERS: &str = "multiple filter-specs cannot be combined";

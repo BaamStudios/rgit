@@ -5,8 +5,9 @@
 //!
 //! This file finds the repository and connects standard input and output
 //! to the service in `rgit_server::upload_pack`, which speaks protocol
-//! v2. The pack is made by `rgit pack-objects`, started as a child
-//! process (or by `uploadpack.packObjectsHook`).
+//! v0, v1 and v2 (`GIT_PROTOCOL` says which one the client asks for).
+//! The pack is made by `rgit pack-objects`, started as a child process
+//! (or by `uploadpack.packObjectsHook`).
 //!
 //! `<directory>` may be the repository's work tree or git directory; like
 //! git, `<directory>/.git`, `<directory>`, `<directory>.git/.git` and
@@ -14,11 +15,6 @@
 //! to home directories. With `--strict` only `<directory>` itself counts.
 //! A candidate may also be a `.git` file naming the git directory (a
 //! linked work tree, a submodule).
-//!
-//! Protocol v0 and v1 are not served yet (rgit #174). A client that does
-//! not ask for v2 is handed to another `git-upload-pack` program on the
-//! exec path or `PATH` if there is one, as for any command rgit does not
-//! have; else it is told that only protocol v2 is served.
 
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -35,16 +31,36 @@ use crate::repo::{self, Mode};
 
 /// The git directory `<directory>` names, if any.
 fn enter_repo(dir: &str, strict: bool) -> Option<PathBuf> {
+    find_repo(dir, strict).map(|found| found.git_dir)
+}
+
+/// A repository a server was asked for.
+pub(crate) struct FoundRepo {
+    /// The path at which it was found: the request, with `/.git` or
+    /// `.git` added where that was needed. For a `.git` file this is the
+    /// file, not where it points (`git daemon` checks this path against
+    /// its directory list, as git does).
+    pub path: PathBuf,
+    /// The git directory.
+    pub git_dir: PathBuf,
+}
+
+/// Find the repository `<directory>` names (see the module
+/// documentation).
+pub(crate) fn find_repo(dir: &str, strict: bool) -> Option<FoundRepo> {
     let cwd = std::env::current_dir().ok()?;
     let overrides = LayoutOverrides::default();
     // The git directory at `p`: `p` itself, or what the `.git` file `p`
     // points to.
-    let repository = |p: PathBuf| -> Option<PathBuf> {
-        if p.is_file() {
-            read_gitfile(&p, &cwd, &overrides).ok()
+    let repository = |p: PathBuf| -> Option<FoundRepo> {
+        let git_dir = if p.is_file() {
+            read_gitfile(&p, &cwd, &overrides).ok()?
+        } else if is_git_directory(&p, &cwd, &overrides) {
+            p.clone()
         } else {
-            is_git_directory(&p, &cwd, &overrides).then_some(p)
-        }
+            return None;
+        };
+        Some(FoundRepo { path: p, git_dir })
     };
     if strict {
         return repository(PathBuf::from(dir));
@@ -124,11 +140,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     drop(parser);
     let protocol = requested_protocol();
-    if protocol != ProtocolVersion::V2 {
-        if let Some(result) = crate::external::run(ctx, argv) {
-            return result;
-        }
-    }
     let dir = &args[0];
     let Some(git_dir) = enter_repo(dir, strict.get()) else {
         return Err(Die::Fatal(msg::not_a_repository(dir)));
@@ -191,6 +202,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             flushed.map_err(|e| Die::Fatal(e.to_string()))?;
             Ok(0)
         }
+        Err(service::Error::Refused(m)) => Err(Die::Error(m, 128)),
         Err(e) => Err(Die::Fatal(e.to_string())),
     }
 }

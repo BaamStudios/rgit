@@ -8,9 +8,11 @@
 //! (sshd, a CGI web server, `git daemon`) starts one process per
 //! connection, and tests drive the same code in memory.
 //!
+//! - [`daemon`]: the request and path rules of `git daemon`.
 //! - [`receive_pack`]: the server side of push (`git-receive-pack`).
 //! - [`upload_pack`]: serve fetches and clones (`git-upload-pack`),
-//!   protocol v2.
+//!   protocol v0, v1 and v2.
 
+pub mod daemon;
 pub mod receive_pack;
 pub mod upload_pack;
