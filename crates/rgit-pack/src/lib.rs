@@ -17,6 +17,9 @@
 //!   parallel delta resolution, thin pack completion, `.idx` and `.rev`
 //!   output.
 //! - [`midx`]: multi-pack indexes (read, write, verify).
+//! - [`bitmap`]: reachability bitmaps (`.bitmap`, EWAH): reading, and
+//!   writing with git's commit selection.
+//! - [`revindex`]: checking `.rev` reverse indexes.
 //! - [`mtimes`]: the `.mtimes` files of cruft packs.
 //! - [`write`]: writing packs (`pack-objects` without delta search).
 //!
@@ -29,6 +32,7 @@
 //! offset and size read from a file is bounds-checked: corrupt files give
 //! [`Error`]s, never panics. `Error`'s `Display` is git's message text.
 
+pub mod bitmap;
 mod cache;
 mod data;
 mod delta;
@@ -40,6 +44,7 @@ pub mod midx;
 mod mmap;
 pub mod mtimes;
 mod pack;
+pub mod revindex;
 mod store;
 mod stream;
 pub mod write;

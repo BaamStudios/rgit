@@ -37,6 +37,7 @@ mod alias;
 mod argv;
 mod attributes;
 mod autocorrect;
+mod bitmaps;
 mod branch_submodules;
 mod cmdlist;
 mod color;

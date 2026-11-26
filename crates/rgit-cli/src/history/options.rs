@@ -263,6 +263,10 @@ pub struct Options {
     pub missing_only: bool,
     /// `--exclude-promisor-objects`.
     pub exclude_promisor: bool,
+    /// `--use-bitmap-index`.
+    pub use_bitmap_index: bool,
+    /// `--test-bitmap`.
+    pub test_bitmap: bool,
 }
 
 /// `--missing=<action>` (Documentation/rev-list-options.adoc).
@@ -422,6 +426,8 @@ impl Options {
             unpacked: false,
             no_kept: false,
             disk_usage: None,
+            use_bitmap_index: false,
+            test_bitmap: false,
             maximal_only: false,
             filters: Vec::new(),
             filter_provided: false,
@@ -634,6 +640,8 @@ impl Options {
                     o.diff.parse_arg("--quiet")?;
                 }
                 "--count" if cmd == Command::RevList => o.count = true,
+                "--use-bitmap-index" if cmd == Command::RevList => o.use_bitmap_index = true,
+                "--test-bitmap" if cmd == Command::RevList => o.test_bitmap = true,
                 "--objects" if cmd == Command::RevList => o.set_objects(false),
                 "--objects-edge" | "--objects-edge-aggressive" if cmd == Command::RevList => {
                     o.set_objects(true);

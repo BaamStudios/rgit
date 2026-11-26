@@ -44,9 +44,11 @@
 //! (`--write-midx=incremental` a new layer of the incremental chain), also
 //! after `--geometric`.
 //!
-//! Not yet: `--filter`, `--max-pack-size` for
-//! the reachable pack. `-b` is accepted, but bitmaps (#23) are not
-//! written.
+//! `-b` (else `repack.writeBitmaps`, on by default in bare repositories)
+//! writes a reachability bitmap for the pack of everything reachable, or
+//! for the multi-pack index with `--write-midx`.
+//!
+//! Not yet: `--filter`, `--max-pack-size` for the reachable pack.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -76,7 +78,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let no_server_info = Cell::new(false);
     let quiet = Cell::new(false);
     let local = Cell::new(false);
-    let bitmap = Cell::new(false);
+    let bitmap = Cell::new(-1);
     let islands = Cell::new(false);
     let unpack_unreachable: RefCell<Option<String>> = RefCell::new(None);
     let keep_unreachable = Cell::new(false);
@@ -135,7 +137,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::flag('n', None, &no_server_info, msg::REPACK_H_N),
             Opt::flag('q', "quiet", &quiet, msg::REPACK_H_QUIET),
             Opt::flag('l', "local", &local, msg::REPACK_H_LOCAL),
-            Opt::flag('b', "write-bitmap-index", &bitmap, msg::REPACK_H_BITMAP),
+            Opt::bool('b', "write-bitmap-index", &bitmap, msg::REPACK_H_BITMAP),
             Opt::flag('i', "delta-islands", &islands, msg::REPACK_H_ISLANDS),
             Opt::string(
                 None,
@@ -192,9 +194,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if geometric.get() != 0 && (all.get() || all_loosen.get() || cruft.get()) {
         return Err(Die::Fatal(msg::REPACK_GEOMETRIC_AND_ALL.into()));
     }
-    // Bitmaps (#23) only speed up later reads: -b is accepted, but no
-    // bitmap is written.
-    let _ = bitmap.get();
     if let Some(opt) = unsupported.borrow().as_deref() {
         return Err(Die::Fatal(msg::not_supported(opt)));
     }
@@ -204,6 +203,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let cruft = cruft.get();
     let all_loosen = all_loosen.get() && !cruft;
     let pack_everything = all.get() || all_loosen || cruft;
+    // `-b`, else `repack.writeBitmaps` (`pack.writeBitmaps`), else true in
+    // bare repositories.
+    let mut write_bitmaps = match bitmap.get() {
+        -1 => config
+            .bool("repack.writebitmaps")
+            .ok()
+            .flatten()
+            .or_else(|| config.bool("pack.writebitmaps").ok().flatten())
+            .unwrap_or_else(|| setup.is_bare() && write_midx.borrow().is_none()),
+        v => v > 0,
+    };
+    if write_bitmaps && !pack_everything && write_midx.borrow().is_none() {
+        if bitmap.get() == -1 && setup.is_bare() {
+            write_bitmaps = false;
+        } else {
+            return Err(Die::Fatal(msg::REPACK_INCREMENTAL_BITMAP.into()));
+        }
+    }
     let delete = delete.get();
     if delete && setup.format.precious_objects {
         return Err(Die::Fatal(msg::REPACK_PRECIOUS.into()));
@@ -223,12 +240,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let d: i64 = d.trim().parse().unwrap_or(50);
         opts.write.max_depth = d.clamp(0, i64::from(rgit_pack::write::MAX_DEPTH)) as u32;
     }
+    // `repack.packKeptObjects` defaults to true when bitmaps are written.
     let pack_kept = pack_kept.get()
         || config
             .bool("repack.packkeptobjects")
             .ok()
             .flatten()
-            .unwrap_or(false);
+            .unwrap_or(write_bitmaps && write_midx.borrow().is_none());
     let keep_names = keep_packs.take();
 
     let odb = repo::odb_with_config(&setup, &config)?;
@@ -251,7 +269,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             let packs_now = store::local_packs(&odb, &keep_names);
             store::prune_packed(&objects_dir, &objects_dir, kind, &packs_now, false)?;
         }
-        write_midx_after(write_midx.take(), &config, &pack_dir, kind, bitmap.get(), quiet.get())?;
+        write_midx_after(
+            ctx,
+            &setup,
+            &config,
+            write_midx.take(),
+            &pack_dir,
+            write_bitmaps,
+            quiet.get(),
+        )?;
         update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
         return Ok(0);
     }
@@ -327,11 +353,34 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             }
         }
     }
-    if partial && bitmap.get() && pack_everything {
+    if partial && write_bitmaps && write_midx.borrow().is_none() && pack_everything {
         check_closure(&odb, &chosen)?;
     }
     let ordered = rgit_pack::write::pack_order(&chosen);
     let new_pack = store::write_pack(&odb, &pack_dir, &ordered, &opts)?;
+    // A pack that leaves out reachable objects (kept or non-local ones)
+    // gets no bitmap; git disables it quietly.
+    let complete = chosen.len() >= walk.listed.len();
+    if let Some(sum) = &new_pack
+        && write_bitmaps
+        && complete
+        && write_midx.borrow().is_none()
+    {
+        let walk_commits: Vec<ObjectId> = chosen
+            .iter()
+            .filter(|o| o.kind == rgit_object::ObjectKind::Commit)
+            .map(|o| o.id)
+            .collect();
+        let idx = pack_dir.join(format!("pack-{}.idx", sum.to_hex()));
+        crate::bitmaps::write_for_pack(
+            &setup,
+            &config,
+            &odb,
+            &idx,
+            &walk_commits,
+            !quiet.get() && rgit_progress::stderr_is_terminal(),
+        )?;
+    }
     if new_pack.is_none() && !quiet.get() {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{}", msg::REPACK_NOTHING_NEW);
@@ -458,23 +507,34 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
 
-    write_midx_after(write_midx.take(), &config, &pack_dir, kind, bitmap.get(), quiet.get())?;
+    write_midx_after(
+        ctx,
+        &setup,
+        &config,
+        write_midx.take(),
+        &pack_dir,
+        write_bitmaps,
+        quiet.get(),
+    )?;
     update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
     Ok(0)
 }
 
-/// `--write-midx[=<mode>]`: write the multi-pack index of the packs left.
+/// `--write-midx[=<mode>]`: write the multi-pack index of the packs left,
+/// with its bitmap when bitmaps are written.
 fn write_midx_after(
-    mode: Option<String>,
+    ctx: &Context,
+    setup: &rgit_repo::Setup,
     config: &rgit_config::ConfigSet,
+    mode: Option<String>,
     pack_dir: &std::path::Path,
-    kind: rgit_hash::HashKind,
     bitmap: bool,
     quiet: bool,
 ) -> Result<(), Die> {
     let Some(mode) = mode else {
         return Ok(());
     };
+    let kind = setup.format.object_format;
     let opts = rgit_pack::midx::write::WriteOptions {
         version: match config.int("midx.version").ok().flatten() {
             Some(2) => 2,
@@ -486,10 +546,19 @@ fn write_midx_after(
         ..Default::default()
     };
     let display = pack_dir.display().to_string();
-    rgit_pack::midx::write::write(pack_dir, &display, kind, &opts).map_err(|e| match e {
-        rgit_pack::midx::write::WriteError::Error(m) => Die::Error(m, 255),
-        rgit_pack::midx::write::WriteError::Fatal(m) => Die::Fatal(m),
-    })?;
+    let hashes = if opts.bitmap && !opts.incremental {
+        crate::bitmaps::existing_name_hashes(pack_dir, kind)
+    } else {
+        Default::default()
+    };
+    let outcome =
+        rgit_pack::midx::write::write(pack_dir, &display, kind, &opts).map_err(|e| match e {
+            rgit_pack::midx::write::WriteError::Error(m) => Die::Error(m, 255),
+            rgit_pack::midx::write::WriteError::Fatal(m) => Die::Fatal(m),
+        })?;
+    if opts.bitmap && !opts.incremental && outcome.written.is_some() {
+        crate::bitmaps::write_for_midx(ctx, setup, config, pack_dir, &hashes, None)?;
+    }
     Ok(())
 }
 
