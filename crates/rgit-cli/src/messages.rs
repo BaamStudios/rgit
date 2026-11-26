@@ -66,6 +66,7 @@ pub mod patch_id;
 pub mod promisor;
 pub mod pull;
 pub mod push;
+pub mod range_diff;
 pub mod read_tree;
 pub mod rebase;
 pub mod recurse_submodules;

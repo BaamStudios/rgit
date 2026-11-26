@@ -6,10 +6,10 @@
 //!
 //! Mail headers are written with `rgit_mail` (RFC 2047 encoding, quoting,
 //! folding). `--attach`/`--inline` write multipart mails, `--base` adds
-//! the base tree information, `--interdiff` and `--commit-list-format`
-//! fill the cover letter, `--notes[=<ref>]` adds notes after the `---`
-//! line (see [`crate::notes`]). Not yet supported: `--range-diff`
-//! (rgit #140).
+//! the base tree information, `--interdiff`, `--range-diff` (see
+//! [`crate::range_diff`]) and `--commit-list-format` fill the cover
+//! letter, `--notes[=<ref>]` adds notes after the `---` line (see
+//! [`crate::notes`]).
 
 #[path = "format_patch/mail.rs"]
 pub(crate) mod mail;
@@ -696,8 +696,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         },
         None => None,
     };
-    if o.range_diff.is_some() {
-        return Err(Die::Fatal(msg::not_supported("--range-diff")));
+    if o.creation_factor.is_some() && o.range_diff.is_none() {
+        return Err(Die::Fatal(msg::requires_option(
+            "--creation-factor",
+            "--range-diff",
+        )));
     }
     // `--base`: the named commit, or the upstream for `auto`.
     let base_start = match &s.base {
@@ -943,6 +946,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         cover = true;
     }
+    // So does a range-diff.
+    if o.range_diff.is_some() && count > 1 && !cover {
+        if s.cover_explicit {
+            return Err(Die::Fatal(msg::requires_cover_or_single("--range-diff")));
+        }
+        cover = true;
+    }
     let list_format = if cover {
         match s.commit_list.as_deref() {
             None | Some("shortlog") => None,
@@ -972,6 +982,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             )?;
             Some((msg::interdiff_header(previous_version(s.reroll.as_deref())), diff))
         }
+        None => None,
+    };
+    let range_diff = match &o.range_diff {
+        Some(prev) => Some(range_diff_block(ctx, &repo, &o, &s, prev, &patches)?),
         None => None,
     };
     // The stable patch id of a prerequisite commit: its patch against
@@ -1185,6 +1199,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             text.push(b'\n');
             text.extend_from_slice(diff);
         }
+        if let Some((header, body)) = &range_diff {
+            text.extend_from_slice(header.as_bytes());
+            text.push(b'\n');
+            text.extend_from_slice(body);
+        }
         if let Some(block) = base_block.take() {
             text.extend_from_slice(block);
         }
@@ -1388,6 +1407,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     out.extend_from_slice(line);
                 }
             }
+            if let Some((header, body)) = &range_diff {
+                out.push(b'\n');
+                out.extend_from_slice(header.as_bytes());
+                out.push(b'\n');
+                out.extend_from_slice(body);
+            }
         }
         if let Some(block) = base_block.take() {
             out.extend_from_slice(block);
@@ -1458,6 +1483,59 @@ fn extra_headers(out: &mut Vec<u8>, s: &Settings) {
         }
         out.extend_from_slice(format!("{name}: {}\n", list.join(",\n    ")).as_bytes());
     }
+}
+
+/// `--range-diff=<previous>`: the header and the comparison of the
+/// previous version with the series. A single revision is the tip of the
+/// previous version on the same base as the series (the parent of its
+/// first patch).
+fn range_diff_block(
+    ctx: &Context,
+    repo: &Repo,
+    o: &Options,
+    s: &Settings,
+    prev: &str,
+    patches: &[Patch],
+) -> Result<(String, Vec<u8>), Die> {
+    let base = patches
+        .first()
+        .and_then(|p| p.commit.parents().ok())
+        .and_then(|ps| ps.first().copied());
+    let tip = patches.last().map(|p| p.id);
+    let range1 = if crate::range_diff::is_range(prev) {
+        prev.to_string()
+    } else {
+        match base {
+            Some(b) => format!("{}..{prev}", b.to_hex()),
+            None => prev.to_string(),
+        }
+    };
+    // The names are checked in a repository of their own: `repo` is
+    // shared with the diff machinery here.
+    let mut names = Repo::open(ctx, Mode::Required)?;
+    if !crate::range_diff::is_revision_arg(&mut names, &range1) {
+        return Err(Die::Fatal(crate::messages::range_diff::bad_revision(prev)));
+    }
+    let range2 = match (base, tip) {
+        (Some(b), Some(t)) => format!("{}..{}", b.to_hex(), t.to_hex()),
+        (None, Some(t)) => t.to_hex(),
+        _ => String::new(),
+    };
+    let mut opts = crate::range_diff::Options::new(repo.default_abbrev());
+    opts.creation_factor = o
+        .creation_factor
+        .map_or(crate::range_diff::FORMAT_PATCH_CREATION_FACTOR, |f| f as i64);
+    let color = match o.diff.color {
+        Some(rgit_config::color::ColorBool::Always) => true,
+        Some(rgit_config::color::ColorBool::Auto) => crate::color::auto(&repo.config),
+        _ => false,
+    };
+    if color {
+        opts.color = Some(crate::range_diff::Colors::from_config(&repo.config)?);
+    }
+    let body = crate::range_diff::compare(ctx, repo, &range1, &range2, &[], &opts)?;
+    let header = msg::range_diff_header(previous_version(s.reroll.as_deref()));
+    Ok((header, body))
 }
 
 /// `--commit-list-format=modern`.

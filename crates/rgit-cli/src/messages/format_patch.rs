@@ -125,10 +125,6 @@ pub fn cannot_read_description(path: &str) -> String {
     format!("unable to read branch description file '{path}'")
 }
 
-pub fn not_supported(what: &str) -> String {
-    format!("format-patch {what} is not supported by rgit yet")
-}
-
 pub const GENERATING_PATCHES: &str = "Generating patches";
 
 pub const NO_UPSTREAM: &str =
@@ -162,6 +158,19 @@ pub fn interdiff_header(previous: Option<u64>) -> String {
         Some(v) => format!("Interdiff against v{v}:"),
         None => "Interdiff:".to_string(),
     }
+}
+
+/// The heading of a range-diff, against version `previous` when the
+/// reroll count says which one.
+pub fn range_diff_header(previous: Option<u64>) -> String {
+    match previous {
+        Some(v) => format!("Range-diff against v{v}:"),
+        None => "Range-diff:".to_string(),
+    }
+}
+
+pub fn requires_option(option: &str, needed: &str) -> String {
+    format!("the option '{option}' requires '{needed}'")
 }
 
 /// The headers of a `--attach`/`--inline` mail after the subject and

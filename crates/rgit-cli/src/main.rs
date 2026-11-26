@@ -70,6 +70,7 @@ mod patch_id;
 mod promisor;
 mod push;
 mod quote;
+mod range_diff;
 mod rebase;
 mod recurse_submodules;
 mod ref_filter;
