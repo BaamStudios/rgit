@@ -217,6 +217,48 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
             .map_or(0, |t| t.seconds))
     }
 
+    /// The root tree of `commit`.
+    pub fn commit_tree(&mut self, commit: &ObjectId) -> Result<ObjectId, BuildError> {
+        match &*self.node(commit, ObjectKind::Commit)? {
+            Node::Commit { tree, .. } => Ok(*tree),
+            _ => Err(BuildError::Read(*commit, "not a commit".into())),
+        }
+    }
+
+    /// The objects `id` (a tree or a tag) refers to, in their order;
+    /// gitlinks are left out. Nothing for commits and blobs.
+    pub fn links(
+        &mut self,
+        id: &ObjectId,
+        kind: ObjectKind,
+    ) -> Result<Vec<(ObjectId, ObjectKind)>, BuildError> {
+        if !matches!(kind, ObjectKind::Tree | ObjectKind::Tag) {
+            return Ok(Vec::new());
+        }
+        Ok(match &*self.node(id, kind)? {
+            Node::Tree(entries) => entries
+                .iter()
+                .map(|(oid, is_tree, _)| {
+                    let k = if *is_tree {
+                        ObjectKind::Tree
+                    } else {
+                        ObjectKind::Blob
+                    };
+                    (*oid, k)
+                })
+                .collect(),
+            Node::Tag(target) => {
+                let k = self
+                    .source
+                    .kind(target)
+                    .map_err(|e| BuildError::Read(*target, e.to_string()))?
+                    .ok_or(BuildError::Missing(*target))?;
+                vec![(*target, k)]
+            }
+            _ => Vec::new(),
+        })
+    }
+
     /// Parents of `commit`.
     pub fn parents(&mut self, commit: &ObjectId) -> Result<Vec<ObjectId>, BuildError> {
         match &*self.node(commit, ObjectKind::Commit)? {
