@@ -17,6 +17,9 @@
 //!   parallel delta resolution, thin pack completion, `.idx` and `.rev`
 //!   output.
 //! - [`midx`]: multi-pack indexes (read, write, verify).
+//! - [`bitmap`]: reachability bitmaps (`.bitmap`, EWAH): reading, and
+//!   writing with git's commit selection.
+//! - [`revindex`]: checking `.rev` reverse indexes.
 //! - [`write`]: writing packs (`pack-objects` without delta search).
 //!
 //! Objects come back as [`Object`] (= [`rgit_object::RawObject`]): the
