@@ -35,6 +35,45 @@ fn git_binary_block(dir: &std::path::Path, a: &[u8], b: &[u8]) -> Vec<u8> {
     text[at..].to_vec()
 }
 
+/// The hunks of a binary patch block: kind line and inflated data.
+fn hunks(block: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut lines = block.split(|&c| c == b'\n').peekable();
+    while let Some(l) = lines.next() {
+        if l.starts_with(b"literal ") || l.starts_with(b"delta ") {
+            let mut zipped = Vec::new();
+            while let Some(d) = lines.next_if(|d| !d.is_empty()) {
+                zipped.extend(rgit_diff::binary::decode_line(d).expect("data line"));
+            }
+            let data = rgit_diff::binary::inflate(&zipped).expect("zlib");
+            out.push((l.to_vec(), data));
+        }
+    }
+    out
+}
+
+/// Whether the `git` binary compresses like rgit (both on zlib-ng
+/// output); with another zlib the compressed bytes and therefore the
+/// literal/delta choice near the break-even point can differ.
+fn same_zlib(dir: &std::path::Path) -> bool {
+    let data: Vec<u8> = (0..5000u32).map(|i| (i * i % 251) as u8).collect();
+    let want = git_binary_block(dir, b"\0", &data);
+    let mut got = Vec::new();
+    rgit_diff::binary::write_binary_patch(&mut got, b"\0", &data);
+    want == got
+}
+
+/// Compares the blocks: exactly with the same zlib, else hunk by hunk
+/// (inflated contents) wherever both chose the same kind of hunk.
+fn same_block(exact: bool, want: &[u8], got: &[u8]) -> bool {
+    if exact {
+        return want == got;
+    }
+    hunks(want).iter().zip(hunks(got)).all(|(w, g)| {
+        w.0.split(|&c| c == b' ').next() != g.0.split(|&c| c == b' ').next() || *w == g
+    })
+}
+
 fn bytes(rng: &mut Rng, n: usize, runs: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(n);
     let alpha = if runs { 2 + rng.below(15) } else { 256 };
@@ -85,6 +124,7 @@ fn check(name: &str, seed: u64, count: usize, max: usize, max_piece: usize, runs
         return;
     }
     let dir = Scratch::new(name);
+    let exact = same_zlib(&dir.0);
     let mut rng = Rng::new(seed);
     let mut bad = 0;
     for i in 0..count {
@@ -92,7 +132,7 @@ fn check(name: &str, seed: u64, count: usize, max: usize, max_piece: usize, runs
         let want = git_binary_block(&dir.0, &a, &b);
         let mut got = Vec::new();
         rgit_diff::binary::write_binary_patch(&mut got, &a, &b);
-        if got != want {
+        if !same_block(exact, &want, &got) {
             bad += 1;
             eprintln!(
                 "case {i} differs\n--- git\n{}\n--- rgit\n{}",
@@ -128,6 +168,7 @@ fn full_hash_bucket() {
         return;
     }
     let dir = Scratch::new("bin-bucket");
+    let exact = same_zlib(&dir.0);
     let x: Vec<u8> = (0..16u8).map(|i| i.wrapping_mul(37) ^ 0x5a).collect();
     let sep: Vec<u8> = (1..=16u8).collect();
     let mut src = vec![0xaa];
@@ -145,9 +186,11 @@ fn full_hash_bucket() {
         let want = git_binary_block(&dir.0, &src, &tgt);
         let mut got = Vec::new();
         rgit_diff::binary::write_binary_patch(&mut got, &src, &tgt);
-        assert_eq!(
-            String::from_utf8_lossy(&got),
-            String::from_utf8_lossy(&want)
+        assert!(
+            same_block(exact, &want, &got),
+            "--- git\n{}\n--- rgit\n{}",
+            String::from_utf8_lossy(&want),
+            String::from_utf8_lossy(&got)
         );
     }
 }
