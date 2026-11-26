@@ -30,7 +30,7 @@ use crate::prelude::*;
 use crate::repo::{self, Mode};
 
 /// The git directory `<directory>` names, if any.
-fn enter_repo(dir: &str, strict: bool) -> Option<PathBuf> {
+pub(crate) fn enter_repo(dir: &str, strict: bool) -> Option<PathBuf> {
     find_repo(dir, strict).map(|found| found.git_dir)
 }
 

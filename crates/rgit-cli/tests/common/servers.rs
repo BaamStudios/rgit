@@ -133,15 +133,28 @@ pub fn start_http(fx: &Fixture) -> String {
 /// [`start_http`] with more environment variables for `git http-backend`
 /// (e.g. `GIT_EXEC_PATH`, to choose the `git upload-pack` it runs).
 pub fn start_http_with(fx: &Fixture, env: Vec<(String, std::ffi::OsString)>) -> String {
+    let git = fx.reference_git().to_path_buf();
+    start_cgi(fx, git, env, false)
+}
+
+/// Serve the fixture's work directory over HTTP with `<program>
+/// http-backend` as CGI (the reference git or rgit). With
+/// `header_protocol` the `Git-Protocol` header reaches the CGI as
+/// `HTTP_GIT_PROTOCOL`, as Apache passes it, instead of `GIT_PROTOCOL`.
+pub fn start_cgi(
+    fx: &Fixture,
+    program: PathBuf,
+    env: Vec<(String, std::ffi::OsString)>,
+    header_protocol: bool,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let git = fx.reference_git().to_path_buf();
     let root = fx.work_dir();
     let home = fx.home_dir();
     std::thread::spawn(move || {
         for s in listener.incoming().flatten() {
-            let (g, r, h, e) = (git.clone(), root.clone(), home.clone(), env.clone());
-            std::thread::spawn(move || serve_cgi(&g, &r, &h, &e, s));
+            let (g, r, h, e) = (program.clone(), root.clone(), home.clone(), env.clone());
+            std::thread::spawn(move || serve_cgi(&g, &r, &h, &e, header_protocol, s));
         }
     });
     format!("http://127.0.0.1:{port}")
@@ -153,6 +166,7 @@ fn serve_cgi(
     root: &Path,
     fx_home: &Path,
     env: &[(String, std::ffi::OsString)],
+    header_protocol: bool,
     mut stream: TcpStream,
 ) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -212,7 +226,14 @@ fn serve_cgi(
         .env("CONTENT_TYPE", header("content-type"))
         .env("CONTENT_LENGTH", body.len().to_string())
         .env("HTTP_CONTENT_ENCODING", header("content-encoding"))
-        .env("GIT_PROTOCOL", header("git-protocol"))
+        .env(
+            if header_protocol {
+                "HTTP_GIT_PROTOCOL"
+            } else {
+                "GIT_PROTOCOL"
+            },
+            header("git-protocol"),
+        )
         .env("REMOTE_ADDR", "127.0.0.1")
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())))
         .arg("http-backend")
