@@ -110,7 +110,7 @@ fn fresh_and_reinit() {
         )]
     );
     assert_eq!(
-        fs::read_to_string(git_dir.join("config")).unwrap(),
+        without_probes(&fs::read_to_string(git_dir.join("config")).unwrap()),
         config,
         "reinit keeps the configuration"
     );
