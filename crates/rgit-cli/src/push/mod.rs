@@ -160,9 +160,7 @@ pub fn check_refs(refs: &mut [PushRef], objects: &Objects<'_>) {
         let have_old = objects.odb.contains(&old);
         // An old value that is not here is not read: in a partial clone
         // that would fetch it from the promisor remote.
-        let commits = match have_old
-            .then(|| (objects.peel(&old), objects.peel(&new)))
-        {
+        let commits = match have_old.then(|| (objects.peel(&old), objects.peel(&new))) {
             Some((Some((o, ObjectKind::Commit)), Some((n, ObjectKind::Commit)))) => Some((o, n)),
             _ => None,
         };

@@ -637,8 +637,14 @@ pub fn fetch(
             args.push("--exclude-promisor-objects".into());
         }
         args.extend(
-            ["--not", "--exclude-hidden=fetch", "--all", "--quiet", "--alternate-refs"]
-                .map(String::from),
+            [
+                "--not",
+                "--exclude-hidden=fetch",
+                "--all",
+                "--quiet",
+                "--alternate-refs",
+            ]
+            .map(String::from),
         );
         crate::trace_child(&args);
     }

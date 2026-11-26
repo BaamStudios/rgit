@@ -1924,7 +1924,10 @@ fn index_argv(
     }
     args.push("--fix-thin".to_owned());
     let forced_keep = opts.unpack_limit.is_none();
-    if opts.unpack_limit.is_none_or(|limit| count >= u64::from(limit)) {
+    if opts
+        .unpack_limit
+        .is_none_or(|limit| count >= u64::from(limit))
+    {
         args.push(format!(
             "--keep=fetch-pack {} on {}",
             std::process::id(),
@@ -2051,5 +2054,104 @@ mod tests {
         );
         assert_eq!(uri_scheme_host("https://[::1]:1/x"), ("https", "[::1]"));
         assert_eq!(uri_scheme_host("https://host"), ("https", "host"));
+    }
+
+    fn fsck() -> Option<FsckCheck> {
+        Some(FsckCheck {
+            entries: Vec::new(),
+            failed: String::new(),
+        })
+    }
+
+    #[test]
+    fn index_command_lines_as_git_runs_them() {
+        let keep = format!(
+            "--keep=fetch-pack {} on {}",
+            std::process::id(),
+            rgit_ident::system::hostname()
+        );
+        let fetch = PackOptions {
+            unpack_limit: Some(100),
+            ..PackOptions::default()
+        };
+        // Below the unpack limit.
+        assert_eq!(
+            index_argv(false, false, true, &fetch, 3),
+            ["unpack-objects", "-q", "--pack_header=2,3"]
+        );
+        assert_eq!(
+            index_argv(false, true, true, &fetch, 3),
+            ["unpack-objects", "--pack_header=2,3"]
+        );
+        // At the limit.
+        assert_eq!(
+            index_argv(false, false, false, &fetch, 100),
+            [
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                &keep,
+                "--pack_header=2,100"
+            ]
+        );
+        // Object checks below the limit.
+        let checked = PackOptions {
+            fsck: fsck(),
+            ..fetch.clone()
+        };
+        assert_eq!(
+            index_argv(false, true, false, &checked, 3),
+            [
+                "index-pack",
+                "--stdin",
+                "-v",
+                "--fix-thin",
+                "--pack_header=2,3",
+                "--strict"
+            ]
+        );
+        // Clone (always kept).
+        assert_eq!(
+            index_argv(true, false, false, &PackOptions::default(), 3),
+            [
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                &keep,
+                "--check-self-contained-and-connected"
+            ]
+        );
+        // Partial clone with object checks, then a lazy fetch.
+        let partial = PackOptions {
+            promisor: Some(String::new()),
+            fsck: fsck(),
+            ..PackOptions::default()
+        };
+        assert_eq!(
+            index_argv(true, false, false, &partial, 3),
+            [
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                &keep,
+                "--promisor",
+                "--fsck-objects"
+            ]
+        );
+        let lazy = PackOptions {
+            unpack_limit: Some(100),
+            ..partial
+        };
+        assert_eq!(
+            index_argv(false, false, false, &lazy, 1),
+            [
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                "--promisor",
+                "--pack_header=2,1",
+                "--fsck-objects"
+            ]
+        );
     }
 }
