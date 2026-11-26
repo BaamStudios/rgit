@@ -349,8 +349,10 @@ pub(crate) fn run<R: Read, W: Write>(s: &mut Session<'_, R, W>, lines: &[String]
     let mut graph = Graph::new(repo.odb, repo.hash, &repo.shallow);
     let common = Common::find(repo, &mut graph, &req.haves);
     trace_request(&req, &common.objects);
-    // Nothing wanted, nothing to say.
-    if req.wants.is_empty() {
+    // Nothing wanted, nothing to say: unless the client only negotiates
+    // (`wait-for-done`, `fetch --negotiate-only`) and waits for the
+    // acknowledgments.
+    if req.wants.is_empty() && !req.wait_for_done {
         return Ok(());
     }
     if let Some(filter) = &req.filter {
@@ -372,7 +374,9 @@ fn respond<R: Read, W: Write>(
     common: Common,
 ) -> Result<()> {
     let repo = s.repo;
-    if !req.done {
+    // Without `have` lines there is nothing to acknowledge: like git, the
+    // pack follows at once.
+    if !req.done && !req.haves.is_empty() {
         s.out.line("acknowledgments")?;
         if common.objects.is_empty() {
             s.out.line("NAK")?;
