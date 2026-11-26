@@ -183,3 +183,7 @@ pub fn bitmap_no_closure(id: &str) -> String {
 }
 
 pub const FAILED_TO_WRITE_BITMAP: &str = "failed to write bitmap index";
+
+pub const REPACK_INCREMENTAL_BITMAP: &str =
+    "Incremental repacks are incompatible with bitmap indexes.  Use
+--no-write-bitmap-index or disable the pack.writeBitmaps configuration.";

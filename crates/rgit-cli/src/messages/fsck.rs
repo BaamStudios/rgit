@@ -174,3 +174,15 @@ pub fn disallowed_path(path: &str) -> String {
 pub fn disallowed_update(value: &str) -> String {
     format!("disallowed submodule update setting: {value}")
 }
+
+pub fn invalid_rev_index(pack: &str) -> String {
+    format!("invalid rev-index for pack '{pack}'")
+}
+
+pub fn unable_to_load_rev_index(pack: &str) -> String {
+    format!("unable to load rev-index for pack '{pack}'")
+}
+
+pub fn bitmap_invalid_checksum(path: &str) -> String {
+    format!("bitmap file '{path}' has invalid checksum")
+}

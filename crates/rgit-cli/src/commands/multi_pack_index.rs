@@ -222,9 +222,35 @@ fn write(ctx: &mut Context, common: &Common, argv: &[String]) -> CmdResult {
         base: base.take().map(|b| (b != "none" && !b.is_empty()).then_some(b)),
         progress: common.show_progress(),
         drop: BTreeSet::new(),
+        write_rev: std::env::var("GIT_TEST_MIDX_WRITE_REV").is_ok_and(|v| v == "1" || v == "true"),
+    };
+    let snapshot = match refs_snapshot.take() {
+        Some(p) => Some(crate::bitmaps::read_refs_snapshot(
+            std::path::Path::new(&p),
+            target.kind,
+        )?),
+        None => None,
+    };
+    let hashes = if opts.bitmap && !opts.incremental {
+        crate::bitmaps::existing_name_hashes(&target.pack_dir(), target.kind)
+    } else {
+        Default::default()
     };
     let outcome = mw::write(&target.pack_dir(), &target.pack_display(), target.kind, &opts)
         .map_err(map_write_error)?;
+    if opts.bitmap
+        && !opts.incremental
+        && outcome.written.is_some()
+    {
+        crate::bitmaps::write_for_midx(
+            ctx,
+            &setup,
+            &config,
+            &target.pack_dir(),
+            &hashes,
+            snapshot.as_deref(),
+        )?;
+    }
     if opts.no_chain_file
         && let Some(sum) = outcome.written
     {
