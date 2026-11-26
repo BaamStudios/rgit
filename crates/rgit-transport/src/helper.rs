@@ -354,12 +354,12 @@ impl Helper {
                 break;
             }
             if helper.debug {
-                eprintln!("Debug: Got cap {}", line.trim_start_matches('*'));
+                eprintln!("{}", messages::debug_got_cap(line.trim_start_matches('*')));
             }
             helper.caps.add(&line)?;
         }
         if helper.debug {
-            eprintln!("Debug: Capabilities complete.");
+            eprintln!("{}", messages::DEBUG_CAPS_COMPLETE);
         }
         Ok(helper)
     }
@@ -380,7 +380,7 @@ impl Helper {
 
     fn write_line(&mut self, line: &str) -> Result<()> {
         if self.debug {
-            eprintln!("Debug: Remote helper: -> {line}");
+            eprintln!("{}", messages::debug_sent(line));
         }
         let mut buf = line.as_bytes().to_vec();
         buf.push(b'\n');
@@ -398,7 +398,7 @@ impl Helper {
     /// One line of output without its newline; `None` at end of file.
     fn read_line(&mut self) -> Result<Option<String>> {
         if self.debug {
-            eprintln!("Debug: Remote helper: Waiting...");
+            eprintln!("{}", messages::DEBUG_WAITING);
         }
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
@@ -418,7 +418,7 @@ impl Helper {
         }
         let line = String::from_utf8_lossy(&line).into_owned();
         if self.debug {
-            eprintln!("Debug: Remote helper: <- {line}");
+            eprintln!("{}", messages::debug_received(&line));
         }
         Ok(Some(line))
     }
@@ -501,7 +501,7 @@ impl Helper {
             out.refs.push(entry);
         }
         if self.debug {
-            eprintln!("Debug: Read ref listing.");
+            eprintln!("{}", messages::DEBUG_READ_LISTING);
         }
         Ok(out)
     }
@@ -671,7 +671,7 @@ impl Helper {
         let line = self.read_line_required()?;
         if line.is_empty() {
             if self.debug {
-                eprintln!("Debug: Smart transport connection ready.");
+                eprintln!("{}", messages::DEBUG_CONNECTED);
             }
             return Ok(Ok(Box::new(self.conn)));
         }
@@ -684,7 +684,7 @@ impl Helper {
     /// End the session: an empty line, then wait for the helper.
     pub fn disconnect(mut self) -> Result<()> {
         if self.debug {
-            eprintln!("Debug: Disconnecting.");
+            eprintln!("{}", messages::DEBUG_DISCONNECTING);
         }
         let _ = self.write_line("");
         let conn: Box<dyn Connection> = Box::new(self.conn);

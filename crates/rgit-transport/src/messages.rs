@@ -311,3 +311,35 @@ pub const FAST_EXPORT_FAILED: &str = "error while running fast-export";
 pub fn could_not_rename(from: &str, to: &str, reason: &str) -> String {
     format!("could not rename '{from}' to '{to}': {reason}")
 }
+
+// ---- GIT_TRANSPORT_HELPER_DEBUG trace lines (stderr) -----------------------
+
+/// A command sent to the helper.
+pub fn debug_sent(line: &str) -> String {
+    format!("Debug: Remote helper: -> {line}")
+}
+
+/// A line received from the helper.
+pub fn debug_received(line: &str) -> String {
+    format!("Debug: Remote helper: <- {line}")
+}
+
+/// Before each read from the helper.
+pub const DEBUG_WAITING: &str = "Debug: Remote helper: Waiting...";
+
+/// One capability.
+pub fn debug_got_cap(cap: &str) -> String {
+    format!("Debug: Got cap {cap}")
+}
+
+/// After the capabilities.
+pub const DEBUG_CAPS_COMPLETE: &str = "Debug: Capabilities complete.";
+
+/// After the answer to `list`.
+pub const DEBUG_READ_LISTING: &str = "Debug: Read ref listing.";
+
+/// After a successful `connect`.
+pub const DEBUG_CONNECTED: &str = "Debug: Smart transport connection ready.";
+
+/// When the session ends.
+pub const DEBUG_DISCONNECTING: &str = "Debug: Disconnecting.";
