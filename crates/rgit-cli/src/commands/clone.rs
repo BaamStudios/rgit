@@ -1634,15 +1634,24 @@ fn report_collisions(
     };
     let ids: HashSet<(u64, u64)> = collided.iter().filter_map(|p| file_id(p)).collect();
     let folded: HashSet<Vec<u8>> = collided.iter().map(|p| p.to_ascii_lowercase()).collect();
-    eprint!("warning: {}", msg::PATHS_COLLIDED);
-    for e in index.entries() {
-        let p = e.path();
-        let peer = collided.iter().any(|c| c.as_slice() == p)
-            || (ignore_case && folded.contains(&p.to_ascii_lowercase()))
-            || (!e.mode.is_gitlink() && file_id(p).is_some_and(|id| ids.contains(&id)));
-        if peer {
-            eprintln!("  '{}'", String::from_utf8_lossy(p));
-        }
+    // git lists the groups together: sorted without regard to case, the
+    // members of a group in index order; an empty line follows the header.
+    let mut peers: Vec<&[u8]> = index
+        .entries()
+        .iter()
+        .filter(|e| {
+            let p = e.path();
+            collided.iter().any(|c| c.as_slice() == p)
+                || (ignore_case && folded.contains(&p.to_ascii_lowercase()))
+                || (!e.mode.is_gitlink() && file_id(p).is_some_and(|id| ids.contains(&id)))
+        })
+        .map(|e| e.path())
+        .collect();
+    peers.dedup();
+    peers.sort_by_key(|p| p.to_ascii_lowercase());
+    eprintln!("warning: {}", msg::PATHS_COLLIDED);
+    for p in peers {
+        eprintln!("  '{}'", String::from_utf8_lossy(p));
     }
 }
 
