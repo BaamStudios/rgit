@@ -237,7 +237,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let args = Args::parse(&argv[1..])?;
     if args.help {
         print!("{}", msg::USAGE);
-        return Ok(129);
+        return Ok(0);
     }
     let cwd = std::env::current_dir().map_err(|e| Die::Fatal(e.to_string()))?;
     let setup = crate::repo::setup_gently(ctx)?;
