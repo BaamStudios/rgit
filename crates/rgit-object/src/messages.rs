@@ -75,4 +75,21 @@ pub mod fsck {
     pub const GITATTRIBUTES_SYMLINK: &str = ".gitattributes is a symlink";
     pub const GITIGNORE_SYMLINK: &str = ".gitignore is a symlink";
     pub const MAILMAP_SYMLINK: &str = ".mailmap is a symlink";
+
+    // Severity lists (`--strict=<msg-id>=<severity>,...`, `fsck.<msg-id>`).
+    pub fn missing_equals(item: &str) -> String {
+        format!("Missing '=': '{item}'")
+    }
+    pub fn unhandled_id(id: &str) -> String {
+        format!("Unhandled message id: {id}")
+    }
+    pub fn unknown_severity(value: &str) -> String {
+        format!("Unknown fsck message type: '{value}'")
+    }
+    pub fn cannot_demote(id: &str, to: &str) -> String {
+        format!("Cannot demote {id} to {to}")
+    }
+    pub fn invalid_skiplist_line(line: &str) -> String {
+        format!("invalid object name: {line}")
+    }
 }

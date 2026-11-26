@@ -147,6 +147,26 @@ pub const INDEX_PACK_FAILED: &str = "index-pack failed";
 /// git: the last line of a clone whose pack fails its checks.
 pub const INVALID_INDEX_PACK_OUTPUT: &str = "fetch-pack: invalid index-pack output";
 
+/// git: a `fetch.fsck.<msg-id>` that names no message id.
+pub fn skipping_unknown_msg_id(id: &str) -> String {
+    format!("Skipping unknown msg id '{id}'")
+}
+
+/// git: `fetch.fsck.skipList` names a file that cannot be read.
+pub fn could_not_open_skiplist(path: &str) -> String {
+    format!("could not open object name list: {path}")
+}
+
+/// git: a configuration entry without a value where one is needed.
+pub fn missing_config_value(name: &str) -> String {
+    format!("missing value for '{name}'")
+}
+
+/// git: follows [`missing_config_value`].
+pub fn unable_to_parse_config(name: &str) -> String {
+    format!("unable to parse '{name}' from command-line config")
+}
+
 /// git: a finding of `fetch.fsckObjects`.
 pub fn fsck_finding(id: &rgit_hash::ObjectId, finding: &dyn std::fmt::Display) -> String {
     format!("object {id}: {finding}")

@@ -8,7 +8,8 @@
 //! `REF_DELTA` bases may come from the repository (thin packs).
 //!
 //! `--strict` checks every object (`--strict=<msg-id>=<severity>,...`
-//! adjusts severities) and its links: an object is only written when
+//! adjusts severities, `skiplist=<file>` leaves objects unchecked) and its
+//! links: an object is only written when
 //! everything it refers to is in the pack (and itself writable) or in the
 //! repository.
 //!
@@ -29,6 +30,7 @@ use rgit_object::ObjectKind;
 use rgit_pack::index_pack::{self as ip, BadEntry, Input, ObjectDb, ObjectHook, Options};
 
 use crate::messages::unpack_objects as msg;
+use crate::commands::fsck::StrictSettings;
 use crate::prelude::*;
 use crate::repo::{self, Mode};
 use crate::repo_objects::Repo;
@@ -39,7 +41,8 @@ struct Args {
     quiet: bool,
     recover: bool,
     strict: bool,
-    fsck_msgs: HashMap<MsgId, Severity>,
+    /// `--strict=<list>`: severities and skip lists.
+    settings: StrictSettings,
     pack_header: Option<(u32, u32)>,
     max_input_size: Option<u64>,
 }
@@ -67,19 +70,8 @@ fn parse_args(argv: &[String]) -> Result<Args, Die> {
             ("-h" | "--help-all", None) => return Err(usage(0)),
             ("--strict", v) => {
                 a.strict = true;
-                for item in v.unwrap_or("").split([',', ' ']).filter(|s| !s.is_empty()) {
-                    let Some((id, sev)) = item.split_once(['=', ':']) else {
-                        continue;
-                    };
-                    let sev = match sev.to_ascii_lowercase().as_str() {
-                        "error" => Severity::Error,
-                        "warn" => Severity::Warn,
-                        "ignore" => Severity::Ignore,
-                        _ => continue,
-                    };
-                    if let Some(id) = MsgId::from_name(id) {
-                        a.fsck_msgs.insert(id, sev);
-                    }
+                if let Some(v) = v {
+                    a.settings.lists.push(v.to_string());
                 }
             }
             ("--pack_header", Some(v)) => {
@@ -159,11 +151,7 @@ struct Sink<'a> {
 
 impl Sink<'_> {
     fn severity(&self, id: MsgId) -> Severity {
-        self.args
-            .fsck_msgs
-            .get(&id)
-            .copied()
-            .unwrap_or_else(|| id.default_severity())
+        self.args.settings.severity(id)
     }
 
     fn write(&self, kind: ObjectKind, data: &[u8]) {
@@ -178,6 +166,13 @@ impl ObjectHook for Sink<'_> {
     fn object(&self, id: &ObjectId, kind: rgit_pack::ObjectKind, data: &[u8]) -> Result<(), String> {
         let kind = ObjectKind::from_pack_type(kind.pack_type()).expect("object kind");
         if self.args.strict {
+            if self.args.settings.skip.contains(id) {
+                self.held
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push((*id, kind, data.to_vec()));
+                return Ok(());
+            }
             let mut failed = false;
             let mut lines = Vec::new();
             fsck::check_object(kind, self.repo.hash, data, &fsck::Options::default(), &mut |f| {
@@ -279,7 +274,7 @@ fn check_gitmodules(
             let Some(&j) = in_pack.get(&e.oid) else {
                 continue;
             };
-            if held[j].1 != ObjectKind::Blob {
+            if held[j].1 != ObjectKind::Blob || sink.args.settings.skip.contains(&e.oid) {
                 continue;
             }
             for (id, text) in crate::commands::fsck::gitmodules::check(&held[j].2) {
@@ -337,10 +332,11 @@ fn fail(e: ip::Error) -> Die {
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
-    let args = parse_args(argv)?;
+    let mut args = parse_args(argv)?;
     let setup = repo::setup(ctx, Mode::Required)?;
     let repo = Repo::open(ctx, setup)?;
     let hash = repo.hash;
+    args.settings.resolve(hash)?;
 
     let mut opts = Options::new(hash);
     // One thread: objects reach the hook in a stable order.

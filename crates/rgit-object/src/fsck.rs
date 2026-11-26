@@ -753,6 +753,162 @@ fn is_ntfs_dot(name: &[u8], base: &str, short_hash: &str) -> bool {
     false
 }
 
+// ----------------------------------------------------------------------
+// Severity settings (`fsck.<msg-id>`, `--strict=<msg-id>=<severity>,...`)
+
+/// Every message id of `fsck-msgids(5)`, lower case. Ids outside this
+/// module's object checks are accepted in settings and have no effect on
+/// object checks.
+pub const KNOWN_IDS: &[&str] = &[
+    "baddate",
+    "baddateoverflow",
+    "bademail",
+    "badfilemode",
+    "badgpgsig",
+    "badheadtarget",
+    "badheadercontinuation",
+    "badname",
+    "badobjectsha1",
+    "badpackedrefentry",
+    "badpackedrefheader",
+    "badparentsha1",
+    "badrefcontent",
+    "badreffiletype",
+    "badrefname",
+    "badrefoid",
+    "badreferentname",
+    "badreftabletablename",
+    "badtagname",
+    "badtimezone",
+    "badtree",
+    "badtreesha1",
+    "badtype",
+    "duplicateentries",
+    "emptyname",
+    "emptypackedrefsfile",
+    "extraheaderentry",
+    "fullpathname",
+    "gitattributesblob",
+    "gitattributeslarge",
+    "gitattributeslinelength",
+    "gitattributesmissing",
+    "gitattributessymlink",
+    "gitignoresymlink",
+    "gitmodulesblob",
+    "gitmoduleslarge",
+    "gitmodulesmissing",
+    "gitmodulesname",
+    "gitmodulesparse",
+    "gitmodulespath",
+    "gitmodulessymlink",
+    "gitmodulesupdate",
+    "gitmodulesurl",
+    "hasdot",
+    "hasdotdot",
+    "hasdotgit",
+    "largepathname",
+    "mailmapsymlink",
+    "missingauthor",
+    "missingcommitter",
+    "missingemail",
+    "missingnamebeforeemail",
+    "missingobject",
+    "missingspacebeforedate",
+    "missingspacebeforeemail",
+    "missingtag",
+    "missingtagentry",
+    "missingtaggerentry",
+    "missingtree",
+    "missingtype",
+    "missingtypeentry",
+    "multipleauthors",
+    "nulincommit",
+    "nulinheader",
+    "nullsha1",
+    "packedrefentrynotterminated",
+    "packedrefunsorted",
+    "refmissingnewline",
+    "symlinkref",
+    "symreftargetisnotaref",
+    "trailingrefcontent",
+    "treenotsorted",
+    "unknowntype",
+    "unterminatedheader",
+    "zeropaddeddate",
+    "zeropaddedfilemode",
+];
+
+/// Whether `id` (lower case) is a message id of `fsck-msgids(5)`.
+pub fn is_known_id(id: &str) -> bool {
+    KNOWN_IDS.contains(&id)
+}
+
+/// Ids whose findings cannot be made less severe than an error.
+const FATAL_IDS: &[&str] = &["nulinheader", "unterminatedheader"];
+
+/// A severity as settings spell it: `error`, `warn` or `ignore` (case
+/// matters, as observed from git).
+pub fn parse_severity(value: &str) -> Option<Severity> {
+    match value {
+        "error" => Some(Severity::Error),
+        "warn" => Some(Severity::Warn),
+        "ignore" => Some(Severity::Ignore),
+        _ => None,
+    }
+}
+
+/// Check one `<msg-id>=<severity>` setting (`key` lower case) the way git
+/// does: the id must be known, the severity valid, and the ids that stop
+/// the check cannot be demoted. Returns the object check it changes, or
+/// `None` for ids outside this module's checks. The error is git's
+/// message (without `fatal: `).
+pub fn check_setting(key: &str, value: &str) -> Result<Option<(MsgId, Severity)>, String> {
+    if !is_known_id(key) {
+        return Err(msg::unhandled_id(key));
+    }
+    let sev = parse_severity(value).ok_or_else(|| msg::unknown_severity(value))?;
+    if FATAL_IDS.contains(&key) && sev != Severity::Error {
+        return Err(msg::cannot_demote(key, value));
+    }
+    Ok(MsgId::from_name(key).map(|id| (id, sev)))
+}
+
+/// The items of a `--strict=<list>` value: separated by commas or spaces
+/// (empty items are skipped), each `<key>=<value>` or `<key>:<value>`. The
+/// key comes back lower case (`skiplist` names a skip list file, anything
+/// else goes to [`check_setting`]); an item without a separator is an
+/// error with git's message.
+pub fn split_settings(list: &str) -> impl Iterator<Item = Result<(String, &str), String>> {
+    list.split([',', ' '])
+        .filter(|s| !s.is_empty())
+        .map(|item| match item.split_once(['=', ':']) {
+            Some((k, v)) => Ok((k.to_ascii_lowercase(), v)),
+            None => Err(msg::missing_equals(item)),
+        })
+}
+
+/// The object ids of a skip list file (`fsck.skipList`): one full hex id
+/// per line, `#` starts a comment, blank lines and surrounding white space
+/// are ignored. The error is git's message for the first bad line.
+pub fn parse_skiplist(hash: HashKind, data: &[u8]) -> Result<Vec<ObjectId>, String> {
+    let mut out = Vec::new();
+    for line in data.split(|&b| b == b'\n') {
+        let line = line
+            .split(|&b| b == b'#')
+            .next()
+            .unwrap_or(&[])
+            .trim_ascii();
+        if line.is_empty() {
+            continue;
+        }
+        match ObjectId::from_hex(hash, line) {
+            Ok(id) => out.push(id),
+            Err(_) => return Err(msg::invalid_skiplist_line(&String::from_utf8_lossy(line))),
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -788,6 +944,55 @@ mod tests {
         ] {
             assert_eq!(ids(ObjectKind::Commit, c(a).as_bytes()), vec![want], "{a}");
         }
+    }
+
+    #[test]
+    fn settings() {
+        assert_eq!(
+            check_setting("missingemail", "warn"),
+            Ok(Some((MsgId::MissingEmail, Severity::Warn)))
+        );
+        assert_eq!(check_setting("badgpgsig", "ignore"), Ok(None));
+        assert_eq!(
+            check_setting("whatever", "warn"),
+            Err("Unhandled message id: whatever".into())
+        );
+        assert_eq!(
+            check_setting("missingemail", "Warn"),
+            Err("Unknown fsck message type: 'Warn'".into())
+        );
+        assert_eq!(
+            check_setting("unterminatedheader", "warn"),
+            Err("Cannot demote unterminatedheader to warn".into())
+        );
+        assert!(check_setting("nulinheader", "error").is_ok());
+        let items: Vec<_> = split_settings("MissingEmail=warn,, skipList:x a=b=c").collect();
+        assert_eq!(
+            items,
+            vec![
+                Ok(("missingemail".into(), "warn")),
+                Ok(("skiplist".into(), "x")),
+                Ok(("a".into(), "b=c")),
+            ]
+        );
+        assert_eq!(
+            split_settings("foo").next(),
+            Some(Err("Missing '=': 'foo'".into()))
+        );
+    }
+
+    #[test]
+    fn skiplist() {
+        let id = "0123456789012345678901234567890123456789";
+        let data = format!("# c\n  {id}  # x\n\n");
+        assert_eq!(
+            parse_skiplist(HashKind::Sha1, data.as_bytes()).unwrap(),
+            vec![ObjectId::from_hex(HashKind::Sha1, id.as_bytes()).unwrap()]
+        );
+        assert_eq!(
+            parse_skiplist(HashKind::Sha1, b"[core]\n"),
+            Err("invalid object name: [core]".into())
+        );
     }
 
     #[test]
