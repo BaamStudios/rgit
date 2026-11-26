@@ -42,9 +42,15 @@ fn help_outside_a_repository() {
             // git show ...`), like git.
             // `upload-archive--writer` prints the usage of
             // `upload-archive`, like git.
+            // The synonyms `fsck-objects`, `stage`, `pickaxe` and the
+            // deprecated `whatchanged` print the usage of `fsck`, `add`,
+            // `blame` and `log`, like git.
             let shown = match cmd {
                 "init-db" => "init",
-                "show" => "log",
+                "show" | "whatchanged" => "log",
+                "fsck-objects" => "fsck",
+                "stage" => "add",
+                "pickaxe" => "blame",
                 "upload-archive--writer" => "upload-archive",
                 _ => cmd,
             };

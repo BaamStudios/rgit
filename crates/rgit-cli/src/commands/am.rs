@@ -1722,7 +1722,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             push_apply("--reject", v, u, false)
         })
         .noarg(),
-        Opt::string(None, "resolvemsg", &resolvemsg, "", msg::HELP_RESOLVEMSG).argh("..."),
+        Opt::string(None, "resolvemsg", &resolvemsg, "...", msg::HELP_RESOLVEMSG).literal_argh(),
         Opt::cmdmode(None, "continue", &cmd, msg::HELP_CONTINUE, CONTINUE),
         Opt::cmdmode('r', "resolved", &cmd, msg::HELP_RESOLVED, CONTINUE),
         Opt::cmdmode(None, "skip", &cmd, msg::HELP_SKIP, SKIP),

@@ -2,7 +2,7 @@
 //! Messages and usage of `git hook` (CLEANROOM.md: user-visible strings
 //! are reproduced verbatim and collected here).
 
-pub const USAGE_RUN: &str = "git hook run [--allow-unknown-hook-name] [--ignore-missing] [--to-stdin=<path>] [(-j|--jobs) <n>]\n<hook-name> [-- <hook-args>]";
+pub const USAGE_RUN: &str = "git hook run [--allow-unknown-hook-name] [--ignore-missing] [--to-stdin=<path>] [(-j|--jobs) <n>]\n\t<hook-name> [-- <hook-args>]";
 pub const USAGE_LIST: &str =
     "git hook list [--allow-unknown-hook-name] [-z] [--show-scope] <hook-name>";
 

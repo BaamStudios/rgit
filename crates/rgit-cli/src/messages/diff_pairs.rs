@@ -16,3 +16,14 @@ pub fn bad_object_id(rest: &str) -> String {
 pub fn unknown_status(status: &str) -> String {
     format!("unknown diff status: {status}")
 }
+
+/// The parse error for an option `diff-pairs` does not know.
+pub fn unknown_option(arg: &str) -> String {
+    match arg.strip_prefix("--") {
+        Some(long) => format!("unknown option `{long}'"),
+        None => {
+            let c = arg.chars().nth(1).unwrap_or('-');
+            format!("unknown switch `{c}'")
+        }
+    }
+}
