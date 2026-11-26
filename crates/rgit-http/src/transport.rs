@@ -49,6 +49,23 @@ pub fn transport_for(
     )))
 }
 
+/// Choose how to reach `url` of the remote described by `ctx`: a remote
+/// helper (`<transport>::<address>`, a scheme rgit does not speak,
+/// `remote.<name>.vcs`; see [`rgit_transport::helper`]) or the transport
+/// [`transport_for`] picks. A helper with `connect` comes back as a
+/// [`Target::Transport`](rgit_transport::helper::Target::Transport).
+pub fn target_for(
+    url: &str,
+    settings: &rgit_transport::Settings<'_>,
+    ctx: &rgit_transport::helper::HelperContext,
+) -> TResult<Option<rgit_transport::helper::Target>> {
+    use rgit_transport::helper::{self, Target};
+    if let Some(spec) = helper::spec_for(url, ctx) {
+        return helper::start_target(spec, ctx, &settings.base_env).map(Some);
+    }
+    Ok(transport_for(url, settings)?.map(Target::Transport))
+}
+
 /// `remote.<name>.proxy` and `remote.<name>.proxyAuthMethod` of the remote
 /// whose `url` or `pushurl` is `url` (they override `http.proxy` and
 /// `http.proxyAuthMethod`; `GIT_HTTP_PROXY_AUTHMETHOD` still wins).

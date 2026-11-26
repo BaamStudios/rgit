@@ -29,11 +29,15 @@
 
 use std::io::IsTerminal;
 
+use bstr::ByteSlice;
+
 use rgit_config::{ConfigSet, SetRequest, SystemEnv, ValuePattern};
 use rgit_hash::ObjectId;
 use rgit_odb::ObjectDatabase;
 use rgit_protocol::push::{Command, Request};
 use rgit_remote::{BranchConfig, Direction, PushDefault, Refspec, RefspecSet, Remote, Remotes};
+use rgit_protocol::push::{AdvertisedRef, Advertisement};
+use rgit_transport::helper::{Helper, HelperContext, OptionReply, Target};
 use rgit_transport::{ConnectOptions, IpVersion, Service, Settings};
 
 use crate::messages::push as msg;
@@ -706,6 +710,44 @@ fn anonymize(url: &str) -> String {
     }
 }
 
+/// The connection of a push through a remote helper without `connect`:
+/// there is no pack protocol, everything written is dropped.
+struct NoConnection;
+
+impl std::io::Read for NoConnection {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl std::io::Write for NoConnection {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl rgit_transport::Connection for NoConnection {
+    fn is_stateless(&self) -> bool {
+        false
+    }
+
+    fn end_request(&mut self) -> rgit_transport::Result<()> {
+        Ok(())
+    }
+
+    fn split(&mut self) -> (&mut (dyn std::io::Read + Send), &mut dyn rgit_transport::WriteHalf) {
+        unreachable!("no pack is sent through a remote helper without connect")
+    }
+
+    fn close(self: Box<Self>) -> rgit_transport::Result<()> {
+        Ok(())
+    }
+}
+
 /// Default colour of `color.push.error` and `color.transport.rejected`.
 const RED: &str = "\x1b[31m";
 
@@ -781,6 +823,180 @@ impl Push<'_> {
         Ok(cert)
     }
 
+    /// The refs of a remote helper (`list for-push`) as an advertisement;
+    /// unknown values (`?`) are the null id. A helper must be able to
+    /// `push` or `export`, and an exporting one needs `refspec`.
+    fn helper_advertisement(&self, h: &mut Helper) -> Result<Advertisement, Die> {
+        let f = self.flags;
+        let caps = h.capabilities().clone();
+        if !caps.push && !caps.export {
+            return Err(Die::Fatal(msg::helper_cannot_push(&h.spec().name)));
+        }
+        if !caps.push && caps.refspecs.is_empty() {
+            eprintln!("warning: {}", rgit_fetch::messages::HELPER_NEEDS_REFSPEC);
+            return Err(Die::Fatal(msg::EXPORT_NEEDS_REFSPEC.into()));
+        }
+        let verbosity = if f.quiet { 0 } else { 1 + f.verbosity };
+        h.standard_options(f.progress, verbosity).map_err(fatal)?;
+        // An exporting helper gets a plain `list` (as git sends it).
+        let listed = h.list(caps.push).map_err(fatal)?;
+        let null = ObjectId::null(self.setup.format.object_format);
+        let refs = rgit_fetch::helper_refs(&listed)
+            .into_iter()
+            .map(|r| AdvertisedRef {
+                name: String::from_utf8_lossy(&r.name).into_owned(),
+                oid: r.oid.unwrap_or(null),
+            })
+            .collect();
+        Ok(Advertisement {
+            refs,
+            ..Advertisement::default()
+        })
+    }
+
+    /// Send the pending updates of `list` through a remote helper (`push`,
+    /// else `export` through `git fast-export`) and set their status from
+    /// its answer. `false` when the helper failed (git then only reports
+    /// the failed push).
+    fn helper_send(
+        &self,
+        mut h: Helper,
+        list: &mut [PushRef],
+        listed: &[AdvertisedRef],
+    ) -> Result<bool, Die> {
+        let f = self.flags;
+        let caps = h.capabilities().clone();
+        let name = h.spec().name.clone();
+        if !list.iter().any(|r| r.status == Status::None) {
+            let _ = h.disconnect();
+            return Ok(true);
+        }
+        if f.dry_run && h.set_option("dry-run", "true").map_err(fatal)? != OptionReply::Ok {
+            return Err(Die::Fatal(msg::helper_no_dry_run(&name)));
+        }
+        if f.force {
+            h.set_option("force", "true").map_err(fatal)?;
+        }
+        if f.atomic {
+            h.set_option("atomic", "true").map_err(fatal)?;
+        }
+        for o in &f.push_options {
+            h.set_option("push-option", o).map_err(fatal)?;
+        }
+        // The value the helper's private ref holds is the old value as far
+        // as rgit knows.
+        let private_value = |dst: &str| caps.private_ref(dst).and_then(|p| self.refs.resolve(&p));
+        let pending: Vec<usize> = (0..list.len())
+            .filter(|&i| list[i].status == Status::None)
+            .collect();
+        let result = if caps.push {
+            let commands: Vec<(bool, String, String)> = pending
+                .iter()
+                .map(|&i| {
+                    let r = &list[i];
+                    let src = match r.new {
+                        Some(_) => r.src.clone().unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    (r.force, src, r.dst.clone())
+                })
+                .collect();
+            h.push(&commands)
+        } else {
+            let mut args: Vec<String> = Vec::new();
+            for r in listed {
+                if let Some(p) = caps.private_ref(&r.name) {
+                    if self.refs.resolve(&p).is_some() && !args.contains(&format!("^{p}")) {
+                        args.push(format!("^{p}"));
+                    }
+                }
+            }
+            for &i in &pending {
+                let r = &mut list[i];
+                if r.old.is_none() {
+                    r.old = private_value(&r.dst);
+                }
+                // A deletion is the refspec `:<dst>` without a ref to export.
+                if r.new.is_none() {
+                    args.push("--refspec".into());
+                    args.push(format!(":{}", r.dst));
+                    continue;
+                }
+                let Some(src) = r.src.clone() else {
+                    continue;
+                };
+                let src_ref = match (src.as_str(), self.head) {
+                    ("HEAD", Some(head)) => head.to_owned(),
+                    _ => src.clone(),
+                };
+                if src_ref != r.dst {
+                    args.push("--refspec".into());
+                    args.push(format!("{src_ref}:{}", r.dst));
+                }
+                args.push(src);
+            }
+            h.export(&args)
+        };
+        let statuses = match result {
+            Ok(s) => s,
+            Err(e) => {
+                if let rgit_transport::Error::Other(m) = &e {
+                    if m.as_str() != rgit_transport::messages::helper_aborted(&name) {
+                        eprintln!("fatal: {m}");
+                        return Err(Die::Exit(rgit_options::EXIT_FATAL));
+                    }
+                }
+                return Ok(false);
+            }
+        };
+        let store = refs_support::ref_store(self.setup, self.config);
+        let objects = refs_support::Objects::open(self.setup);
+        let mut hooks = refs_support::UpdateHooks::new(self.setup, self.config, &objects);
+        let hash = self.setup.format.object_format;
+        for &i in &pending {
+            let r = &mut list[i];
+            match statuses.iter().find(|s| s.name == r.dst) {
+                None if caps.push => r.status = Status::RemoteFailure,
+                // Nothing to export for it: the helper has it already.
+                None => r.status = Status::UpToDate,
+                Some(s) => match s.error.as_deref() {
+                    None => r.status = Status::Ok,
+                    Some("non-fast forward") => r.status = Status::RejectNonFf,
+                    Some("already exists") => r.status = Status::RejectAlreadyExists,
+                    Some("fetch first") => r.status = Status::RejectFetchFirst,
+                    Some("needs force") => r.status = Status::RejectNeedsForce,
+                    Some("stale info") => r.status = Status::RejectStale,
+                    Some("forced update") => {
+                        r.status = Status::Ok;
+                        r.forced_update = true;
+                    }
+                    Some(why) => {
+                        r.status = Status::RemoteReject;
+                        r.remote_msg = (!why.is_empty()).then(|| why.to_owned());
+                    }
+                },
+            }
+            // The private ref follows a successful push.
+            if r.status != Status::Ok || f.dry_run || caps.no_private_update || caps.refspecs.is_empty() {
+                continue;
+            }
+            let Some(private) = caps.private_ref(&r.dst) else {
+                continue;
+            };
+            let update = match r.new {
+                Some(new) => rgit_refs::RefUpdate::update(&private, new, None),
+                None => rgit_refs::RefUpdate::delete(&private, hash, None),
+            }
+            .message(msg::REFLOG_MESSAGE);
+            let mut tx = rgit_refs::Transaction::new(&store);
+            if let Err(e) = tx.push(update).and_then(|()| tx.commit(&mut hooks)) {
+                eprintln!("error: {e}");
+            }
+        }
+        let _ = h.disconnect();
+        Ok(true)
+    }
+
     /// `error: failed to push some refs to '<url>'`, in the colour of
     /// `color.push.error` (default red) when `color.push` says so. Like
     /// git, the reset follows the newline.
@@ -815,8 +1031,33 @@ impl Push<'_> {
             ip: f.ip,
             base_env: self.ctx.child_env(),
         };
-        let Some(mut transport) = rgit_http::transport_for(url, &settings).map_err(fatal)? else {
-            return Err(Die::Fatal(msg::transport_not_supported(url)));
+        let vcs = self.remote.vcs.as_ref().map(|v| v.to_str_lossy().into_owned());
+        let helper_ctx = HelperContext {
+            remote: self
+                .remote
+                .is_configured()
+                .then(|| self.remote.name.to_str_lossy().into_owned()),
+            vcs,
+            git_dir: Some(self.setup.git_dir.clone()),
+        };
+        if helper_ctx.vcs.is_some() || rgit_transport::helper::spec_for(url, &helper_ctx).is_some()
+        {
+            let protocol = helper_ctx
+                .vcs
+                .clone()
+                .unwrap_or_else(|| rgit_fetch::protocol_name(url));
+            rgit_remote::check_allowed(protocol.as_bytes(), self.config, &env).map_err(fatal)?;
+        }
+        // A remote helper without `connect` is driven with `list for-push`
+        // and `push`/`export` instead of the pack protocol.
+        let mut helper: Option<Helper> = None;
+        let mut transport = match rgit_http::target_for(url, &settings, &helper_ctx).map_err(fatal)? {
+            Some(Target::Transport(t)) => Some(t),
+            Some(Target::Helper(h)) => {
+                helper = Some(*h);
+                None
+            }
+            None => return Err(Die::Fatal(msg::transport_not_supported(url))),
         };
         rgit_remote::check_allowed(
             rgit_fetch::protocol_name(url).as_bytes(),
@@ -842,9 +1083,17 @@ impl Push<'_> {
                 .flatten()
                 .unwrap_or(false),
         );
-        let conn = transport.connect(&opts).map_err(fatal)?;
-        let mut session =
-            send::start(conn, hash).map_err(|e| Die::Fatal(send::advertisement_error(&e)))?;
+        let mut session = match (&mut helper, &mut transport) {
+            (Some(h), _) => send::Session {
+                conn: Box::new(NoConnection),
+                adv: self.helper_advertisement(h)?,
+            },
+            (None, Some(t)) => {
+                let conn = t.connect(&opts).map_err(fatal)?;
+                send::start(conn, hash).map_err(|e| Die::Fatal(send::advertisement_error(&e)))?
+            }
+            (None, None) => return Err(Die::Fatal(msg::transport_not_supported(url))),
+        };
         // Printed before the connection is dropped (the server then
         // reports the hang-up), like git.
         if f.atomic && !session.adv.caps.contains("atomic") {
@@ -890,6 +1139,14 @@ impl Push<'_> {
             f.force,
             f.prune,
         );
+        // A helper's unknown values (`?`): the ref is taken as new, the
+        // helper decides.
+        if helper.is_some() {
+            let null = ObjectId::null(hash);
+            for r in list.iter_mut().filter(|r| r.old == Some(null)) {
+                r.old = None;
+            }
+        }
         // send-pack leaves several updates of one ref to the server.
         if f.send_pack {
             errors.retain(|e| !list.iter().any(|r| e.error == msg::dst_multiple_src(&r.dst)));
@@ -1013,7 +1270,14 @@ impl Push<'_> {
                 name: r.dst.clone(),
             })
             .collect();
-        if f.dry_run || commands.is_empty() {
+        if let Some(h) = helper {
+            let listed = session.adv.refs.clone();
+            send::finish_empty(session);
+            if !self.helper_send(h, &mut list, &listed)? {
+                self.failed_to_push(&display);
+                return Ok(1);
+            }
+        } else if f.dry_run || commands.is_empty() {
             for r in list.iter_mut().filter(|r| r.status == Status::None) {
                 r.status = Status::Ok;
             }

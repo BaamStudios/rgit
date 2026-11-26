@@ -41,6 +41,34 @@ impl ChildConnection {
     }
 }
 
+impl ChildConnection {
+    /// A copy of the child's standard output for another process's
+    /// standard input (a remote helper's `import` stream for
+    /// `fast-import`).
+    pub(crate) fn stdout_stdio(&self) -> Result<Stdio> {
+        dup_stdio(&self.stdout)
+    }
+
+    /// A copy of the child's standard input for another process's
+    /// standard output (`fast-export` writing to a remote helper).
+    pub(crate) fn stdin_stdio(&self) -> Result<Stdio> {
+        match &self.stdin.0 {
+            Some(s) => dup_stdio(s),
+            None => Err(Error::Io(io::ErrorKind::BrokenPipe.into())),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn dup_stdio(fd: &impl std::os::fd::AsFd) -> Result<Stdio> {
+    Ok(Stdio::from(fd.as_fd().try_clone_to_owned()?))
+}
+
+#[cfg(not(unix))]
+fn dup_stdio<T>(_fd: &T) -> Result<Stdio> {
+    Err(Error::Other(messages::UNABLE_TO_FORK.into()))
+}
+
 /// The child's standard input, closed early by [`WriteHalf::close_write`].
 #[derive(Debug)]
 struct Stdin(Option<ChildStdin>);

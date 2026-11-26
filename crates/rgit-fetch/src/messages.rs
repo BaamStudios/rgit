@@ -31,6 +31,15 @@ pub fn no_remote_helper(scheme: &str) -> String {
     format!("unable to find remote helper for '{scheme}'")
 }
 
+/// `warning:` for an importing remote helper without `refspec`
+/// capability.
+pub const HELPER_NEEDS_REFSPEC: &str = "this remote helper should implement refspec capability";
+
+/// `fatal:` when the private ref of an imported ref is missing.
+pub fn could_not_read_ref(name: &str) -> String {
+    format!("could not read ref {name}")
+}
+
 /// `fatal:` for a `protocol.version` other than 0, 1 or 2.
 pub fn unknown_protocol_version(value: &str) -> String {
     format!("unknown value for config 'protocol.version': {value}")
