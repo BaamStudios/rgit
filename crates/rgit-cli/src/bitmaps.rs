@@ -114,6 +114,12 @@ pub fn write_for_pack(
         written.selected as i64,
         true,
     );
+    rgit_trace::trace2::data_int(
+        "pack-bitmap-write",
+        "num_maximal_commits",
+        written.maximal as i64,
+        true,
+    );
     write_file(&idx.with_extension("bitmap"), &written.bytes)
 }
 
@@ -388,4 +394,29 @@ pub fn write_for_midx(
         &rgit_pack::bitmap::midx_bitmap_path(pack_dir, &midx.checksum()),
         &written.bytes,
     )
+}
+
+/// How many of `objects` git would send verbatim from the bitmapped pack
+/// (the preferred pack of a MIDX bitmap): those stored there.
+pub fn reusable_count(odb: &ObjectDatabase, objects: &[rgit_pack::write::ListedObject]) -> usize {
+    let Some(store) = odb.packs() else {
+        return 0;
+    };
+    let Some(index) = open(store.set()) else {
+        return 0;
+    };
+    let first = (index.num_objects() > 0)
+        .then(|| index.location(0))
+        .flatten()
+        .map(|(p, _)| p.uid());
+    objects
+        .iter()
+        .filter(|o| match index.position(&o.id) {
+            None => false,
+            Some(bit) => {
+                !index.is_midx()
+                    || index.location(bit).map(|(p, _)| p.uid()) == first
+            }
+        })
+        .count()
 }

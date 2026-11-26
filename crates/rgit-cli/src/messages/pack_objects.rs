@@ -140,3 +140,19 @@ pub fn total(objects: usize, deltas: u32, reused: u32, reused_deltas: u32) -> St
 
 pub const BITMAP_DISABLED_NOT_PACKED: &str =
     "disabling bitmap writing, as some objects are not being packed";
+
+pub fn total_reused(
+    objects: usize,
+    deltas: u32,
+    reused: u32,
+    reused_deltas: u32,
+    pack_reused: usize,
+) -> String {
+    if pack_reused == 0 {
+        return total(objects, deltas, reused, reused_deltas);
+    }
+    format!(
+        "Total {objects} (delta {deltas}), reused {reused} (delta {reused_deltas}), \
+         pack-reused {pack_reused} (from 1)"
+    )
+}

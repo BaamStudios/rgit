@@ -488,6 +488,65 @@ pub struct Written {
     pub bytes: Vec<u8>,
     /// Number of selected commits.
     pub selected: usize,
+    /// Number of maximal commits: the selected ones plus those below
+    /// which the nearest selected (or maximal) descendants differ.
+    pub maximal: usize,
+}
+
+/// Count the maximal commits of `selected`: walking from the selected
+/// commits towards the roots (children first), a commit is maximal when
+/// it is selected or when its children lead to different maximal
+/// commits.
+pub fn count_maximal<S: ObjectSource + ?Sized>(
+    graph: &mut Graph<'_, S>,
+    selected: &[ObjectId],
+) -> Result<usize, BuildError> {
+    // The commits reachable from the selected ones, with their parents.
+    let mut parents: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    let mut stack: Vec<ObjectId> = selected.to_vec();
+    while let Some(c) = stack.pop() {
+        if parents.contains_key(&c) {
+            continue;
+        }
+        let ps = graph.parents(&c)?;
+        stack.extend(ps.iter().copied());
+        parents.insert(c, ps);
+    }
+    let mut children_left: HashMap<ObjectId, usize> = parents.keys().map(|c| (*c, 0)).collect();
+    for ps in parents.values() {
+        for p in ps {
+            *children_left.get_mut(p).expect("walked") += 1;
+        }
+    }
+    let is_selected: HashSet<ObjectId> = selected.iter().copied().collect();
+    let mut incoming: HashMap<ObjectId, HashSet<ObjectId>> = HashMap::new();
+    let mut ready: Vec<ObjectId> = children_left
+        .iter()
+        .filter(|(_, n)| **n == 0)
+        .map(|(c, _)| *c)
+        .collect();
+    ready.sort();
+    let mut count = 0;
+    while let Some(c) = ready.pop() {
+        let got = incoming.remove(&c).unwrap_or_default();
+        let ident = if is_selected.contains(&c) || got.len() > 1 {
+            count += 1;
+            Some(c)
+        } else {
+            got.into_iter().next()
+        };
+        for p in &parents[&c] {
+            if let Some(i) = ident {
+                incoming.entry(*p).or_default().insert(i);
+            }
+            let n = children_left.get_mut(p).expect("walked");
+            *n -= 1;
+            if *n == 0 {
+                ready.push(*p);
+            }
+        }
+    }
+    Ok(count)
 }
 
 /// Build a complete `.bitmap` file. `candidates` are the commits that may
@@ -520,6 +579,7 @@ pub fn write_bitmap<S: ObjectSource + ?Sized>(
     // Written oldest first; equal dates keep pack order.
     picked.sort_by_key(|&i| (dated[i].1, i));
     let selected: Vec<ObjectId> = picked.iter().map(|&i| dated[i].0).collect();
+    let maximal = count_maximal(&mut graph, &selected)?;
     let entries = build(&mut graph, &selected, n, &bit_of)?;
     let hashes = match names {
         NameHashes::Given(v) => v,
@@ -555,6 +615,7 @@ pub fn write_bitmap<S: ObjectSource + ?Sized>(
     Ok(Written {
         bytes,
         selected: selected.len(),
+        maximal,
     })
 }
 

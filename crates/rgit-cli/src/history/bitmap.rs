@@ -140,6 +140,14 @@ pub fn run(ctx: &Context, setup: &rgit_repo::Setup, opts: &Options, resolved: &R
         return Ok(None);
     };
     if !haves.is_empty() {
+        // Which algorithm git would use for the excluded side; both give
+        // the exact answer here.
+        let label = if boundary_traversal(&store.config) {
+            "haves/boundary"
+        } else {
+            "haves/classic"
+        };
+        let _region = rgit_trace::trace2::region("pack-bitmap", label, true);
         let Ok(h) = reach(&mut graph, &index, &mut pos, &haves) else {
             return Ok(None);
         };
@@ -296,6 +304,20 @@ pub fn test_bitmap(ctx: &Context, setup: &rgit_repo::Setup, resolved: &Resolved)
     }
     eprintln!("OK!");
     Ok(0)
+}
+
+/// `pack.useBitmapBoundaryTraversal` (default: `feature.experimental`),
+/// overridden by `GIT_TEST_PACK_USE_BITMAP_BOUNDARY_TRAVERSAL`.
+fn boundary_traversal(config: &rgit_config::ConfigSet) -> bool {
+    if let Ok(v) = std::env::var("GIT_TEST_PACK_USE_BITMAP_BOUNDARY_TRAVERSAL") {
+        return !matches!(v.as_str(), "0" | "false" | "no" | "off" | "");
+    }
+    config
+        .bool("pack.usebitmapboundarytraversal")
+        .ok()
+        .flatten()
+        .or_else(|| config.bool("feature.experimental").ok().flatten())
+        .unwrap_or(false)
 }
 
 /// A checksum of the words of a bitmap for the `--test-bitmap` report.

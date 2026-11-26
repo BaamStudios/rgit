@@ -64,7 +64,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let keep_true_parents = Cell::new(false);
     let local = Cell::new(false);
     let path_walk = Cell::new(false);
-    let use_bitmap = Cell::new(false);
+    let use_bitmap = Cell::new(-1);
     // 0: no bitmap, 1: `--write-bitmap-index`, 2: `--write-bitmap-index-quiet`.
     let write_bitmap = Cell::new(0);
     let name_hash_version = Cell::new(1);
@@ -171,7 +171,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             // rgit's walk does not apply grafts: the true parents are kept
             // anyway.
             Opt::flag(None, "keep-true-parents", &keep_true_parents, msg::H_KEEP_TRUE_PARENTS),
-            Opt::flag(None, "use-bitmap-index", &use_bitmap, msg::H_USE_BITMAP_INDEX),
+            Opt::bool(None, "use-bitmap-index", &use_bitmap, msg::H_USE_BITMAP_INDEX),
             Opt::set_int(
                 None,
                 "write-bitmap-index",
@@ -379,8 +379,32 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if include_tag.get() {
         add_tags(&repo, &mut listed);
     }
+    // Objects a reachability bitmap lets git send verbatim from the
+    // bitmapped pack ("pack-reused"); only counted, the pack is written
+    // the same way.
+    let use_bitmaps = match use_bitmap.get() {
+        -1 => {
+            stdout.get()
+                && config
+                    .bool("pack.usebitmaps")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(true)
+        }
+        v => v > 0,
+    };
+    let allow_reuse = config
+        .string("pack.allowpackreuse")
+        .ok()
+        .flatten()
+        .is_none_or(|v| !matches!(v.to_string().to_ascii_lowercase().as_str(), "false" | "no" | "off" | "0"));
+    let pack_reused = if use_bitmaps && allow_reuse && stdout.get() && revs.get() && !skip.any() {
+        crate::bitmaps::reusable_count(&odb, &listed)
+    } else {
+        0
+    };
     if show_progress {
-        show_enumerated(&listed, &bases);
+        show_enumerated_reused(&listed, &bases, pack_reused);
     }
     let ordered = pw::pack_order(&listed);
     if ordered.is_empty() && non_empty.get() {
@@ -441,11 +465,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let sum = |f: fn(&pw::PackSummary) -> u32| summaries.iter().map(f).sum::<u32>();
         eprintln!(
             "{}",
-            msg::total(
+            msg::total_reused(
                 summaries.iter().map(|s| s.entries.len()).sum(),
                 sum(|s| s.deltas),
-                sum(|s| s.reused),
-                sum(|s| s.reused_deltas)
+                sum(|s| s.reused).saturating_sub(pack_reused as u32),
+                sum(|s| s.reused_deltas),
+                pack_reused,
             )
         );
     }
@@ -456,6 +481,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 /// push). Like git, both count the objects to pack plus the delta bases
 /// the other side has under the path of a tree or blob that is packed.
 pub(crate) fn show_enumerated(listed: &[ListedObject], bases: &[ListedObject]) {
+    show_enumerated_reused(listed, bases, 0);
+}
+
+/// [`show_enumerated`]; `reused` objects sent verbatim from a bitmapped
+/// pack are not counted.
+fn show_enumerated_reused(listed: &[ListedObject], bases: &[ListedObject], reused: usize) {
     let paths: std::collections::HashSet<u32> = listed
         .iter()
         .filter(|o| matches!(o.kind, ObjectKind::Tree | ObjectKind::Blob))
@@ -469,8 +500,9 @@ pub(crate) fn show_enumerated(listed: &[ListedObject], bases: &[ListedObject]) {
     let mut meter = rgit_progress::Progress::start(push_msg::PROGRESS_ENUMERATING, 0, true);
     meter.set(n);
     meter.stop();
-    let mut meter = rgit_progress::Progress::start(push_msg::PROGRESS_COUNTING, n, true);
-    for i in 1..=n {
+    let counted = n.saturating_sub(reused as u64);
+    let mut meter = rgit_progress::Progress::start(push_msg::PROGRESS_COUNTING, counted, true);
+    for i in 1..=counted {
         meter.set(i);
     }
     meter.stop();

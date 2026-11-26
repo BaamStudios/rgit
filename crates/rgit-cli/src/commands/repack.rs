@@ -227,12 +227,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let d: i64 = d.trim().parse().unwrap_or(50);
         opts.write.max_depth = d.clamp(0, i64::from(rgit_pack::write::MAX_DEPTH)) as u32;
     }
+    // `repack.packKeptObjects` defaults to true when bitmaps are written.
     let pack_kept = pack_kept.get()
         || config
             .bool("repack.packkeptobjects")
             .ok()
             .flatten()
-            .unwrap_or(false);
+            .unwrap_or(write_bitmaps && write_midx.borrow().is_none());
     let keep_names = keep_packs.take();
 
     let odb = repo::odb_with_config(&setup, &config)?;
@@ -284,8 +285,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let ordered = rgit_pack::write::pack_order(&chosen);
     let new_pack = store::write_pack(&odb, &pack_dir, &ordered, &opts)?;
+    // A pack that leaves out reachable objects (kept or non-local ones)
+    // gets no bitmap; git disables it quietly.
+    let complete = chosen.len() >= walk.listed.len();
     if let Some(sum) = &new_pack
         && write_bitmaps
+        && complete
         && write_midx.borrow().is_none()
     {
         let walk_commits: Vec<ObjectId> = chosen
@@ -374,10 +379,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             ..Default::default()
         };
         let display = format!("{}/pack", objects_dir.display());
-        rgit_pack::midx::write::write(&pack_dir, &display, kind, &opts).map_err(|e| match e {
-            rgit_pack::midx::write::WriteError::Error(m) => Die::Error(m, 255),
-            rgit_pack::midx::write::WriteError::Fatal(m) => Die::Fatal(m),
-        })?;
+        let hashes = if opts.bitmap && !opts.incremental {
+            crate::bitmaps::existing_name_hashes(&pack_dir, kind)
+        } else {
+            Default::default()
+        };
+        let outcome = rgit_pack::midx::write::write(&pack_dir, &display, kind, &opts).map_err(
+            |e| match e {
+                rgit_pack::midx::write::WriteError::Error(m) => Die::Error(m, 255),
+                rgit_pack::midx::write::WriteError::Fatal(m) => Die::Fatal(m),
+            },
+        )?;
+        if opts.bitmap && !opts.incremental && outcome.written.is_some() {
+            crate::bitmaps::write_for_midx(ctx, &setup, &config, &pack_dir, &hashes, None)?;
+        }
     }
 
     let update_info = !no_server_info.get()
