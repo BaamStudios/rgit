@@ -122,13 +122,29 @@ impl Tracker {
     }
 
     /// The lines for `--missing=print` / `print-info` (`?` dropped with
-    /// `--missing-only`).
-    pub fn report(&self, only: bool) -> Vec<u8> {
+    /// `--missing-only`). With `-z` (`nul`) every field ends in NUL and is
+    /// unquoted: `<id> NUL missing=yes NUL [path=<p> NUL] [type=<t> NUL]`.
+    pub fn report(&self, only: bool, nul: bool) -> Vec<u8> {
         let mut out = Vec::new();
         if !matches!(self.action, Missing::Print | Missing::PrintInfo) {
             return out;
         }
         for (id, kind, path) in &self.found {
+            if nul {
+                out.extend_from_slice(id.to_hex().as_bytes());
+                out.extend_from_slice(b"\0missing=yes\0");
+                if self.action == Missing::PrintInfo {
+                    if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
+                        out.extend_from_slice(b"path=");
+                        out.extend_from_slice(p);
+                        out.push(0);
+                    }
+                    out.extend_from_slice(b"type=");
+                    out.extend_from_slice(kind.as_bytes());
+                    out.push(0);
+                }
+                continue;
+            }
             if !only {
                 out.push(b'?');
             }
@@ -269,7 +285,7 @@ pub fn object_filter(repo: &Repo<'_>, opts: &Options) -> Result<Option<FilterSta
 
 /// Print the `~<id>` lines of `--filter-print-omitted` and the missing
 /// objects of `--missing=print`, also under `--quiet`.
-pub fn print_tail(omitted: &[ObjectId], tracker: &Tracker, missing_only: bool) {
+pub fn print_tail(omitted: &[ObjectId], tracker: &Tracker, missing_only: bool, nul: bool) {
     let mut out = Vec::new();
     if !missing_only {
         for id in omitted {
@@ -278,7 +294,7 @@ pub fn print_tail(omitted: &[ObjectId], tracker: &Tracker, missing_only: bool) {
             out.push(b'\n');
         }
     }
-    out.extend_from_slice(&tracker.report(missing_only));
+    out.extend_from_slice(&tracker.report(missing_only, nul));
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(&out);
     let _ = stdout.flush();

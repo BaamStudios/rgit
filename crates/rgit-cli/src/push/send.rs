@@ -110,6 +110,10 @@ pub fn pack_objects(
         let listed = pw::enumerate(&source, out.hash, &tips).map_err(|e| e.to_string())?;
         (listed, Vec::new())
     };
+    // A partial clone fetches the objects it is to send but lacks in one
+    // batch, not one request per object while writing the pack.
+    let ids: Vec<_> = listed.iter().map(|o| o.id).collect();
+    out.odb.prefetch(&ids);
     if out.progress && !listed.is_empty() {
         crate::commands::pack_objects::show_enumerated(&listed, &bases);
     }

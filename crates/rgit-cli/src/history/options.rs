@@ -1026,6 +1026,18 @@ impl Options {
         if self.count && self.left_right && self.objects.is_some() {
             return Err(Die::Fatal(msg::MARKED_COUNT_OBJECTS.to_string()));
         }
+        if self.missing_only && self.count {
+            return Err(Die::Fatal(msg::cannot_be_used_together(
+                "--missing-only",
+                "--count",
+            )));
+        }
+        if self.missing_only && self.disk_usage.is_some() {
+            return Err(Die::Fatal(msg::cannot_be_used_together(
+                "--missing-only",
+                "--disk-usage",
+            )));
+        }
         self.walk.children = self.children;
         if self.max_count_oldest {
             if self.max_count_given {

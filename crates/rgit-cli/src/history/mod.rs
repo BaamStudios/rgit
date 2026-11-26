@@ -3917,7 +3917,7 @@ fn list_objects(
     } else {
         Vec::new()
     };
-    missing::print_tail(&omitted, &tracker.borrow(), missing_only);
+    missing::print_tail(&omitted, &tracker.borrow(), missing_only, p.opts.zero);
     Ok(0)
 }
 

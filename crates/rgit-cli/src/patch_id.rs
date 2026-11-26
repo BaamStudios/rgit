@@ -385,6 +385,33 @@ impl<'r> CommitIds<'r> {
         Some(key)
     }
 
+    /// In a partial clone, fetch the blobs the patch ids of `ids` read in
+    /// one batch instead of one request per diff.
+    fn prefetch(&self, ids: &[ObjectId]) {
+        if !rgit_odb::lazy::enabled() {
+            return;
+        }
+        let cached = self.full.borrow();
+        let mut blobs = Vec::new();
+        for id in ids.iter().filter(|id| !cached.contains_key(id)) {
+            for p in self.pairs(id).unwrap_or_default() {
+                let blob = |s: &Option<crate::diff::collect::Side>| {
+                    s.as_ref()
+                        .filter(|s| s.mode & 0o170000 != 0o160000 && !s.oid.is_null())
+                        .map(|s| s.oid)
+                };
+                let (old, new) = (blob(&p.old), blob(&p.new));
+                if old != new {
+                    blobs.extend(old);
+                    blobs.extend(new);
+                }
+            }
+        }
+        if !blobs.is_empty() {
+            self.repo.odb().prefetch(&blobs);
+        }
+    }
+
     /// The patch id of commit `id`.
     pub fn patch_id(&self, id: &ObjectId) -> Option<ObjectId> {
         if let Some(found) = self.full.borrow().get(id) {
@@ -428,6 +455,13 @@ impl<'r> CommitIds<'r> {
         let rk = keys(right);
         let lset: HashSet<&[u8]> = lk.iter().map(|(_, k)| k.as_slice()).collect();
         let rset: HashSet<&[u8]> = rk.iter().map(|(_, k)| k.as_slice()).collect();
+        let wanted: Vec<ObjectId> = lk
+            .iter()
+            .filter(|(_, k)| rset.contains(k.as_slice()))
+            .chain(rk.iter().filter(|(_, k)| lset.contains(k.as_slice())))
+            .map(|(id, _)| *id)
+            .collect();
+        self.prefetch(&wanted);
         let full = |list: &[(ObjectId, Vec<u8>)], other: &HashSet<&[u8]>| {
             list.iter()
                 .filter(|(_, k)| other.contains(k.as_slice()))

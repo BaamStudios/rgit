@@ -228,9 +228,14 @@ fn run_fetch(ctx: &Context, git_dir: &Path, remote: &str, quiet: bool, ids: &[Ob
         .env("GIT_DIR", git_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null());
+    let child_trace = rgit_trace::trace2::child_start(Default::default(), &traced);
     let Ok(mut child) = cmd.spawn() else {
+        if let Some(t) = child_trace {
+            t.exit(-1, -1);
+        }
         return;
     };
+    rgit_trace::trace2::data_repo_id("promisor", "fetch_count", &ids.len().to_string(), Some(0));
     if let Some(mut stdin) = child.stdin.take() {
         let mut text = String::new();
         for id in ids {
@@ -239,7 +244,14 @@ fn run_fetch(ctx: &Context, git_dir: &Path, remote: &str, quiet: bool, ids: &[Ob
         }
         let _ = stdin.write_all(text.as_bytes());
     }
-    let _ = child.wait();
+    let pid = child.id();
+    let status = child.wait();
+    if let Some(t) = child_trace {
+        match status {
+            Ok(s) => t.exit_status(pid, s),
+            Err(_) => t.exit(i64::from(pid), -1),
+        }
+    }
 }
 
 /// Characters written as `%xx` in a filter inside `combine:`
