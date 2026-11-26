@@ -721,30 +721,30 @@ docker logs "$container" >"$work/gitea.log" 2>&1 || true
 docker cp "$container:/data/git-calls.log" "$work/git-calls.log" >/dev/null 2>&1 || true
 log "git calls made by Gitea ($server)"
 if [ -f "$work/git-calls.log" ]; then
-    echo "total: $(grep -c '^rc=' "$work/git-calls.log")"
+    echo "total: $(grep -c '^start ' "$work/git-calls.log")"
     echo "by command (calls, failed):"
     # The command is the program name of a dashed call, else the first
     # argument that is not a global option (-c and -C take a value).
-    grep '^rc=' "$work/git-calls.log" | awk '{
+    grep -E '^(start |rc=)' "$work/git-calls.log" | awk '{
         rc = substr($1, 4); line = $0; sub(/^[^[]*\[/, "", line)
         k = split(line, t, /\] \[/); sub(/\]$/, "", t[k]); cmd = t[1]
         if (cmd == "git") { cmd = "-"; for (i = 2; i <= k; i++) {
             if (t[i] == "-c" || t[i] == "-C") { i++; continue }
             if (t[i] ~ /^-/) continue
             cmd = t[i]; break } }
-        n[cmd]++; if (rc != 0) f[cmd]++
+        if ($1 == "start") n[cmd]++; else if (rc != 0) f[cmd]++
     } END { for (c in n) printf "  %-22s %5d %5d\n", c, n[c], f[c] }' | sort
     echo "failed calls:"
     awk '/^### step / {step = $3; next}
         /^rc=[1-9]/ {print "(" step ") " $0; show = 1; next}
-        /^rc=0/ {show = 0} show' "$work/git-calls.log" |
+        /^(rc=0|start )/ {show = 0} show' "$work/git-calls.log" |
         sed -E 's/pwd=[^ ]* //' | sort | uniq -c | sort -rn | head -n 150
 fi
 if [ -n "$inventory" ] && [ -f "$work/git-calls.log" ]; then
     # One line per distinct form: count, command, options. Gitea's own
     # global options (-c protocol.version=2 -c credential.helper=) are
     # dropped; ids, paths, refs, URLs and free text are masked.
-    grep '^rc=' "$work/git-calls.log" | awk '
+    grep '^start ' "$work/git-calls.log" | awk '
     function mask(v) {
         if (v ~ /^[0-9a-f]{7,64}$/) return "<id>"
         if (v ~ /:\/\//) return "<url>"

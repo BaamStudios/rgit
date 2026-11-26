@@ -14,10 +14,11 @@
 #            run, to tell rgit failures from Gitea's normal non-zero exits).
 #
 # The wrapper is /usr/bin/git (and the dashed git-* links to it). It runs
-# the program of the same name in /usr/libexec/git-core and appends one line
-# per call to /data/git-calls.log: exit status, GIT_PROTOCOL, directory and arguments,
-# followed by the stderr of failed calls. stdin and stdout pass through
-# untouched; stderr is buffered per call.
+# the program of the same name in /usr/libexec/git-core and appends to
+# /data/git-calls.log a `start` line per call (GIT_PROTOCOL, directory,
+# arguments) and an `rc=<exit status>` line when it ends, followed by the
+# stderr of failed calls. stdin and stdout pass through untouched; stderr
+# is buffered per call.
 set -eu
 
 kind=$1
@@ -85,13 +86,9 @@ if [ "$depth" -ge 40 ]; then
     exit 125
 fi
 export M5_GIT_WRAPPER_DEPTH=$((depth + 1))
-err=$(mktemp)
-"/usr/libexec/git-core/$name" "$@" 2>"$err"
-rc=$?
-cat "$err" >&2
-# One write per call, so that concurrent calls do not interleave.
-entry=$(
-    printf 'rc=%d uid=%s proto=%s pwd=%s argv: [%s]' "$rc" "$(id -u)" "${GIT_PROTOCOL:-}" "$PWD" "$name"
+# The arguments as [a] [b] ..., newlines shown as |.
+args=$(
+    printf '[%s]' "$name"
     for a; do
         case "$a" in
         (*'
@@ -99,6 +96,17 @@ entry=$(
         (*) printf ' [%s]' "$a" ;;
         esac
     done
+)
+# One write per line, so that concurrent calls do not interleave. The start
+# line also records calls that never finish (Gitea kills its long-running
+# `cat-file --batch` processes).
+printf 'start uid=%s proto=%s pwd=%s argv: %s\n' "$(id -u)" "${GIT_PROTOCOL:-}" "$PWD" "$args" >>"$log"
+err=$(mktemp)
+"/usr/libexec/git-core/$name" "$@" 2>"$err"
+rc=$?
+cat "$err" >&2
+entry=$(
+    printf 'rc=%d uid=%s proto=%s pwd=%s argv: %s' "$rc" "$(id -u)" "${GIT_PROTOCOL:-}" "$PWD" "$args"
     if [ "$rc" -ne 0 ]; then printf '\n'; sed 's/^/    | /' "$err" | head -n 20; fi
 )
 printf '%s\n' "$entry" >>"$log"

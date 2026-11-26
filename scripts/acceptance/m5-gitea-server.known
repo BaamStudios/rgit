@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Steps of m5-gitea-server.sh that are known to fail with rgit as Gitea's
 # server-side git (issue #71). One step per line: name, issue, reason.
 # A listed step that passes is reported as "newly passing"; remove it then.
