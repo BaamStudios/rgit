@@ -30,35 +30,10 @@ use rgit_hash::ObjectId;
 use crate::bundle::{self as fb, Prerequisites, UnbundleOptions};
 use crate::repo::LocalRepo;
 use crate::session::{ConnectSettings, FsckCheck};
-use crate::update;
+use crate::{messages, update};
 
 /// How deep bundle lists may refer to other lists.
 const MAX_DEPTH: usize = 5;
-
-/// `warning:` when a URI could not be downloaded.
-pub fn failed_to_download(uri: &str) -> String {
-    format!("failed to download bundle from URI '{uri}'")
-}
-
-/// `warning:` when the bundle URI given to clone gave nothing.
-pub fn failed_to_fetch(uri: &str) -> String {
-    format!("failed to fetch objects from bundle URI '{uri}'")
-}
-
-/// `warning:` for a file that is neither bundle nor list.
-pub fn not_bundle_or_list(uri: &str) -> String {
-    format!("file at URI '{uri}' is not a bundle or bundle list")
-}
-
-/// `error:` for a URI with spaces or control characters.
-pub fn uri_malformed(uri: &str) -> String {
-    format!("bundle-uri: URI is malformed: {uri}")
-}
-
-/// `error:` for a download target with control characters.
-pub fn filename_malformed(path: &str) -> String {
-    format!("bundle-uri: filename is malformed: {path}")
-}
 
 /// What a bundle URI gave.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -99,13 +74,13 @@ impl Client<'_> {
     fn download(&self, uri: &str) -> Option<Vec<u8>> {
         let remote = uri.starts_with("http://") || uri.starts_with("https://");
         if remote && is_malformed(uri) {
-            eprintln!("error: {}", uri_malformed(uri));
+            eprintln!("error: {}", messages::uri_malformed(uri));
             return None;
         }
         let dir = self.bundles_dir();
         let dir_shown = dir.to_string_lossy();
         if remote && dir_shown.chars().any(|c| c.is_control()) {
-            eprintln!("error: {}", filename_malformed(&dir_shown));
+            eprintln!("error: {}", messages::filename_malformed(&dir_shown));
             return None;
         }
         let data = if uri.starts_with("http://") || uri.starts_with("https://") {
@@ -135,7 +110,7 @@ impl Client<'_> {
             std::fs::read(uri).ok()
         };
         if data.is_none() {
-            eprintln!("warning: {}", failed_to_download(uri));
+            eprintln!("warning: {}", messages::failed_to_download(uri));
         }
         data
     }
@@ -151,7 +126,7 @@ impl Client<'_> {
         match self.parse_list(uri, &data) {
             Some(l) => Got::List(l),
             None => {
-                eprintln!("warning: {}", not_bundle_or_list(uri));
+                eprintln!("warning: {}", messages::not_bundle_or_list(uri));
                 Got::Failed
             }
         }
@@ -381,7 +356,7 @@ pub fn fetch_bundle_uri(
     let _region = rgit_trace::trace2::region("fetch", "fetch-bundle-uri", true);
     let o = client.fetch(uri, 0, stored);
     if !o.ok && stored.is_none() {
-        eprintln!("warning: {}", failed_to_fetch(uri));
+        eprintln!("warning: {}", messages::failed_to_fetch(uri));
     }
     o
 }

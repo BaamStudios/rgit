@@ -20,13 +20,6 @@ use crate::repo::LocalRepo;
 use crate::session::{self, FsckCheck, ReceivedPack};
 use crate::{Error, Result, graph};
 
-/// `error:` before the list of missing prerequisites.
-pub const LACKS_PREREQUISITES: &str = "Repository lacks these prerequisite commits:";
-
-/// `error:` for prerequisites whose history is incomplete.
-pub const NOT_CONNECTED: &str = "some prerequisite commits exist in the object store, \
-but are not connected to the repository's history";
-
 /// An open bundle: the header, and the reader at the start of the pack.
 pub struct OpenBundle {
     pub header: Header,
@@ -130,12 +123,12 @@ impl Prerequisites {
         match self {
             Prerequisites::Ok => {}
             Prerequisites::Missing(ids) => {
-                eprintln!("error: {LACKS_PREREQUISITES}");
+                eprintln!("error: {}", crate::messages::LACKS_PREREQUISITES);
                 for id in ids {
                     eprintln!("error: {} ", id.to_hex());
                 }
             }
-            Prerequisites::NotConnected => eprintln!("error: {NOT_CONNECTED}"),
+            Prerequisites::NotConnected => eprintln!("error: {}", crate::messages::NOT_CONNECTED),
         }
     }
 }

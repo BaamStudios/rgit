@@ -155,3 +155,35 @@ pub fn fsck_finding(id: &rgit_hash::ObjectId, finding: &dyn std::fmt::Display) -
 /// `fatal:` when a bundle cannot be used as fetch source (after its own
 /// `error:` lines).
 pub const REMOTE_TRANSPORT_ERROR: &str = "remote transport reported error";
+
+/// `error:` before the list of missing prerequisites.
+pub const LACKS_PREREQUISITES: &str = "Repository lacks these prerequisite commits:";
+
+/// `error:` for prerequisites whose history is incomplete.
+pub const NOT_CONNECTED: &str = "some prerequisite commits exist in the object store, \
+but are not connected to the repository's history";
+
+/// `warning:` when a URI could not be downloaded.
+pub fn failed_to_download(uri: &str) -> String {
+    format!("failed to download bundle from URI '{uri}'")
+}
+
+/// `warning:` when the bundle URI given to clone gave nothing.
+pub fn failed_to_fetch(uri: &str) -> String {
+    format!("failed to fetch objects from bundle URI '{uri}'")
+}
+
+/// `warning:` for a file that is neither bundle nor list.
+pub fn not_bundle_or_list(uri: &str) -> String {
+    format!("file at URI '{uri}' is not a bundle or bundle list")
+}
+
+/// `error:` for a URI with spaces or control characters.
+pub fn uri_malformed(uri: &str) -> String {
+    format!("bundle-uri: URI is malformed: {uri}")
+}
+
+/// `error:` for a download target with control characters.
+pub fn filename_malformed(path: &str) -> String {
+    format!("bundle-uri: filename is malformed: {path}")
+}
