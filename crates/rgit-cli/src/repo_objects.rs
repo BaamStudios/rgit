@@ -22,9 +22,6 @@ use rgit_repo::Setup;
 use crate::refs::Refs;
 use crate::{Context, Die};
 
-/// Replacements are followed this many times.
-const MAX_REPLACE_DEPTH: usize = 5;
-
 /// A pack directory as an [`ObjectStore`].
 #[derive(Debug)]
 pub struct PackStore {
@@ -163,8 +160,6 @@ pub struct Repo {
     pub odb: ObjectDatabase,
     dirs: Vec<ObjectDir>,
     pub refs: Refs,
-    replace_enabled: bool,
-    replace: Option<HashMap<ObjectId, ObjectId>>,
     /// What hooks inherit from the command line (#76).
     pub hook_context: crate::hooks::HookContext,
 }
@@ -258,13 +253,9 @@ impl Repo {
             odb.push_store(packs.clone());
             dirs.push(ObjectDir { loose, packs });
         }
-        let replace_enabled = !ctx.no_replace_objects
-            && std::env::var_os("GIT_NO_REPLACE_OBJECTS").is_none()
-            && config
-                .bool("core.useReplaceRefs")
-                .ok()
-                .flatten()
-                .unwrap_or(true);
+        if !ctx.no_replace_objects {
+            crate::replace_objects::install(&mut odb, &setup, &config);
+        }
         let refs = Refs::new(&setup);
         let repo = Repo {
             setup,
@@ -273,8 +264,6 @@ impl Repo {
             odb,
             dirs,
             refs,
-            replace_enabled,
-            replace: None,
             hook_context: crate::hooks::HookContext::new(ctx),
         };
         crate::hooks::watch_index(&repo);
@@ -282,43 +271,34 @@ impl Repo {
     }
 
     /// The replacement of `oid` (following chains), or `oid` itself.
+    /// A chain that is too long or loops ends the command, as in git.
     pub fn replaced(&mut self, oid: &ObjectId) -> ObjectId {
-        if !self.replace_enabled {
-            return *oid;
+        match self.odb.replaced(oid) {
+            Ok(id) => id,
+            Err(e) => crate::convert::die_now(&e.to_string()),
         }
-        let map = self.replacements();
-        let mut cur = *oid;
-        for _ in 0..MAX_REPLACE_DEPTH {
-            match map.get(&cur) {
-                Some(next) => cur = *next,
-                None => break,
-            }
-        }
-        cur
     }
 
     /// Replace refs as `original -> replacement` (empty when replacing is
     /// disabled).
     pub fn replacements(&mut self) -> &HashMap<ObjectId, ObjectId> {
-        if !self.replace_enabled {
-            self.replace.get_or_insert_with(HashMap::new).clear();
-            return self.replace.as_ref().expect("set");
+        static EMPTY: std::sync::OnceLock<HashMap<ObjectId, ObjectId>> = std::sync::OnceLock::new();
+        match self.odb.replacements() {
+            Some(m) => m,
+            None => EMPTY.get_or_init(HashMap::new),
         }
-        if self.replace.is_none() {
-            let base = std::env::var("GIT_REPLACE_REF_BASE")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "refs/replace/".to_string());
-            let mut map = HashMap::new();
-            for (name, target) in self.refs.list(&base) {
-                let hex = &name[base.len()..];
-                if let Ok(from) = ObjectId::from_hex(self.hash, hex.as_bytes()) {
-                    map.insert(from, target);
-                }
-            }
-            self.replace = Some(map);
-        }
-        self.replace.as_ref().expect("loaded")
+    }
+
+    /// Stop following replace refs (commands that check or transfer the
+    /// stored objects).
+    pub fn no_replace(&mut self) {
+        self.odb.clear_replacements();
+    }
+
+    /// Read the legacy graft file now, if there is one (printing its
+    /// deprecation hint), as git does when a command parses commits.
+    pub fn read_grafts(&self) {
+        crate::grafts::Lazy::new(&self.setup.common_dir, self.hash, &self.config).touch();
     }
 
     /// [`Repo::replacements`] as an owned value, for lookups without a
@@ -410,12 +390,8 @@ impl Replacements {
 }
 
 fn chain(map: &HashMap<ObjectId, ObjectId>, oid: &ObjectId) -> ObjectId {
-    let mut cur = *oid;
-    for _ in 0..MAX_REPLACE_DEPTH {
-        match map.get(&cur) {
-            Some(next) => cur = *next,
-            None => break,
-        }
+    match rgit_odb::follow_replacements(map, oid) {
+        Ok(id) => id,
+        Err(e) => crate::convert::die_now(&e.to_string()),
     }
-    cur
 }

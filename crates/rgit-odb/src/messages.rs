@@ -112,3 +112,9 @@ pub fn insufficient_permission(dir: &Path) -> String {
         dir.display()
     )
 }
+
+/// `replace depth too high for object <oid>` (replace refs chain too long
+/// or loop).
+pub fn replace_depth_too_high(oid: &ObjectId) -> String {
+    format!("replace depth too high for object {oid}")
+}

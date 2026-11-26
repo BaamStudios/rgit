@@ -334,7 +334,9 @@ fn fail(e: ip::Error) -> Die {
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut args = parse_args(argv)?;
     let setup = repo::setup(ctx, Mode::Required)?;
-    let repo = Repo::open(ctx, setup)?;
+    let mut repo = Repo::open(ctx, setup)?;
+    // The pack holds stored objects; replacements play no part.
+    repo.no_replace();
     let hash = repo.hash;
     args.settings.resolve(hash)?;
 

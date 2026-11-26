@@ -130,6 +130,10 @@ pub enum Error {
     /// (fatal in git).
     #[error(transparent)]
     AllocLimit(#[from] rgit_object::AllocLimitError),
+    /// Replace refs chain more than [`crate::MAX_REPLACE_DEPTH`] times
+    /// (or loop) from this object (fatal in git).
+    #[error("{}", messages::replace_depth_too_high(.0))]
+    ReplaceDepth(ObjectId),
     /// An I/O error.
     #[error("{context}: {source}")]
     Io {
@@ -158,6 +162,7 @@ impl Error {
                 | Error::Collision(_)
                 | Error::InsufficientPermission { .. }
                 | Error::AllocLimit(_)
+                | Error::ReplaceDepth(_)
         )
     }
 

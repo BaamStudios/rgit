@@ -256,6 +256,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let setup = repo::setup(ctx, Mode::Required)?;
     let mut repo = Repo::open(ctx, setup)?;
+    // fsck checks the stored objects, not their replacements.
+    repo.no_replace();
+    repo.read_grafts();
     let cfg = fsck_config(&repo)?;
     let mut f = Fsck {
         opts: opts.clone(),

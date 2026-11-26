@@ -83,6 +83,9 @@ impl Repo<'_> {
         if self.objects.is_shallow(id) {
             return Vec::new();
         }
+        if let Some(grafted) = self.objects.grafted_parents(id) {
+            return grafted;
+        }
         commit.parents().unwrap_or_default()
     }
 
@@ -597,6 +600,7 @@ fn run_parsed(ctx: &Context, cmd: Command, mut opts: Options) -> Result<i32, Die
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.use_grafts(&setup.common_dir, &config);
     objects.set_large_object_options(
         rgit_odb::LargeObjectOptions::from_config(&config)
             .map_err(|e| Die::Fatal(e.to_string()))?,
@@ -746,6 +750,7 @@ fn walk_args(ctx: &Context, args: &[String]) -> Result<Walked, Die> {
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.use_grafts(&setup.common_dir, &config);
     objects.set_large_object_options(
         rgit_odb::LargeObjectOptions::from_config(&config)
             .map_err(|e| Die::Fatal(e.to_string()))?,
@@ -891,6 +896,7 @@ pub fn walk_formatted(
     let mut objects = Objects::new(revisions::objects_dir(&setup), kind, &shallow);
     let refs = Refs::new(&setup, kind);
     objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+    objects.use_grafts(&setup.common_dir, &config);
     objects.set_large_object_options(
         rgit_odb::LargeObjectOptions::from_config(&config)
             .map_err(|e| Die::Fatal(e.to_string()))?,

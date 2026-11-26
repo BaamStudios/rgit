@@ -123,6 +123,9 @@ struct Layer {
 pub struct Objects {
     layers: Vec<Layer>,
     hash: HashKind,
+    /// Replace refs followed by [`Objects::read`], see
+    /// [`Objects::use_replace_refs`].
+    replace: std::collections::HashMap<ObjectId, ObjectId>,
 }
 
 impl Objects {
@@ -140,7 +143,19 @@ impl Objects {
         };
         let mut layers = vec![layer(dir)];
         layers.extend(rgit_odb::resolve_alternates(dir).iter().map(|d| layer(d)));
-        Objects { layers, hash }
+        Objects {
+            layers,
+            hash,
+            replace: Default::default(),
+        }
+    }
+
+    /// Read replaced objects through their replacements (unless replacing
+    /// is disabled, see [`crate::replace_objects::enabled`]).
+    pub fn use_replace_refs(&mut self, setup: &Setup, config: &ConfigSet) {
+        if crate::replace_objects::enabled(config) {
+            self.replace = crate::replace_objects::load(setup);
+        }
     }
 
     /// The hash algorithm.
@@ -155,8 +170,17 @@ impl Objects {
             .any(|l| l.packs.contains(id) || l.loose.contains(id))
     }
 
-    /// Type and content of an object.
+    /// Type and content of an object (of its replacement, see
+    /// [`Objects::use_replace_refs`]).
     pub fn read(&self, id: &ObjectId) -> Option<(ObjectKind, Vec<u8>)> {
+        let id = &if self.replace.is_empty() {
+            *id
+        } else {
+            match rgit_odb::follow_replacements(&self.replace, id) {
+                Ok(r) => r,
+                Err(e) => crate::convert::die_now(&e.to_string()),
+            }
+        };
         let mut cache = DeltaBaseCache::new(0);
         for l in &self.layers {
             if let Ok(Some(o)) = l.packs.read(id, &mut cache, &mut |_| {}) {
@@ -344,9 +368,13 @@ impl Revs {
         let shallow = std::env::var_os("GIT_SHALLOW_FILE")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| setup.common_dir.join("shallow"));
+        let mut objects = revisions::Objects::new(revisions::objects_dir(setup), kind, &shallow);
+        let refs = revisions::Refs::new(setup, kind);
+        objects.use_replace_refs(&refs, &config, ctx.no_replace_objects);
+        objects.use_grafts(&setup.common_dir, &config);
         Ok(Revs {
-            objects: revisions::Objects::new(revisions::objects_dir(setup), kind, &shallow),
-            refs: revisions::Refs::new(setup, kind),
+            objects,
+            refs,
             config,
             index: revisions::IndexFile::new(setup, kind),
             work_tree: setup.work_tree.clone().map(revisions::WorkTree),
@@ -364,9 +392,13 @@ impl Revs {
         let shallow = std::env::var_os("GIT_SHALLOW_FILE")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| setup.common_dir.join("shallow"));
+        let mut objects = revisions::Objects::new(revisions::objects_dir(setup), kind, &shallow);
+        let refs = revisions::Refs::new(setup, kind);
+        objects.use_replace_refs(&refs, &config, false);
+        objects.use_grafts(&setup.common_dir, &config);
         Revs {
-            objects: revisions::Objects::new(revisions::objects_dir(setup), kind, &shallow),
-            refs: revisions::Refs::new(setup, kind),
+            objects,
+            refs,
             config,
             index: revisions::IndexFile::new(setup, kind),
             work_tree: setup.work_tree.clone().map(revisions::WorkTree),
