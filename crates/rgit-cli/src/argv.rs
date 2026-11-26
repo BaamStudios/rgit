@@ -34,12 +34,15 @@ pub fn outln(line: &str) {
     let _ = out.write_all(b"\n");
 }
 
-/// `eprintln!` for a message that may hold escaped names.
+/// `eprintln!` for a message that may hold escaped names. Like the
+/// crate's `eprintln!`, the line goes out in a single write: a parent that
+/// relays our stderr packet by packet (`upload-archive`) must not see it
+/// in pieces.
 pub fn errln(line: &str) {
     use std::io::Write as _;
-    let mut err = std::io::stderr().lock();
-    let _ = err.write_all(&rgit_bstr::to_bytes(line));
-    let _ = err.write_all(b"\n");
+    let mut bytes = rgit_bstr::to_bytes(line).into_owned();
+    bytes.push(b'\n');
+    let _ = std::io::stderr().lock().write_all(&bytes);
 }
 
 #[cfg(test)]
