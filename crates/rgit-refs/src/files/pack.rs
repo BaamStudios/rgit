@@ -47,6 +47,11 @@ impl FilesStore {
                 .compact(false)
                 .map_err(|e| TransactionError::Rejected(e.to_string()));
         }
+        if std::env::var_os("GIT_QUARANTINE_PATH").is_some() {
+            return Err(TransactionError::Rejected(
+                crate::messages::cannot_write_packed_refs(crate::messages::QUARANTINE),
+            ));
+        }
         let opts = LockOptions::new()
             .timeout(self.options.packed_refs_timeout)
             .shared(self.options.shared)

@@ -584,6 +584,9 @@ impl RefStore for FilesStore {
         updates: Vec<RefUpdate>,
         hooks: &mut dyn RefHooks,
     ) -> Result<Box<dyn PreparedTransaction + 's>, TransactionError> {
+        if std::env::var_os("GIT_QUARANTINE_PATH").is_some() {
+            return Err(TransactionError::Quarantine);
+        }
         if self.reftable {
             let prepared = crate::reftable::backend::prepare(self, updates, hooks)?;
             return Ok(Box::new(prepared));

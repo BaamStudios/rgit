@@ -21,7 +21,7 @@ use std::io::{Read, Write};
 use rgit_hash::{HashKind, ObjectId};
 use rgit_protocol::pktline::{Packet, Reader, Writer};
 
-use super::{Backend, Command, Out, Push, RefReport, Sink, messages as m};
+use super::{Backend, Command, Push, RefReport, Sink, messages as m};
 
 /// A running `proc-receive` hook.
 pub trait ProcReceive {
@@ -136,14 +136,29 @@ pub(super) fn run<B: Backend, W: Write + Send>(push: &mut Push<'_, B, W>) {
                 }
             })
         });
-        let outcome = talk(hook.as_mut(), &features, commands, &options, out, hash);
+        let mut errors = Vec::new();
+        let outcome = talk(
+            hook.as_mut(),
+            &features,
+            commands,
+            &options,
+            &mut errors,
+            hash,
+        );
         let code = hook.finish();
         if let Some(t) = relay {
             let _ = t.join();
         }
-        (outcome, code)
+        (outcome, code, errors)
     });
-    match result {
+    // Our complaints about the report come after everything the hook
+    // printed (the hook echoes each line before it sends it), whatever
+    // the scheduling of the relay thread.
+    let (outcome, code, errors) = result;
+    for e in &errors {
+        out.error(e);
+    }
+    match (outcome, code) {
         (Err(Failure::Version(v)), _) => {
             out.error(&m::proc_receive_bad_version(&v));
             fail_all(commands, m::REASON_PROC_RECEIVE_MISSING);
@@ -165,12 +180,12 @@ pub(super) fn run<B: Backend, W: Write + Send>(push: &mut Push<'_, B, W>) {
 }
 
 /// The whole exchange with the hook.
-fn talk<W: Write + Send>(
+fn talk(
     hook: &mut dyn ProcReceive,
     features: &str,
     commands: &mut [Command],
     options: &[String],
-    out: &Out<W>,
+    errors: &mut Vec<String>,
     hash: HashKind,
 ) -> Result<(), Failure> {
     let push_options = negotiate(hook, features)?;
@@ -192,16 +207,17 @@ fn talk<W: Write + Send>(
         }
         w.flush_io().map_err(|_| Failure::Io)?;
     }
-    if read_report(out, commands, hash, hook) {
+    if read_report(errors, commands, hash, hook) {
         Ok(())
     } else {
         Err(Failure::Io)
     }
 }
 
-/// Reads the hook's status lines; `false` if the stream broke.
-fn read_report<W: Write + Send>(
-    out: &Out<W>,
+/// Reads the hook's status lines; `false` if the stream broke. Problems
+/// with the report are collected in `errors`.
+fn read_report(
+    errors: &mut Vec<String>,
     commands: &mut [Command],
     hash: HashKind,
     hook: &mut dyn ProcReceive,
@@ -223,7 +239,7 @@ fn read_report<W: Write + Send>(
         if let Some(rest) = line.strip_prefix("option ") {
             let Some(i) = current else {
                 if !orphan_reported {
-                    out.error(m::PROC_RECEIVE_OPTION_WITHOUT_OK);
+                    errors.push(m::PROC_RECEIVE_OPTION_WITHOUT_OK.to_string());
                     orphan_reported = true;
                 }
                 continue;
@@ -253,7 +269,7 @@ fn read_report<W: Write + Send>(
         }
         orphan_reported = false;
         let Some((status, rest)) = line.split_once(' ') else {
-            out.error(&m::proc_receive_incomplete(&line));
+            errors.push(m::proc_receive_incomplete(&line));
             current = None;
             continue;
         };
@@ -262,7 +278,7 @@ fn read_report<W: Write + Send>(
             None => (rest, None),
         };
         if status != "ok" && status != "ng" {
-            out.error(&m::proc_receive_bad_status(status, refname));
+            errors.push(m::proc_receive_bad_status(status, refname));
             current = None;
             continue;
         }
@@ -271,9 +287,9 @@ fn read_report<W: Write + Send>(
             .position(|c| c.name == refname && c.run_proc_receive)
         else {
             if commands.iter().any(|c| c.name == refname) {
-                out.error(&m::proc_receive_unexpected_ref(refname));
+                errors.push(m::proc_receive_unexpected_ref(refname));
             } else {
-                out.error(&m::proc_receive_unknown_ref(refname));
+                errors.push(m::proc_receive_unknown_ref(refname));
             }
             current = None;
             continue;

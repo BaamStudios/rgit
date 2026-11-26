@@ -188,4 +188,8 @@ pub enum TransactionError {
     /// The transaction was already committed or aborted.
     #[error("{}", messages::TRANSACTION_CLOSED)]
     Closed,
+    /// Reference updates are refused while objects are quarantined
+    /// (`GIT_QUARANTINE_PATH` is set, even to an empty value).
+    #[error("{}", messages::QUARANTINE)]
+    Quarantine,
 }
