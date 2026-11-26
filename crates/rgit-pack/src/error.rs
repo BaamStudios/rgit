@@ -179,6 +179,11 @@ pub enum Error {
         /// The failed check, e.g. `has unknown signature`.
         what: &'static str,
     },
+    /// The multi-pack index names a pack whose `.idx` cannot be loaded.
+    IndexUnavailable {
+        /// The `.pack` file.
+        path: PathBuf,
+    },
     /// An object does not hash to the id recorded in the index.
     HashMismatch {
         /// The object.
@@ -238,6 +243,9 @@ impl fmt::Display for Error {
             Error::CrcMismatch { id, path } => m::crc_mismatch(f, id, path),
             Error::HashMismatch { id, path } => m::hash_mismatch(f, id, path),
             Error::Mtimes { path, what } => m::mtimes(f, path, what),
+            Error::IndexUnavailable { path } => f.write_str(
+                &crate::midx::messages::packfile_index_unavailable(&path.display().to_string()),
+            ),
         }
     }
 }

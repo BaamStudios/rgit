@@ -184,6 +184,46 @@ impl ObjectDatabase {
         db
     }
 
+    /// [`ObjectDatabase::open_with_packs`], with the multi-pack index of
+    /// every pack directory in use. Problems that make a MIDX unusable are
+    /// printed as `error: <text>`; a broken MIDX git dies on is
+    /// [`Error::MultiPackIndex`].
+    pub fn open_with_midx(
+        objects_dir: impl Into<PathBuf>,
+        hash: HashKind,
+        options: LooseOptions,
+    ) -> Result<ObjectDatabase, Error> {
+        let objects_dir = objects_dir.into();
+        let mut errors = Vec::new();
+        let result = (|| {
+            let mut db = ObjectDatabase::open(&objects_dir, hash, options.clone());
+            let packs = Arc::new(PackStore::open_with_midx(
+                objects_dir.join("pack"),
+                hash,
+                &mut errors,
+            )?);
+            db.push_store(packs.clone());
+            db.packs = Some(packs);
+            for alt in alternates::resolve(&objects_dir) {
+                db.push_store(Arc::new(LooseStore::new(&alt, hash, options.clone())));
+                db.push_store(Arc::new(PackStore::open_with_midx(
+                    alt.join("pack"),
+                    hash,
+                    &mut errors,
+                )?));
+            }
+            Ok(db)
+        })();
+        {
+            use std::io::Write;
+            let mut err = std::io::stderr().lock();
+            for e in &errors {
+                let _ = writeln!(err, "error: {e}");
+            }
+        }
+        result
+    }
+
     /// The database of a repository: [`ObjectDatabase::open_with_packs`] on
     /// [`objects_dir`] of its common directory, with the hash algorithm of
     /// the repository, the loose object settings from `config`
@@ -207,7 +247,15 @@ impl ObjectDatabase {
         let options = LooseOptions::from_config(config, warnings)?;
         let large = LargeObjectOptions::from_config(config)?;
         let hash = setup.format.object_format;
-        let mut db = ObjectDatabase::open_with_packs(objects_dir(&setup.common_dir), hash, options);
+        let use_midx = config
+            .bool("core.multiPackIndex")
+            .map_err(|e| Error::Config(e.to_string()))?
+            .unwrap_or(true);
+        let mut db = if use_midx {
+            ObjectDatabase::open_with_midx(objects_dir(&setup.common_dir), hash, options)?
+        } else {
+            ObjectDatabase::open_with_packs(objects_dir(&setup.common_dir), hash, options)
+        };
         db.set_large_object_options(large);
         let limit = config.int("core.deltaBaseCacheLimit").ok().flatten();
         if let (Some(limit), Some(packs)) = (limit, &db.packs) {

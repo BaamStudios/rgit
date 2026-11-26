@@ -16,6 +16,7 @@
 //! - [`index_pack`]: index a pack stream (`git index-pack`): object ids,
 //!   parallel delta resolution, thin pack completion, `.idx` and `.rev`
 //!   output.
+//! - [`midx`]: multi-pack indexes (read, write, verify).
 //! - [`mtimes`]: the `.mtimes` files of cruft packs.
 //! - [`write`]: writing packs (`pack-objects` without delta search).
 //!
@@ -35,6 +36,7 @@ mod error;
 mod index;
 pub mod index_pack;
 pub mod messages;
+pub mod midx;
 mod mmap;
 pub mod mtimes;
 mod pack;

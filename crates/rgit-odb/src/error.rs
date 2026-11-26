@@ -108,6 +108,9 @@ pub enum Error {
     /// A configuration value is invalid (fatal in git).
     #[error("{0}")]
     Config(String),
+    /// The multi-pack index is broken in a way git dies on.
+    #[error("{0}")]
+    MultiPackIndex(String),
     /// A copy of an object in a pack cannot be read (reported for each
     /// copy while looking further).
     #[error(transparent)]
@@ -155,6 +158,7 @@ impl Error {
         !matches!(
             self,
             Error::Config(_)
+                | Error::MultiPackIndex(_)
                 | Error::Collision(_)
                 | Error::InsufficientPermission { .. }
                 | Error::AllocLimit(_)

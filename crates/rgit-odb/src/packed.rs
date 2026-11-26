@@ -38,6 +38,18 @@ impl PackStore {
         PackStore::from_set(Arc::new(PackSet::open(pack_dir, hash)))
     }
 
+    /// [`PackStore::open`] with the multi-pack index of the directory
+    /// ([`PackSet::open_with_midx`]).
+    pub fn open_with_midx(
+        pack_dir: impl Into<PathBuf>,
+        hash: HashKind,
+        errors: &mut Vec<String>,
+    ) -> Result<PackStore, Error> {
+        let set = PackSet::open_with_midx(pack_dir, hash, errors)
+            .map_err(|e| Error::MultiPackIndex(e.0))?;
+        Ok(PackStore::from_set(Arc::new(set)))
+    }
+
     /// A store over an existing pack set.
     pub fn from_set(set: Arc<PackSet>) -> PackStore {
         PackStore {
