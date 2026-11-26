@@ -747,7 +747,9 @@ impl Session {
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
         let proto = &mut self.proto;
         let show_progress = !opts.no_progress;
-        let unpack_limit = if opts.promisor.is_some() {
+        // A promisor pack is always kept; with object checks git hands the
+        // pack to `index-pack --strict`, which keeps it too.
+        let unpack_limit = if opts.promisor.is_some() || opts.fsck.is_some() {
             0
         } else {
             u64::from(opts.unpack_limit.unwrap_or(0))
@@ -905,13 +907,23 @@ impl Session {
         // Objects in the pack as sent (without bases appended for a thin
         // pack): below the unpack limit they become loose objects.
         let sent = indexed.objects().len() as u64 - indexed.local_objects();
-        if opts.promisor.is_none()
+        let unpack = opts.promisor.is_none()
+            && opts.fsck.is_none()
             // With packfile URIs git keeps the inline pack as it is.
             && uris.is_empty()
             && opts
                 .unpack_limit
-                .is_some_and(|limit| sent < u64::from(limit))
-        {
+                .is_some_and(|limit| sent < u64::from(limit));
+        if uris.is_empty() && !shallow_transfer(repo, opts) {
+            trace_child(&index_argv(
+                self.program == "clone",
+                show_progress,
+                unpack,
+                opts,
+                sent,
+            ));
+        }
+        if unpack {
             unpack_to_loose(repo, &tmp, &indexed)?;
             drop(tmp);
             return Ok(Some(ReceivedPack {
@@ -1933,6 +1945,85 @@ fn write_file(dest: &Path, prefix: &str, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// git runs `index-pack` or `unpack-objects` for a received pack and
+/// `rev-list` for the connectivity check as child processes; rgit does
+/// that work in-process and reports it in `GIT_TRACE` and as trace2
+/// `child_start` / `child_exit` events with the command line git uses.
+pub fn trace_child(args: &[String]) {
+    let argv = rgit_trace::trace2::git_argv(args);
+    rgit_trace::trace_run_command::<String>(&[], &argv);
+    if let Some(t) = rgit_trace::trace2::child_start(Default::default(), &argv) {
+        t.exit(i64::from(std::process::id()), 0);
+    }
+}
+
+/// A transfer that may change the shallow boundary: git runs its
+/// children with `--shallow-file`, which rgit does not report.
+fn shallow_transfer(repo: &LocalRepo, opts: &PackOptions) -> bool {
+    opts.deepen.is_some()
+        || opts.deepen_since.is_some()
+        || !opts.deepen_not.is_empty()
+        || repo.shallow_file().exists()
+}
+
+/// The command line git uses to store a received pack of `count` objects
+/// (observed from git 2.56): `unpack-objects` below the unpack limit,
+/// else `index-pack`; `--keep` when the pack is kept whatever its size
+/// (clone, `fetch -k`), else the pack header it read to decide.
+fn index_argv(
+    clone: bool,
+    progress: bool,
+    unpack: bool,
+    opts: &PackOptions,
+    count: u64,
+) -> Vec<String> {
+    let header = format!("--pack_header=2,{count}");
+    if unpack {
+        let mut args = vec!["unpack-objects".to_owned()];
+        if !progress {
+            args.push("-q".to_owned());
+        }
+        args.push(header);
+        return args;
+    }
+    let mut args = vec!["index-pack".to_owned(), "--stdin".to_owned()];
+    if progress {
+        args.push("-v".to_owned());
+    }
+    args.push("--fix-thin".to_owned());
+    let forced_keep = opts.unpack_limit.is_none();
+    if opts
+        .unpack_limit
+        .is_none_or(|limit| count >= u64::from(limit))
+    {
+        args.push(format!(
+            "--keep=fetch-pack {} on {}",
+            std::process::id(),
+            rgit_ident::system::hostname()
+        ));
+    }
+    if clone && opts.promisor.is_none() {
+        args.push("--check-self-contained-and-connected".to_owned());
+    }
+    if opts.promisor.is_some() {
+        args.push("--promisor".to_owned());
+    }
+    if !forced_keep {
+        args.push(header);
+    }
+    if opts.fsck.is_some() {
+        args.push(
+            if opts.promisor.is_some() {
+                "--fsck-objects"
+            } else {
+                "--strict"
+            }
+            .to_owned(),
+        );
+    }
+    args
+}
+
 /// Create the `.keep` file; `false` if one exists already (the pack was
 /// there before and stays kept).
 fn write_keep(path: &Path) -> Result<bool> {
@@ -2031,5 +2122,104 @@ mod tests {
         );
         assert_eq!(uri_scheme_host("https://[::1]:1/x"), ("https", "[::1]"));
         assert_eq!(uri_scheme_host("https://host"), ("https", "host"));
+    }
+
+    fn fsck() -> Option<FsckCheck> {
+        Some(FsckCheck {
+            entries: Vec::new(),
+            failed: String::new(),
+        })
+    }
+
+    #[test]
+    fn index_command_lines_as_git_runs_them() {
+        let keep = format!(
+            "--keep=fetch-pack {} on {}",
+            std::process::id(),
+            rgit_ident::system::hostname()
+        );
+        let fetch = PackOptions {
+            unpack_limit: Some(100),
+            ..PackOptions::default()
+        };
+        // Below the unpack limit.
+        assert_eq!(
+            index_argv(false, false, true, &fetch, 3),
+            ["unpack-objects", "-q", "--pack_header=2,3"]
+        );
+        assert_eq!(
+            index_argv(false, true, true, &fetch, 3),
+            ["unpack-objects", "--pack_header=2,3"]
+        );
+        // At the limit.
+        assert_eq!(
+            index_argv(false, false, false, &fetch, 100),
+            [
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                &keep,
+                "--pack_header=2,100"
+            ]
+        );
+        // Object checks below the limit.
+        let checked = PackOptions {
+            fsck: fsck(),
+            ..fetch.clone()
+        };
+        assert_eq!(
+            index_argv(false, true, false, &checked, 3),
+            [
+                "index-pack",
+                "--stdin",
+                "-v",
+                "--fix-thin",
+                "--pack_header=2,3",
+                "--strict"
+            ]
+        );
+        // Clone (always kept).
+        assert_eq!(
+            index_argv(true, false, false, &PackOptions::default(), 3),
+            [
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                &keep,
+                "--check-self-contained-and-connected"
+            ]
+        );
+        // Partial clone with object checks, then a lazy fetch.
+        let partial = PackOptions {
+            promisor: Some(String::new()),
+            fsck: fsck(),
+            ..PackOptions::default()
+        };
+        assert_eq!(
+            index_argv(true, false, false, &partial, 3),
+            [
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                &keep,
+                "--promisor",
+                "--fsck-objects"
+            ]
+        );
+        let lazy = PackOptions {
+            unpack_limit: Some(100),
+            ..partial
+        };
+        assert_eq!(
+            index_argv(false, false, false, &lazy, 1),
+            [
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                "--promisor",
+                "--pack_header=2,1",
+                "--fsck-objects"
+            ]
+        );
     }
 }

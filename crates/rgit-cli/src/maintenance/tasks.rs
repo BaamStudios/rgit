@@ -718,7 +718,14 @@ fn geometry(repo: &Repo, factor: i64) -> Geometry {
         .unwrap_or_default();
     let mut counts: Vec<u64> = packs
         .into_iter()
-        .filter(|p| !p.keep && !p.base().with_extension("mtimes").exists())
+        // Promisor packs are left out of the progression: a partial clone
+        // with a few small lazily fetched packs needs no merge.
+        .filter(|p| {
+            let base = p.base();
+            !p.keep
+                && !base.with_extension("mtimes").exists()
+                && !base.with_extension("promisor").exists()
+        })
         .map(|p| u64::from(p.pack.index().len()))
         .collect();
     counts.sort_unstable();

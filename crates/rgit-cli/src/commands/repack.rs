@@ -352,7 +352,17 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let partial = crate::promisor::has_remote(&config);
     let mut walk = Walk::new(&odb, reach::shallow_commits(&common, kind));
     if partial {
-        walk.seen.extend(odb.promisor_objects().iter().copied());
+        // The walk stops at the objects of promisor packs and passes over
+        // missing objects they refer to; an object they refer to that is
+        // here outside the promisor packs (a blob in the index, say) is
+        // still packed when reachable.
+        let in_packs = odb.promisor_pack_objects();
+        walk.seen.extend(
+            odb.promisor_objects()
+                .iter()
+                .filter(|id| in_packs.contains(id) || !odb.contains(id))
+                .copied(),
+        );
     }
     let needs_walk = pack_everything || !loose_ids.is_empty();
     if needs_walk {

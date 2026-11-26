@@ -189,6 +189,7 @@ pub(crate) enum Unborn {
 impl Settings {
     pub fn load(repo: &Repository<'_>, opts: &Options) -> Result<Settings> {
         let config = repo.config;
+        check_filter_config(config)?;
         let flag = |name: &str| -> Result<bool> {
             config
                 .bool(name)
@@ -244,4 +245,43 @@ impl Settings {
             promisor_remotes: promisor::advertisement(config),
         })
     }
+}
+
+/// The `uploadpackfilter.*` variables are read when upload-pack starts, and
+/// one that does not parse is fatal: `uploadpackfilter.allow` and
+/// `uploadpackfilter.<filter>.allow` are booleans,
+/// `uploadpackfilter.tree.maxDepth` an unsigned number.
+fn check_filter_config(config: &ConfigSet) -> Result<()> {
+    use messages as msg;
+    for e in config.entries() {
+        let Some(rest) = e.name.strip_prefix(b"uploadpackfilter.") else {
+            continue;
+        };
+        if rest == b"allow" || rest.ends_with(b".allow") {
+            e.bool().map_err(|err| Error::fatal(err.to_string()))?;
+        } else if rest == b"tree.maxdepth" {
+            if e.value.is_none() {
+                let name = String::from_utf8_lossy(&e.name);
+                eprintln!("error: {}", msg::missing_config_value(&name));
+                let fatal = match &e.source.origin {
+                    rgit_config::Origin::File(p) => {
+                        let cwd = std::env::current_dir().ok();
+                        let shown = cwd
+                            .as_deref()
+                            .and_then(|c| p.strip_prefix(c).ok())
+                            .unwrap_or(p);
+                        msg::bad_config_variable(&name, &shown.display().to_string(), e.line)
+                    }
+                    rgit_config::Origin::CommandLine => {
+                        msg::unable_to_parse_config(&name, "command-line config")
+                    }
+                    other => msg::unable_to_parse_config(&name, &other.describe()),
+                };
+                return Err(Error::fatal(fatal));
+            }
+            e.int(rgit_config::IntWidth::U64)
+                .map_err(|err| Error::fatal(err.to_string()))?;
+        }
+    }
+    Ok(())
 }

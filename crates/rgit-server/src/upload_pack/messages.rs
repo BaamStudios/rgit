@@ -162,3 +162,18 @@ pub const FILTER_NOT_NEGOTIATED: &str = "git upload-pack: filtering capability n
 
 /// Protocol v0: a second `filter` line.
 pub const MULTIPLE_FILTERS: &str = "multiple filter-specs cannot be combined";
+
+/// A value-less config variable that needs a value.
+pub fn missing_config_value(name: &str) -> String {
+    format!("missing value for '{name}'")
+}
+
+/// The `fatal:` line after [`missing_config_value`] for a config file.
+pub fn bad_config_variable(name: &str, file: &str, line: usize) -> String {
+    format!("bad config variable '{name}' in file '{file}' at line {line}")
+}
+
+/// The `fatal:` line after [`missing_config_value`] for other sources.
+pub fn unable_to_parse_config(name: &str, source: &str) -> String {
+    format!("unable to parse '{name}' from {source}")
+}

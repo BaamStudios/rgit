@@ -923,15 +923,19 @@ fn fetch_main(ctx: &mut Context, argv: &[String], action: Option<&str>) -> CmdRe
     }
     drop(cli_repo);
     if code == 0 && args.auto_maintenance {
-        maintenance(ctx, quiet_mode);
+        maintenance(ctx, quiet_mode, args.refetch);
     }
     Ok(code)
 }
 
 /// The automatic maintenance after fetching (a `maintenance run --auto`
 /// child process).
-fn maintenance(ctx: &Context, quiet: bool) {
-    crate::maintenance::run_auto_quiet(ctx, quiet);
+fn maintenance(ctx: &Context, quiet: bool, refetch: bool) {
+    if refetch {
+        crate::maintenance::run_auto_after_refetch(ctx, quiet);
+    } else {
+        crate::maintenance::run_auto_quiet(ctx, quiet);
+    }
 }
 
 /// `--all`, `--multiple`, a group: every remote in turn, `FETCH_HEAD`
@@ -987,7 +991,7 @@ fn fetch_multiple(
         trace_parallel_done();
     }
     if args.auto_maintenance {
-        maintenance(ctx, quiet);
+        maintenance(ctx, quiet, args.refetch);
     }
     Ok(code)
 }

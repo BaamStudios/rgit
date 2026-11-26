@@ -87,6 +87,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Options that change what is packed or written, not implemented yet:
     // remember the first one given and refuse to run.
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
+    // `--exclude-promisor-objects`, so far only with `--stdin-packs`.
+    let exclude_promisor = Cell::new(false);
     // Every option given of those (for the checks against `--cruft`).
     let given: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
     let reject = |name: &'static str| {
@@ -242,7 +244,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "exclude-promisor-objects",
                 None,
                 msg::H_EXCLUDE_PROMISOR_OBJECTS,
-                reject("exclude-promisor-objects"),
+                |_, unset| {
+                    exclude_promisor.set(!unset);
+                    Ok(())
+                },
             )
             .noarg(),
             Opt::callback(
@@ -312,6 +317,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if revs.get() || given.iter().any(|g| walks.contains(g)) {
             return Err(Die::Fatal(msg::CRUFT_REVS.into()));
         }
+    }
+    if exclude_promisor.get() && stdin_packs.get().is_none() {
+        unsupported
+            .borrow_mut()
+            .get_or_insert_with(|| "--exclude-promisor-objects".to_owned());
     }
     if let Some(opt) = unsupported.borrow().as_deref() {
         return Err(Die::Fatal(msg::not_supported(opt)));
@@ -446,7 +456,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         cruft_mtimes = Some(selection.mtimes);
         (selection.objects, Vec::new())
     } else if let Some(follow) = stdin_packs.get() {
-        let objects = crate::housekeeping::stdin_packs::select(&odb, &mut input, follow, unpacked.get())?;
+        let objects = crate::housekeeping::stdin_packs::select(
+            &odb,
+            &mut input,
+            follow,
+            unpacked.get(),
+            exclude_promisor.get(),
+        )?;
         (objects, Vec::new())
     } else if revs.get() {
         let mut tips = Vec::new();

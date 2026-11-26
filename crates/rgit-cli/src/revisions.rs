@@ -107,6 +107,11 @@ impl Objects {
         self.odb.promisor_objects().clone()
     }
 
+    /// The objects stored in promisor packs (not those they refer to).
+    pub fn promisor_pack_objects(&self) -> HashSet<ObjectId> {
+        self.odb.promisor_pack_objects()
+    }
+
     /// Whether the object exists here (no lazy fetch).
     pub fn contains(&self, oid: &ObjectId) -> bool {
         self.odb.contains(self.replaced(oid))
