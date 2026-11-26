@@ -152,7 +152,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let Some(dir) = dir else {
         return Err(usage_error(m::MUST_SPECIFY_DIRECTORY));
     };
-    let git_dir = enter_repo(&dir).ok_or_else(|| Die::Fatal(m::not_a_repository(&dir)))?;
+    let found = super::upload_pack::find_repo(&dir, false)?
+        .ok_or_else(|| Die::Fatal(m::not_a_repository(&dir)))?;
+    super::upload_pack::check_ownership(ctx, &found)?;
+    let git_dir = found.git_dir;
     std::env::set_current_dir(&git_dir).map_err(|_| Die::Fatal(m::not_a_repository(&dir)))?;
     ctx.git_dir = Some(".".to_string());
     let setup = repo::setup(ctx, Mode::Required)?;
@@ -248,24 +251,6 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Ok(()) => Ok(0),
         Err(rp::Fatal(msg)) => Err(Die::Fatal(msg)),
     }
-}
-
-/// `enter_repo`: `<dir>/.git`, `<dir>.git`, `<dir>` (also with `.git`
-/// appended), the first that is a git directory.
-fn enter_repo(dir: &str) -> Option<PathBuf> {
-    let base = PathBuf::from(dir);
-    let candidates = [
-        PathBuf::from(format!("{dir}.git/.git")),
-        base.join(".git"),
-        PathBuf::from(format!("{dir}.git")),
-        base.clone(),
-    ];
-    candidates.into_iter().find(|c| is_git_dir(c))
-}
-
-fn is_git_dir(p: &Path) -> bool {
-    p.join("HEAD").is_file() && p.join("objects").is_dir() && p.join("refs").is_dir()
-        || p.join("commondir").is_file() && p.join("HEAD").is_file()
 }
 
 fn now() -> i64 {

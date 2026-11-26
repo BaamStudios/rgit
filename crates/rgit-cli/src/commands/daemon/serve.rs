@@ -5,11 +5,13 @@
 //!
 //! The checks and their order follow git 2.56 (observed): a service that
 //! is off for good, the path (aliases, `~user`, `--interpolated-path`,
-//! `--base-path`, the repository itself, the directory list), the
-//! `git-daemon-export-ok` file, the repository's `daemon.*` setting, the
-//! access hook. A client is told `access denied or repository not
+//! `--base-path`, the repository itself, its owner, the directory list),
+//! the `git-daemon-export-ok` file, the repository's `daemon.*` setting,
+//! the access hook. A client is told `access denied or repository not
 //! exported` unless `--informative-errors` is on; the log has the
-//! reason.
+//! reason. A repository owned by someone else and not listed in
+//! `safe.directory` ends the process with git's `fatal:` message on
+//! standard error (not through the log); the client is told nothing.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::ToSocketAddrs;
@@ -20,7 +22,7 @@ use rgit_server::daemon::{self, Host, Interpolation, Request, RequestError, Serv
 use super::imp::Options;
 use super::log::Logger;
 use super::sys;
-use crate::commands::upload_pack::{FoundRepo, find_repo};
+use crate::commands::upload_pack::{FoundRepo, check_ownership, find_repo};
 use crate::prelude::*;
 use crate::repo::{self, Mode};
 
@@ -155,19 +157,26 @@ impl Connection<'_> {
         Die::Exit(REFUSED)
     }
 
-    /// The repository `dir` asks for, if it may be served.
-    fn path_ok(&self, dir: &str, host: Option<&Host>) -> Option<FoundRepo> {
+    /// The repository `dir` asks for, if it may be served. A repository
+    /// owned by someone else (and not listed in `safe.directory`) or a
+    /// broken `.git` file ends the process, as in git.
+    fn path_ok(
+        &self,
+        ctx: &Context,
+        dir: &str,
+        host: Option<&Host>,
+    ) -> Result<Option<FoundRepo>, Die> {
         let (opts, log) = (self.opts, self.log);
         if daemon::is_aliased(dir) {
             log.error(&msg::aliased(dir));
-            return None;
+            return Ok(None);
         }
         let mut path = dir.to_owned();
         if dir.starts_with('~') {
             match opts.user_path.as_deref() {
                 None => {
                     log.error(&msg::user_path_not_allowed(dir));
-                    return None;
+                    return Ok(None);
                 }
                 Some("") => {}
                 Some(user_path) => {
@@ -196,24 +205,49 @@ impl Connection<'_> {
             path = format!("{base}{dir}");
         }
 
-        let mut found = find_repo(&path, opts.strict_paths);
+        let mut found = self.find(ctx, &path)?;
         if found.is_none() && opts.base_path.is_some() && opts.base_path_relaxed {
             // Without the base path, as before it was introduced.
             path = dir.to_owned();
-            found = find_repo(&path, opts.strict_paths);
+            found = self.find(ctx, &path)?;
         }
         let Some(found) = found else {
             log.error(&msg::not_a_repository(&path));
-            return None;
+            return Ok(None);
         };
         // The path as it was found counts, like in git: links are not
         // followed for this check.
         let found_at = found.path.to_string_lossy();
         if !daemon::in_directory_list(&found_at, &opts.directories, opts.strict_paths) {
             log.error(&msg::not_in_directory_list(&found_at));
-            return None;
+            return Ok(None);
         }
-        Some(found)
+        Ok(Some(found))
+    }
+
+    /// Find the repository at `path` and check who owns it (observed
+    /// with git 2.56): before the directory list, the export and the
+    /// service settings. With `--strict-paths` the path itself is checked
+    /// first, so a path that does not exist ends with the ownership
+    /// message too; otherwise only a repository that was found is.
+    fn find(&self, ctx: &Context, path: &str) -> Result<Option<FoundRepo>, Die> {
+        if self.opts.strict_paths {
+            let p = std::path::PathBuf::from(path);
+            let candidate = match find_repo(path, true)? {
+                Some(found) => found,
+                None => FoundRepo {
+                    git_dir: p.clone(),
+                    path: p,
+                },
+            };
+            check_ownership(ctx, &candidate)?;
+            return find_repo(path, true);
+        }
+        let found = find_repo(path, false)?;
+        if let Some(found) = &found {
+            check_ownership(ctx, found)?;
+        }
+        Ok(found)
     }
 
     fn run(&self, ctx: &mut Context, request: &Request) -> CmdResult {
@@ -225,7 +259,7 @@ impl Connection<'_> {
             return Err(self.refuse(msg::SERVICE_NOT_ENABLED, dir));
         }
         let host = request.host.as_deref().map(Host::parse);
-        let Some(found) = self.path_ok(dir, host.as_ref()) else {
+        let Some(found) = self.path_ok(ctx, dir, host.as_ref())? else {
             return Err(self.refuse(msg::NO_SUCH_REPOSITORY, dir));
         };
         let path = found.path.to_string_lossy().into_owned();

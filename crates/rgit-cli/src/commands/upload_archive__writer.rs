@@ -21,20 +21,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let dir = &argv[1];
     let not_repo = || Die::Fatal(msg::not_a_repository(dir));
-    let candidates = [
-        format!("{dir}.git/.git"),
-        format!("{dir}/.git"),
-        format!("{dir}.git"),
-        dir.clone(),
-    ];
-    let target = candidates
-        .iter()
-        .find(|c| {
-            let p = std::path::Path::new(c);
-            p.is_dir() && (p.join("HEAD").is_file() || p.join(".git").exists())
-        })
-        .ok_or_else(not_repo)?;
-    std::env::set_current_dir(target).map_err(|_| not_repo())?;
+    let found = super::upload_pack::find_repo(dir, false)?.ok_or_else(not_repo)?;
+    super::upload_pack::check_ownership(ctx, &found)?;
+    std::env::set_current_dir(&found.git_dir).map_err(|_| not_repo())?;
+    // Like git: the repository is named explicitly (`GIT_DIR=.`), so
+    // `safe.bareRepository` does not apply.
+    ctx.git_dir = Some(".".into());
     if crate::repo::setup_gently(ctx)?.is_none() {
         return Err(not_repo());
     }

@@ -77,7 +77,19 @@ fn daemon(fx: &Fixture, ours: bool) -> Command {
 /// Run a daemon that is expected to end by itself, with `input` on
 /// standard input.
 fn run_daemon(fx: &Fixture, ours: bool, args: &[String], input: &[u8]) -> Output {
+    run_daemon_env(fx, ours, args, input, &[])
+}
+
+/// [`run_daemon`] with more environment variables.
+fn run_daemon_env(
+    fx: &Fixture,
+    ours: bool,
+    args: &[String],
+    input: &[u8],
+    env: &[(&str, &str)],
+) -> Output {
     let mut cmd = daemon(fx, ours);
+    cmd.envs(env.iter().copied());
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -163,6 +175,13 @@ fn command_line_equals_git() {
         &["-h"],
         &["--bogus"],
         &["--port=abc"],
+        &["--port=9418x"],
+        &["--port="],
+        &["--port=0x"],
+        &["--port=08"],
+        &["--inetd", "--log-destination=stderr", "--port=65536"],
+        &["--inetd", "--log-destination=stderr", "--port=0"],
+        &["--inetd", "--log-destination=stderr", "--port=4294967296"],
         &["--init-timeout=3a"],
         &["--init-timeout=-3"],
         &["--timeout=3a"],
@@ -206,6 +225,70 @@ fn command_line_equals_git() {
             "{args:?}"
         );
         assert_ne!(ours.status.code(), Some(0), "{args:?}");
+    }
+}
+
+/// `--port` values the address lookup does not take (negative as a C
+/// `int`): every host fails, then the daemon.
+#[test]
+fn port_beyond_int_equals_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let cases: &[&[&str]] = &[
+        &["--listen=127.0.0.1", "--port=2147483648"],
+        &["--listen=127.0.0.1", "--listen=localhost", "--port=-1"],
+        &["--port=-1"],
+        &["--port=99999999999999999999"],
+    ];
+    for args in cases {
+        let args = strings(args);
+        let git = run_daemon(&fx, false, &args, b"");
+        let ours = run_daemon(&fx, true, &args, b"");
+        assert_eq!(
+            (git.status.code(), normalized(&fx, &git.stderr)),
+            (ours.status.code(), normalized(&fx, &ours.stderr)),
+            "{args:?}"
+        );
+        assert_eq!(ours.status.code(), Some(128), "{args:?}");
+    }
+}
+
+/// `--port` as git reads it: base prefixes, white space and a sign, and
+/// only the low 16 bits count (`p + 65536` listens on `p`).
+#[test]
+fn port_wraps_like_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let forms: [fn(u16) -> String; 3] = [
+        |p| format!("{}", u32::from(p) + 65536),
+        |p| format!(" +0x{:x}", u64::from(p) + (1 << 32)),
+        |p| format!("0{:o}", u32::from(p) + 3 * 65536),
+    ];
+    for form in forms {
+        let port = free_port();
+        let arg = format!("--port={}", form(port));
+        let pid_file = fx.work_dir().join(format!("wrap-{port}.pid"));
+        let mut cmd = daemon(&fx, true);
+        cmd.args([
+            "--listen=127.0.0.1",
+            "--export-all",
+            "--log-destination=none",
+            &arg,
+            &format!("--pid-file={}", pid_file.display()),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+        let _server = Server(cmd.spawn().unwrap());
+        assert!(wait_for_file(&pid_file), "{arg}");
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).is_ok(),
+            "{arg} does not listen on {port}"
+        );
     }
 }
 
@@ -299,6 +382,17 @@ fn work_tree_links(fx: &Fixture) -> String {
 /// log.
 #[track_caller]
 fn same_inetd(fx: &Fixture, args: &[&str], input: &[u8]) -> (String, String, Option<i32>) {
+    same_inetd_env(fx, args, input, &[])
+}
+
+/// [`same_inetd`] with more environment variables.
+#[track_caller]
+fn same_inetd_env(
+    fx: &Fixture,
+    args: &[&str],
+    input: &[u8],
+    env: &[(&str, &str)],
+) -> (String, String, Option<i32>) {
     let work = fx.work_dir();
     let mut argv = strings(&["--inetd", "--log-destination=stderr"]);
     argv.extend(
@@ -306,7 +400,7 @@ fn same_inetd(fx: &Fixture, args: &[&str], input: &[u8]) -> (String, String, Opt
             .map(|a| a.replace("{WORK}", work.to_str().unwrap())),
     );
     let answer = |ours: bool| {
-        let out = run_daemon(fx, ours, &argv, input);
+        let out = run_daemon_env(fx, ours, &argv, input, env);
         (
             packets(fx, &out.stdout),
             normalized(fx, &out.stderr),
@@ -485,29 +579,92 @@ fn inetd_requests_equal_git() {
         assert_eq!(got, Some(code), "{dir}: {out}");
     }
 
-    // `--strict-paths` does not look for `<path>.git`. (git 2.56 ends
-    // with "detected dubious ownership" for a path that does not exist;
-    // rgit answers as for any other missing repository.)
+    // `--strict-paths` does not look for `<path>.git`; a path that does
+    // not exist ends with the ownership message, as in git 2.56 (the
+    // path is checked before it is looked at).
     let strict = listed(&["--strict-paths", "{WORK}/bare.git"]);
-    let out = run_daemon(
-        &fx,
-        true,
-        &{
-            let mut argv = strings(&["--inetd", "--log-destination=stderr"]);
-            argv.extend(
-                strict
-                    .iter()
-                    .map(|a| a.replace("{WORK}", fx.work_dir().to_str().unwrap())),
-            );
-            argv
-        },
-        &up(&abs("bare"), &["host=h"]),
+    let (answer, log, code) = same_inetd(&fx, &strict, &up(&abs("bare"), &["host=h"]));
+    assert_eq!((answer.as_str(), code), ("", Some(128)), "{log}");
+    assert!(
+        log.contains("\nfatal: detected dubious ownership in repository at 'WORK/bare'\n"),
+        "{log}"
     );
-    assert_eq!(out.status.code(), Some(255));
-    assert_eq!(
-        packets(&fx, &out.stdout),
-        "ERR no such repository: WORK/bare\n"
+}
+
+/// The owner of the repository (`safe.directory`): checked for every
+/// service before the directory list, the export and the service
+/// settings; a refusal ends the daemon with git's message and tells the
+/// client nothing. Ownership is faked with
+/// `GIT_TEST_ASSUME_DIFFERENT_OWNER`.
+#[test]
+fn inetd_checks_the_owner() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let foreign = [("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")];
+    let request = |service: &str, dir: &str| first_packet(&format!("{service} {dir}"), &["host=h"]);
+    let base = ["--verbose", "--base-path={WORK}"];
+    let with = |extra: &[&str], service: &str, dir: &str, env: &[(&str, &str)]| {
+        let args: Vec<&str> = base.iter().chain(extra).copied().collect();
+        same_inetd_env(&fx, &args, &request(service, dir), env)
+    };
+    for service in ["git-upload-pack", "git-receive-pack", "git-upload-archive"] {
+        for dir in ["/bare.git", "/bare", "/srv", "/srv/.git", "/nope"] {
+            with(&["--export-all"], service, dir, &foreign);
+        }
+    }
+    // Before the export, the directory list and the service settings.
+    with(&[], "git-upload-pack", "/srv", &foreign);
+    with(
+        &["--export-all", "{WORK}/vhost"],
+        "git-upload-pack",
+        "/srv",
+        &foreign,
     );
+    with(
+        &["--export-all", "--forbid-override=receive-pack"],
+        "git-receive-pack",
+        "/srv",
+        &foreign,
+    );
+    // Listed in `safe.directory`, through the environment.
+    let work = fx.work_dir().display().to_string();
+    for value in [
+        format!("{work}/bare.git"),
+        format!("{work}/srv"),
+        "*".to_owned(),
+    ] {
+        let env = [
+            foreign[0],
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "safe.directory"),
+            ("GIT_CONFIG_VALUE_0", value.as_str()),
+        ];
+        let (answer, _, _) = with(&["--export-all"], "git-upload-pack", "/bare.git", &env);
+        let refused = answer.is_empty();
+        assert_eq!(refused, value.ends_with("/srv"), "{value}: {answer}");
+    }
+    // `--strict-paths`: the path itself is checked first (a work tree, a
+    // `.git` file, a path that does not exist, a broken `.git` file).
+    std::fs::write(fx.work_dir().join("broken"), "junk\n").unwrap();
+    for (dir, env) in [
+        ("srv", &foreign[..]),
+        ("srv/.git", &foreign[..]),
+        ("bare.git", &foreign[..]),
+        ("nope", &[][..]),
+        ("srv", &[][..]),
+        ("broken", &[][..]),
+    ] {
+        let path = format!("{{WORK}}/{dir}");
+        let args = ["--export-all", "--strict-paths", path.as_str()];
+        let abs = format!("{work}/{dir}");
+        same_inetd_env(&fx, &args, &request("git-upload-pack", &abs), env);
+    }
+    // Without `--strict-paths` a missing repository is no ownership
+    // question; a broken `.git` file ends the daemon.
+    with(&["--export-all"], "git-upload-pack", "/nope", &[]);
+    with(&["--export-all"], "git-upload-pack", "/broken", &[]);
 }
 
 #[test]
@@ -1109,6 +1266,128 @@ fn timeouts_and_connection_limit() {
     d.wait_for_log("Disconnected");
     let work = fx.work_dir();
     git_ok(&fx, &work, &["ls-remote", &d.url("srv")]);
+}
+
+/// A connection from `source` (a loopback address) that sends nothing.
+fn connect_from(source: &str, port: u16) -> Option<socket2::Socket> {
+    use socket2::{Domain, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).ok()?;
+    let from: std::net::SocketAddr = format!("{source}:0").parse().ok()?;
+    socket.bind(&from.into()).ok()?;
+    let to: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
+    socket.connect(&to.into()).ok()?;
+    Some(socket)
+}
+
+/// Whether the daemon has closed `socket`.
+fn closed(socket: &socket2::Socket) -> bool {
+    let mut stream: TcpStream = socket.try_clone().unwrap().into();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let mut buf = [0u8; 16];
+    match stream.read(&mut buf) {
+        Ok(n) => n == 0,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    }
+}
+
+/// The limit, the connections (name and source address) in order and the
+/// one that is ended.
+type Scenario<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+
+/// `--max-connections`: when the limit is reached, the newest connection
+/// of the client that came first among those with several is ended (as
+/// observed with git 2.56); connections come from several loopback
+/// addresses.
+#[test]
+fn connection_limit_ends_like_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    if std::net::TcpListener::bind("127.0.0.2:0").is_err() {
+        eprintln!("skipping: no 127.0.0.2");
+        return;
+    }
+    let scenarios: &[Scenario] = &[
+        (
+            "3",
+            &[
+                ("A1", "127.0.0.2"),
+                ("A2", "127.0.0.2"),
+                ("A3", "127.0.0.2"),
+                ("B1", "127.0.0.1"),
+            ],
+            "A3",
+        ),
+        (
+            "4",
+            &[
+                ("Z1", "127.0.0.9"),
+                ("Z2", "127.0.0.9"),
+                ("Y1", "127.0.0.3"),
+                ("Y2", "127.0.0.3"),
+                ("C1", "127.0.0.1"),
+            ],
+            "Z2",
+        ),
+        (
+            "5",
+            &[
+                ("A1", "127.0.0.2"),
+                ("B1", "127.0.0.4"),
+                ("A2", "127.0.0.2"),
+                ("A3", "127.0.0.2"),
+                ("B2", "127.0.0.4"),
+                ("C1", "127.0.0.1"),
+            ],
+            "A3",
+        ),
+        (
+            "2",
+            &[
+                ("A1", "127.0.0.2"),
+                ("B1", "127.0.0.4"),
+                ("C1", "127.0.0.1"),
+            ],
+            "C1",
+        ),
+    ];
+    for (limit, connections, expected) in scenarios {
+        let d = start(
+            &fx,
+            &format!("limit{limit}"),
+            &[
+                "--export-all",
+                "--init-timeout=60",
+                &format!("--max-connections={limit}"),
+            ],
+        );
+        let mut open = Vec::new();
+        for (n, (label, source)) in connections.iter().enumerate() {
+            let socket = connect_from(source, d.port).expect("connect");
+            open.push((*label, socket));
+            // Each child in its turn.
+            if n + 1 < connections.len() {
+                let started = Instant::now();
+                while d.log().matches("Connection from").count() < n + 1 {
+                    assert!(started.elapsed() < Duration::from_secs(30), "{}", d.log());
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+        let ended: Vec<&str> = open
+            .iter()
+            .filter(|(_, s)| closed(s))
+            .map(|(label, _)| *label)
+            .collect();
+        assert_eq!(ended, [*expected], "limit {limit}: {}", d.log());
+    }
 }
 
 /// Ends the process named in a pid file when the test ends.
