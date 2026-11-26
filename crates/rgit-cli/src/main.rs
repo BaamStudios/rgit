@@ -61,6 +61,7 @@ mod housekeeping;
 mod index_config;
 mod interactive;
 mod large;
+mod library;
 mod maintenance;
 mod messages;
 mod notes;

@@ -567,6 +567,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rgit"
+version = "0.1.0"
+dependencies = [
+ "bstr",
+ "rgit-attr",
+ "rgit-config",
+ "rgit-convert",
+ "rgit-date",
+ "rgit-difftest",
+ "rgit-hash",
+ "rgit-index",
+ "rgit-object",
+ "rgit-odb",
+ "rgit-refs",
+ "rgit-repo",
+ "rgit-revwalk",
+ "rgit-worktree",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "rgit-apply"
 version = "0.1.0"
 dependencies = [
@@ -614,6 +636,7 @@ dependencies = [
  "mimalloc",
  "regex",
  "regex-automata",
+ "rgit",
  "rgit-apply",
  "rgit-archive",
  "rgit-attr",
