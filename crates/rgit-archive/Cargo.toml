@@ -1,0 +1,16 @@
+[package]
+name = "rgit-archive"
+description = "Archives for rgit: tar and zip writers, gzip, the upload-archive protocol and get-tar-commit-id"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+crc32fast = "1.5.0"
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
+rgit-protocol = { path = "../rgit-protocol" }
