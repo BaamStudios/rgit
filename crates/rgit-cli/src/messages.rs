@@ -24,6 +24,7 @@ pub mod describe;
 pub mod diff;
 pub mod diff_tree;
 pub mod fetch;
+pub mod fetch_pack;
 pub mod fmt_merge_msg;
 pub mod for_each_ref;
 pub mod format_patch;

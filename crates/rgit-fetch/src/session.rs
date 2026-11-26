@@ -287,6 +287,14 @@ impl Session {
         }
     }
 
+    /// Whether the server accepts a `filter` line.
+    pub fn supports_filter(&self) -> bool {
+        match &self.proto {
+            Proto::V2(c) => c.supports_filter(),
+            Proto::V0 { adv, .. } => adv.caps.contains("filter"),
+        }
+    }
+
     /// Whether the server takes `want-ref` lines (protocol v2 with the
     /// `ref-in-want` fetch feature).
     pub fn supports_ref_in_want(&self) -> bool {
@@ -368,6 +376,7 @@ impl Session {
             deepen_relative: opts.deepen_relative,
             deepen_since: opts.deepen_since,
             deepen_not: opts.deepen_not.clone(),
+            filter: opts.filter.clone(),
             ..FetchArgs::default()
         };
         args.server_options.clone_from(&opts.server_options);
@@ -714,6 +723,9 @@ pub struct PackOptions {
     /// Check every received object (`fetch.fsckObjects`,
     /// `transfer.fsckObjects`).
     pub fsck: Option<FsckCheck>,
+    /// `filter <spec>` (partial clone), sent only when the server
+    /// advertises `filter`.
+    pub filter: Option<String>,
 }
 
 /// Object checks of `fetch.fsckObjects` / `transfer.fsckObjects`, at the
@@ -1112,7 +1124,12 @@ fn write_keep(path: &Path) -> Result<bool> {
     o.write(true).create_new(true);
     match o.open(path) {
         Ok(mut f) => {
-            writeln!(f, "fetch-pack {}", std::process::id())?;
+            writeln!(
+                f,
+                "fetch-pack {} on {}",
+                std::process::id(),
+                rgit_ident::system::hostname()
+            )?;
             Ok(true)
         }
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
