@@ -214,9 +214,12 @@ pub fn load_config(ctx: &Context, setup: &Setup) -> Result<rgit_config::ConfigSe
 
 /// Print a setup error like git (all lines, last one `fatal:`) and exit 128.
 pub fn die(e: Error) -> Die {
+    // One write per message, as git does: `upload-archive` relays the
+    // stderr of its writer packet by packet.
     let mut err = std::io::stderr();
     for (level, msg) in e.report() {
-        let _ = writeln!(err, "{} {msg}", level.prefix());
+        let line = format!("{} {msg}\n", level.prefix());
+        let _ = err.write_all(line.as_bytes());
     }
     Die::Exit(rgit_options::EXIT_FATAL)
 }
