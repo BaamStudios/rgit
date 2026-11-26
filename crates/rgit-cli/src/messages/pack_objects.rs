@@ -116,6 +116,17 @@ pub fn rev_not_supported(rev: &str) -> String {
 pub const THIN_NOT_INDEXABLE: &str = "--thin cannot be used to build an indexable pack";
 /// git: `--cruft` with an option that makes pack-objects walk revisions.
 pub const CRUFT_REVS: &str = "cannot use internal rev list with --cruft";
+/// git: `--stdin-packs` with an option that makes pack-objects walk revisions.
+pub const STDIN_PACKS_REVS: &str = "cannot use internal rev list with --stdin-packs";
+/// git: `--stdin-packs` with `--filter`.
+pub const STDIN_PACKS_FILTER: &str =
+    "options '--stdin-packs' and '--filter' cannot be used together";
+
+/// git: `--stdin-packs=<mode>` with an unknown mode.
+pub fn invalid_stdin_packs(mode: &str) -> String {
+    format!("invalid value for 'stdin-packs': '{mode}'")
+}
+
 /// git: `--cruft` with `--stdin-packs`.
 pub const CRUFT_STDIN_PACKS: &str = "options '--stdin-packs' and '--cruft' cannot be used together";
 

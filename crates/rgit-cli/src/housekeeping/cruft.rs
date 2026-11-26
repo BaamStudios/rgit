@@ -194,7 +194,7 @@ pub fn select(
 /// The objects `id` refers to (parents and tree of a commit, entries of a
 /// tree without gitlinks, the target of a tag). Nothing when it cannot be
 /// read.
-fn references(odb: &ObjectDatabase, id: &ObjectId) -> Vec<ObjectId> {
+pub(crate) fn references(odb: &ObjectDatabase, id: &ObjectId) -> Vec<ObjectId> {
     let hash = odb.hash_kind();
     let Ok(Some(o)) = odb.read(id) else {
         return Vec::new();
