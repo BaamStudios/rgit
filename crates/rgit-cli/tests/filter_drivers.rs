@@ -462,9 +462,17 @@ fn archive_tells_ref_and_treeish() {
         for file in ["filter.log", "out.tar"] {
             let _ = std::fs::remove_file(fx.work_dir().join(file));
         }
-        fx.compare(["archive", "-o", "out.tar", name])
-            .checks(CHECKOUT)
-            .run();
+        // The archive of a tree carries the current time: fixed here, so
+        // that the two runs write the same file.
+        fx.compare([
+            "archive",
+            "--mtime=2005-04-07T22:13:13",
+            "-o",
+            "out.tar",
+            name,
+        ])
+        .checks(CHECKOUT)
+        .run();
     }
     // A detached HEAD is the ref `HEAD`.
     let mut fx = fx.git(["checkout", "-q", "--detach"]);
