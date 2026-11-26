@@ -713,7 +713,12 @@ fn split_factor(config: &ConfigSet) -> i64 {
 /// (git-repack(1), `--geometric`): packs without `.keep` and not cruft,
 /// by object count.
 fn geometry(repo: &Repo, factor: i64) -> Geometry {
-    let mut counts: Vec<u64> = store::local_packs(repo.odb(), &[])
+    // `Repo::odb` reads through its stores and has no list of the local
+    // packs: open the object database the way `repack` does.
+    let packs = crate::repo::odb_with_config(&repo.setup, &repo.config)
+        .map(|odb| store::local_packs(&odb, &[]))
+        .unwrap_or_default();
+    let mut counts: Vec<u64> = packs
         .into_iter()
         .filter(|p| !p.keep && !p.base().with_extension("mtimes").exists())
         .map(|p| u64::from(p.pack.index().len()))
