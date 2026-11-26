@@ -53,6 +53,7 @@ rgit-refs = { path = "../rgit-refs" }
 rgit-remote = { path = "../rgit-remote" }
 rgit-repo = { path = "../rgit-repo" }
 rgit-revwalk = { path = "../rgit-revwalk" }
+rgit-server = { path = "../rgit-server" }
 rgit-submodule = { path = "../rgit-submodule" }
 rgit-progress = { path = "../rgit-progress" }
 rgit-trace = { path = "../rgit-trace" }

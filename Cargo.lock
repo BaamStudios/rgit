@@ -522,6 +522,7 @@ dependencies = [
  "rgit-remote",
  "rgit-repo",
  "rgit-revwalk",
+ "rgit-server",
  "rgit-submodule",
  "rgit-trace",
  "rgit-trailer",
@@ -857,6 +858,17 @@ dependencies = [
  "rgit-object",
  "rgit-refs",
  "thiserror",
+]
+
+[[package]]
+name = "rgit-server"
+version = "0.1.0"
+dependencies = [
+ "rgit-config",
+ "rgit-hash",
+ "rgit-protocol",
+ "rgit-refs",
+ "rgit-trace",
 ]
 
 [[package]]
