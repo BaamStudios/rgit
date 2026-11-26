@@ -466,3 +466,89 @@ fn push_to_rgit_receive_pack(format: &str) {
         results[1]
     );
 }
+
+/// `receive.denyCurrentBranch` with a namespace (t5509 15): the name the
+/// client sent, without the namespace, is compared with the checked-out
+/// branches and named in the messages; `updateInstead` updates the work
+/// tree.
+#[test]
+fn current_branch_in_a_namespace_same_as_git() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main", "src"]);
+    if fx.is_skipped() {
+        return;
+    }
+    fx = fx
+        .write("src/f", "f\n")
+        .git(["-C", "src", "add", "f"])
+        .git(["-C", "src", "commit", "-q", "-m", "f"])
+        .git(["-C", "src", "config", "protocol.ext.allow", "always"])
+        .git(["init", "-q", "-b", "main", "unborn"])
+        .git(["init", "-q", "-b", "main", "born"])
+        .git(["-C", "born", "commit", "-q", "--allow-empty", "-m", "b"])
+        .git(["init", "-q", "-b", "main", "nshead"])
+        .git([
+            "-C",
+            "nshead",
+            "symbolic-ref",
+            "HEAD",
+            "refs/namespaces/ns/refs/heads/main",
+        ])
+        .git(["init", "-q", "--bare", "-b", "main", "bare.git"])
+        .git([
+            "-C",
+            "src",
+            "push",
+            "-q",
+            "../bare.git",
+            "main:refs/namespaces/ns/refs/heads/main",
+            "main:refs/namespaces/other/refs/heads/main",
+        ])
+        .git([
+            "-C",
+            "bare.git",
+            "symbolic-ref",
+            "HEAD",
+            "refs/namespaces/ns/refs/heads/main",
+        ]);
+    let remote = |repo: &str| format!("ext::git --namespace=ns %s ../{repo}");
+    let push = |fx: &mut Fixture, repo: &str, refspec: &str| {
+        fx.compare(["-C", "src", "push", &remote(repo), refspec])
+            .checks([Check::ExitCode, Check::Stdout, Check::Stderr, Check::Refs])
+            .repo(repo)
+            .run();
+    };
+    push(&mut fx, "unborn", "HEAD:main");
+    push(&mut fx, "born", "HEAD:main");
+    push(&mut fx, "nshead", "HEAD:main");
+    push(&mut fx, "bare.git", ":main");
+    fx = fx.git([
+        "-C",
+        "unborn",
+        "config",
+        "receive.denyCurrentBranch",
+        "updateInstead",
+    ]);
+    fx.compare(["-C", "src", "push", &remote("unborn"), "HEAD:main"])
+        .checks([
+            Check::ExitCode,
+            Check::Stdout,
+            Check::Stderr,
+            Check::Refs,
+            Check::Index,
+            Check::Worktree,
+        ])
+        .repo("unborn")
+        .run();
+    fx = fx.git(["-C", "born", "config", "receive.denyCurrentBranch", "warn"]);
+    push(&mut fx, "born", "HEAD:main");
+    fx = fx.git([
+        "-C",
+        "born",
+        "config",
+        "receive.denyCurrentBranch",
+        "refuse",
+    ]);
+    push(&mut fx, "born", ":main");
+}

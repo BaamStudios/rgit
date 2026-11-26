@@ -17,7 +17,7 @@
 //! linked work tree, a submodule).
 
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rgit_config::SystemEnv;
 use rgit_protocol::ProtocolVersion;
@@ -30,8 +30,8 @@ use crate::prelude::*;
 use crate::repo::{self, Mode};
 
 /// The git directory `<directory>` names, if any.
-pub(crate) fn enter_repo(dir: &str, strict: bool) -> Option<PathBuf> {
-    find_repo(dir, strict).map(|found| found.git_dir)
+pub(crate) fn enter_repo(dir: &str, strict: bool) -> Result<Option<PathBuf>, Die> {
+    Ok(find_repo(dir, strict)?.map(|found| found.git_dir))
 }
 
 /// A repository a server was asked for.
@@ -45,32 +45,41 @@ pub(crate) struct FoundRepo {
     pub git_dir: PathBuf,
 }
 
+/// The git directory at `p`: `p` itself, or what the `.git` file `p`
+/// points to. A `.git` file that names no repository is fatal, as in
+/// git (`invalid gitfile format: <path>`).
+fn repository_at(p: PathBuf, cwd: &Path) -> Result<Option<FoundRepo>, Die> {
+    let overrides = LayoutOverrides::default();
+    let git_dir = if p.is_file() {
+        read_gitfile(&p, cwd, &overrides).map_err(|kind| {
+            crate::repo::die(rgit_repo::Error::Gitfile {
+                kind,
+                path: p.clone(),
+            })
+        })?
+    } else if is_git_directory(&p, cwd, &overrides) {
+        p.clone()
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(FoundRepo { path: p, git_dir }))
+}
+
 /// Find the repository `<directory>` names (see the module
 /// documentation).
-pub(crate) fn find_repo(dir: &str, strict: bool) -> Option<FoundRepo> {
-    let cwd = std::env::current_dir().ok()?;
-    let overrides = LayoutOverrides::default();
-    // The git directory at `p`: `p` itself, or what the `.git` file `p`
-    // points to.
-    let repository = |p: PathBuf| -> Option<FoundRepo> {
-        let git_dir = if p.is_file() {
-            read_gitfile(&p, &cwd, &overrides).ok()?
-        } else if is_git_directory(&p, &cwd, &overrides) {
-            p.clone()
-        } else {
-            return None;
-        };
-        Some(FoundRepo { path: p, git_dir })
+pub(crate) fn find_repo(dir: &str, strict: bool) -> Result<Option<FoundRepo>, Die> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(None);
     };
     if strict {
-        return repository(PathBuf::from(dir));
+        return repository_at(PathBuf::from(dir), &cwd);
     }
     let base = if dir.starts_with('~') {
         let env = SystemEnv::default();
-        rgit_config::value::expand_user_path(dir.as_bytes(), &env)
-            .ok()?
-            .to_string_lossy()
-            .into_owned()
+        match rgit_config::value::expand_user_path(dir.as_bytes(), &env) {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(_) => return Ok(None),
+        }
     } else {
         dir.to_owned()
     };
@@ -79,10 +88,39 @@ pub(crate) fn find_repo(dir: &str, strict: bool) -> Option<FoundRepo> {
         "" => "/",
         t => t,
     };
-    ["/.git", "", ".git/.git", ".git"]
-        .iter()
-        .map(|suffix| PathBuf::from(format!("{trimmed}{suffix}")))
-        .find_map(repository)
+    for suffix in ["/.git", "", ".git/.git", ".git"] {
+        let found = repository_at(PathBuf::from(format!("{trimmed}{suffix}")), &cwd)?;
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    Ok(None)
+}
+
+/// The ownership check of the servers other than `upload-pack` (see
+/// [`rgit_repo::safe::check_server_ownership`]): the repository must
+/// belong to the user or be listed in `safe.directory`, else the
+/// command dies with git's message.
+pub(crate) fn check_ownership(ctx: &Context, found: &FoundRepo) -> Result<(), Die> {
+    let env = SystemEnv::default();
+    let mut protected = rgit_repo::StandardProtectedConfig::new(&env, crate::repo::command_line(ctx));
+    let owner = rgit_repo::safe::Owner::current(&env);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    match rgit_repo::safe::check_server_ownership(
+        &owner,
+        &mut protected,
+        &found.path,
+        &found.git_dir,
+        &cwd,
+    ) {
+        Ok(warnings) => {
+            for w in warnings {
+                eprintln!("warning: {w}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(crate::repo::die(e)),
+    }
 }
 
 /// The protocol version a client asks for in `GIT_PROTOCOL`
@@ -141,7 +179,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
     let protocol = requested_protocol();
     let dir = &args[0];
-    let Some(git_dir) = enter_repo(dir, strict.get()) else {
+    // Unlike the other servers, upload-pack does not check who owns the
+    // repository (git 2.56, observed): serving other users' repositories
+    // read-only is what it is for.
+    let Some(git_dir) = enter_repo(dir, strict.get())? else {
         return Err(Die::Fatal(msg::not_a_repository(dir)));
     };
     // Like git: work inside the git directory, with `GIT_DIR=.`.

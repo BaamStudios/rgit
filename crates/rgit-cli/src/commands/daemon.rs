@@ -55,7 +55,7 @@ mod imp {
     use crate::prelude::*;
 
     /// The port of the `git://` transport.
-    const DEFAULT_PORT: u16 = 9418;
+    const DEFAULT_PORT: u32 = 9418;
 
     /// Set for the process that `--detach` starts in the background.
     const DETACHED: &str = "RGIT_DAEMON_DETACHED";
@@ -83,7 +83,8 @@ mod imp {
         /// input and output (set by the listening daemon).
         pub serve: bool,
         pub listen: Vec<String>,
-        pub port: Option<u16>,
+        /// `--port`, as git keeps it (see [`parse_port`]); 0: the default.
+        pub port: u32,
         pub user: Option<String>,
         pub group: Option<String>,
         pub timeout: u32,
@@ -99,6 +100,39 @@ mod imp {
             stdout: String::new(),
             stderr: format!("usage: {}\n", msg::USAGE),
         })
+    }
+
+    /// `--port=<n>` the way git takes it (observed with git 2.56): like
+    /// C's `strtoul` with base 0 (leading white space, a sign, `0x` for
+    /// hexadecimal, `0` for octal; too large a number counts as the
+    /// largest one), nothing after the number, then the low 32 bits.
+    /// `None`: not a number (git shows the usage).
+    pub(super) fn parse_port(value: &str) -> Option<u32> {
+        let s = value.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+        let (negative, s) = match s.as_bytes().first() {
+            Some(b'-') => (true, &s[1..]),
+            Some(b'+') => (false, &s[1..]),
+            _ => (false, s),
+        };
+        let (radix, digits) = match s.as_bytes() {
+            [b'0', b'x' | b'X', c, ..] if c.is_ascii_hexdigit() => (16, &s[2..]),
+            [b'0', ..] => (8, s),
+            _ => (10, s),
+        };
+        if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+            return None;
+        }
+        let value = digits.chars().fold(0u64, |acc, c| {
+            acc.checked_mul(u64::from(radix))
+                .and_then(|v| v.checked_add(u64::from(c.to_digit(radix).unwrap_or(0))))
+                .unwrap_or(u64::MAX)
+        });
+        let value = if negative {
+            value.wrapping_neg()
+        } else {
+            value
+        };
+        Some(value as u32)
     }
 
     fn timeout(option: &str, value: &str) -> Result<u32, Die> {
@@ -124,11 +158,7 @@ mod imp {
             };
             match (name, value) {
                 ("--listen", Some(v)) => o.listen.push(v.to_ascii_lowercase()),
-                ("--port", Some(v)) => match v.parse::<u16>() {
-                    Ok(0) => o.port = None,
-                    Ok(n) => o.port = Some(n),
-                    Err(_) => return Err(usage()),
-                },
+                ("--port", Some(v)) => o.port = parse_port(v).ok_or_else(usage)?,
                 ("--serve", None) => o.serve = true,
                 ("--inetd", None) => o.inetd = true,
                 ("--verbose", None) => o.verbose = true,
@@ -196,7 +226,7 @@ mod imp {
             verbose: opts.verbose,
         };
 
-        if opts.inetd && (!opts.listen.is_empty() || opts.port.is_some()) {
+        if opts.inetd && (!opts.listen.is_empty() || opts.port != 0) {
             return Err(log.fatal(msg::INETD_LISTEN));
         }
         if opts.inetd && (opts.detach || opts.user.is_some() || opts.group.is_some()) {
@@ -239,7 +269,10 @@ mod imp {
             return detach(args, &log);
         }
         let exe = std::env::current_exe().map_err(|e| log.fatal(e.to_string()))?;
-        let port = opts.port.unwrap_or(DEFAULT_PORT);
+        let port = match opts.port {
+            0 => DEFAULT_PORT,
+            n => n,
+        };
         let listeners = listen::bind(&opts, &log, port)?;
         if let Some(file) = &opts.pid_file {
             std::fs::write(file, format!("{}\n", std::process::id())).map_err(|e| {

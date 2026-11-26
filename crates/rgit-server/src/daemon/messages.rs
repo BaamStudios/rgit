@@ -120,6 +120,13 @@ pub fn disconnected(child: u32, with_error: bool) -> String {
 pub const TOO_MANY_CHILDREN: &str = "Too many children, dropping connection";
 
 /// A listening address could not be resolved.
+/// The reason the C library gives when the port it is asked for is not a
+/// number it takes (`--port` beyond 2^31 - 1; `EAI_SERVICE`).
+pub const SERVNAME_NOT_SUPPORTED: &str = "Servname not supported for ai_socktype";
+
+/// The host name of the lookup without `--listen`.
+pub const ANY_HOST: &str = "(null)";
+
 pub fn getaddrinfo_failed(host: &str, reason: &str) -> String {
     format!("getaddrinfo() for {host} failed: {reason}")
 }
@@ -130,7 +137,7 @@ pub fn could_not_bind(addr: &str, reason: &str) -> String {
 }
 
 /// No socket for one `--listen` host.
-pub fn no_sockets_for_host(host: &str, port: u16) -> String {
+pub fn no_sockets_for_host(host: &str, port: u32) -> String {
     format!("unable to allocate any listen sockets for host {host} on port {port}")
 }
 
@@ -205,7 +212,7 @@ pub fn base_path_missing(path: &str) -> String {
 }
 
 /// Nothing to listen on.
-pub fn no_listen_sockets(port: u16) -> String {
+pub fn no_listen_sockets(port: u32) -> String {
     format!("unable to allocate any listen sockets on port {port}")
 }
 

@@ -54,6 +54,9 @@ use messages as msg;
 /// `GIT_HTTP_MAX_REQUEST_BUFFER` / `http.maxRequestBuffer` default.
 const DEFAULT_MAX_REQUEST_BUFFER: u64 = 10 * 1024 * 1024;
 
+/// How many symbolic references are followed to resolve `HEAD`.
+const MAX_SYMREF_DEPTH: usize = 5;
+
 /// A repository opened for a request.
 pub struct Repository {
     /// The git directory (absolute); services run inside it.
@@ -70,11 +73,20 @@ pub struct Repository {
     pub odb: ObjectDatabase,
 }
 
+/// Why [`Host::open`] gave up on a repository that exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opened {
+    /// The host has printed its `fatal:` message (a broken `.git` file, a
+    /// repository owned by someone else); the request ends with status
+    /// 500.
+    Died,
+}
+
 /// What the caller provides: finding and opening repositories.
 pub trait Host {
     /// The repository at `dir` (the work tree or git directory, with the
-    /// `.git` suffixes `git upload-pack` tries), or `None`.
-    fn open(&mut self, dir: &str) -> Option<Repository>;
+    /// `.git` suffixes `git upload-pack` tries), or `None` (status 404).
+    fn open(&mut self, dir: &str) -> std::result::Result<Option<Repository>, Opened>;
 }
 
 /// How to run the services.
@@ -138,6 +150,8 @@ impl Service {
 /// The end of the request in progress: answered, or a fatal error.
 enum Stop {
     Fatal(String),
+    /// Ended with status 500; the message is out already.
+    Died,
     Io,
 }
 
@@ -183,6 +197,9 @@ pub fn http_backend<R: Read + Send>(
             let _ = writeln!(req.err, "fatal: {m}");
             let _ = req.status_only(500, "Internal Server Error");
         }
+        Err(Stop::Died) => {
+            let _ = req.status_only(500, "Internal Server Error");
+        }
         // The web server went away; nothing to tell anyone.
         Err(Stop::Io) => {}
     }
@@ -207,15 +224,18 @@ impl Request<'_> {
         h.end()
     }
 
+    // The headers go out before the message, as in git.
     fn not_found(&mut self, message: &str) -> Result<()> {
-        let _ = writeln!(self.err, "{message}");
         self.status_only(404, "Not Found")?;
+        let _ = self.out.flush();
+        let _ = writeln!(self.err, "{message}");
         Ok(())
     }
 
     fn forbidden(&mut self, message: &str) -> Result<()> {
-        let _ = writeln!(self.err, "{message}");
         self.status_only(403, "Forbidden")?;
+        let _ = self.out.flush();
+        let _ = writeln!(self.err, "{message}");
         Ok(())
     }
 
@@ -255,7 +275,7 @@ impl Request<'_> {
         }
         let dir = &path[..start];
         let file = &path[start + 1..];
-        let Some(repo) = host.open(dir) else {
+        let Some(repo) = host.open(dir).map_err(|Opened::Died| Stop::Died)? else {
             return self.not_found(&msg::not_a_repository(dir));
         };
         if self.var("GIT_HTTP_EXPORT_ALL").is_none()
@@ -354,17 +374,28 @@ impl Request<'_> {
             return self.forbidden(msg::GETANYFILE_DISABLED);
         }
         let prefix = namespace_prefix(self.opts.namespace.as_deref());
-        let text = match repo.refs.read_raw(&format!("{prefix}HEAD")) {
-            Ok(Some(Target::Symbolic(name))) => {
-                let name = name.strip_prefix(prefix.as_str()).unwrap_or(&name);
-                format!("ref: {name}\n")
+        // `HEAD` resolved to the end: the last name of the chain, or the
+        // object of a detached `HEAD`. One that does not resolve (an
+        // unborn branch, none in the namespace) is an empty answer
+        // (observed with git 2.56).
+        let head = format!("{prefix}HEAD");
+        let mut name = head.clone();
+        let mut text = String::new();
+        for _ in 0..MAX_SYMREF_DEPTH {
+            match repo.refs.read_raw(&name) {
+                Ok(Some(Target::Symbolic(target))) => name = target,
+                Ok(Some(Target::Object(id))) => {
+                    text = if name == head {
+                        format!("{}\n", id.to_hex())
+                    } else {
+                        let shown = name.strip_prefix(prefix.as_str()).unwrap_or(&name);
+                        format!("ref: {shown}\n")
+                    };
+                    break;
+                }
+                _ => break,
             }
-            Ok(Some(Target::Object(id))) => format!("{}\n", id.to_hex()),
-            _ => {
-                let e = io::Error::from(io::ErrorKind::NotFound);
-                return self.not_found(&msg::cannot_open("HEAD", &rgit_messages::strerror(&e)));
-            }
-        };
+        }
         let mut h = self.headers();
         h.str("Content-Length", &text.len().to_string())?;
         h.str("Content-Type", "text/plain")?;
