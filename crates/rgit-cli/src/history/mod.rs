@@ -3882,6 +3882,19 @@ fn list_objects(
     let filter = missing::object_filter(repo, p.opts)?;
     let filtered = filter.is_some();
     let filter_provided = p.opts.filter_provided;
+    let verify = p.opts.verify_objects;
+    if verify {
+        // The objects named on the command line are checked before
+        // anything is listed.
+        for (id, _, source) in &resolved.tips {
+            if missing::verify(repo, id)? == Some(false) {
+                missing::report_mismatch(id);
+                return Err(Die::Fatal(msg::bad_object(source)));
+            }
+        }
+    }
+    // The first fatal error of `--verify-objects` while listing.
+    let failed: std::cell::RefCell<Option<Die>> = std::cell::RefCell::new(None);
     let mut lister = ObjectLister::new(missing::Trees {
         repo,
         missing: tracker.clone(),
@@ -3958,6 +3971,12 @@ fn list_objects(
      -> Result<(), Die> {
         for obj in &resolved.pending {
             let mut emit = |id: &ObjectId, name: &[u8]| {
+                if verify {
+                    missing::verify_listed(repo, id, &failed);
+                    if failed.borrow().is_some() {
+                        return;
+                    }
+                }
                 *count += 1;
                 if !quiet_objects {
                     p.object(id, name);
@@ -3978,6 +3997,9 @@ fn list_objects(
                         emit(&obj.id, &obj.name);
                     }
                 }
+            }
+            if let Some(e) = failed.take() {
+                return Err(e);
             }
         }
         Ok(())
@@ -4008,11 +4030,20 @@ fn list_objects(
                 pending_done = true;
             }
             lister.list_commit_tree(&tree, &mut |id, name| {
+                if verify {
+                    missing::verify_listed(repo, id, &failed);
+                    if failed.borrow().is_some() {
+                        return;
+                    }
+                }
                 count += 1;
                 if !quiet_objects {
                     p.object(id, name);
                 }
             })?;
+            if let Some(e) = failed.take() {
+                return Err(e);
+            }
         } else {
             trees.push(tree);
         }
@@ -4022,11 +4053,20 @@ fn list_objects(
     }
     for tree in trees {
         lister.list_commit_tree(&tree, &mut |id, name| {
+            if verify {
+                missing::verify_listed(repo, id, &failed);
+                if failed.borrow().is_some() {
+                    return;
+                }
+            }
             count += 1;
             if !quiet_objects {
                 p.object(id, name);
             }
         })?;
+        if let Some(e) = failed.take() {
+            return Err(e);
+        }
     }
     if counting {
         p.out.extend_from_slice(format!("{count}\n").as_bytes());

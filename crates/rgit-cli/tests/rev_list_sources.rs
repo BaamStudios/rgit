@@ -239,3 +239,70 @@ fn source_names_of_ref_sets() {
         fx.compare(&args).checks(Check::OUTPUT).run();
     }
 }
+
+/// The loose file of object `id` (hex) below `work`.
+fn loose_path(work: &std::path::Path, id: &str) -> std::path::PathBuf {
+    work.join(".git/objects").join(&id[..2]).join(&id[2..])
+}
+
+/// The trimmed stdout of a reference git command.
+fn git_line(fx: &Fixture, args: &[&str]) -> String {
+    String::from_utf8(fx.git_stdout(args))
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
+/// `--verify-objects`: a listed blob stored under a wrong name is reported
+/// and listed; a tip that does not hash to its id (here a truncated loose
+/// blob) is fatal before anything is listed; a missing blob is fatal.
+#[test]
+fn verify_objects_checks_blobs_and_tips() {
+    let mut fx = history();
+    if fx.is_skipped() {
+        return;
+    }
+    let work = fx.work_dir();
+    // A blob whose file is copied to another id (t1450's "bad sha1").
+    fx = fx.write("fresh", "fresh\n");
+    let real = git_line(&fx, &["hash-object", "-w", "fresh"]);
+    let bad = format!("ff{}", &real[2..]);
+    std::fs::create_dir_all(work.join(".git/objects/ff")).unwrap();
+    std::fs::copy(loose_path(&work, &real), loose_path(&work, &bad)).unwrap();
+    fx = fx.git([
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{bad},bad"),
+    ]);
+    let tree = git_line(&fx, &["write-tree"]);
+    let bogus = git_line(&fx, &["commit-tree", "-m", "bogus", &tree]);
+    // A blob missing from a tree.
+    fx = fx.git([
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        "100644,1234567812345678123456781234567812345678,gone",
+    ]);
+    let tree = git_line(&fx, &["write-tree", "--missing-ok"]);
+    let gone = git_line(&fx, &["commit-tree", "-m", "gone", &tree]);
+    fx = fx.git(["read-tree", "HEAD"]);
+    // A large blob truncated so that its header still parses.
+    fx = fx.write("big", "x".repeat(5000));
+    let big = git_line(&fx, &["hash-object", "-w", "big"]);
+    let path = loose_path(&work, &big);
+    let data = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, &data[..64]).unwrap();
+    for args in [
+        &["rev-list", "--verify-objects", "HEAD"][..],
+        &["rev-list", "--verify-objects", "--all"],
+        &["rev-list", "--verify-objects", &bogus],
+        &["rev-list", "--verify-objects", "--count", &bogus],
+        &["rev-list", "--verify-objects", &big],
+        &["rev-list", "--objects", &big],
+        &["rev-list", "--verify-objects", &gone],
+    ] {
+        fx.compare(args).checks(Check::OUTPUT).run();
+    }
+}

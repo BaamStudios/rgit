@@ -216,7 +216,12 @@ impl TreeSource for Trees<'_, '_> {
     }
 
     fn peek_blob(&mut self, id: &ObjectId) -> Option<Option<u64>> {
-        self.repo.objects.size_here(id).map(Some)
+        // A blob whose copy here cannot be read is there all the same
+        // (git lists it without reading it).
+        match self.repo.objects.size_here(id) {
+            Some(size) => Some(Some(size)),
+            None => self.repo.objects.contains(id).then_some(None),
+        }
     }
 
     fn blob(
@@ -236,6 +241,69 @@ impl TreeSource for Trees<'_, '_> {
             }
         }
     }
+}
+
+/// `--verify-objects`: whether object `id` hashes to its id (`None`: it
+/// is missing). A copy that cannot be read at all is fatal, like any read
+/// of it; one whose content ends early counts as a mismatch.
+pub fn verify(repo: &Repo<'_>, id: &ObjectId) -> Result<Option<bool>, Die> {
+    use rgit_odb::Error;
+    let odb = repo.objects.odb();
+    match odb.read_unreplaced(id) {
+        Ok(Some(raw)) => {
+            let actual = rgit_hash::hash_object(odb.hash_kind(), raw.kind.name(), &raw.data)
+                .map_err(|e| Die::Fatal(e.to_string()))?;
+            Ok(Some(actual == *id))
+        }
+        Ok(None) => Ok(None),
+        Err(Error::HashMismatch { .. } | Error::Truncated { .. } | Error::SizeMismatch { .. }) => {
+            Ok(Some(false))
+        }
+        Err(e) => {
+            // git tries the object twice, reporting each attempt.
+            let mut err = std::io::stderr().lock();
+            for _ in 0..2 {
+                for line in e.git_lines() {
+                    let _ = writeln!(err, "error: {line}");
+                }
+            }
+            let path = odb.loose().path_of(id);
+            Err(Die::Fatal(if path.is_file() {
+                msg::loose_object_corrupt(&id.to_hex(), &path.display().to_string())
+            } else {
+                msg::bad_object(&id.to_hex())
+            }))
+        }
+    }
+}
+
+/// `--verify-objects` for an object the lister lists: a blob that does
+/// not hash to its id is reported and still listed (trees are read for
+/// the walk anyway and not checked, as observed). The first fatal error
+/// is kept in `failed`; nothing is checked after it.
+pub fn verify_listed(repo: &Repo<'_>, id: &ObjectId, failed: &RefCell<Option<Die>>) {
+    if failed.borrow().is_some() {
+        return;
+    }
+    match repo.objects.odb().header_unreplaced(id) {
+        Ok(Some(h)) if h.kind != ObjectKind::Blob => return,
+        Ok(None) => return,
+        _ => {}
+    }
+    match verify(repo, id) {
+        Ok(Some(false)) => report_mismatch(id),
+        Ok(_) => {}
+        Err(e) => *failed.borrow_mut() = Some(e),
+    }
+}
+
+/// `error: hash mismatch <id>` of `--verify-objects`.
+pub fn report_mismatch(id: &ObjectId) {
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "error: {}",
+        msg::hash_mismatch(&id.to_hex())
+    );
 }
 
 /// Sparse-checkout patterns read from a blob.

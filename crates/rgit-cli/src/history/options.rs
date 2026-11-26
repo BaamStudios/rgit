@@ -123,6 +123,9 @@ pub struct Options {
     pub header: bool,
     pub quiet: bool,
     pub objects: Option<ObjectsMode>,
+    /// `--verify-objects`: the objects listed are checked against their
+    /// ids (implies `--objects`).
+    pub verify_objects: bool,
     /// `--[no-]object-names`.
     pub object_names: bool,
     pub stdin: bool,
@@ -446,6 +449,7 @@ impl Options {
             missing: None,
             missing_only: false,
             exclude_promisor: false,
+            verify_objects: false,
         }
     }
 
@@ -654,6 +658,10 @@ impl Options {
                 "--use-bitmap-index" if cmd == Command::RevList => o.use_bitmap_index = true,
                 "--test-bitmap" if cmd == Command::RevList => o.test_bitmap = true,
                 "--objects" if cmd == Command::RevList => o.set_objects(false),
+                "--verify-objects" if cmd == Command::RevList => {
+                    o.set_objects(false);
+                    o.verify_objects = true;
+                }
                 "--objects-edge" | "--objects-edge-aggressive" if cmd == Command::RevList => {
                     o.set_objects(true);
                 }

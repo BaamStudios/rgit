@@ -142,6 +142,16 @@ pub fn bad_object(id: &str) -> String {
     format!("bad object {id}")
 }
 
+/// `--verify-objects`: an object does not hash to its id.
+pub fn hash_mismatch(id: &str) -> String {
+    format!("hash mismatch {id}")
+}
+
+/// `--verify-objects`: a loose object cannot be read.
+pub fn loose_object_corrupt(id: &str, path: &str) -> String {
+    format!("loose object {id} (stored in {path}) is corrupt")
+}
+
 pub fn could_not_read(id: &str) -> String {
     format!("Could not read {id}")
 }
