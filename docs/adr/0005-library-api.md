@@ -273,8 +273,8 @@ Rules for `rgit` and `rgit-porcelain`, and the target for the plumbing:
   reftable options, `rgit-odb` lazy-fetch hook, `rgit-worktree`
   precompose switch) become fields of the handle or arguments.
 
-The table in "Context" is the work list; it is tracked in its own issue and
-done crate by crate, each time a group that needs the crate moves.
+The table in "Context" is the work list; it is tracked in #724 and done
+crate by crate, each time a group that needs the crate moves.
 
 ### 6. Threads
 
@@ -357,6 +357,9 @@ stay behind, so the library's share of a group is smaller than its size):
 | 10 | Transfer | 17,483 | `push/`, `submodules`, `fetch_submodules`, `recurse_submodules`; `fetch`, `push`, `pull`, `clone`, `remote`, `ls-remote`, `submodule`, `bundle`, `archive`, `init` |
 | 11 | Maintenance and object plumbing | 21,603 | `housekeeping/`, `maintenance/`, `reflog_expire`, `bitmaps`; `gc`, `repack`, `prune`, `pack-objects`, `index-pack`, `fsck`, `cat-file`, `fast-import`, `fast-export`, `config` |
 
+Issues: step 2 #723, step 3 #725, step 4 #726, step 5 #727, step 6 #728,
+step 7 #729, step 8 #730, step 9 #731, step 10 #732, step 11 #733.
+
 Why this order:
 
 - **The handle is first because everything takes it.** Every function to
@@ -402,7 +405,7 @@ pull request that touches the moved files.
 - **Rustdoc examples** on every operation of the facade. They compile in
   CI; examples that need a repository are `no_run` until the API can create
   one itself (`init`, `add`, `commit`), then they run.
-- **Purity check**: a script in CI greps `crates/rgit` and
+- **Purity check** (#734): a script in CI greps `crates/rgit` and
   `crates/rgit-porcelain` for `println!`, `eprintln!`, `process::exit`,
   `std::env::var`, `set_current_dir` and `static mut` outside tests and
   comments, with an allow-list for the reviewed exceptions. The plumbing crates are added as
@@ -427,14 +430,16 @@ Limits of step 1, each removed by the step named:
 
 | Limit | Removed by |
 |---|---|
-| `status` reports renames as deletion plus addition, no ahead/behind, no state of a running merge or rebase, and for a submodule only another checked-out commit | step 4 |
-| `status` returns `Error::Unsupported` when a file must be read to be compared and its content goes through a `filter.<name>.clean`/`.process` driver (text, `eol`, `ident` and encodings are converted) | step 3 |
-| `status`, `log` and `rev_parse` do not use replace refs, grafts or the commit-graph | step 2 |
+| `status` reports renames as deletion plus addition, no ahead/behind, no state of a running merge or rebase, and for a submodule only another checked-out commit | step 4 (#726) |
+| `status` returns `Error::Unsupported` when a file must be read to be compared and its content goes through a `filter.<name>.clean`/`.process` driver (text, `eol`, `ident` and encodings are converted) | step 3 (#725) |
+| `status`, `log` and `rev_parse` do not use replace refs, grafts or the commit-graph | step 2 (#723) |
 | The facade has its own glue for revisions (`revision.rs`), content (`convert.rs`) and the status walk (`status.rs`): about 1,200 lines that duplicate what `rgit-cli` does with more features | steps 2, 3, 4 (the facade then calls `rgit-porcelain`) |
-| Reference names that are not UTF-8 are refused | #214 |
-| `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `TZ` and the trace variables are still read from the process by the plumbing | the global-state issue |
+| Reference names that are not UTF-8 are refused | #214, then #736 |
+| `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `TZ` and the trace variables are still read from the process by the plumbing | #724 |
 
 ## Open questions (owner)
+
+Tracked in #735.
 
 1. **Crate name.** `rgit` on crates.io belongs to another project (a git
    web interface, 0.11.0). Options: publish the facade under another package
