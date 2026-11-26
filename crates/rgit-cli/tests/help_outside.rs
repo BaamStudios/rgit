@@ -52,9 +52,9 @@ fn help_outside_a_repository() {
             // like git.
             let usage = match cmd {
                 "upload-pack" => "usage: git-upload-pack".to_owned(),
-                // `format-rev` is marked `(EXPERIMENTAL!)` in its usage, like
-                // git (a known breakage in t1517).
-                "format-rev" => "usage: (experimental!) git format-rev".to_owned(),
+                // `format-rev` and `replay` are marked `(EXPERIMENTAL!)` in
+                // their usage, like git (a known breakage in t1517).
+                "format-rev" | "replay" => format!("usage: (experimental!) git {shown}"),
                 _ => format!("usage: git {shown}"),
             };
             if out.status.code() != Some(0)

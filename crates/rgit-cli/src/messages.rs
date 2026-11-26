@@ -84,6 +84,7 @@ pub mod refs;
 pub mod remote;
 pub mod remote_helper;
 pub mod replace;
+pub mod replay;
 pub mod repo_cmd;
 pub mod rerere;
 pub mod reset;
