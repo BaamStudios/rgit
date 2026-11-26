@@ -1633,9 +1633,10 @@ impl Push<'_> {
                 (crate::tracking::branch_key(branch, "remote"), remote.as_str()),
                 (crate::tracking::branch_key(branch, "merge"), r.dst.as_str()),
             ] {
+                let value = rgit_bstr::to_bytes(value);
                 let req = SetRequest {
                     key: &key,
-                    value: Some(&rgit_bstr::to_bytes(value)),
+                    value: Some(&value),
                     pattern: &ValuePattern::Any,
                     all: false,
                     comment: None,
