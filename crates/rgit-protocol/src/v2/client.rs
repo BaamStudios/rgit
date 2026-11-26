@@ -200,6 +200,16 @@ pub struct FetchArgs {
     /// The local repository's hash algorithm; if set, it must match the
     /// server's.
     pub local_format: Option<HashKind>,
+    /// `sideband-all` (sent only if the server advertises
+    /// `fetch=... sideband-all`): every packet of the response is
+    /// multiplexed like the pack data, so that progress can arrive during
+    /// negotiation.
+    pub sideband_all: bool,
+    /// `packfile-uris <protocols>` (comma-separated, sent only if the
+    /// server advertises `fetch=... packfile-uris`): the server may send
+    /// parts of the pack as URIs in a `packfile-uris` section
+    /// ([`FetchOutcome::packfile_uris`]).
+    pub packfile_uris: Option<String>,
 }
 
 impl FetchArgs {
@@ -234,6 +244,9 @@ pub struct FetchOutcome {
     pub rounds: usize,
     /// Whether a `packfile` section was received.
     pub packfile: bool,
+    /// The `packfile-uris` section: `(pack hash, URI)` of each pack the
+    /// client has to download and index in addition to the inline pack.
+    pub packfile_uris: Vec<(String, String)>,
 }
 
 /// An owned packet, so that the reader can be used again while one is being
@@ -276,6 +289,13 @@ pub struct Client<C> {
     caps: Capabilities,
     format: HashKind,
     agent: String,
+    /// The current `fetch` response is multiplexed (`sideband-all`).
+    sideband_all: bool,
+    /// Progress (sideband 2) met while reading a multiplexed response, not
+    /// yet shown.
+    pending: Vec<Vec<u8>>,
+    /// An error message (sideband 3) met there, not yet shown.
+    pending_error: Option<Vec<u8>>,
 }
 
 impl<C: Duplex> Client<C> {
@@ -320,6 +340,9 @@ impl<C: Duplex> Client<C> {
             caps,
             format,
             agent: agent::agent().to_owned(),
+            sideband_all: false,
+            pending: Vec::new(),
+            pending_error: None,
         })
     }
 
@@ -347,6 +370,16 @@ impl<C: Duplex> Client<C> {
     /// Whether the server accepts `filter` in `fetch`.
     pub fn supports_filter(&self) -> bool {
         self.caps.has_feature("fetch", "filter")
+    }
+
+    /// Whether the server accepts `sideband-all` in `fetch`.
+    pub fn supports_sideband_all(&self) -> bool {
+        self.caps.has_feature("fetch", "sideband-all")
+    }
+
+    /// Whether the server accepts `packfile-uris` in `fetch`.
+    pub fn supports_packfile_uris(&self) -> bool {
+        self.caps.has_feature("fetch", "packfile-uris")
     }
 
     /// Whether the server accepts shallow and deepen arguments in `fetch`.
@@ -417,7 +450,42 @@ impl<C: Duplex> Client<C> {
     }
 
     fn next(&mut self) -> Result<Pkt> {
-        Ok(Pkt::from_packet(self.reader.read()?))
+        loop {
+            let pkt = Pkt::from_packet(self.reader.read()?);
+            if !self.sideband_all {
+                return Ok(pkt);
+            }
+            // sideband-all: data packets carry a band byte; progress is
+            // kept for later, an error ends the response.
+            let Pkt::Data(d) = pkt else {
+                return Ok(pkt);
+            };
+            match demux(&d)? {
+                Band::Data(line) => {
+                    let line = line.strip_suffix(b"\n").unwrap_or(line);
+                    return Ok(Pkt::Data(line.to_vec()));
+                }
+                Band::Progress(p) => self.pending.push(p.to_vec()),
+                Band::Error(m) => {
+                    self.pending_error = Some(m.to_vec());
+                    let text = String::from_utf8_lossy(m);
+                    let text = text.strip_suffix('\n').unwrap_or(&text);
+                    return Err(Error::SidebandFatal(text.to_owned()));
+                }
+            }
+        }
+    }
+
+    /// Show the progress and error messages met in a multiplexed
+    /// response.
+    fn drain<P: Write>(&mut self, progress: &mut Progress<P>) -> Result<()> {
+        for p in std::mem::take(&mut self.pending) {
+            progress.feed(&p)?;
+        }
+        if let Some(m) = self.pending_error.take() {
+            progress.remote_error(&m)?;
+        }
+        Ok(())
     }
 
     /// The first packet of a response; response-end packets left over from
@@ -509,6 +577,29 @@ impl<C: Duplex> Client<C> {
         P: Write,
         F: FnMut(&[u8]) -> io::Result<()>,
     {
+        self.sideband_all = args.sideband_all && self.supports_sideband_all();
+        // Multiplexed lines keep their LF until the band byte is off.
+        self.reader.chomp_newline(!self.sideband_all);
+        let result = self.fetch_inner(args, negotiator, progress, &mut on_pack);
+        let drained = self.drain(progress);
+        self.sideband_all = false;
+        self.reader.chomp_newline(true);
+        let outcome = result?;
+        drained?;
+        Ok(outcome)
+    }
+
+    fn fetch_inner<P, F>(
+        &mut self,
+        args: &FetchArgs,
+        negotiator: &mut dyn Negotiator,
+        progress: &mut Progress<P>,
+        on_pack: &mut F,
+    ) -> Result<FetchOutcome>
+    where
+        P: Write,
+        F: FnMut(&[u8]) -> io::Result<()>,
+    {
         let mut outcome = FetchOutcome::default();
         if let Some(local) = args.local_format {
             if local != self.format {
@@ -559,7 +650,7 @@ impl<C: Duplex> Client<C> {
             if done {
                 end_negotiation(outcome.rounds);
                 let first = self.first()?;
-                self.read_sections(first, &mut outcome, progress, &mut on_pack)?;
+                self.read_sections(first, &mut outcome, progress, on_pack)?;
                 return Ok(outcome);
             }
 
@@ -577,7 +668,7 @@ impl<C: Duplex> Client<C> {
                     Pkt::Delim => {
                         end_negotiation(outcome.rounds);
                         let first = self.next()?;
-                        self.read_sections(first, &mut outcome, progress, &mut on_pack)?;
+                        self.read_sections(first, &mut outcome, progress, on_pack)?;
                         return Ok(outcome);
                     }
                     Pkt::Data(d) if !ready && d == b"NAK" => {}
@@ -702,6 +793,7 @@ impl<C: Duplex> Client<C> {
             (args.no_progress, "no-progress"),
             (args.include_tag, "include-tag"),
             (args.ofs_delta, "ofs-delta"),
+            (self.sideband_all, "sideband-all"),
         ] {
             if on {
                 self.line(name)?;
@@ -727,6 +819,11 @@ impl<C: Duplex> Client<C> {
                 self.line(&format!("filter {filter}"))?;
             }
         }
+        if let Some(protocols) = &args.packfile_uris {
+            if self.supports_packfile_uris() {
+                self.line(&format!("packfile-uris {protocols}"))?;
+            }
+        }
         for id in &args.wants {
             self.line(&format!("want {id}"))?;
         }
@@ -746,7 +843,12 @@ impl<C: Duplex> Client<C> {
         on_pack: &mut F,
     ) -> Result<()> {
         // Sections must come in this order; each may appear once.
-        const ORDER: [&[u8]; 3] = [b"shallow-info", b"wanted-refs", b"packfile"];
+        const ORDER: [&[u8]; 4] = [
+            b"shallow-info",
+            b"wanted-refs",
+            b"packfile-uris",
+            b"packfile",
+        ];
         let mut stage = 0;
         let mut header = first;
         loop {
@@ -794,7 +896,33 @@ impl<C: Duplex> Client<C> {
                     outcome.wanted_refs = refs;
                     end
                 }
+                2 => {
+                    // The URIs' paths may be secret (signed CDN links):
+                    // traced as `<redacted>`.
+                    self.reader.tracer_mut().set_redact_uris(true);
+                    let mut uris = Vec::new();
+                    let end = self.read_lines(|this, line| {
+                        let bad =
+                            || Error::BadPackfileUri(String::from_utf8_lossy(line).into_owned());
+                        let sp = line.iter().position(|&b| b == b' ').ok_or_else(bad)?;
+                        let hash = &line[..sp];
+                        if hash.len() != this.format.hex_len()
+                            || !hash.iter().all(u8::is_ascii_hexdigit)
+                        {
+                            return Err(bad());
+                        }
+                        uris.push((
+                            String::from_utf8_lossy(hash).into_owned(),
+                            String::from_utf8_lossy(&line[sp + 1..]).into_owned(),
+                        ));
+                        Ok(())
+                    });
+                    self.reader.tracer_mut().set_redact_uris(false);
+                    outcome.packfile_uris = uris;
+                    end?
+                }
                 _ => {
+                    self.drain(progress)?;
                     self.read_packfile(progress, on_pack)?;
                     outcome.packfile = true;
                     return Ok(());

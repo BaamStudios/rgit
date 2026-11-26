@@ -60,6 +60,8 @@ pub enum Error {
     BadShallowLine(String),
     /// v2 `fetch`: bad line in the `wanted-refs` section.
     BadWantedRef(String),
+    /// v2 `fetch`: bad line in the `packfile-uris` section.
+    BadPackfileUri(String),
     /// v2 `ls-refs`: bad line.
     InvalidLsRefs(String),
     /// The hash algorithm of the local repository differs from the
@@ -114,6 +116,7 @@ impl fmt::Display for Error {
             Error::NoSectionsWithoutReady => f.write_str(messages::NO_SECTIONS_WITHOUT_READY),
             Error::BadShallowLine(l) => f.write_str(&messages::bad_shallow_line(l)),
             Error::BadWantedRef(l) => f.write_str(&messages::bad_wanted_ref(l)),
+            Error::BadPackfileUri(l) => f.write_str(&messages::bad_packfile_uri(l)),
             Error::InvalidLsRefs(l) => f.write_str(&messages::invalid_ls_refs_response(l)),
             Error::MismatchedAlgorithms { client, server } => {
                 f.write_str(&messages::mismatched_algorithms(client, server))

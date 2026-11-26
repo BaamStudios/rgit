@@ -610,6 +610,8 @@ dependencies = [
  "rgit-refs",
  "rgit-remote",
  "rgit-repo",
+ "rgit-submodule",
+ "rgit-trace",
  "rgit-transport",
  "tempfile",
  "thiserror",
@@ -869,6 +871,7 @@ version = "0.1.0"
 dependencies = [
  "bstr",
  "rgit-config",
+ "rgit-object",
  "rgit-pathspec",
 ]
 

@@ -326,6 +326,43 @@ impl<'a> SmartHttp<'a> {
         }
     }
 
+    /// `GET` the session URL itself: a file such as a pack named in a
+    /// `packfile-uris` section, following redirects as configured. A
+    /// failure is an [`Error::Access`] with libcurl's reason
+    /// (`The requested URL returned error: 404`).
+    pub fn download(&mut self) -> Result<RpcResponse> {
+        let url = self.url.clone();
+        let shown = url.without_credentials().to_string();
+        let headers = self.common_headers();
+        let follow = self.client.opts.follow_redirects != FollowRedirects::Never;
+        match self.execute("GET", url, headers, false, Payload::None, follow, "") {
+            Ok((resp, _)) if (200..300).contains(&resp.status) => {
+                let content_type = resp.header("content-type").map(str::to_string);
+                Ok(RpcResponse {
+                    inner: resp.body,
+                    content_type,
+                })
+            }
+            Ok((mut resp, _)) => {
+                let status = resp.status;
+                drain(&mut resp);
+                Err(Error::Access {
+                    url: shown,
+                    status: Some(status),
+                    reason: messages::returned_error(status),
+                    remote: Vec::new(),
+                })
+            }
+            Err(ExecError::Transport(t)) => Err(Error::Access {
+                url: shown,
+                status: None,
+                reason: t.reason,
+                remote: Vec::new(),
+            }),
+            Err(ExecError::Other(e)) => Err(e),
+        }
+    }
+
     fn rpc_small(&mut self, service: Service, url: Url, small: &[u8]) -> Result<RpcResponse> {
         let svc = service.name();
         let gzip = service == Service::UploadPack && small.len() > GZIP_THRESHOLD;

@@ -158,6 +158,11 @@ pub fn bad_wanted_ref(line: &str) -> String {
     format!("protocol error: bad wanted-ref line '{line}'")
 }
 
+/// A line in the `packfile-uris` section that is not `<hash> <uri>`.
+pub fn bad_packfile_uri(line: &str) -> String {
+    format!("expected '<hash> <uri>', got: {line}")
+}
+
 /// A request line given by the caller that cannot be sent (it contains LF
 /// or does not fit into a pkt-line).
 pub fn bad_request_line(line: &str) -> String {

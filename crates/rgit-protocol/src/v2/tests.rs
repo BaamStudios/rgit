@@ -658,3 +658,96 @@ fn unadvertised_command_is_refused() {
         "protocol error: server does not support the 'ls-refs' command"
     );
 }
+
+fn adv_uris(s: Script) -> Script {
+    s.line("version 2")
+        .line("agent=git/2.56.0-Linux")
+        .line("ls-refs=unborn")
+        .line("fetch=shallow wait-for-done filter sideband-all packfile-uris")
+        .line("object-format=sha1")
+        .flush()
+}
+
+#[test]
+fn sideband_all_and_packfile_uris_request() {
+    // Observed from git 2.56.0: `sideband-all` after `ofs-delta`,
+    // `packfile-uris` after `filter`, just before the wants.
+    let s = adv_uris(Script::default())
+        .raw(b"\x01packfile\n")
+        .raw(b"\x01PACK")
+        .flush();
+    let mut c = client(s);
+    let mut a = args(&[A]);
+    a.sideband_all = true;
+    a.filter = Some("blob:none".into());
+    a.packfile_uris = Some("http,https".into());
+    fetch(&mut c, &a, &mut NoopNegotiator).0.unwrap();
+    let lines = sent(c);
+    let start = lines.iter().position(|l| l == "ofs-delta\n").unwrap() + 1;
+    assert_eq!(
+        lines[start..],
+        [
+            "sideband-all\n".to_owned(),
+            "filter blob:none\n".into(),
+            "packfile-uris http,https\n".into(),
+            format!("want {A}\n"),
+            "done\n".into(),
+            "0000".into(),
+        ]
+    );
+}
+
+#[test]
+fn packfile_uris_not_sent_without_server_support() {
+    let s = Script::default().adv().pack(b"PACK");
+    let mut c = client(s);
+    let mut a = args(&[A]);
+    a.sideband_all = true;
+    a.packfile_uris = Some("https".into());
+    fetch(&mut c, &a, &mut NoopNegotiator).0.unwrap();
+    let lines = sent(c);
+    assert!(!lines.iter().any(|l| l.starts_with("packfile-uris")));
+    assert!(!lines.iter().any(|l| l.starts_with("sideband-all")));
+}
+
+#[test]
+fn multiplexed_sections_with_packfile_uris() {
+    // With sideband-all every packet of the response carries a band byte,
+    // the section headers included (observed from git 2.56.0).
+    let s = adv_uris(Script::default())
+        .raw(b"\x01acknowledgments\n")
+        .raw(b"\x02counting\n")
+        .raw(format!("\x01ACK {B}\n").as_bytes())
+        .raw(b"\x01ready\n")
+        .delim()
+        .raw(b"\x01packfile-uris\n")
+        .raw(format!("\x01{C} https://cdn.example/p/{C}.pack\n").as_bytes())
+        .delim()
+        .raw(b"\x01packfile\n")
+        .raw(b"\x01PACK")
+        .flush();
+    let mut c = client(s);
+    let mut a = args(&[A]);
+    a.sideband_all = true;
+    a.packfile_uris = Some("https".into());
+    let (r, pack, prog) = fetch(&mut c, &a, &mut haves(&[B]));
+    let r = r.unwrap();
+    assert_eq!(r.common, vec![oid(B)]);
+    assert_eq!(
+        r.packfile_uris,
+        vec![(C.to_owned(), format!("https://cdn.example/p/{C}.pack"))]
+    );
+    assert_eq!(pack, b"PACK");
+    assert_eq!(prog, "remote: counting        \n");
+}
+
+#[test]
+fn bad_packfile_uri_line() {
+    let s = adv_uris(Script::default())
+        .line("packfile-uris")
+        .line("1234 https://x/y")
+        .delim()
+        .pack(b"PACK");
+    let e = fetch_error(s, &args(&[A]), &mut NoopNegotiator);
+    assert_eq!(e, "expected '<hash> <uri>', got: 1234 https://x/y");
+}
