@@ -250,6 +250,9 @@ fn collect_tips(objects: &dyn ObjectLookup, store: &FilesStore, opts: &Options) 
                     let Ok(next) = tag.object() else { break };
                     cur = next;
                     deref = true;
+                    // Reading the tag and peeling it each look the target
+                    // up (twice in git's object table).
+                    names.loaded.push(cur);
                     names.loaded.push(cur);
                 }
                 ObjectKind::Commit => {
@@ -401,9 +404,11 @@ fn run_with(
             namer.load(id).map_err(bad_object)?;
         }
     }
-    // Older tips first (tagger date, commit date for other references).
+    // Tags first (lightweight ones too), then the other references, each
+    // group oldest first (tagger date for annotated tags, else the commit
+    // date).
     let mut tips = names.tips.clone();
-    tips.sort_by_key(|t| t.date);
+    tips.sort_by_key(|t| (!t.from_tag, t.date));
     for tip in &tips {
         namer.name_tip(tip).map_err(bad_object)?;
     }
@@ -525,68 +530,111 @@ fn annotate_line(
 
 /// The commits `--all` lists, in the order git's object table holds them:
 /// slots by the first four bytes of the id (little endian), linear probing,
-/// the table doubling from 32 entries whenever it would be half full.
-/// `read` is the order the commits were read; each read commit also brings
-/// its parents (and, without a commit-graph, its tree) into the table.
+/// the table doubling from 32 entries whenever it would be half full (the
+/// entries move over in slot order). A lookup that finds its object behind
+/// the slot it started at swaps it into that slot (observed: a reference
+/// to an object already in the table moves it ahead of the objects it
+/// collides with).
+///
+/// The lookups: every reference's object (`refs`, in listing order; a
+/// tag's target twice, for reading the tag and for peeling it), each
+/// reference's commit read right after that, then for every commit as the
+/// naming walk reads it (`read`): its tree (without a commit-graph) and its
+/// parents.
 fn all_order(
     refs: &[ObjectId],
     read: &[ObjectId],
     objects: &dyn ObjectLookup,
     with_trees: bool,
 ) -> Vec<ObjectId> {
-    let mut inserted: Vec<(ObjectId, bool)> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut add = |id: ObjectId, commit: bool, inserted: &mut Vec<(ObjectId, bool)>| {
-        if seen.insert(id) {
-            inserted.push((id, commit));
-        }
-    };
-    for id in refs.iter().chain(read) {
-        let obj = read_obj(objects, id);
-        let is_commit = matches!(obj, Some((ObjectKind::Commit, _)));
-        add(*id, is_commit, &mut inserted);
-        if let Some((ObjectKind::Commit, data)) = obj {
-            if let Ok(c) = Commit::parse(objects.hash_kind(), &data) {
-                if let Some(t) = c.tree().ok().filter(|_| with_trees) {
-                    add(t, false, &mut inserted);
-                }
-                for p in c.parents().unwrap_or_default() {
-                    add(p, true, &mut inserted);
-                }
+    let mut table = ObjectTable::default();
+    let parse = |table: &mut ObjectTable, id: &ObjectId| {
+        if let Some((ObjectKind::Commit, data)) = read_obj(objects, id)
+            && let Ok(c) = Commit::parse(objects.hash_kind(), &data)
+        {
+            if let Some(t) = c.tree().ok().filter(|_| with_trees) {
+                table.lookup(t, false);
+            }
+            for p in c.parents().unwrap_or_default() {
+                table.lookup(p, true);
             }
         }
+    };
+    let mut parsed = std::collections::HashSet::new();
+    // Each reference's commit is read right after its lookups.
+    for (i, id) in refs.iter().enumerate() {
+        let is_commit = matches!(objects.kind(id).ok().flatten(), Some(ObjectKind::Commit));
+        table.lookup(*id, is_commit);
+        if is_commit && refs.get(i + 1) != Some(id) && parsed.insert(*id) {
+            parse(&mut table, id);
+        }
     }
-    let mut table: Vec<Option<(ObjectId, bool)>> = Vec::new();
-    let mut count = 0usize;
-    let slot = |id: &ObjectId, size: usize| -> usize {
+    for id in read {
+        if parsed.insert(*id) {
+            parse(&mut table, id);
+        }
+    }
+    table.commits()
+}
+
+/// A model of git's object table for [`all_order`].
+#[derive(Default)]
+struct ObjectTable {
+    slots: Vec<Option<(ObjectId, bool)>>,
+    count: usize,
+}
+
+impl ObjectTable {
+    fn home(id: &ObjectId, size: usize) -> usize {
         let b = id.as_bytes();
         u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize & (size - 1)
-    };
-    let place = |table: &mut Vec<Option<(ObjectId, bool)>>, e: (ObjectId, bool)| {
-        let size = table.len();
-        let mut i = slot(&e.0, size);
-        while table[i].is_some() {
+    }
+
+    fn place(slots: &mut [Option<(ObjectId, bool)>], e: (ObjectId, bool)) {
+        let size = slots.len();
+        let mut i = Self::home(&e.0, size);
+        while slots[i].is_some() {
             i = (i + 1) & (size - 1);
         }
-        table[i] = Some(e);
-    };
-    for e in inserted {
-        if table.len() <= count * 2 + 1 {
-            let size = if table.len() < 32 { 32 } else { table.len() * 2 };
-            let old = std::mem::replace(&mut table, vec![None; size]);
-            for o in old.into_iter().flatten() {
-                place(&mut table, o);
+        slots[i] = Some(e);
+    }
+
+    /// Find `id`, inserting it when missing.
+    fn lookup(&mut self, id: ObjectId, commit: bool) {
+        if !self.slots.is_empty() {
+            let size = self.slots.len();
+            let first = Self::home(&id, size);
+            let mut i = first;
+            while let Some((other, _)) = self.slots[i] {
+                if other == id {
+                    if i != first {
+                        self.slots.swap(i, first);
+                    }
+                    return;
+                }
+                i = (i + 1) & (size - 1);
             }
         }
-        place(&mut table, e);
-        count += 1;
+        if self.slots.len() <= self.count * 2 + 1 {
+            let size = if self.slots.len() < 32 { 32 } else { self.slots.len() * 2 };
+            let old = std::mem::replace(&mut self.slots, vec![None; size]);
+            for o in old.into_iter().flatten() {
+                Self::place(&mut self.slots, o);
+            }
+        }
+        Self::place(&mut self.slots, (id, commit));
+        self.count += 1;
     }
-    table
-        .into_iter()
-        .flatten()
-        .filter(|(_, commit)| *commit)
-        .map(|(id, _)| id)
-        .collect()
+
+    /// The commits in slot order.
+    fn commits(self) -> Vec<ObjectId> {
+        self.slots
+            .into_iter()
+            .flatten()
+            .filter(|(_, commit)| *commit)
+            .map(|(id, _)| id)
+            .collect()
+    }
 }
 
 fn read_obj(objects: &dyn ObjectLookup, id: &ObjectId) -> Option<(ObjectKind, Vec<u8>)> {
