@@ -682,6 +682,26 @@ pub fn walk_commits(ctx: &Context, args: &[String]) -> Result<Vec<ObjectId>, Die
     Ok(walk_args(ctx, args)?.commits)
 }
 
+thread_local! {
+    /// Output of [`log_captured`] (instead of standard output).
+    static CAPTURE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `git log <args>` (without a pager) and return its output instead of
+/// writing it (`format-rev`).
+pub fn log_captured(ctx: &Context, args: &[String]) -> Result<Vec<u8>, Die> {
+    CAPTURE.with_borrow_mut(|c| *c = Some(Vec::new()));
+    let result = main(ctx, Command::Log, args);
+    let out = CAPTURE.with_borrow_mut(Option::take).unwrap_or_default();
+    result.map(|_| out)
+}
+
+/// Whether `rev-list` accepts the option `arg` on its own (for commands
+/// that pass unknown options on to a revision walk).
+pub fn is_rev_list_option(arg: &str) -> bool {
+    Options::parse(Command::Log, std::slice::from_ref(&arg.to_owned())).is_ok()
+}
+
 /// The commits `rev-list <args>` lists, in walk order, each with its
 /// parents (for `bisect`).
 pub fn walk_with_parents(
@@ -2311,7 +2331,17 @@ impl Printer<'_, '_> {
     }
 
     fn flush(&mut self) {
-        if let Some(f) = self.sink.as_mut() {
+        let captured = self.sink.is_none()
+            && CAPTURE.with_borrow_mut(|c| match c {
+                Some(c) => {
+                    c.extend_from_slice(&self.out);
+                    true
+                }
+                None => false,
+            });
+        if captured {
+            // Kept for `log_captured`.
+        } else if let Some(f) = self.sink.as_mut() {
             let _ = f.write_all(&self.out);
         } else if !self.opts.quiet {
             let mut lock = std::io::stdout().lock();
