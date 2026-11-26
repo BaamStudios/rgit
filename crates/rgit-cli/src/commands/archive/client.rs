@@ -68,9 +68,8 @@ pub fn run(
     };
     let Some(mut transport) = rgit_http::transport_for(&url, &settings).map_err(|e| fatal(&e))?
     else {
-        return Err(Die::Fatal(format!(
-            "unable to find remote helper for '{}'",
-            url.split("://").next().unwrap_or(&url)
+        return Err(Die::Fatal(crate::messages::ls_remote::no_remote_helper(
+            url.split("://").next().unwrap_or(&url),
         )));
     };
     let mut options = ConnectOptions::new(Service::UploadArchive);
