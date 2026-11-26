@@ -1403,6 +1403,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let matched: Vec<Vec<u8>> = candidates
             .into_iter()
             .filter(|p| pathspec.match_path_seen(p, &mut seen).is_some())
+            // Skip-worktree entries match but are not committed.
+            .filter(|p| {
+                !index
+                    .get(p, rgit_index::Stage::MERGED)
+                    .is_some_and(|e| e.flags.skip_worktree)
+            })
             .collect();
         if let Some(item) = pathspec.unmatched(&seen).next() {
             return Err(Die::Error(

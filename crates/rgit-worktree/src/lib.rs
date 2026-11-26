@@ -20,6 +20,7 @@
 
 pub mod ignore;
 pub mod messages;
+pub mod sparse;
 pub mod stat;
 
 mod os;

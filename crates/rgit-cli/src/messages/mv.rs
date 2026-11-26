@@ -26,6 +26,15 @@ pub const DEST_DIR_MISSING: &str = "destination directory does not exist";
 pub const DEST_NOT_DIR: &str = "destination is not a directory";
 pub const DEST_BEYOND_SYMLINK: &str = "destination is beyond a symbolic link";
 pub const MULTIPLE_SOURCES: &str = "multiple sources for the same target";
+/// The destination is a skip-worktree entry (no file, but in the index).
+pub const DEST_IN_INDEX: &str = "destination exists in the index";
+
+/// Files moved out of the sparse checkout with local changes (then the
+/// paths, one per line, and [`DIRTY_OUTSIDE_HINT`]).
+pub const DIRTY_OUTSIDE_HEADER: &str = "The following paths have been moved outside the\nsparse-checkout definition but are not sparse due to local\nmodifications.";
+
+/// Advice `updateSparsePath` after [`DIRTY_OUTSIDE_HEADER`].
+pub const DIRTY_OUTSIDE_HINT: &str = "To correct the sparsity of these paths, do the following:\n* Use \"git add --sparse <paths>\" to update the index\n* Use \"git sparse-checkout reapply\" to apply the sparsity rules";
 
 /// A failed check of one move: `<what>, source=<src>, destination=<dst>`.
 #[must_use]

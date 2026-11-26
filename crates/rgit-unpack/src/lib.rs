@@ -138,7 +138,10 @@ pub use checkout::{
 pub use objects::{Objects, read_blob, tree_entries};
 pub use path::{PathOptions, verify_checkout_path};
 pub use submodule::Submodules;
-pub use unpack::{Applied, Merge, Options, Plan, Porcelain, Problem, Rejection, Worktree, plan};
+pub use unpack::{
+    Applied, Merge, Options, Plan, Porcelain, Problem, Rejection, SparseWarning, SparseWarnings,
+    Worktree, plan, reapply_sparse,
+};
 
 use rgit_hash::ObjectId;
 

@@ -969,6 +969,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 columns,
                 uf_delay,
                 summary: submodule_summary(&repo, &entries, rules.as_ref()),
+                sparse_percent: sparse_percent(&repo, &index),
             };
             let mut summary = long(&mut p, &ctx, &entries, &untracked_paths, &ignored_paths);
             if let Some(c) = &p.colors {
@@ -1559,6 +1560,9 @@ struct LongContext<'a> {
     /// `status.submoduleSummary`: the blocks for the staged and the
     /// unstaged submodule changes.
     summary: (Vec<u8>, Vec<u8>),
+    /// In a sparse checkout: the share of index entries present in the
+    /// work tree, in percent.
+    sparse_percent: Option<usize>,
 }
 
 fn label_of(letter: u8) -> &'static str {
@@ -1586,6 +1590,16 @@ fn conflict_label(code: &str) -> &'static str {
 
 /// The long format (Documentation/git-status.adoc, "OUTPUT"). Returns
 /// where the closing summary line ("nothing to commit", ...) starts.
+/// `core.sparseCheckout`: 100 minus the share of skip-worktree entries
+/// (rounded down), as `status` shows it.
+fn sparse_percent(repo: &Repo, index: &rgit_index::Index) -> Option<usize> {
+    if !crate::sparse::enabled(&repo.config) || index.is_empty() {
+        return None;
+    }
+    let skipped = index.entries().iter().filter(|e| e.flags.skip_worktree).count();
+    Some(100 - skipped * 100 / index.len())
+}
+
 fn long(
     p: &mut Printer,
     ctx: &LongContext,
@@ -1699,6 +1713,10 @@ fn long(
             p.text("\n");
         }
         p.text("\n");
+    }
+    if let Some(pct) = ctx.sparse_percent {
+        p.text(&msg::sparse_checkout_percent(pct));
+        p.text("\n\n");
     }
     if unborn {
         p.text("\n");
@@ -1963,6 +1981,12 @@ fn check_worktree_with(
     meta: Option<&FileStat>,
     status: impl FnOnce() -> std::io::Result<Status>,
 ) -> Result<(), Die> {
+    // Outside a sparse checkout the file is missing on purpose: it counts
+    // as unchanged.
+    if e.flags.skip_worktree && e.stage() == rgit_index::Stage::MERGED {
+        c.wt_mode = Some(e.mode.0);
+        return Ok(());
+    }
     let Some(meta) = meta else {
         c.wt = b'D';
         c.wt_mode = None;

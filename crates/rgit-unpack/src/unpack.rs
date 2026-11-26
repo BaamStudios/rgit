@@ -10,6 +10,7 @@ use std::path::Path;
 use rgit_hash::ObjectId;
 use rgit_index::{AddOptions, Entry, Index, Stage};
 use rgit_worktree::ignore::Excludes;
+use rgit_worktree::sparse::Sparse;
 use rgit_worktree::stat::{Checker, Status, stat_from_metadata};
 
 use crate::Error;
@@ -90,6 +91,97 @@ pub struct Options<'a> {
     /// `--recurse-submodules`: active submodules are checked and moved
     /// along with their gitlinks (with `update`).
     pub submodules: Option<&'a dyn Submodules>,
+    /// The sparse checkout patterns (`core.sparseCheckout`). With
+    /// `update` the skip-worktree bits of the new index follow them: paths
+    /// leaving the checkout are removed from the work tree (when up to
+    /// date), paths entering it are written. Without `update` only new
+    /// entries get their bit from the patterns. See [`SparseWarnings`].
+    pub sparse: Option<&'a Sparse>,
+    /// Paths (sorted) that stay in the work tree whatever the sparse
+    /// patterns say: the conflicts of a merge result.
+    pub visible: &'a [Vec<u8>],
+}
+
+/// Why a path was left as it is despite the sparse patterns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SparseWarning {
+    /// Outside the patterns, but its file has local changes.
+    NotUptodate,
+    /// It has conflicts, so the patterns cannot be applied to it.
+    Unmerged,
+    /// Entering the checkout, but a file was already there.
+    AlreadyPresent,
+}
+
+/// The paths a sparse checkout update could not bring in line with the
+/// patterns. These are warnings: the update still succeeds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SparseWarnings {
+    items: Vec<(SparseWarning, Vec<u8>)>,
+}
+
+impl SparseWarnings {
+    /// Whether there is nothing to report.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Every warning with its path, in the order found.
+    pub fn items(&self) -> &[(SparseWarning, Vec<u8>)] {
+        &self.items
+    }
+
+    /// Records a warning.
+    pub fn push(&mut self, w: SparseWarning, path: Vec<u8>) {
+        self.items.push((w, path));
+    }
+
+    /// `read-tree` style: one line per path (print each after `error: `;
+    /// the command still succeeds).
+    pub fn plumbing_messages(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .map(|(w, p)| {
+                let p = lossy(p);
+                match w {
+                    SparseWarning::NotUptodate => msg::sparse_not_uptodate(&p),
+                    SparseWarning::Unmerged => msg::sparse_unmerged(&p),
+                    SparseWarning::AlreadyPresent => msg::sparse_already_present(&p),
+                }
+            })
+            .collect()
+    }
+
+    /// Porcelain style: the complete text for stderr, one `warning: `
+    /// block per kind followed by the hint to reapply; empty when there is
+    /// nothing to report.
+    pub fn porcelain_text(&self) -> String {
+        let mut kinds: Vec<SparseWarning> = self.items.iter().map(|(w, _)| *w).collect();
+        kinds.sort();
+        kinds.dedup();
+        let mut out = String::new();
+        for kind in &kinds {
+            out.push_str("warning: ");
+            out.push_str(match kind {
+                SparseWarning::NotUptodate => msg::SPARSE_NOT_UPTODATE,
+                SparseWarning::Unmerged => msg::SPARSE_UNMERGED,
+                SparseWarning::AlreadyPresent => msg::SPARSE_ALREADY_PRESENT,
+            });
+            for (w, p) in &self.items {
+                if w == kind {
+                    out.push('\t');
+                    out.push_str(&lossy(p));
+                    out.push('\n');
+                }
+            }
+            out.push('\n');
+        }
+        if !kinds.is_empty() {
+            out.push_str(msg::SPARSE_AFTER_FIXING);
+            out.push('\n');
+        }
+        out
+    }
 }
 
 /// Why the merge would lose local work. Ordered as git groups them.
@@ -211,6 +303,7 @@ pub struct Plan {
     update: Vec<Vec<u8>>,
     /// Submodules to move ([`Options::submodules`]).
     moves: Vec<Move>,
+    warnings: SparseWarnings,
 }
 
 /// What [`Plan::apply`] did.
@@ -222,9 +315,16 @@ pub struct Applied {
     /// or removed; git reports these and fails with exit code 128 after
     /// writing the index.
     pub errors: Vec<String>,
+    /// Paths left despite the sparse patterns (see [`Options::sparse`]).
+    pub sparse_warnings: SparseWarnings,
 }
 
 impl Plan {
+    /// Paths left despite the sparse patterns.
+    pub fn sparse_warnings(&self) -> &SparseWarnings {
+        &self.warnings
+    }
+
     /// The merged index (stat data of new entries not yet filled in).
     pub fn index(&self) -> &Index {
         &self.index
@@ -320,6 +420,7 @@ impl Plan {
             remove,
             update,
             moves: _,
+            warnings,
         } = self;
         let mut meter = progress.then(|| {
             rgit_progress::Progress::start_delayed(
@@ -432,7 +533,11 @@ impl Plan {
             }
             errors.extend(missing);
         }
-        Applied { index, errors }
+        Applied {
+            index,
+            errors,
+            sparse_warnings: warnings,
+        }
     }
 }
 
@@ -479,6 +584,8 @@ pub fn plan(
         consumed: HashSet::new(),
         rejection: Rejection::default(),
         moves: Vec::new(),
+        present: HashSet::new(),
+        warnings: SparseWarnings::default(),
     };
     let groups: Vec<&[Entry]> = index
         .entries()
@@ -524,6 +631,7 @@ pub fn plan(
     if !u.rejection.problems.is_empty() {
         return Err(Error::Rejected(u.rejection));
     }
+    u.apply_sparse()?;
     let mut out = index.clone();
     out.clear_entries();
     // Like git, a result of unpacking trees has no resolve undo records.
@@ -548,6 +656,58 @@ pub fn plan(
         remove: u.remove,
         update: u.update,
         moves: u.moves,
+        warnings: u.warnings,
+    })
+}
+
+/// Brings the skip-worktree bits of `index` and the work tree in line
+/// with `sparse` without merging any tree (`git sparse-checkout
+/// set`/`reapply`/`disable`): files leaving the checkout are removed when
+/// up to date, files entering it are written. Conflicted and modified
+/// paths stay and are reported in [`Plan::sparse_warnings`].
+///
+/// # Errors
+/// Object and I/O errors.
+pub fn reapply_sparse(
+    odb: &dyn Objects,
+    index: &Index,
+    wt: &Worktree<'_>,
+    sparse: &Sparse,
+) -> Result<Plan, Error> {
+    let mut opts = Options {
+        update: true,
+        sparse: Some(sparse),
+        ..Options::default()
+    };
+    let mut u = Unpacker {
+        index,
+        wt: Some(wt),
+        opts: &mut opts,
+        result: index.entries().to_vec(),
+        update: Vec::new(),
+        remove: Vec::new(),
+        removed: HashSet::new(),
+        consumed: HashSet::new(),
+        rejection: Rejection::default(),
+        moves: Vec::new(),
+        present: HashSet::new(),
+        warnings: SparseWarnings::default(),
+    };
+    u.apply_sparse()?;
+    // Only skip-worktree bits change; the entries stay in place.
+    let _ = odb;
+    let mut out = index.clone();
+    for (pos, r) in std::mem::take(&mut u.result).into_iter().enumerate() {
+        if let Some(e) = out.entry_mut(pos) {
+            e.flags.skip_worktree = r.flags.skip_worktree;
+        }
+    }
+    Ok(Plan {
+        index: out,
+        remove: u.remove,
+        update: u.update,
+        moves: u.moves,
+        warnings: u.warnings,
     })
 }
 
@@ -605,6 +765,8 @@ fn three_way(
         consumed: HashSet::new(),
         rejection: Rejection::default(),
         moves: Vec::new(),
+        present: HashSet::new(),
+        warnings: SparseWarnings::default(),
     };
     let groups: Vec<&[Entry]> = index
         .entries()
@@ -717,6 +879,7 @@ fn three_way(
     if !u.rejection.problems.is_empty() {
         return Err(Error::Rejected(u.rejection));
     }
+    u.apply_sparse()?;
     let mut out = index.clone();
     out.clear_entries();
     // Like git, a result of unpacking trees has no resolve undo records.
@@ -743,6 +906,7 @@ fn three_way(
         remove: u.remove,
         update: u.update,
         moves: u.moves,
+        warnings: u.warnings,
     })
 }
 
@@ -776,6 +940,10 @@ struct Unpacker<'u, 'o, 'w> {
     rejection: Rejection,
     /// Submodules to move.
     moves: Vec<Move>,
+    /// New entries whose path already has a file (sparse checkout: decided
+    /// after the merge, see [`Unpacker::apply_sparse`]).
+    present: HashSet<Vec<u8>>,
+    warnings: SparseWarnings,
 }
 
 impl<'o> Unpacker<'_, 'o, '_> {
@@ -960,6 +1128,11 @@ impl<'o> Unpacker<'_, 'o, '_> {
     fn merged(&mut self, t: &Entry, old: Option<&Entry>) -> Result<bool, Error> {
         let mut ok = match old {
             Some(old) => self.verify_uptodate(old),
+            None if self.file_in_the_way(t.path()) => {
+                // Whether it matters depends on the sparse patterns.
+                self.present.insert(t.path().to_vec());
+                true
+            }
             None => self.verify_absent(t.path(), t.mode.is_gitlink())?,
         };
         // A submodule that moves to another commit: its staged changes
@@ -1006,10 +1179,12 @@ impl<'o> Unpacker<'_, 'o, '_> {
             return true;
         };
         // An assume-unchanged entry that has to change is checked for real:
-        // its local changes must not be lost either.
-        let status = if e.flags.assume_valid && !e.flags.skip_worktree {
+        // its local changes must not be lost either. So is a skip-worktree
+        // entry whose file is there after all.
+        let status = if e.flags.assume_valid || e.flags.skip_worktree {
             match wt.checker.lstat(e.path()) {
                 Ok(Some(meta)) => wt.checker.check_with(e, &meta),
+                Ok(None) if e.flags.skip_worktree => Ok(Status::Unchanged),
                 Ok(None) => Ok(Status::Deleted),
                 Err(err) => Err(err),
             }
@@ -1025,6 +1200,145 @@ impl<'o> Unpacker<'_, 'o, '_> {
             }
             _ => true,
         }
+    }
+
+    /// Sparse checkout with work tree checks: an untracked file (not a
+    /// directory) stands at `path`.
+    fn file_in_the_way(&self, path: &[u8]) -> bool {
+        if self.opts.sparse.is_none() || !self.opts.update || !self.checks_worktree() {
+            return false;
+        }
+        let Some(wt) = self.wt else {
+            return false;
+        };
+        if !self.index.entries_for_path(path).is_empty() {
+            return false;
+        }
+        fs::symlink_metadata(join(wt.root, path)).is_ok_and(|m| !m.is_dir())
+    }
+
+    /// Whether the file of the visible entry `e` may be removed when it
+    /// leaves the sparse checkout.
+    fn sparse_uptodate(&self, e: &Entry) -> bool {
+        let Some(wt) = self.wt else {
+            return true;
+        };
+        matches!(
+            wt.checker.check(e),
+            // Like the merge checks, only the cached stat data counts.
+            Ok(Status::Unchanged | Status::Deleted)
+        )
+    }
+
+    /// Sets the skip-worktree bits of the merge result from the sparse
+    /// patterns and adjusts the work tree changes (see
+    /// [`Options::sparse`]).
+    fn apply_sparse(&mut self) -> Result<(), Error> {
+        let Some(sparse) = self.opts.sparse else {
+            return Ok(());
+        };
+        let update = self.opts.update && self.wt.is_some();
+        let mut writes: HashSet<Vec<u8>> = self.update.iter().cloned().collect();
+        let mut removes = Vec::new();
+        let result = std::mem::take(&mut self.result);
+        let mut out = Vec::with_capacity(result.len());
+        let mut last_unmerged: Option<Vec<u8>> = None;
+        for mut r in result {
+            let path = r.path().to_vec();
+            if r.stage() != Stage::MERGED {
+                // A conflict cannot be brought in line with the patterns
+                // (even when they include it).
+                if update
+                    && last_unmerged.as_deref() != Some(path.as_slice())
+                    && self
+                        .index
+                        .entries_for_path(&path)
+                        .iter()
+                        .any(|e| e.stage().is_conflict())
+                {
+                    self.warnings.push(SparseWarning::Unmerged, path.clone());
+                    last_unmerged = Some(path);
+                }
+                out.push(r);
+                continue;
+            }
+            let want_skip =
+                !sparse.includes(&path) && self.opts.visible.binary_search(&path).is_err();
+            let old = self.index.get(&path, Stage::MERGED);
+            if !update {
+                r.flags.skip_worktree = match old {
+                    Some(o) => o.flags.skip_worktree,
+                    None => want_skip,
+                };
+                out.push(r);
+                continue;
+            }
+            let was_conflicted = old.is_none()
+                && self
+                    .index
+                    .entries_for_path(&path)
+                    .iter()
+                    .any(|e| e.stage().is_conflict());
+            match old {
+                // A discarded conflict outside the checkout: its file goes.
+                None if was_conflicted => {
+                    r.flags.skip_worktree = want_skip;
+                    if want_skip {
+                        writes.remove(&path);
+                        removes.push((path.clone(), false));
+                    }
+                }
+                None => {
+                    if self.present.contains(&path) {
+                        r.flags.skip_worktree = false;
+                        if want_skip {
+                            writes.remove(&path);
+                        } else {
+                            self.warnings
+                                .push(SparseWarning::AlreadyPresent, path.clone());
+                        }
+                    } else {
+                        r.flags.skip_worktree = want_skip;
+                        if want_skip {
+                            writes.remove(&path);
+                        }
+                    }
+                }
+                Some(o) if o.flags.skip_worktree => {
+                    r.flags.skip_worktree = want_skip;
+                    if want_skip {
+                        writes.remove(&path);
+                    } else if !r.mode.is_gitlink() {
+                        writes.insert(path.clone());
+                    }
+                }
+                Some(o) => {
+                    if !want_skip {
+                        r.flags.skip_worktree = false;
+                    } else if r.mode.is_gitlink() {
+                        // A checked out submodule stays.
+                        r.flags.skip_worktree = true;
+                        writes.remove(&path);
+                    } else if writes.contains(&path) || self.opts.reset || self.sparse_uptodate(o) {
+                        r.flags.skip_worktree = true;
+                        writes.remove(&path);
+                        removes.push((path.clone(), false));
+                    } else {
+                        self.warnings.push(SparseWarning::NotUptodate, path.clone());
+                        r.flags.skip_worktree = false;
+                    }
+                }
+            }
+            out.push(r);
+        }
+        self.result = out;
+        if update {
+            let mut upd: Vec<Vec<u8>> = writes.into_iter().collect();
+            upd.sort();
+            self.update = upd;
+            self.remove.extend(removes);
+        }
+        Ok(())
     }
 
     fn excluded(&mut self, path: &[u8], is_dir: bool) -> bool {

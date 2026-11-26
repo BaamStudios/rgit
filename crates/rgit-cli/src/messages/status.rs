@@ -49,6 +49,11 @@ pub fn detached_from(name: &str) -> String {
 pub const NOT_ON_BRANCH: &str = "Not currently on any branch.";
 pub const NO_COMMITS_YET: &str = "No commits yet";
 
+/// `status` in a sparse checkout.
+pub fn sparse_checkout_percent(pct: usize) -> String {
+    format!("You are in a sparse checkout with {pct}% of tracked files present.")
+}
+
 pub const LABEL_NEW: &str = "new file:";
 pub const LABEL_MODIFIED: &str = "modified:";
 pub const LABEL_DELETED: &str = "deleted:";

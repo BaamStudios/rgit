@@ -311,7 +311,9 @@ fn move_index_inner(
     } else {
         None
     };
+    let sparse = crate::sparse::load(repo);
     let mut opts = Options {
+        sparse: sparse.as_ref(),
         reset: force,
         update: true,
         show_all_errors: true,
@@ -348,6 +350,7 @@ fn move_index_inner(
         Some(u) => plan.apply_submodules(repo.odb(), &wt, &conv, progress, u, force),
         None => plan.apply_with_progress(repo.odb(), &wt, &conv, progress),
     };
+    crate::sparse::print_warnings(&applied.sparse_warnings, true);
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if let Some(reference) = mtime {

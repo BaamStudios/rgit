@@ -164,6 +164,7 @@ fn reset_index(
         }
     }
     let empty_blob = repo.hash.empty_blob();
+    let sparse = crate::sparse::load(repo);
     if intent_to_add && !gone.is_empty() {
         repo.odb()
             .write(ObjectKind::Blob, b"")
@@ -197,8 +198,15 @@ fn reset_index(
         if same {
             continue;
         }
+        // The skip-worktree bit stays; a new entry outside the sparse
+        // checkout gets it.
+        let skip = match index.get(&path, Stage::MERGED) {
+            Some(old) => old.flags.skip_worktree,
+            None => sparse.as_ref().is_some_and(|s| !s.includes(&path)),
+        };
         index.remove_path(&path);
-        let entry = Entry::new(path, Stage::MERGED, IndexMode(mode), id);
+        let mut entry = Entry::new(path, Stage::MERGED, IndexMode(mode), id);
+        entry.flags.skip_worktree = skip;
         index
             .add(
                 entry,
@@ -671,7 +679,9 @@ fn reset_worktree(
     } else {
         None
     };
+    let sparse = crate::sparse::load(repo);
     let mut opts = Options {
+        sparse: sparse.as_ref(),
         reset: mode == HARD,
         // git-reset(1): unmerged entries take the target's version.
         discard_unmerged: mode == MERGE,
@@ -699,6 +709,7 @@ fn reset_worktree(
         Some(u) => plan.apply_submodules(repo.odb(), &wt, &conv, false, u, mode == HARD),
         None => plan.apply(repo.odb(), &wt, &conv),
     };
+    crate::sparse::print_warnings(&applied.sparse_warnings, false);
     let mut index = applied.index;
     repo.converter()?.use_index(&index);
     if mode == KEEP {

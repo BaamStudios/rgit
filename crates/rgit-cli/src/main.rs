@@ -78,6 +78,7 @@ mod revision;
 mod revisions;
 mod sequencer;
 mod signing;
+mod sparse;
 mod submodules;
 mod switch_branch;
 mod telemetry;
