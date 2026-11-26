@@ -207,17 +207,34 @@ fn wants() {
     let zero = "0".repeat(40);
 
     // The connection ends before the request does.
-    for lines in [
-        &[][..],
-        &[&format!("want {main}")[..]],
-        &[&format!("want {main}"), "0000"],
+    for (mode, lines) in [
+        (STATELESS, &[][..]),
+        (STATELESS, &[&format!("want {main}")[..]]),
+        (V0, &[&format!("want {main}"), "0000"]),
+        (
+            V0,
+            &[&format!("want {main}"), "0000", &format!("have {main}")],
+        ),
+        (
+            STATELESS,
+            &[&format!("want {main}"), "0000", &format!("have {main}")],
+        ),
     ] {
-        let served = serve(&dir, "", STATELESS, &request(lines));
+        let served = serve(&dir, "", mode, &request(lines));
         match served.result {
             Err(Error::Fatal(m)) => assert_eq!(m, "the remote end hung up unexpectedly"),
             other => panic!("{lines:?}: {other:?}"),
         }
     }
+    // A stateless request may end with the `want` list.
+    let served = serve(
+        &dir,
+        "",
+        STATELESS,
+        &request(&[&format!("want {main}"), "0000"]),
+    );
+    served.result.unwrap();
+    assert_eq!(served.packets, [""; 0]);
     // An object that is not there: the client is told, the error is
     // fatal.
     let served = serve(
@@ -345,11 +362,18 @@ fn negotiation() {
         [format!("ACK {tree} common\n"), "NAK\n".to_owned()]
     );
 
-    // A depth request is answered before the negotiation.
+    // A depth request is answered before the negotiation; a stateless
+    // client may leave it at that.
     let input = request(&[&format!("want {main}"), "deepen 1", "0000"]);
     let served = serve(&dir, "", STATELESS, &input);
     assert_eq!(
         served.packets,
+        [format!("shallow {main}"), "0000".to_owned()]
+    );
+    served.result.unwrap();
+    let served = serve(&dir, "", V0, &input);
+    assert_eq!(
+        served.packets[served.packets.len() - 2..],
         [format!("shallow {main}"), "0000".to_owned()]
     );
     assert!(matches!(served.result, Err(Error::Fatal(_))));

@@ -682,6 +682,17 @@ fn negotiation_equals_git() {
     };
     check(stateless, &[]);
     check(stateless, &[flush()]);
+    // A request may end with the `want` list, not later.
+    assert_eq!(check(stateless, &[want(""), flush()]).code, Some(0));
+    assert_eq!(
+        check(stateless, &[want("multi_ack_detailed"), flush()]).code,
+        Some(0)
+    );
+    assert_eq!(check(stateless, &[want("")]).code, Some(128));
+    assert_eq!(
+        check(stateless, &[want(""), flush(), have(&h3)]).code,
+        Some(128)
+    );
     check(stateless, &[want(""), flush(), done()]);
     for mode in [
         "multi_ack_detailed no-done",
@@ -1056,6 +1067,28 @@ fn shallow_and_filter_requests_equal_git() {
         answer(&deeper)[..2],
         [format!("shallow {h3}"), format!("unshallow {h2}")]
     );
+
+    // Over HTTP a client asks for the `shallow` lines in a request of
+    // its own.
+    let stateless = Call {
+        flags: &["--stateless-rpc"],
+        ..srv
+    };
+    for lines in [
+        &[&want[..], "deepen 1", "0000"][..],
+        &[&want, &shallow, "deepen 1", "0000"],
+        &[&want, &shallow, "0000"],
+        &[&want, "deepen-since 1", "0000"],
+        &[&want, "deepen 1", "0000", &have],
+    ] {
+        let reply = same(&fx, stateless, lines);
+        let ends_with_have = lines.last().is_some_and(|l| l.starts_with("have "));
+        assert_eq!(
+            reply.code,
+            Some(if ends_with_have { 128 } else { 0 }),
+            "{lines:?}"
+        );
+    }
 
     // A repository that is shallow itself.
     let sh = Call {

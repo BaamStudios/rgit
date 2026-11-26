@@ -506,6 +506,9 @@ fn check_wants<R: Read, W: Write>(
 /// - `done`: `ACK <last common>` in the `multi_ack` modes when there is a
 ///   common object, nothing without `multi_ack`; `NAK` when there is
 ///   none.
+/// - `--stateless-rpc`: a request may end right after the `want` list
+///   (a client that only asks for the `shallow` lines); that is no
+///   error.
 fn negotiate<R: Read, W: Write>(
     s: &mut Session<'_, R, W>,
     req: &Request,
@@ -529,9 +532,15 @@ fn negotiate<R: Read, W: Write>(
     let mut got_common = false;
     let mut got_other = false;
     let mut sent_ready = false;
+    let mut first = true;
     loop {
         s.opts.active();
-        let line = match s.reader.read_or_eof()? {
+        let packet = s.reader.read_or_eof()?;
+        if packet.is_none() && first && s.opts.stateless_rpc {
+            return Ok(None);
+        }
+        first = false;
+        let line = match packet {
             None => return Err(Error::fatal(msg::HUNG_UP)),
             Some(Packet::Flush) => {
                 if let Some(last) = last.filter(|_| {
