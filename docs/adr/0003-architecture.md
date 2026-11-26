@@ -40,6 +40,13 @@ Infrastructure crates added in wave 1 (2026-11-12):
 | `rgit-simcheck` | Similarity check against git's source (CI only, not published) |
 | `rgit-test-tool` | MIT replacements for `test-tool` internals (tests only, not published) |
 
+Library API (added 2026-11-26, [ADR 0005](0005-library-api.md)):
+
+| Crate | Responsibility |
+|---|---|
+| `rgit` | The facade for Rust programs: `Repository` and a few value types over the crates above |
+| `rgit-porcelain` | The operations moved out of `rgit-cli` (created by step 2 of ADR 0005) |
+
 Crates are created when the first issue needs them, not up front.
 Dependencies point downwards only (hash → object → odb/pack → repo → …).
 

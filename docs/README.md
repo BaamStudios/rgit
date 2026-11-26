@@ -5,6 +5,8 @@ Architecture decision records live in `docs/adr/` (`NNNN-title.md`):
 - [0001 Conformance strategy](adr/0001-conformance-strategy.md)
 - [0002 Own implementation, no gitoxide dependency](adr/0002-own-implementation.md)
 - [0003 Architecture](adr/0003-architecture.md)
+- [0004 Server architecture](adr/0004-server-architecture.md)
+- [0005 rgit as a Rust library](adr/0005-library-api.md)
 
 Milestones:
 

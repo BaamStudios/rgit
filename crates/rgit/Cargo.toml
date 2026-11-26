@@ -1,0 +1,34 @@
+[package]
+name = "rgit"
+description = "rgit as a library: a small, documented API over the rgit crates (open, status, log, rev-parse; see docs/adr/0005-library-api.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# Not published yet: the API is at step 1 of ADR 0005, and the name `rgit`
+# is taken on crates.io (ADR 0005, "Open questions").
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-attr = { path = "../rgit-attr" }
+rgit-config = { path = "../rgit-config" }
+rgit-convert = { path = "../rgit-convert" }
+rgit-date = { path = "../rgit-date" }
+rgit-hash = { path = "../rgit-hash" }
+rgit-index = { path = "../rgit-index" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+rgit-refs = { path = "../rgit-refs" }
+rgit-repo = { path = "../rgit-repo" }
+rgit-revwalk = { path = "../rgit-revwalk" }
+rgit-worktree = { path = "../rgit-worktree" }
+thiserror = "2"
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
+tempfile = "3"
