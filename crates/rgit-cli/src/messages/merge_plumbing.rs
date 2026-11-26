@@ -66,6 +66,10 @@ pub fn submodule_conflict(path: &str) -> String {
 
 pub const MERGE_OURS_USAGE: &str = "usage: git merge-ours <base>... -- HEAD <remote>...";
 pub const MERGE_SUBTREE_USAGE: &str = "usage: git merge-subtree <base>... -- <head> <remote> ...";
+pub const MERGE_RECURSIVE_OURS_USAGE: &str =
+    "usage: git merge-recursive-ours <base>... -- <head> <remote> ...";
+pub const MERGE_RECURSIVE_THEIRS_USAGE: &str =
+    "usage: git merge-recursive-theirs <base>... -- <head> <remote> ...";
 /// The usage of the script strategies (the trailing space is git's).
 pub fn script_usage(name: &str) -> String {
     format!("usage: git {name} ")

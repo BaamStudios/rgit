@@ -163,7 +163,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::string_list(None, "keep-pack", &keep_packs, "name", msg::REPACK_H_KEEP_PACK),
             Opt::integer('g', "geometric", &geometric, msg::REPACK_H_GEOMETRIC),
             Opt::callback(
-                'm',
+                None,
                 "write-midx",
                 Some("mode"),
                 msg::REPACK_H_WRITE_MIDX,
@@ -173,6 +173,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 },
             )
             .optional(None),
+            // `-m` (no argument) is `--write-midx`; `-h` does not list it.
+            Opt::callback('m', None, None, msg::REPACK_H_WRITE_MIDX, |_, _| {
+                *write_midx.borrow_mut() = Some("default".to_owned());
+                Ok(())
+            })
+            .noarg()
+            .hidden(),
             Opt::string(None, "expire-to", &expire_to, "dir", msg::REPACK_H_EXPIRE_TO),
             Opt::callback(None, "filter-to", Some("dir"), msg::REPACK_H_FILTER_TO, reject("filter-to")),
             Opt::callback(

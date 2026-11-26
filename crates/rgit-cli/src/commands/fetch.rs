@@ -334,6 +334,8 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
                 "server-specific",
                 msg::HELP_SERVER_OPTION,
             ),
+            Opt::flag('4', "ipv4", &ipv4, msg::HELP_IPV4).noneg(),
+            Opt::flag('6', "ipv6", &ipv6, msg::HELP_IPV6).noneg(),
             Opt::string_list(
                 None,
                 "negotiation-restrict",
@@ -356,8 +358,6 @@ fn parse(argv: &[String]) -> Result<(Args, Vec<String>), Die> {
                 msg::HELP_NEGOTIATION_INCLUDE,
             ),
             Opt::flag(None, "negotiate-only", &negotiate_only, msg::HELP_NEGOTIATE_ONLY),
-            Opt::flag('4', "ipv4", &ipv4, msg::HELP_IPV4).noneg(),
-            Opt::flag('6', "ipv6", &ipv6, msg::HELP_IPV6).noneg(),
             Opt::callback(None, "filter", Some("args"), msg::HELP_FILTER, |v, unset| {
                 match v {
                     Some(spec) if !unset => filters.borrow_mut().push(spec.to_owned()),

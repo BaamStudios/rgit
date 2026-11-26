@@ -553,6 +553,23 @@ pub fn show_main(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
     run_main(ctx, Command::Log, argv, true)
 }
 
+/// `git whatchanged` (Documentation/git-whatchanged.adoc): `log` that
+/// skips merges and shows the raw diff unless another format (or none) is
+/// asked for; both defaults can be overridden. `-h` shows `log`'s usage.
+pub fn whatchanged_main(ctx: &Context, argv: &[String]) -> Result<i32, Die> {
+    if matches!(argv.first().map(String::as_str), Some("-h" | "--help-all")) {
+        return run_main(ctx, Command::Log, argv, false);
+    }
+    let args: Vec<String> = std::iter::once("--no-merges".to_owned())
+        .chain(argv.iter().cloned())
+        .collect();
+    let mut opts = Options::parse(Command::Log, &args)?;
+    if !opts.diff.no_output && !any_format(&opts.diff) {
+        opts.diff.raw = true;
+    }
+    run_parsed(ctx, Command::Log, opts)
+}
+
 /// `git diff-tree` with `-v`, `--pretty` or `--format`: the given commits
 /// shown like `show` does, but with plumbing diffs (`argv` as for `show`).
 pub fn diff_tree_show(ctx: &Context, argv: &[String]) -> Result<i32, Die> {

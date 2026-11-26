@@ -18,7 +18,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         msg::WRITE_TREE_USAGE,
         vec![
             Opt::flag(None, "missing-ok", &missing_ok, msg::HELP_MISSING_OK),
-            Opt::string(None, "prefix", &prefix, "<prefix>/", msg::HELP_PREFIX),
+            Opt::string(None, "prefix", &prefix, "<prefix>/", msg::HELP_PREFIX).literal_argh(),
         ],
     );
     let args = parser.parse(argv)?.args;

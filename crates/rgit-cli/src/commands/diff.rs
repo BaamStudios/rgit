@@ -25,8 +25,21 @@ fn usage() -> String {
 }
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
-    if let Some(code) = diff::help(argv, &usage()) {
-        return Ok(code);
+    if argv.len() == 2 && matches!(argv[1].as_str(), "-h" | "--help-all") {
+        // Outside a repository `diff` is `diff --no-index`, which lists its
+        // options on stdout; inside one git prints the usage of all forms
+        // as a usage error (observed with git 2.56.1).
+        let all = argv[1] == "--help-all";
+        if crate::repo::setup_gently_quiet(ctx)?.is_none() {
+            let hidden = if all { msg::NO_INDEX_HIDDEN } else { "" };
+            let text = format!("{}\n{hidden}{}", msg::NO_INDEX_USAGE, msg::OPTIONS_GROUP);
+            let _ = std::io::Write::write_all(&mut std::io::stdout().lock(), text.as_bytes());
+            return Ok(0);
+        }
+        if all {
+            return Err(usage_exit(format!("{}{}", msg::INVALID_HELP_ALL, usage())));
+        }
+        return Err(usage_exit(usage()));
     }
     let mut cached = false;
     let mut no_index = false;
