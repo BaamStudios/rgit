@@ -247,3 +247,36 @@ pub fn uri_malformed(uri: &str) -> String {
 pub fn filename_malformed(path: &str) -> String {
     format!("bundle-uri: filename is malformed: {path}")
 }
+
+/// `warning:` for a `promisor.acceptFromServerUrl` value with a bad
+/// remote name.
+pub fn invalid_promisor_remote_name(name: &str, value: &str) -> String {
+    format!(
+        "invalid remote name '{name}' before '=' sign in '{value}' from promisor.acceptFromServerUrl config"
+    )
+}
+
+/// `warning:` for a `promisor.acceptFromServerUrl` value that is no URL.
+pub fn invalid_promisor_url_pattern(pattern: &str, value: &str) -> String {
+    format!("invalid url pattern '{pattern}' in '{value}' from promisor.acceptFromServerUrl config")
+}
+
+/// A remote created for an accepted promisor remote.
+pub fn auto_creating_promisor(name: &str, url: &str) -> String {
+    format!("Auto-creating promisor remote '{name}' for URL '{url}'")
+}
+
+/// A field of an accepted promisor remote stored (`what`: filter, token).
+pub fn storing_field(what: &str, remote: &str, old: &str, new: &str) -> String {
+    format!("Storing new {what} from server for remote '{remote}'.\n    '{old}' -> '{new}'")
+}
+
+/// `warning:` for an advertised filter that does not parse.
+pub fn invalid_stored_filter(filter: &str, remote: &str, why: &str) -> String {
+    format!("invalid filter '{filter}' for remote '{remote}' will not be stored: {why}")
+}
+
+/// `warning:` for an advertised token with control characters.
+pub fn invalid_stored_token(token: &str, remote: &str) -> String {
+    format!("invalid token '{token}' for remote '{remote}' will not be stored")
+}

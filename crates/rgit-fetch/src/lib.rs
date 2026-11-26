@@ -43,6 +43,7 @@ mod error;
 mod fetch;
 pub mod graph;
 pub mod messages;
+pub mod promisor;
 pub mod refmap;
 mod repo;
 mod session;

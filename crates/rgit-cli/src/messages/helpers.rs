@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Messages of the commands rgit only answers in part so far:
-//! `backfill`, `checkout--worker` and `fsmonitor--daemon` (usage strings
+//! `checkout--worker` and `fsmonitor--daemon` (usage strings
 //! and the messages of the paths that work, verbatim from the `git` binary).
-
-// ------------------------------------------------------------- backfill
-
-pub const BACKFILL_USAGE: &[&str] = &[
-    "git backfill [--min-batch-size=<n>] [--[no-]sparse] [--[no-]include-edges] [<revision-range>]",
-];
-pub const BACKFILL_H_MIN_BATCH_SIZE: &str = "Minimum number of objects to request at a time";
-pub const BACKFILL_H_SPARSE: &str = "Restrict the missing objects to the current sparse-checkout";
-pub const BACKFILL_H_INCLUDE_EDGES: &str = "Include blobs from boundary commits in the backfill";
-pub const BACKFILL_UNSUPPORTED: &str =
-    "backfill from a promisor remote is not supported by rgit yet";
 
 // ------------------------------------------------------ checkout--worker
 

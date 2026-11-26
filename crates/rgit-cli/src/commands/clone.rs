@@ -265,8 +265,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             )));
         }
     }
-    let filter = crate::promisor::parse_filters(&filter.borrow())?
-        .map(|(f, text)| (f.to_spec(), text));
+    let filter = if crate::promisor::is_auto(&filter.borrow()) {
+        Some((crate::promisor::AUTO.to_owned(), crate::promisor::AUTO.to_owned()))
+    } else {
+        crate::promisor::parse_filters(&filter.borrow())?.map(|(f, text)| (f.to_spec(), text))
+    };
     let ref_format = match ref_format.into_inner() {
         Some(f) => Some(repo_init::parse_ref_format(&f).map_err(|e| init_failed(&e))?),
         None => None,
@@ -707,10 +710,12 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
 
     let config_path = git_dir.join("config");
-    // `-c <key>[=<value>]`: added as given (without a value: `true`).
+    // `-c <key>[=<value>]`: added (without a value: `true`) with section
+    // and variable name in lower case, like git writes them.
     for kv in &opts.config {
         let (k, v) = kv.split_once('=').unwrap_or((kv, "true"));
-        if let Err(e) = config_add(&config_path, k, v) {
+        let k = canonical_key(k);
+        if let Err(e) = config_add(&config_path, &k, v) {
             if let Die::Fatal(m) = e {
                 eprintln!("error: {m}");
             }
@@ -869,6 +874,14 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     session
         .check_server_options(&opts.server_options)
         .map_err(|e| fatal(&e))?;
+    // Promisor remotes the server offers; `--filter=auto` takes their
+    // filters.
+    // (Their configuration follows that of the new remote.)
+    let accepted = session.accept_promisor_remotes(&repo.config);
+    let send_filter = match opts.filter.as_ref().map(|f| f.0.as_str()) {
+        Some(crate::promisor::AUTO) => accepted.as_ref().and_then(|a| a.auto_filter()),
+        f => f.map(str::to_owned),
+    };
 
     // Fetch refspecs given with `-c remote.<name>.fetch=...` are used in
     // addition to the default one.
@@ -1073,6 +1086,9 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             config_set(&config_path, k, v)?;
         }
     }
+    if let Some(a) = &accepted {
+        a.write(&config_path);
+    }
     // Take over the remote's object format: record it, and open the
     // repository again so that objects and references use it.
     let (setup, repo) = if hash == setup.format.object_format {
@@ -1209,7 +1225,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 repo.hash,
                 rgit_fetch::messages::INVALID_INDEX_PACK_OUTPUT,
             ),
-            filter: partial.then(|| opts.filter.as_ref().map(|f| f.0.clone())).flatten(),
+            filter: partial.then(|| send_filter.clone()).flatten(),
             promisor: partial.then(|| promisor_refs(&refs)),
             ..deepen.clone()
         };
@@ -1758,6 +1774,20 @@ fn config_write(path: &Path, key: &str, value: &str, add: bool) -> Result<(), Di
     rgit_config::write::set_in_file(path, &rgit_fs::LockOptions::default(), &req)
         .map(|_| ())
         .map_err(|e| Die::Fatal(e.to_string()))
+}
+
+/// `key` with its section and variable name in lower case (the
+/// subsection keeps its case).
+fn canonical_key(key: &str) -> String {
+    match (key.find('.'), key.rfind('.')) {
+        (Some(first), Some(last)) if first < last => format!(
+            "{}{}{}",
+            key[..first].to_ascii_lowercase(),
+            &key[first..last],
+            key[last..].to_ascii_lowercase()
+        ),
+        _ => key.to_ascii_lowercase(),
+    }
 }
 
 fn config_set(path: &Path, key: &str, value: &str) -> Result<(), Die> {

@@ -16,6 +16,7 @@
 
 use std::io::{BufRead, BufWriter, Write};
 
+use bstr::ByteSlice as _;
 use rgit_hash::ObjectId;
 use rgit_object::{ObjectKind, TreeIter};
 
@@ -793,6 +794,13 @@ fn command(repo: &mut Repo, opts: &BatchOptions, line: &[u8], out: &mut Out) -> 
             one(repo, opts, &req, out)?;
             out.done()?;
         }
+        b"remote-object-info" => {
+            let Some(arg) = arg else {
+                return Err(Die::Fatal(msg::requires_arguments("remote-object-info")));
+            };
+            remote_object_info(repo, opts, &String::from_utf8_lossy(arg), out)?;
+            out.done()?;
+        }
         b"mailmap" => {
             let Some(arg) = arg else {
                 return Err(Die::Fatal(msg::requires_arguments("mailmap")));
@@ -816,6 +824,114 @@ fn command(repo: &mut Repo, opts: &BatchOptions, line: &[u8], out: &mut Out) -> 
             out.flush()?;
         }
         _ => return Err(Die::Fatal(msg::unknown_command(&text))),
+    }
+    Ok(())
+}
+
+/// `remote-object-info <remote> <oid>...`: the formatted line of each
+/// object as the remote describes it (protocol v2 `object-info`). Only
+/// `%(objectname)`, `%(objecttype)` and `%(objectsize)` have values; the
+/// other placeholders are empty.
+fn remote_object_info(
+    repo: &mut Repo,
+    opts: &BatchOptions,
+    arg: &str,
+    out: &mut Out,
+) -> Result<(), Die> {
+    let words = crate::alias::split(arg)
+        .map_err(|e| Die::Fatal(msg::remote_info_bad_command_line(e)))?;
+    let mut words = words.into_iter().filter(|w| !w.is_empty());
+    let Some(remote) = words.next() else {
+        return Err(Die::Fatal(msg::REMOTE_INFO_NEEDS_REMOTE.into()));
+    };
+    let hexlen = repo.hash.hex_len();
+    let mut ids = Vec::new();
+    for w in words {
+        // A full id, possibly followed by more text; hex digits alone are
+        // an abbreviation.
+        let id = w
+            .get(..hexlen)
+            .and_then(|h| ObjectId::from_hex(repo.hash, h.as_bytes()).ok());
+        match id {
+            Some(id) => ids.push(id),
+            None if w.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                return Err(Die::Fatal(msg::remote_info_short_oid(hexlen)));
+            }
+            None => return Err(Die::Fatal(msg::remote_info_invalid_oid(&w))),
+        }
+    }
+    if ids.is_empty() {
+        return Err(Die::Fatal(msg::REMOTE_INFO_NEEDS_OBJECTS.into()));
+    }
+    let mut attrs = Vec::new();
+    if opts.fmt.atoms.contains(&Atom::Size) {
+        attrs.push("size");
+    }
+    if opts.fmt.atoms.contains(&Atom::Type) {
+        attrs.push("type");
+    }
+
+    let remotes = rgit_remote::Remotes::from_config(&repo.config)
+        .map_err(super::ls_remote::remote_config_die)?;
+    let git_dir = repo.setup.cwd.join(&repo.setup.git_dir);
+    let remote = remotes
+        .get(remote.as_bytes(), Some(&git_dir))
+        .map_err(|e| Die::Fatal(e.to_string()))?;
+    let url = remote
+        .fetch_url()
+        .map(|u| u.to_str_lossy().into_owned())
+        .unwrap_or_default();
+    let env = rgit_config::SystemEnv::default();
+    let settings = rgit_fetch::ConnectSettings {
+        env: &env,
+        config: &repo.config,
+        base_env: Vec::new(),
+        upload_pack: remote
+            .upload_pack
+            .as_ref()
+            .map(|u| u.to_str_lossy().into_owned()),
+        ip: rgit_transport::IpVersion::Any,
+        verbose: false,
+    };
+    let fatal = |e: rgit_fetch::Error| Die::Fatal(e.to_string());
+    let mut session = rgit_fetch::Session::connect(&url, &settings, "git").map_err(fatal)?;
+    if session.version() != rgit_protocol::ProtocolVersion::V2 {
+        // Said before the connection closes (and the server complains).
+        eprintln!("fatal: {}", msg::OBJECT_INFO_NEEDS_V2);
+        drop(session);
+        return Err(Die::Exit(128));
+    }
+    let infos = session.object_info(&attrs, &ids).map_err(fatal)?;
+    let _ = session.close();
+    let Some(infos) = infos else {
+        return Err(Die::Fatal(msg::OBJECT_INFO_NOT_ENABLED.into()));
+    };
+    for info in infos {
+        let Some(values) = info.values else {
+            out.put(info.id.as_bytes());
+            out.put(b" missing");
+            out.end();
+            continue;
+        };
+        let value = |attr: &str| {
+            values
+                .iter()
+                .find(|(a, _)| a == attr)
+                .map(|(_, v)| v.as_bytes())
+                .unwrap_or_default()
+        };
+        let mut line = Vec::new();
+        for atom in &opts.fmt.atoms {
+            match atom {
+                Atom::Literal(l) => line.extend_from_slice(l),
+                Atom::Name => line.extend_from_slice(info.id.as_bytes()),
+                Atom::Type => line.extend_from_slice(value("type")),
+                Atom::Size => line.extend_from_slice(value("size")),
+                _ => {}
+            }
+        }
+        out.put(&line);
+        out.end();
     }
     Ok(())
 }

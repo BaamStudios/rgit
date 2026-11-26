@@ -19,7 +19,7 @@ pub mod skipping;
 mod tests;
 
 pub use client::{
-    Client, Duplex, FetchArgs, FetchOutcome, LsRefsArgs, Pipe, RemoteRef, ShallowInfo,
+    Client, Duplex, FetchArgs, FetchOutcome, LsRefsArgs, ObjectInfo, Pipe, RemoteRef, ShallowInfo,
 };
 pub use negotiate::{CommitInfo, CommitSource, ConsecutiveNegotiator, Negotiator, NoopNegotiator};
 pub use skipping::SkippingNegotiator;

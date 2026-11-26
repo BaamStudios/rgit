@@ -118,3 +118,20 @@ pub fn textconv_failed(name: &str) -> String {
 pub fn invalid_mailmap_bool(value: &str) -> String {
     format!("mailmap: invalid boolean '{value}'")
 }
+
+pub const REMOTE_INFO_NEEDS_OBJECTS: &str = "remote-object-info requires objects";
+pub const REMOTE_INFO_NEEDS_REMOTE: &str = "must supply valid remote when using remote-object-info";
+pub const OBJECT_INFO_NEEDS_V2: &str = "object-info requires protocol v2";
+
+pub fn remote_info_invalid_oid(name: &str) -> String {
+    format!("not a valid object name '{name}'")
+}
+
+pub fn remote_info_bad_command_line(why: &str) -> String {
+    format!("remote-object-info: failed to parse command line: {why}")
+}
+pub const OBJECT_INFO_NOT_ENABLED: &str = "object-info capability is not enabled on the server";
+
+pub fn remote_info_short_oid(len: usize) -> String {
+    format!("remote-object-info does not support short oids, {len} characters required")
+}
