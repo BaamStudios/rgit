@@ -42,6 +42,7 @@ pub mod grafts;
 pub mod grep;
 pub mod hash_object;
 pub mod help;
+pub mod history;
 pub mod hook;
 pub mod housekeeping;
 pub mod index_files;
