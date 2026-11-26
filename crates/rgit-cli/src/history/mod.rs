@@ -962,6 +962,7 @@ pub fn walk_formatted(
         sources: None,
         encoding: recode::output_encoding(repo.config),
         out: Vec::new(),
+        sink: None,
         first: true,
         dist: None,
         graph: None,
@@ -1049,6 +1050,8 @@ struct Printer<'r, 'a> {
     /// `i18n.logOutputEncoding` (else `i18n.commitEncoding`, UTF-8).
     encoding: Vec<u8>,
     out: Vec<u8>,
+    /// `--output=<file>`: where the output goes instead of stdout.
+    sink: Option<std::fs::File>,
     first: bool,
     /// `--bisect-all`: the distance shown with the decorations.
     dist: Option<usize>,
@@ -1683,13 +1686,38 @@ impl Printer<'_, '_> {
                 dst_prefix: dst,
                 abbrev: &abbrev,
                 null,
-                indicators: [
-                    o.indicators[0].unwrap_or(b'+'),
-                    o.indicators[1].unwrap_or(b'-'),
-                    o.indicators[2].unwrap_or(b' '),
-                ],
+                reverse: o.reverse,
             };
-            line_log::write(&mut bytes, l.patches(id), &render);
+            let patches = l.patches(id);
+            let plains = line_log::write(patches, &render);
+            // Word diff, colours and indicators as for other patches.
+            let mut out = crate::diff::output::Output::new(
+                Some(&d.repo),
+                d.repo.hash,
+                &d.opts,
+                d.formats,
+                !self.opts.plumbing,
+            )?;
+            out.set_color(&d.opts)?;
+            let contents = |e: Option<&ObjectId>| -> Vec<u8> {
+                e.and_then(|id| self.repo.objects.read(id).ok().flatten())
+                    .map(|(_, data)| data)
+                    .unwrap_or_default()
+            };
+            let items: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = plains
+                .into_iter()
+                .zip(patches)
+                .map(|(plain, p)| {
+                    let old = contents(p.old.as_ref().map(|e| &e.id));
+                    let new = contents(Some(&p.new.id));
+                    if o.reverse {
+                        (plain, new, old)
+                    } else {
+                        (plain, old, new)
+                    }
+                })
+                .collect();
+            bytes.extend_from_slice(&out.decorate(&items));
         }
         if bytes.is_empty() {
             return Ok(bytes);
@@ -2294,7 +2322,9 @@ impl Printer<'_, '_> {
     }
 
     fn flush(&mut self) {
-        if !self.opts.quiet {
+        if let Some(f) = self.sink.as_mut() {
+            let _ = f.write_all(&self.out);
+        } else if !self.opts.quiet {
             let mut lock = std::io::stdout().lock();
             let _ = lock.write_all(&self.out);
             let _ = lock.flush();
@@ -3047,6 +3077,7 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
             .map(|e| e.as_bytes().to_vec())
             .unwrap_or_else(|| recode::output_encoding(repo.config)),
         out: Vec::with_capacity(1 << 16),
+        sink: None,
         first: true,
         dist: None,
         graph: None,
@@ -3076,6 +3107,16 @@ fn run(ctx: &Context, repo: &Repo<'_>, cmd: Command, opts: &Options) -> Result<i
         signature_colors,
         signature_cache: std::cell::RefCell::new(None),
     };
+    if let (Command::Log, Some(path)) = (cmd, opts.diff.output.as_ref()) {
+        let full = std::env::current_dir().unwrap_or_default().join(path);
+        let f = std::fs::File::create(&full).map_err(|e| {
+            Die::Fatal(msg::could_not_open_for_writing(
+                path,
+                &crate::global::strerror(&e),
+            ))
+        })?;
+        p.sink = Some(f);
+    }
     p.line_log = line_log;
     if opts.graph {
         let palette = p

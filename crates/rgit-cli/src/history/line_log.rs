@@ -707,7 +707,8 @@ pub struct Render<'x> {
     pub dst_prefix: &'x [u8],
     pub abbrev: &'x dyn Fn(&ObjectId) -> String,
     pub null: String,
-    pub indicators: [u8; 3],
+    /// `-R`: the patches turn the new contents into the old.
+    pub reverse: bool,
 }
 
 fn quoted(out: &mut Vec<u8>, prefix: &[u8], path: &[u8]) {
@@ -725,68 +726,109 @@ fn canonical(mode: u32) -> u32 {
     }
 }
 
-/// Write the patches of one commit.
-pub fn write(out: &mut Vec<u8>, patches: &[FilePatch], r: &Render<'_>) {
+/// The lines of a hunk with `-` and `+` swapped; within each run of
+/// changed lines the (new) deletions come first.
+fn reversed_lines(lines: &[Line]) -> Vec<&Line> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].kind == b' ' {
+            out.push(&lines[i]);
+            i += 1;
+            continue;
+        }
+        let end = lines[i..]
+            .iter()
+            .position(|l| l.kind == b' ')
+            .map_or(lines.len(), |p| i + p);
+        out.extend(lines[i..end].iter().filter(|l| l.kind == b'+'));
+        out.extend(lines[i..end].iter().filter(|l| l.kind == b'-'));
+        i = end;
+    }
+    out
+}
+
+/// The patches of one commit, one plain patch (indicators `+`, `-` and
+/// space) per file.
+pub fn write(patches: &[FilePatch], r: &Render<'_>) -> Vec<Vec<u8>> {
     use std::io::Write as _;
+    let mut files = Vec::new();
     for p in patches {
+        let mut out = Vec::new();
         let new_mode = canonical(p.new.mode);
+        let new_id = (r.abbrev)(&p.new.id);
+        // The two sides as shown: (prefix, path) of the old and new side.
+        let (a, b) = if r.reverse {
+            ((r.dst_prefix, &p.new_path), (r.src_prefix, &p.old_path))
+        } else {
+            ((r.src_prefix, &p.old_path), (r.dst_prefix, &p.new_path))
+        };
         out.extend_from_slice(b"diff --git ");
-        quoted(out, r.src_prefix, &p.old_path);
+        quoted(&mut out, a.0, a.1);
         out.push(b' ');
-        quoted(out, r.dst_prefix, &p.new_path);
+        quoted(&mut out, b.0, b.1);
         out.push(b'\n');
         match &p.old {
+            None if r.reverse => {
+                let _ = writeln!(out, "deleted file mode {new_mode:06o}");
+                let _ = writeln!(out, "index {}..{}", new_id, r.null);
+                out.extend_from_slice(b"--- ");
+                quoted(&mut out, a.0, a.1);
+                out.extend_from_slice(b"\n+++ /dev/null\n");
+            }
             None => {
                 let _ = writeln!(out, "new file mode {new_mode:06o}");
-                let _ = writeln!(out, "index {}..{}", r.null, (r.abbrev)(&p.new.id));
-                out.extend_from_slice(b"--- /dev/null\n");
+                let _ = writeln!(out, "index {}..{}", r.null, new_id);
+                out.extend_from_slice(b"--- /dev/null\n+++ ");
+                quoted(&mut out, b.0, b.1);
+                out.push(b'\n');
             }
             Some(old) => {
                 let old_mode = canonical(old.mode);
-                if old_mode == new_mode {
-                    let _ = writeln!(
-                        out,
-                        "index {}..{} {:06o}",
-                        (r.abbrev)(&old.id),
-                        (r.abbrev)(&p.new.id),
-                        new_mode
-                    );
+                let old_id = (r.abbrev)(&old.id);
+                let ((m1, i1), (m2, i2)) = if r.reverse {
+                    ((new_mode, &new_id), (old_mode, &old_id))
                 } else {
-                    let _ = writeln!(out, "old mode {old_mode:06o}");
-                    let _ = writeln!(out, "new mode {new_mode:06o}");
-                    let _ = writeln!(
-                        out,
-                        "index {}..{}",
-                        (r.abbrev)(&old.id),
-                        (r.abbrev)(&p.new.id)
-                    );
+                    ((old_mode, &old_id), (new_mode, &new_id))
+                };
+                if m1 == m2 {
+                    let _ = writeln!(out, "index {i1}..{i2} {m2:06o}");
+                } else {
+                    let _ = writeln!(out, "old mode {m1:06o}");
+                    let _ = writeln!(out, "new mode {m2:06o}");
+                    let _ = writeln!(out, "index {i1}..{i2}");
                 }
                 out.extend_from_slice(b"--- ");
-                quoted(out, r.src_prefix, &p.old_path);
+                quoted(&mut out, a.0, a.1);
+                out.extend_from_slice(b"\n+++ ");
+                quoted(&mut out, b.0, b.1);
                 out.push(b'\n');
             }
         }
-        out.extend_from_slice(b"+++ ");
-        quoted(out, r.dst_prefix, &p.new_path);
-        out.push(b'\n');
         for h in &p.hunks {
-            let _ = write!(
-                out,
-                "@@ -{},{} +{},{} @@",
-                h.old_start, h.old_count, h.new_start, h.new_count
-            );
+            let (os, oc, ns, nc) = if r.reverse {
+                (h.new_start, h.new_count, h.old_start, h.old_count)
+            } else {
+                (h.old_start, h.old_count, h.new_start, h.new_count)
+            };
+            let _ = write!(out, "@@ -{os},{oc} +{ns},{nc} @@");
             if let Some(f) = &h.func {
                 out.push(b' ');
                 out.extend_from_slice(f);
             }
             out.push(b'\n');
-            for l in &h.lines {
-                let ind = match l.kind {
-                    b'+' => r.indicators[0],
-                    b'-' => r.indicators[1],
-                    _ => r.indicators[2],
+            let lines: Vec<&Line> = if r.reverse {
+                reversed_lines(&h.lines)
+            } else {
+                h.lines.iter().collect()
+            };
+            for l in lines {
+                let kind = match (l.kind, r.reverse) {
+                    (b'+', true) => b'-',
+                    (b'-', true) => b'+',
+                    (k, _) => k,
                 };
-                out.push(ind);
+                out.push(kind);
                 out.extend_from_slice(&l.text);
                 if l.text.last() != Some(&b'\n') {
                     out.push(b'\n');
@@ -795,5 +837,7 @@ pub fn write(out: &mut Vec<u8>, patches: &[FilePatch], r: &Render<'_>) {
                 }
             }
         }
+        files.push(out);
     }
+    files
 }

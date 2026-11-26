@@ -234,3 +234,8 @@ pub const REFLOG_HISTORY_LIMITING: &str =
 pub fn cannot_walk_reflogs(name: &str) -> String {
     format!("cannot walk reflogs for {name}")
 }
+
+/// `--output=<file>` cannot be created.
+pub fn could_not_open_for_writing(path: &str, err: &str) -> String {
+    format!("could not open '{path}' for writing: {err}")
+}
