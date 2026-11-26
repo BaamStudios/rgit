@@ -135,10 +135,10 @@ pub fn print(refs: &[PushRef], style: &Style<'_>) -> bool {
     if style.porcelain {
         text.push_str("Done\n");
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(text.as_bytes());
+        let _ = out.write_all(&rgit_bstr::to_bytes(&text));
         let _ = out.flush();
     } else {
-        let _ = std::io::stderr().write_all(text.as_bytes());
+        let _ = std::io::stderr().write_all(&rgit_bstr::to_bytes(&text));
     }
     failed
 }

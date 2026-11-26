@@ -108,7 +108,7 @@ pub fn decide_with(repo: &LocalRepo, entry: &Entry, force: bool, check_forced: b
     let Some(local) = &entry.local else {
         return Status::FetchHead;
     };
-    let local = local.to_str_lossy();
+    let local = rgit_bstr::from_bytes(local);
     let Some(old) = repo.resolve(&local) else {
         return if entry.remote.starts_with(b"refs/tags/") {
             Status::NewTag
@@ -180,7 +180,7 @@ pub fn apply_with_message(
     if local.starts_with(b"refs/heads/") && repo.kind(&new) != Some(ObjectKind::Commit) {
         eprintln!(
             "error: {}",
-            messages::non_commit_to_branch(&new.to_hex(), &local.to_str_lossy())
+            messages::non_commit_to_branch(&new.to_hex(), &rgit_bstr::from_bytes(local))
         );
         return Status::NotCommit(Box::new(status));
     }
@@ -188,7 +188,8 @@ pub fn apply_with_message(
         Status::FastForward(o) | Status::Forced(o) | Status::TagUpdate(o) => *o,
         _ => repo.hash.null(),
     };
-    let update = RefUpdate::update(local.to_str_lossy().into_owned(), new, Some(old)).message(msg);
+    let update =
+        RefUpdate::update(rgit_bstr::from_bytes(local).into_owned(), new, Some(old)).message(msg);
     match write(repo, update) {
         Ok(()) => status,
         Err(e) => {
@@ -206,7 +207,7 @@ pub fn ref_update(local: &BStr, new: ObjectId, status: &Status, action: &str) ->
     };
     let msg = format!("{action}: {}", status.reflog_message());
     let old = old.unwrap_or_else(|| new.kind().null());
-    RefUpdate::update(local.to_str_lossy().into_owned(), new, Some(old)).message(msg)
+    RefUpdate::update(rgit_bstr::from_bytes(local).into_owned(), new, Some(old)).message(msg)
 }
 
 /// The reflog writer and the caller's `reference-transaction` hook.
@@ -297,12 +298,7 @@ pub fn stale_refs(
             continue;
         }
         let Some(dst) = &spec.dst else { continue };
-        let prefix = dst
-            .split_str("*")
-            .next()
-            .unwrap_or(b"")
-            .to_str_lossy()
-            .into_owned();
+        let prefix = rgit_bstr::from_bytes(dst.split_str("*").next().unwrap_or(b"")).into_owned();
         // Only directories: `refs/remotes/origin/` lists below it.
         let list_prefix = match prefix.rfind('/') {
             Some(i) => &prefix[..=i],
@@ -316,7 +312,9 @@ pub fn stale_refs(
             ) {
                 continue;
             }
-            let Some(src) = spec.map_dst(name.as_bytes()) else {
+            // Names that are not UTF-8 are escaped; match their bytes.
+            let raw = rgit_bstr::to_bytes(&name).into_owned();
+            let Some(src) = spec.map_dst(&raw) else {
                 continue;
             };
             if specs.is_excluded(&src) {
@@ -325,7 +323,7 @@ pub fn stale_refs(
             if refs.iter().any(|r| r.name == src.as_slice()) {
                 continue;
             }
-            let name = BString::from(name);
+            let name = BString::from(raw);
             if !out.iter().any(|(n, _)| n == &name) {
                 out.push((name, oid));
             }
@@ -340,6 +338,11 @@ pub fn stale_refs(
 pub fn delete(repo: &LocalRepo, name: &BStr, old: ObjectId) -> Result<(), String> {
     write(
         repo,
-        RefUpdate::delete(name.to_str_lossy().into_owned(), repo.hash, Some(old)).no_deref(true),
+        RefUpdate::delete(
+            rgit_bstr::from_bytes(name).into_owned(),
+            repo.hash,
+            Some(old),
+        )
+        .no_deref(true),
     )
 }

@@ -3,7 +3,7 @@
 //! arguments, the ref map from refspecs, opportunistic remote-tracking
 //! updates, merge candidates and tag following.
 
-use bstr::{BString, ByteSlice};
+use bstr::BString;
 use rgit_hash::{HashKind, ObjectId};
 use rgit_protocol::v2::RemoteRef;
 use rgit_remote::refspec::{FetchMapping, fetch_map, remove_duplicate_destinations};
@@ -57,7 +57,7 @@ pub fn ref_prefixes(specs: &RefspecSet, extra: &[String]) -> Vec<String> {
         if spec.exact_oid {
             continue;
         }
-        let src = spec.src.to_str_lossy();
+        let src = rgit_bstr::from_bytes(&spec.src);
         if spec.pattern {
             let star = src.find('*').unwrap_or(src.len());
             add(src[..star].to_string());

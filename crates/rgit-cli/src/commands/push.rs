@@ -844,7 +844,7 @@ impl Push<'_> {
         let refs = rgit_fetch::helper_refs(&listed)
             .into_iter()
             .map(|r| AdvertisedRef {
-                name: String::from_utf8_lossy(&r.name).into_owned(),
+                name: rgit_bstr::from_bytes(&r.name).into_owned(),
                 oid: r.oid.unwrap_or(null),
             })
             .collect();

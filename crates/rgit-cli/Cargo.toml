@@ -31,6 +31,7 @@ bstr = { version = "1.13", default-features = false, features = ["std"] }
 # The library API (ADR 0005); commands move onto it step by step.
 rgit = { path = "../rgit" }
 rgit-archive = { path = "../rgit-archive" }
+rgit-bstr = { path = "../rgit-bstr" }
 rgit-attr = { path = "../rgit-attr" }
 rgit-apply = { path = "../rgit-apply" }
 rgit-commit = { path = "../rgit-commit" }

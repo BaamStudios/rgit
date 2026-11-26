@@ -1155,7 +1155,7 @@ impl Session {
         };
         let list: Vec<String> = names
             .iter()
-            .map(|n| String::from_utf8_lossy(&target(n)).into_owned())
+            .map(|n| rgit_bstr::from_bytes(&target(n)).into_owned())
             .collect();
         if list.is_empty() {
             return Ok(());
@@ -1244,7 +1244,7 @@ fn helper_fetch(
                 .refs
                 .iter()
                 .find(|r| r.oid == Some(*w) && r.symref_target.is_none())
-                .map(|r| String::from_utf8_lossy(&r.name).into_owned())
+                .map(|r| rgit_bstr::from_bytes(&r.name).into_owned())
                 .unwrap_or_else(|| w.to_hex());
             (w.to_hex(), name)
         })

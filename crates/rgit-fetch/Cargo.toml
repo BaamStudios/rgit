@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 bstr = { version = "1.13", default-features = false, features = ["std"] }
+rgit-bstr = { path = "../rgit-bstr" }
 rgit-bundle = { path = "../rgit-bundle" }
 rgit-config = { path = "../rgit-config" }
 rgit-fs = { path = "../rgit-fs" }

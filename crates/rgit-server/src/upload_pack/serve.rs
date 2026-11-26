@@ -56,7 +56,8 @@ impl<W: Write> Output<W> {
     /// A text line: `line` and LF.
     pub fn line(&mut self, line: &str) -> Result<()> {
         let mut data = Vec::with_capacity(line.len() + 2);
-        data.extend_from_slice(line.as_bytes());
+        // Reference names that are not UTF-8 go out as their bytes.
+        data.extend_from_slice(&rgit_bstr::to_bytes(line));
         data.push(b'\n');
         self.data(&data)
     }
