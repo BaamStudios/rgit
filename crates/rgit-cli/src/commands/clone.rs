@@ -45,6 +45,8 @@ use crate::repo::command_line;
 /// Parsed command line.
 #[derive(Default)]
 struct Options {
+    /// `--bundle-uri`.
+    bundle_uri: Option<String>,
     quiet: bool,
     progress: Option<bool>,
     no_checkout: bool,
@@ -237,11 +239,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     drop(parser);
 
     // Options rgit does not implement yet.
-    let unsupported: [(&str, bool); 4] = [
+    let unsupported: [(&str, bool); 3] = [
         ("--filter", filter.borrow().is_some()),
         ("--also-filter-submodules", also_filter_submodules.get()),
         ("--sparse", sparse.get()),
-        ("--bundle-uri", bundle_uri.borrow().is_some()),
     ];
     if let Some((name, _)) = unsupported.iter().find(|(_, used)| *used) {
         return Err(Die::Fatal(msg::unsupported(name)));
@@ -250,6 +251,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Some(f) => Some(repo_init::parse_ref_format(&f).map_err(|e| init_failed(&e))?),
         None => None,
     };
+    if bundle_uri.borrow().is_some()
+        && (depth.borrow().is_some()
+            || shallow_since.borrow().is_some()
+            || !shallow_exclude.borrow().is_empty())
+    {
+        return Err(Die::Fatal(msg::incompatible(
+            "--bundle-uri",
+            "--depth/--shallow-since/--shallow-exclude",
+        )));
+    }
     let separate_git_dir = separate_git_dir.into_inner();
     if separate_git_dir.is_some() && (bare.get() || mirror.get()) {
         let first = if bare.get() { "--bare" } else { "--mirror" };
@@ -293,6 +304,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         shallow_submodules: shallow_submodules.get(),
         remote_submodules: remote_submodules.get(),
         jobs: jobs.get(),
+        bundle_uri: bundle_uri.into_inner(),
     };
     if opts.bare {
         opts.no_checkout = true;
@@ -309,6 +321,8 @@ struct Source {
     /// Where the transport connects: the URL, or the git directory a
     /// gitfile at the source points to.
     connect_url: String,
+    /// The source is a bundle file.
+    bundle: bool,
 }
 
 /// git's lookup of a local repository: `<repo>/.git`, `<repo>`,
@@ -369,7 +383,21 @@ fn resolve_source(repo: &str, cwd: &Path, local: Option<bool>) -> Result<Source,
             connect_url: git_dir.map_or_else(|| url.clone(), |g| g.to_string_lossy().into_owned()),
             url,
             local_dir: local != Some(false),
+            bundle: false,
         });
+    }
+    // A bundle file: `<repo>`, else `<repo>.bundle`.
+    for suffix in ["", ".bundle"] {
+        let candidate = cwd.join(format!("{repo}{suffix}"));
+        if rgit_fetch::bundle::is_bundle_file(&candidate) {
+            let url = candidate.to_string_lossy().into_owned();
+            return Ok(Source {
+                connect_url: url.clone(),
+                url,
+                local_dir: false,
+                bundle: true,
+            });
+        }
     }
     let bytes = repo.as_bytes();
     if rgit_remote::url::is_url(bytes) || !rgit_remote::url::is_local_path(bytes) {
@@ -377,6 +405,7 @@ fn resolve_source(repo: &str, cwd: &Path, local: Option<bool>) -> Result<Source,
             url: repo.to_owned(),
             connect_url: repo.to_owned(),
             local_dir: false,
+            bundle: false,
         });
     }
     Err(Die::Fatal(msg::repository_does_not_exist(repo)))
@@ -464,7 +493,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let source = resolve_source(repo, &cwd, opts.local)?;
     let dir = match dir_arg {
         Some(d) => d.to_owned(),
-        None => rgit_remote::url::humanish_dir(repo.as_bytes(), opts.bare, false)
+        None => rgit_remote::url::humanish_dir(repo.as_bytes(), opts.bare, source.bundle)
             .map_err(|e| Die::Fatal(e.to_string()))?
             .to_string(),
     };
@@ -663,6 +692,29 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         }
     }
 
+    // `--bundle-uri`: the bundles come first (before a local clone copies
+    // the objects). Their refs (`refs/bundles/*`) become `have`s below.
+    let mut bundles_used = false;
+    if let Some(uri) = &opts.bundle_uri {
+        let setup = open_new_repository(ctx, &git_dir, work_tree.as_deref())?;
+        let config = refs_support::load_config(ctx, &setup)?;
+        let repo = LocalRepo::open(&setup, config).map_err(|e| Die::Fatal(e.to_string()))?;
+        let bundle_settings = ConnectSettings {
+            env: &env,
+            config: &repo.config,
+            base_env: ctx.child_env(),
+            upload_pack: None,
+            ip: opts.ip,
+            verbose: opts.verbose,
+        };
+        let o = rgit_fetch::bundle_uri::fetch_bundle_uri(&repo, &bundle_settings, uri, None);
+        bundles_used = o.unbundled;
+        if let (true, Some(token)) = (o.heuristic, o.token) {
+            config_set(&config_path, "fetch.bundleURI", uri)?;
+            config_set(&config_path, "fetch.bundleCreationToken", &token.to_string())?;
+        }
+    }
+
     // Borrow objects: --reference repositories, then the source itself
     // for a local --shared clone.
     let mut alternates: Vec<PathBuf> = Vec::new();
@@ -769,6 +821,9 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         opts.server_options.clone()
     };
     let mut session = Session::connect(&source.connect_url, &connect, "clone").map_err(|e| fatal(&e))?;
+    if session.bundle_header().is_some_and(|h| h.filter.is_some()) {
+        return Err(Die::Fatal(msg::CLONE_FILTERED_BUNDLE.into()));
+    }
     session
         .check_server_options(&opts.server_options)
         .map_err(|e| fatal(&e))?;
@@ -968,6 +1023,41 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         (setup, repo)
     };
 
+    // A list the server advertises (`transfer.bundleURI`), unless
+    // `--bundle-uri` was given. Bundle refs become `have`s below.
+    if opts.bundle_uri.is_none()
+        && repo
+            .config
+            .bool("transfer.bundleuri")
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    {
+        if let Some(lines) = session.bundle_uri_lines().map_err(|e| fatal(&e))? {
+            let mut list = rgit_bundle::BundleList::new(&source.url);
+            for line in &lines {
+                let _ = list.parse_line(line, &mut |m| eprintln!("warning: {m}"));
+            }
+            let missing = list.missing_uris();
+            if !missing.is_empty() {
+                for id in missing {
+                    eprintln!("error: {}", rgit_bundle::messages::bundle_has_no_uri(id));
+                }
+            } else if !list.entries.is_empty() {
+                let bundle_settings = ConnectSettings {
+                    env: &env,
+                    config: &repo.config,
+                    base_env: ctx.child_env(),
+                    upload_pack: None,
+                    ip: opts.ip,
+                    verbose: opts.verbose,
+                };
+                let o =
+                    rgit_fetch::bundle_uri::fetch_bundle_list(&repo, &bundle_settings, &list);
+                bundles_used |= o.unbundled;
+            }
+        }
+    }
     let reflog_msg = msg::reflog_clone(&anonymize(&source.url));
     let mut packs: Vec<ReceivedPack> = Vec::new();
     let mut remote_head_ref: Option<String> = None;
@@ -1036,7 +1126,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         // With alternates, their refs and the advertised objects found
         // there are announced as `have`s.
         let advertised: Vec<ObjectId> = refs.iter().filter_map(|r| r.oid).collect();
-        let haves = (!alternates.is_empty()).then_some(advertised.as_slice());
+        let haves = (!alternates.is_empty() || bundles_used).then_some(advertised.as_slice());
 
         let show_progress = !opts.quiet
             && opts

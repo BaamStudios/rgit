@@ -1,0 +1,15 @@
+[package]
+name = "rgit-bundle"
+description = "rgit: bundle files (git bundle) and bundle lists (bundle URIs)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rgit-hash = { path = "../rgit-hash" }
+rgit-config = { path = "../rgit-config" }

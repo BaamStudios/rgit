@@ -151,3 +151,7 @@ pub const INVALID_INDEX_PACK_OUTPUT: &str = "fetch-pack: invalid index-pack outp
 pub fn fsck_finding(id: &rgit_hash::ObjectId, finding: &dyn std::fmt::Display) -> String {
     format!("object {id}: {finding}")
 }
+
+/// `fatal:` when a bundle cannot be used as fetch source (after its own
+/// `error:` lines).
+pub const REMOTE_TRANSPORT_ERROR: &str = "remote transport reported error";

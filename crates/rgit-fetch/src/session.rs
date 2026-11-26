@@ -105,13 +105,21 @@ enum Proto {
         adv: Advertisement,
         client: Option<v0::Client<Box<dyn Connection>>>,
     },
+    /// A bundle file: its refs are the remote's refs, its pack is stored
+    /// once (`unbundled`).
+    Bundle {
+        path: PathBuf,
+        header: rgit_bundle::Header,
+        caps: Capabilities,
+        unbundled: bool,
+    },
 }
 
 /// An open connection to `upload-pack`.
 pub struct Session {
     proto: Proto,
     url: String,
-    transport: Box<dyn Transport>,
+    transport: Option<Box<dyn Transport>>,
     options: ConnectOptions,
     program: &'static str,
     shallow_info: Option<ShallowInfo>,
@@ -196,6 +204,9 @@ impl Session {
         settings: &ConnectSettings<'_>,
         program: &'static str,
     ) -> Result<Session> {
+        if let Some(path) = crate::bundle::bundle_path(url) {
+            return Session::open_bundle(url, path, program);
+        }
         let protocol = protocol_name(url);
         rgit_remote::check_allowed(protocol.as_bytes(), settings.config, settings.env)
             .map_err(|e| Error::fatal(e.to_string()))?;
@@ -254,11 +265,65 @@ impl Session {
         Ok(Session {
             proto,
             url: url.to_owned(),
-            transport,
+            transport: Some(transport),
             options,
             program,
             shallow_info: None,
         })
+    }
+
+    /// A session reading the bundle file at `path`.
+    fn open_bundle(url: &str, path: PathBuf, program: &'static str) -> Result<Session> {
+        let header = match crate::bundle::open(&path) {
+            Ok(b) => b.header,
+            Err(crate::bundle::OpenError::CannotOpen(e)) => return Err(e.into()),
+            Err(crate::bundle::OpenError::Header(e)) => {
+                return Err(match e {
+                    rgit_bundle::HeaderError::NotABundle => {
+                        Error::fatal(rgit_bundle::messages::not_a_bundle(url))
+                    }
+                    rgit_bundle::HeaderError::Error(m) | rgit_bundle::HeaderError::Fatal(m) => {
+                        Error::fatal(m)
+                    }
+                    rgit_bundle::HeaderError::Io(e) => e.into(),
+                });
+            }
+        };
+        let mut caps = Capabilities::new();
+        // Any object may be asked for; what is missing afterwards fails
+        // the connectivity check.
+        caps.push("allow-reachable-sha1-in-want", None);
+        caps.push("object-format", Some(header.hash.name().to_owned()));
+        Ok(Session {
+            proto: Proto::Bundle {
+                path,
+                header,
+                caps,
+                unbundled: false,
+            },
+            url: url.to_owned(),
+            transport: None,
+            options: ConnectOptions::new(Service::UploadPack),
+            program,
+            shallow_info: None,
+        })
+    }
+
+    /// The header of the bundle this session reads, if it reads one.
+    pub fn bundle_header(&self) -> Option<&rgit_bundle::Header> {
+        match &self.proto {
+            Proto::Bundle { header, .. } => Some(header),
+            _ => None,
+        }
+    }
+
+    /// The `key=value` lines of the server's bundle list (protocol v2
+    /// `bundle-uri`); `None` when the server does not offer the command.
+    pub fn bundle_uri_lines(&mut self) -> Result<Option<Vec<String>>> {
+        match &mut self.proto {
+            Proto::V2(c) if c.supports_bundle_uri() => Ok(Some(c.bundle_uri()?)),
+            _ => Ok(None),
+        }
     }
 
     /// The `shallow-info` sections received so far (merged), taken out.
@@ -276,6 +341,7 @@ impl Session {
         match &self.proto {
             Proto::V2(_) => ProtocolVersion::V2,
             Proto::V0 { adv, .. } => adv.version,
+            Proto::Bundle { .. } => ProtocolVersion::V0,
         }
     }
 
@@ -284,6 +350,7 @@ impl Session {
         match &self.proto {
             Proto::V2(c) => c.object_format(),
             Proto::V0 { adv, .. } => adv.format,
+            Proto::Bundle { header, .. } => header.hash,
         }
     }
 
@@ -300,6 +367,7 @@ impl Session {
         match &self.proto {
             Proto::V2(c) => c.capabilities(),
             Proto::V0 { adv, .. } => &adv.caps,
+            Proto::Bundle { caps, .. } => caps,
         }
     }
 
@@ -333,6 +401,7 @@ impl Session {
         match &mut self.proto {
             Proto::V2(c) => Ok(c.ls_refs(args)?),
             Proto::V0 { adv, .. } => Ok(adv.refs.clone()),
+            Proto::Bundle { header, .. } => Ok(crate::bundle::remote_refs(header)),
         }
     }
 
@@ -355,6 +424,37 @@ impl Session {
         if wants.is_empty() && opts.want_refs.is_empty() {
             return Ok(None);
         }
+        if let Proto::Bundle {
+            path,
+            header,
+            unbundled,
+            ..
+        } = &mut self.proto
+        {
+            if *unbundled {
+                return Ok(None);
+            }
+            *unbundled = true;
+            let check = crate::bundle::check_prerequisites(repo, header);
+            if check != crate::bundle::Prerequisites::Ok {
+                check.report();
+                return Err(Error::fatal(messages::REMOTE_TRANSPORT_ERROR));
+            }
+            let mut bundle = match crate::bundle::open(path) {
+                Ok(b) => b,
+                Err(crate::bundle::OpenError::CannotOpen(e)) => return Err(e.into()),
+                Err(crate::bundle::OpenError::Header(_)) => {
+                    return Err(Error::fatal(messages::REMOTE_TRANSPORT_ERROR));
+                }
+            };
+            let uopts = crate::bundle::UnbundleOptions {
+                progress: !opts.no_progress,
+                title: None,
+                fsck: opts.fsck.clone(),
+            };
+            let pack = crate::bundle::unbundle(repo, &mut bundle, &uopts)?;
+            return Ok(Some(pack));
+        }
         let mut args = FetchArgs {
             wants: wants.to_vec(),
             want_refs: opts.want_refs.clone(),
@@ -375,7 +475,8 @@ impl Session {
         // A v0/v1 service that sent a pack has ended: connect again.
         if let Proto::V0 { adv, client } = &mut self.proto {
             if client.is_none() {
-                let (a, c) = reconnect(self.transport.as_mut(), &self.options, self.program)?;
+                let transport = self.transport.as_mut().expect("v0 has a transport");
+                let (a, c) = reconnect(transport.as_mut(), &self.options, self.program)?;
                 *adv = a;
                 *client = Some(c);
             }
@@ -504,6 +605,7 @@ impl Session {
                     let c = client.as_mut().expect("connected above");
                     c.fetch(&args, negotiator, &mut progress, sink)
                 }
+                Proto::Bundle { .. } => unreachable!("handled above"),
             };
             drop(tx);
             let indexed = match worker.join() {
@@ -674,7 +776,7 @@ impl Session {
                 client.close()?;
                 let _ = client.into_inner().close();
             }
-            Proto::V0 { client: None, .. } => {}
+            Proto::V0 { client: None, .. } | Proto::Bundle { .. } => {}
         }
         Ok(())
     }
@@ -949,12 +1051,30 @@ fn trace_packfile() -> Option<std::fs::File> {
 }
 
 pub fn store_pack_stream(repo: &LocalRepo, reader: &mut dyn Read) -> Result<ReceivedPack> {
+    index_stream(repo, reader, None, false, None)
+}
+
+/// Index the pack read from `reader` (with meters titled `title` when
+/// `progress`, objects checked with `fsck`) and store it like a fetched
+/// pack, kept until the caller releases it.
+pub(crate) fn index_stream(
+    repo: &LocalRepo,
+    reader: &mut dyn Read,
+    title: Option<&str>,
+    progress: bool,
+    fsck: Option<&FsckCheck>,
+) -> Result<ReceivedPack> {
     let pack_dir = repo.objects_dir().join("pack");
     std::fs::create_dir_all(&pack_dir)?;
     let mut tmp = TempFile::with_mode(&pack_dir, rgit_fs::PACK_PREFIX, 0o444)?;
     let tmp_path = tmp.path().to_path_buf();
     let mut file = tmp.file_mut().try_clone()?;
     let ip_opts = index_pack_options(repo);
+    let fsck_hook = fsck.map(|check| FsckHook {
+        hash: repo.hash,
+        check,
+    });
+    let mut meter = ip::meter::PackMeter::new(title, true, progress);
     let indexed = ip::index_pack(
         Input::Stream {
             reader,
@@ -963,9 +1083,17 @@ pub fn store_pack_stream(repo: &LocalRepo, reader: &mut dyn Read) -> Result<Rece
         },
         &ip_opts,
         Some(&repo.odb as &dyn ObjectDb),
-        None,
-        None,
-    )?;
+        fsck_hook.as_ref().map(|h| h as &dyn ip::ObjectHook),
+        Some(&mut meter),
+    );
+    let indexed = match indexed {
+        Err(ip::Error::Hook(msg)) => {
+            eprintln!("fatal: {msg}");
+            let failed = fsck.map(|c| c.failed.clone()).unwrap_or_default();
+            return Err(Error::fatal(failed));
+        }
+        r => r?,
+    };
     let stored = store_pack(repo, tmp, &indexed)?;
     repo.rescan_packs();
     Ok(ReceivedPack {

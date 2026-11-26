@@ -6,6 +6,7 @@
 //! The walk itself (orderings, limiting, boundary, sides, objects) lives in
 //! `rgit_revwalk::walk`; this module wires it to the repository and prints.
 
+mod bundle_walk;
 mod decorate;
 mod follow;
 pub mod graph;
@@ -39,6 +40,7 @@ use crate::repo::{self, Mode};
 use crate::revisions::{self, Config, IndexFile, Objects, Refs, WorkTree};
 use crate::signing::verify::{self, Check};
 use crate::{Context, Die};
+pub use bundle_walk::bundle_walk;
 use decorate::{Colors, Decorations, Parts};
 pub use options::Options;
 use options::{Abbrev, Decorate, MergeDiff, MergesPatch, ObjectsMode};

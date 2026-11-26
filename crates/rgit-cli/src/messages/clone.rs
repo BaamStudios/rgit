@@ -194,3 +194,6 @@ pub fn failed_to_copy(path: &str, reason: &str) -> String {
 pub fn failed_to_create_directory(path: &str) -> String {
     format!("failed to create directory '{path}'")
 }
+
+/// `fatal:` for a clone from a bundle with an object filter.
+pub const CLONE_FILTERED_BUNDLE: &str = "cannot clone from filtered bundle";

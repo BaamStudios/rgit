@@ -464,6 +464,31 @@ impl<C: Duplex> Client<C> {
         }
     }
 
+    /// Whether the server advertises the `bundle-uri` command.
+    pub fn supports_bundle_uri(&self) -> bool {
+        self.caps.contains("bundle-uri")
+    }
+
+    /// Run `bundle-uri` (`gitprotocol-v2.adoc`): the `key=value` lines of
+    /// the server's bundle list, as sent.
+    pub fn bundle_uri(&mut self) -> Result<Vec<String>> {
+        self.begin("bundle-uri", &[])?;
+        self.end_request()?;
+        let mut lines = Vec::new();
+        let mut pkt = self.first()?;
+        loop {
+            match pkt {
+                Pkt::Flush => return Ok(lines),
+                Pkt::Data(line) => {
+                    let line = line.strip_suffix(b"\n").unwrap_or(&line);
+                    lines.push(String::from_utf8_lossy(line).into_owned());
+                }
+                other => return Err(Error::Unexpected(other.describe())),
+            }
+            pkt = self.next()?;
+        }
+    }
+
     fn parse_ref(&self, line: &[u8]) -> Result<RemoteRef> {
         let bad = || Error::InvalidLsRefs(String::from_utf8_lossy(line).into_owned());
         let mut fields = line.split(|&b| b == b' ');

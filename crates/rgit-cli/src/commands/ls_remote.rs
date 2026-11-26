@@ -216,85 +216,92 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         return Ok(0);
     }
 
-    rgit_remote::check_allowed(rgit_fetch::protocol_name(&url).as_bytes(), &config, &env)
-        .map_err(|e| Die::Fatal(e.to_string()))?;
-    let settings = Settings {
-        env: &env,
-        config: &config,
-        ip: IpVersion::Any,
-        base_env: ctx.child_env(),
-    };
-    let fatal = |e: &dyn std::fmt::Display| Die::Fatal(e.to_string());
-    let Some(mut transport) = rgit_http::transport_for(&url, &settings).map_err(|e| fatal(&e))?
-    else {
-        return Err(Die::Fatal(msg::no_remote_helper(
-            url.split("://").next().unwrap_or(&url),
-        )));
-    };
-    let mut options = ConnectOptions::new(Service::UploadPack);
-    options.program = upload_pack.borrow().clone().or_else(|| {
-        remote
-            .upload_pack
-            .as_ref()
-            .map(|p| p.to_str_lossy().into_owned())
-    });
-    options.protocol_version =
-        rgit_fetch::protocol_version(&config, &env).map_err(|e| fatal(&e))?;
-    options.trace_name = Some("ls-remote".into());
-    let conn = transport.connect(&options).map_err(|e| fatal(&e))?;
-    let mut reader = Reader::new(conn, "ls-remote");
-    skip_service_header(&mut reader).map_err(|e| fatal(&e))?;
-    // A service that ends without saying anything (no repository, a
-    // failing upload-pack) has printed its own error already.
-    if reader.peek().map_err(|e| fatal(&e))?.is_none() {
-        let _ = reader.into_inner().close();
-        return Err(Die::Fatal(msg::READ_FAILED.into()));
-    }
-    let refs: Vec<RemoteRef> = match ProtocolVersion::read(&mut reader).map_err(|e| fatal(&e))? {
-        ProtocolVersion::V2 => {
-            let caps = Capabilities::read_v2(&mut reader).map_err(|e| fatal(&e))?;
-            let mut client = Client::with_capabilities(reader, caps).map_err(|e| fatal(&e))?;
-            let mut ls = LsRefsArgs::standard();
-            // `-o` replaces `remote.<name>.serverOption`.
-            ls.server_options = if server_options.borrow().is_empty() {
-                remote
-                    .server_options
-                    .iter()
-                    .map(|o| o.to_str_lossy().into_owned())
-                    .collect()
-            } else {
-                server_options.borrow().clone()
-            };
-            if branches.get() {
-                ls.ref_prefixes.push("refs/heads/".into());
-            }
-            if tags.get() {
-                ls.ref_prefixes.push("refs/tags/".into());
-            }
-            let refs = client.ls_refs(&ls).map_err(|e| fatal(&e))?;
-            client.close().map_err(|e| fatal(&e))?;
-            client.into_inner().close().map_err(|e| fatal(&e))?;
-            refs
+    let refs: Vec<RemoteRef> = if let Some(path) = rgit_fetch::bundle::bundle_path(&url) {
+        match rgit_fetch::bundle::open(&path) {
+            Ok(b) => rgit_fetch::bundle::remote_refs(&b.header),
+            Err(e) => return Err(bundle_open_error(&url, e)),
         }
-        v => {
-            if !server_options.borrow().is_empty() {
-                eprintln!("hint: {}", rgit_fetch::messages::SERVER_OPTIONS_HINT);
-                return Err(Die::Fatal(rgit_fetch::messages::SERVER_OPTIONS_NEED_V2.into()));
+    } else {
+        rgit_remote::check_allowed(rgit_fetch::protocol_name(&url).as_bytes(), &config, &env)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
+        let settings = Settings {
+            env: &env,
+            config: &config,
+            ip: IpVersion::Any,
+            base_env: ctx.child_env(),
+        };
+        let fatal = |e: &dyn std::fmt::Display| Die::Fatal(e.to_string());
+        let Some(mut transport) = rgit_http::transport_for(&url, &settings).map_err(|e| fatal(&e))?
+        else {
+            return Err(Die::Fatal(msg::no_remote_helper(
+                url.split("://").next().unwrap_or(&url),
+            )));
+        };
+        let mut options = ConnectOptions::new(Service::UploadPack);
+        options.program = upload_pack.borrow().clone().or_else(|| {
+            remote
+                .upload_pack
+                .as_ref()
+                .map(|p| p.to_str_lossy().into_owned())
+        });
+        options.protocol_version =
+            rgit_fetch::protocol_version(&config, &env).map_err(|e| fatal(&e))?;
+        options.trace_name = Some("ls-remote".into());
+        let conn = transport.connect(&options).map_err(|e| fatal(&e))?;
+        let mut reader = Reader::new(conn, "ls-remote");
+        skip_service_header(&mut reader).map_err(|e| fatal(&e))?;
+        // A service that ends without saying anything (no repository, a
+        // failing upload-pack) has printed its own error already.
+        if reader.peek().map_err(|e| fatal(&e))?.is_none() {
+            let _ = reader.into_inner().close();
+            return Err(Die::Fatal(msg::READ_FAILED.into()));
+        }
+        match ProtocolVersion::read(&mut reader).map_err(|e| fatal(&e))? {
+            ProtocolVersion::V2 => {
+                let caps = Capabilities::read_v2(&mut reader).map_err(|e| fatal(&e))?;
+                let mut client = Client::with_capabilities(reader, caps).map_err(|e| fatal(&e))?;
+                let mut ls = LsRefsArgs::standard();
+                // `-o` replaces `remote.<name>.serverOption`.
+                ls.server_options = if server_options.borrow().is_empty() {
+                    remote
+                        .server_options
+                        .iter()
+                        .map(|o| o.to_str_lossy().into_owned())
+                        .collect()
+                } else {
+                    server_options.borrow().clone()
+                };
+                if branches.get() {
+                    ls.ref_prefixes.push("refs/heads/".into());
+                }
+                if tags.get() {
+                    ls.ref_prefixes.push("refs/tags/".into());
+                }
+                let refs = client.ls_refs(&ls).map_err(|e| fatal(&e))?;
+                client.close().map_err(|e| fatal(&e))?;
+                client.into_inner().close().map_err(|e| fatal(&e))?;
+                refs
             }
-            let refs = rgit_protocol::v0::read_advertisement(&mut reader, v)
-                .map_err(|e| fatal(&e))?
-                .refs;
-            let mut conn = reader.into_inner();
-            if !conn.is_stateless() {
-                // End the session: a flush packet instead of wants. A
-                // server that is gone already does not need it.
-                let _ = conn.write_all(b"0000");
-                let _ = conn.end_request();
+            v => {
+                if !server_options.borrow().is_empty() {
+                    eprintln!("hint: {}", rgit_fetch::messages::SERVER_OPTIONS_HINT);
+                    return Err(Die::Fatal(rgit_fetch::messages::SERVER_OPTIONS_NEED_V2.into()));
+                }
+                let refs = rgit_protocol::v0::read_advertisement(&mut reader, v)
+                    .map_err(|e| fatal(&e))?
+                    .refs;
+                let mut conn = reader.into_inner();
+                if !conn.is_stateless() {
+                    // End the session: a flush packet instead of wants. A
+                    // server that is gone already does not need it.
+                    let _ = conn.write_all(b"0000");
+                    let _ = conn.end_request();
+                }
+                // How the server ends after the flush does not matter (git
+                // does not look at its exit status either).
+                let _ = conn.close();
+                refs
             }
-            // How the server ends after the flush does not matter (git
-            // does not look at its exit status either).
-            let _ = conn.close();
-            refs
         }
     };
     if dest.is_none() && !quiet.get() {
@@ -352,6 +359,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let _ = writeln!(out, "{}\t{}", e.oid.to_hex(), e.name);
     }
     Ok(if exit_code.get() && !found { 2 } else { 0 })
+}
+
+/// The error for a bundle file that cannot be read.
+pub(crate) fn bundle_open_error(url: &str, e: rgit_fetch::bundle::OpenError) -> Die {
+    use rgit_bundle::HeaderError;
+    match e {
+        rgit_fetch::bundle::OpenError::CannotOpen(e) => Die::Fatal(e.to_string()),
+        rgit_fetch::bundle::OpenError::Header(HeaderError::NotABundle) => {
+            Die::Fatal(rgit_bundle::messages::not_a_bundle(url))
+        }
+        rgit_fetch::bundle::OpenError::Header(HeaderError::Error(m) | HeaderError::Fatal(m)) => {
+            Die::Fatal(m)
+        }
+        rgit_fetch::bundle::OpenError::Header(HeaderError::Io(e)) => Die::Fatal(e.to_string()),
+    }
 }
 
 /// One line of the listing (with its `ref:` line for `--symref`).

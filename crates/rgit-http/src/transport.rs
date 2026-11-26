@@ -49,6 +49,22 @@ pub fn transport_for(
     )))
 }
 
+/// Download the file at the `http://` or `https://` URL `url` (a bundle
+/// URI), with the `http.*` settings and credential helpers of `settings`.
+pub fn download(url: &str, settings: &rgit_transport::Settings<'_>) -> TResult<Vec<u8>> {
+    let parsed = Url::parse(url).map_err(other)?;
+    let opts = HttpOptions::load(settings.config, &parsed, settings.env).map_err(other)?;
+    let credentials = SystemCredentials {
+        config: settings.config.clone(),
+        base_env: settings.base_env.clone(),
+        helper_caps: (false, false),
+    };
+    let mut session = SmartHttp::new(url, opts)
+        .map_err(other)?
+        .with_credentials(credentials);
+    session.get_file().map_err(other)
+}
+
 /// `remote.<name>.proxy` and `remote.<name>.proxyAuthMethod` of the remote
 /// whose `url` or `pushurl` is `url` (they override `http.proxy` and
 /// `http.proxyAuthMethod`; `GIT_HTTP_PROXY_AUTHMETHOD` still wins).
