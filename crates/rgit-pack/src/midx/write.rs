@@ -26,8 +26,7 @@ use rgit_hash::{HashKind, ObjectId};
 use super::messages as m;
 use super::{
     CHAIN_DIR, CHAIN_FILE, FILE_NAME, HEADER_LEN, ID_BTMP, ID_LOFF, ID_OIDF, ID_OIDL, ID_OOFF,
-    ID_PNAM, ID_RIDX,
-    LARGE_FLAG, MidxChain, MultiPackIndex, SIGNATURE, hash_version, layer_path,
+    ID_PNAM, ID_RIDX, LARGE_FLAG, MidxChain, MultiPackIndex, SIGNATURE, hash_version, layer_path,
 };
 use crate::PackIndex;
 
@@ -104,6 +103,10 @@ pub fn build(kind: HashKind, version: u8, names: &[&str], entries: &[Entry]) -> 
     build_with(kind, version, names, entries, None)
 }
 
+/// The pseudo-pack order (positions into the entries) and, per pack, the
+/// first bit and number of bits: the `RIDX` and `BTMP` chunks.
+pub type PseudoPack = (Vec<u32>, Vec<(u32, u32)>);
+
 /// The pseudo-pack order of `entries` (sorted by id) for a reachability
 /// bitmap: the objects of the preferred pack first, then those of the
 /// other packs by pack-int-id, each pack in offset order. Returns the
@@ -113,7 +116,7 @@ pub fn pseudo_pack_order(
     entries: &[Entry],
     num_packs: usize,
     preferred: Option<usize>,
-) -> (Vec<u32>, Vec<(u32, u32)>) {
+) -> PseudoPack {
     let rank = |p: u32| -> (bool, u32) { (preferred != Some(p as usize), p) };
     let mut order: Vec<u32> = (0..entries.len() as u32).collect();
     order.sort_by_key(|&i| {
@@ -144,7 +147,7 @@ pub fn build_with(
     version: u8,
     names: &[&str],
     entries: &[Entry],
-    pseudo: Option<&(Vec<u32>, Vec<(u32, u32)>)>,
+    pseudo: Option<&PseudoPack>,
 ) -> Vec<u8> {
     let h = kind.byte_len();
     let mut pnam: Vec<u8> = Vec::new();

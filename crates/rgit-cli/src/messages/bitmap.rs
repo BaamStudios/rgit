@@ -40,6 +40,9 @@ pub fn no_indexed_bitmap(hex: &str) -> String {
     format!("commit '{hex}' doesn't have an indexed bitmap")
 }
 
-pub fn midx_missing(hex: &str) -> String {
-    format!("could not find '{hex}' in the multi-pack-index")
+pub const MIDX_EMPTY: &str = "refusing to write multi-pack .bitmap without any objects";
+pub const MIDX_WRITE_FAILED: &str = "could not write multi-pack bitmap";
+
+pub fn could_not_open_pack(name: &str) -> String {
+    format!("could not open pack {name}")
 }

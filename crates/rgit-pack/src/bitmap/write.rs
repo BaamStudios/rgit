@@ -127,7 +127,10 @@ pub fn select_commits(
 
 /// What the walk needs to know about a commit or tree.
 enum Node {
-    Commit { tree: ObjectId, parents: Vec<ObjectId> },
+    Commit {
+        tree: ObjectId,
+        parents: Vec<ObjectId>,
+    },
     Tree(Vec<(ObjectId, bool, Vec<u8>)>),
     Tag(ObjectId),
     Blob,
@@ -150,7 +153,11 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
         }
     }
 
-    fn node(&mut self, id: &ObjectId, kind: ObjectKind) -> Result<std::sync::Arc<Node>, BuildError> {
+    fn node(
+        &mut self,
+        id: &ObjectId,
+        kind: ObjectKind,
+    ) -> Result<std::sync::Arc<Node>, BuildError> {
         if let Some(n) = self.nodes.get(id) {
             return Ok(n.clone());
         }
@@ -205,7 +212,9 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
             .ok_or(BuildError::Missing(*commit))?;
         let c = Commit::parse(self.hash, &obj.data)
             .map_err(|_| BuildError::Read(*commit, "corrupt commit".into()))?;
-        Ok(c.committer().and_then(|s| s.time()).map_or(0, |t| t.seconds))
+        Ok(c.committer()
+            .and_then(|s| s.time())
+            .map_or(0, |t| t.seconds))
     }
 
     /// Parents of `commit`.
@@ -292,7 +301,8 @@ impl<'a, S: ObjectSource + ?Sized> Graph<'a, S> {
             }
             // Depth first: (tree, next entry, path of the tree).
             let root = self.node(&tree, ObjectKind::Tree)?;
-            let mut stack: Vec<(std::sync::Arc<Node>, usize, Vec<u8>)> = vec![(root, 0, Vec::new())];
+            let mut stack: Vec<(std::sync::Arc<Node>, usize, Vec<u8>)> =
+                vec![(root, 0, Vec::new())];
             while let Some((node, pos, path)) = stack.last_mut() {
                 let Node::Tree(entries) = &**node else {
                     stack.pop();
@@ -349,7 +359,12 @@ pub fn build<S: ObjectSource + ?Sized>(
         let mut bm = Bitmap::new();
         let mut lookup = |id: &ObjectId, _k: ObjectKind| bit_of(id);
         let mut stored = |id: &ObjectId| done.get(id).cloned();
-        graph.fill(&[(*c, ObjectKind::Commit)], &mut bm, &mut stored, &mut lookup)?;
+        graph.fill(
+            &[(*c, ObjectKind::Commit)],
+            &mut bm,
+            &mut stored,
+            &mut lookup,
+        )?;
         bm.trim();
         let bm = std::sync::Arc::new(bm);
         done.insert(*c, bm.clone());
@@ -358,25 +373,22 @@ pub fn build<S: ObjectSource + ?Sized>(
     Ok(out)
 }
 
-/// The bytes of a `.bitmap` file.
-///
-/// - `kinds`: the type of every object, by bit;
-/// - `index_pos`: the position of every object in the `.idx` (MIDX), by
-///   bit;
-/// - `entries`: the commit bitmaps, oldest first (the order of [`build`]);
-/// - `name_hashes`: by bit (written in index order when the cache is on);
-/// - `checksum`: of the pack (MIDX).
+/// The bytes of a `.bitmap` file for the objects `objs` (types, index
+/// positions, checksum), with the commit bitmaps `entries` (oldest first,
+/// the order of [`build`]); `entry_pos` gives the index position of a
+/// commit, `name_hashes` the name hashes by bit (written in index order
+/// when the cache is on).
 pub fn serialize(
     hash: HashKind,
-    kinds: &[ObjectKind],
-    index_pos: &[u32],
+    objs: &Objects<'_>,
     entries: &[Selected],
     entry_pos: &dyn Fn(&ObjectId) -> u32,
     name_hashes: &[u32],
-    checksum: &[u8],
     opts: Options,
 ) -> Vec<u8> {
-    let n = kinds.len();
+    let index_pos = objs.index_pos;
+    let checksum = objs.checksum;
+    let n = objs.objects.len();
     let mut flags = FLAG_FULL_DAG;
     if opts.hash_cache {
         flags |= FLAG_HASH_CACHE;
@@ -392,7 +404,7 @@ pub fn serialize(
     out.extend_from_slice(checksum);
 
     let mut types: [Bitmap; 4] = Default::default();
-    for (bit, k) in kinds.iter().enumerate() {
+    for (bit, (_, k)) in objs.objects.iter().enumerate() {
         types[type_slot(*k)].set(bit);
     }
     for t in &types {
@@ -600,18 +612,8 @@ pub fn write_bitmap<S: ObjectSource + ?Sized>(
         }
         NameHashes::Walk => Vec::new(),
     };
-    let kinds: Vec<ObjectKind> = objs.objects.iter().map(|o| o.1).collect();
     let entry_pos = |id: &ObjectId| bit_of(id).map_or(0, |b| objs.index_pos[b]);
-    let bytes = serialize(
-        hash,
-        &kinds,
-        objs.index_pos,
-        &entries,
-        &entry_pos,
-        &hashes,
-        objs.checksum,
-        opts,
-    );
+    let bytes = serialize(hash, objs, &entries, &entry_pos, &hashes, opts);
     Ok(Written {
         bytes,
         selected: selected.len(),
@@ -670,7 +672,15 @@ pub fn write_pack_bitmap<S: ObjectSource + ?Sized>(
         index_pos: &index_pos,
         checksum: idx.pack_checksum(),
     };
-    write_bitmap(source, hash, &objs, &commits, preferred, NameHashes::Walk, opts)
+    write_bitmap(
+        source,
+        hash,
+        &objs,
+        &commits,
+        preferred,
+        NameHashes::Walk,
+        opts,
+    )
 }
 
 #[cfg(test)]
@@ -687,7 +697,9 @@ mod tests {
         let tail: Vec<usize> = sel[100..].to_vec();
         assert_eq!(
             tail,
-            [100, 102, 106, 114, 130, 162, 226, 327, 428, 529, 630, 731, 832, 933]
+            [
+                100, 102, 106, 114, 130, 162, 226, 327, 428, 529, 630, 731, 832, 933
+            ]
         );
     }
 
@@ -700,7 +712,9 @@ mod tests {
         let pos = sel.iter().position(|&s| s == 20123).unwrap();
         assert_eq!(
             &sel[pos..],
-            &[20123, 20248, 20498, 20998, 21998, 23998, 27998, 32999, 38000]
+            &[
+                20123, 20248, 20498, 20998, 21998, 23998, 27998, 32999, 38000
+            ]
         );
     }
 

@@ -123,7 +123,11 @@ impl Bitmap {
 
     /// Drop trailing zero words.
     pub fn trim(&mut self) {
-        let used = self.words.iter().rposition(|&w| w != 0).map_or(0, |i| i + 1);
+        let used = self
+            .words
+            .iter()
+            .rposition(|&w| w != 0)
+            .map_or(0, |i| i + 1);
         self.words.truncate(used);
     }
 
@@ -236,7 +240,9 @@ fn encode_words(words: &[u64], bits: usize, out: &mut Vec<u8>) {
 /// truncated or inconsistent.
 pub fn decode(data: &[u8]) -> Option<(Bitmap, usize)> {
     let be32 = |p: usize| -> Option<u32> {
-        Some(u32::from_be_bytes(data.get(p..p.checked_add(4)?)?.try_into().ok()?))
+        Some(u32::from_be_bytes(
+            data.get(p..p.checked_add(4)?)?.try_into().ok()?,
+        ))
     };
     let bits = be32(0)? as usize;
     let nwords = be32(4)? as usize;
@@ -300,7 +306,10 @@ mod tests {
     fn empty_layout() {
         let mut out = Vec::new();
         Bitmap::new().encode_trimmed(&mut out);
-        assert_eq!(out, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            out,
+            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
     }
 
     #[test]
@@ -324,7 +333,10 @@ mod tests {
         let mut out = Vec::new();
         full.encode_full(&mut out);
         let (back, _) = decode(&out).unwrap();
-        assert_eq!(back.ones().collect::<Vec<_>>(), b.ones().collect::<Vec<_>>());
+        assert_eq!(
+            back.ones().collect::<Vec<_>>(),
+            b.ones().collect::<Vec<_>>()
+        );
         assert_eq!(back.words().len(), 6000usize.div_ceil(64));
     }
 

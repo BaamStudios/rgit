@@ -291,8 +291,13 @@ pub fn write_pack(
     let base = pack_dir.join(format!("pack-{}", checksum.to_hex()));
     let with = |ext: &str| base.with_extension(ext);
     if with("pack").exists() && with("idx").exists() {
-        // The same objects in the same order: nothing to replace.
+        // The same objects in the same order: nothing to replace, but a
+        // missing `.rev` is added (`pack.writeReverseIndex`).
         drop(tmp);
+        if opts.rev && !with("rev").exists() {
+            let bytes = indexed.rev_bytes().map_err(|e| Die::Fatal(e.to_string()))?;
+            write_file(&with("rev"), "tmp_rev_", &bytes, opts.shared)?;
+        }
         return Ok(Some(checksum));
     }
     share(&tmp_path, opts.shared);

@@ -439,11 +439,12 @@ impl BitmapIndex {
     /// Bit of `id`, if the pack (MIDX) has it.
     pub fn position(&self, id: &ObjectId) -> Option<usize> {
         match &self.order {
-            Order::Pack { pack, bit_of, .. } => pack
-                .index()
-                .lookup(id)
-                .map(|p| bit_of[p as usize] as usize),
-            Order::Midx { midx, bit_of, .. } => midx.lookup(id).map(|p| bit_of[p as usize] as usize),
+            Order::Pack { pack, bit_of, .. } => {
+                pack.index().lookup(id).map(|p| bit_of[p as usize] as usize)
+            }
+            Order::Midx { midx, bit_of, .. } => {
+                midx.lookup(id).map(|p| bit_of[p as usize] as usize)
+            }
         }
     }
 
@@ -552,7 +553,10 @@ impl BitmapIndex {
         match &self.order {
             Order::Pack { pack, by_bit, .. } => Some((pack.clone(), by_bit[bit].0)),
             Order::Midx {
-                midx, packs, by_bit, ..
+                midx,
+                packs,
+                by_bit,
+                ..
             } => {
                 let pos = by_bit[bit];
                 let p = midx.pack_id(pos).ok()?;

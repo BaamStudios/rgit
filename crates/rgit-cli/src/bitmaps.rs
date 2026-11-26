@@ -171,6 +171,21 @@ pub fn open(set: &rgit_pack::PackSet) -> Option<BitmapIndex> {
             rgit_pack::midx::MultiPackIndex::open(chain.tip().path(), set.hash_kind(), &mut errors)
         {
             let read_ridx = std::env::var("GIT_TEST_MIDX_READ_RIDX").map_or(true, |v| v != "0");
+            // A MIDX listing a pack that is gone is stale: git warns once
+            // for the bitmap and once for the MIDX, then uses the packs.
+            let missing = midx.pack_names().iter().find(|n| {
+                let idx = set.dir().join(n);
+                !packs.iter().any(|p| p.index().path() == idx)
+            });
+            let has_bitmap =
+                rgit_pack::bitmap::midx_bitmap_path(set.dir(), &midx.checksum()).exists();
+            if let Some(name) = missing {
+                if has_bitmap {
+                    eprintln!("warning: {}", msg::could_not_open_pack(name));
+                    eprintln!("warning: {}", msg::could_not_open_pack(name));
+                }
+                return open_pack_bitmaps(&packs);
+            }
             match BitmapIndex::open_midx(set.dir(), midx, &packs, read_ridx) {
                 Ok(Some(b)) => {
                     if let Some(src) = b.revindex_source() {
@@ -192,10 +207,15 @@ pub fn open(set: &rgit_pack::PackSet) -> Option<BitmapIndex> {
             }
         }
     }
+    open_pack_bitmaps(&packs)
+}
+
+/// The first pack (by name) with a usable `.bitmap`.
+fn open_pack_bitmaps(packs: &[Arc<Pack>]) -> Option<BitmapIndex> {
     let mut found: Option<BitmapIndex> = None;
     // git looks at the packs in the order it loaded them (oldest name
     // first); the first one with a bitmap wins.
-    let mut ordered = packs.clone();
+    let mut ordered = packs.to_vec();
     ordered.sort_by(|a, b| a.path().cmp(b.path()));
     for p in ordered {
         if !rgit_pack::bitmap::pack_bitmap_path(p.index().path()).exists() {
@@ -271,7 +291,10 @@ pub fn existing_name_hashes(
 
 /// The tips of `--refs-snapshot=<path>`: object ids, a leading `+` marks
 /// a preferred tip.
-pub fn read_refs_snapshot(path: &Path, hash: rgit_hash::HashKind) -> Result<Vec<(ObjectId, bool)>, Die> {
+pub fn read_refs_snapshot(
+    path: &Path,
+    hash: rgit_hash::HashKind,
+) -> Result<Vec<(ObjectId, bool)>, Die> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Die::Fatal(format!("could not open '{}': {e}", path.display())))?;
     let mut out = Vec::new();
@@ -312,6 +335,10 @@ pub fn write_for_midx(
     let Some(order) = midx.reverse_index() else {
         return Ok(());
     };
+    if order.is_empty() {
+        eprintln!("warning: {}", msg::MIDX_EMPTY);
+        return Ok(());
+    }
     let set = rgit_pack::PackSet::open(pack_dir, hash);
     let all_packs = set.packs();
     let packs: Vec<Option<Arc<Pack>>> = midx
@@ -333,7 +360,9 @@ pub fn write_for_midx(
             .cloned()
             .flatten()
             .ok_or_else(|| Die::Fatal(format!("could not load pack {pid}")))?;
-        let (kind, _) = pack.object_info(off).map_err(|e| Die::Fatal(e.to_string()))?;
+        let (kind, _) = pack
+            .object_info(off)
+            .map_err(|e| Die::Fatal(e.to_string()))?;
         if kind == rgit_object::ObjectKind::Commit {
             commits_in.insert(id);
         }
@@ -359,7 +388,10 @@ pub fn write_for_midx(
     } else {
         crate::history::walk_commits(ctx, &args)?
     };
-    let candidates: Vec<ObjectId> = walked.into_iter().filter(|c| commits_in.contains(c)).collect();
+    let candidates: Vec<ObjectId> = walked
+        .into_iter()
+        .filter(|c| commits_in.contains(c))
+        .collect();
     let names: Vec<u32> = objects
         .iter()
         .map(|(id, _)| hashes.get(id).copied().unwrap_or(0))
@@ -383,7 +415,11 @@ pub fn write_for_midx(
     ) {
         Ok(w) => w,
         Err(BuildError::Missing(id)) => {
-            return Err(Die::Fatal(msg::midx_missing(&id.to_hex())));
+            // Without its bitmap the new MIDX is not kept.
+            eprintln!("warning: {}", msg::no_full_closure(&id.to_hex()));
+            let _ = std::fs::remove_file(pack_dir.join(rgit_pack::midx::FILE_NAME));
+            let _ = std::fs::remove_file(rgit_pack::bitmap::midx_rev_path(pack_dir, &midx_sum));
+            return Err(Die::Error(msg::MIDX_WRITE_FAILED.into(), 255));
         }
         Err(e) => return Err(Die::Fatal(e.to_string())),
     };
@@ -413,10 +449,7 @@ pub fn reusable_count(odb: &ObjectDatabase, objects: &[rgit_pack::write::ListedO
         .iter()
         .filter(|o| match index.position(&o.id) {
             None => false,
-            Some(bit) => {
-                !index.is_midx()
-                    || index.location(bit).map(|(p, _)| p.uid()) == first
-            }
+            Some(bit) => !index.is_midx() || index.location(bit).map(|(p, _)| p.uid()) == first,
         })
         .count()
 }

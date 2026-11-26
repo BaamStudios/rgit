@@ -28,6 +28,7 @@
 //! offset and size read from a file is bounds-checked: corrupt files give
 //! [`Error`]s, never panics. `Error`'s `Display` is git's message text.
 
+pub mod bitmap;
 mod cache;
 mod data;
 mod delta;
@@ -36,9 +37,9 @@ mod index;
 pub mod index_pack;
 pub mod messages;
 pub mod midx;
-pub mod bitmap;
 mod mmap;
 mod pack;
+pub mod revindex;
 mod store;
 pub mod write;
 

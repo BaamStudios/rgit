@@ -44,7 +44,6 @@ pub fn eligible(opts: &Options, resolved: &Resolved) -> bool {
         && !opts.bisect_vars
         && !opts.bisect_all
         && !opts.walk_reflogs
-        && !opts.unpacked
         && !opts.graph
         && !opts.maximal_only
         && opts.objects.is_none_or(|m| !m.edge && !m.in_commit_order)
@@ -64,7 +63,10 @@ pub fn eligible(opts: &Options, resolved: &Resolved) -> bool {
         && w.no_walk.is_none()
         && !w.cherry_pick
         && !w.cherry_mark
-        && resolved.commits.iter().all(|c| c.2.is_none() || !opts.left_right)
+        && resolved
+            .commits
+            .iter()
+            .all(|c| c.2.is_none() || !opts.left_right)
 }
 
 /// Bit positions for the objects of the bitmap plus the objects found
@@ -106,7 +108,12 @@ fn reach(
 
 /// Answer the query with the bitmap; `None` when there is no usable
 /// bitmap (the caller walks instead).
-pub fn run(ctx: &Context, setup: &rgit_repo::Setup, opts: &Options, resolved: &Resolved) -> Result<Option<i32>, Die> {
+pub fn run(
+    ctx: &Context,
+    setup: &rgit_repo::Setup,
+    opts: &Options,
+    resolved: &Resolved,
+) -> Result<Option<i32>, Die> {
     let store = crate::repo_objects::Repo::open(ctx, setup.clone())?;
     let Some(index) = crate::bitmaps::open(store.local_packs()) else {
         return Ok(None);
@@ -154,6 +161,21 @@ pub fn run(ctx: &Context, setup: &rgit_repo::Setup, opts: &Options, resolved: &R
         result.and_not(&h);
     }
     rgit_trace::trace2::data_int("bitmap", "bitmap/hits", 1, true);
+    if opts.unpacked {
+        // Everything in the bitmapped pack (MIDX) is packed; of the rest,
+        // only loose objects stay.
+        let n = index.num_objects();
+        let mut keep = Bitmap::new();
+        for (i, (id, _)) in pos.ext.iter().enumerate() {
+            if !matches!(
+                store.locate(id),
+                Some(crate::repo_objects::Location::Packed(..))
+            ) {
+                keep.set(n + i);
+            }
+        }
+        result.and(&keep);
+    }
 
     let n = index.num_objects();
     let kinds: &[ObjectKind] = if with_objects {
@@ -227,7 +249,11 @@ pub fn run(ctx: &Context, setup: &rgit_repo::Setup, opts: &Options, resolved: &R
 
 /// `rev-list --test-bitmap <commit>`: compare the stored bitmap of the
 /// commit with a walk of everything reachable from it.
-pub fn test_bitmap(ctx: &Context, setup: &rgit_repo::Setup, resolved: &Resolved) -> Result<i32, Die> {
+pub fn test_bitmap(
+    ctx: &Context,
+    setup: &rgit_repo::Setup,
+    resolved: &Resolved,
+) -> Result<i32, Die> {
     let tips: Vec<(ObjectId, ObjectKind)> = resolved
         .commits
         .iter()
@@ -283,10 +309,16 @@ pub fn test_bitmap(ctx: &Context, setup: &rgit_repo::Setup, resolved: &Resolved)
     let mut none = |_: &ObjectId| None;
     let mut bit_of = |id: &ObjectId, kind: ObjectKind| Some(pos.bit(id, kind));
     graph
-        .fill(&[(tip, ObjectKind::Commit)], &mut walked, &mut none, &mut bit_of)
+        .fill(
+            &[(tip, ObjectKind::Commit)],
+            &mut walked,
+            &mut none,
+            &mut bit_of,
+        )
         .map_err(|e| Die::Fatal(e.to_string()))?;
     let total = walked.count() as u64;
-    let show = rgit_progress::stderr_is_terminal() || std::env::var_os("GIT_PROGRESS_DELAY").is_some();
+    let show =
+        rgit_progress::stderr_is_terminal() || std::env::var_os("GIT_PROGRESS_DELAY").is_some();
     let mut meter = rgit_progress::Progress::start(msg::PROGRESS_VERIFYING, total, show);
     meter.set(total);
     meter.stop();

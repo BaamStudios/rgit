@@ -388,6 +388,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     if !opts.connectivity_only {
         f.errors |= verify_midx(&repo, &opts);
+        f.errors |= verify_rev_and_bitmaps(&repo);
     }
 
     report(&mut f, &repo)?;
@@ -571,6 +572,65 @@ fn read_skiplist(repo: &Repo, path: &str) -> Result<HashSet<ObjectId>, Die> {
         }
     }
     Ok(skip)
+}
+
+/// Check the `.rev` files and the trailing checksums of the `.bitmap`
+/// files of the repository's packs and MIDX.
+fn verify_rev_and_bitmaps(repo: &Repo) -> i32 {
+    let pack_dir = rgit_odb::objects_dir(&repo.setup.common_dir).join("pack");
+    let mut names: Vec<String> = std::fs::read_dir(&pack_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    let mut errors = 0;
+    for name in &names {
+        let path = pack_dir.join(name);
+        if let Some(stem) = name.strip_suffix(".rev")
+            && stem.starts_with("pack-")
+        {
+            let idx = pack_dir.join(format!("{stem}.idx"));
+            let Ok(index) = rgit_pack::PackIndex::open(&idx, repo.hash) else {
+                continue;
+            };
+            let pack = pack_dir.join(format!("{stem}.pack"));
+            match rgit_pack::revindex::verify(&path, &index) {
+                Ok(problems) if problems.is_empty() => {}
+                Ok(problems) => {
+                    for p in problems {
+                        eprintln!("error: {p}");
+                    }
+                    eprintln!(
+                        "error: {}",
+                        msg::invalid_rev_index(&pack.display().to_string())
+                    );
+                    errors |= ERROR_PACK;
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    eprintln!(
+                        "error: {}",
+                        msg::unable_to_load_rev_index(&pack.display().to_string())
+                    );
+                    errors |= ERROR_PACK;
+                }
+            }
+        } else if name.ends_with(".bitmap") {
+            let Ok(data) = std::fs::read(&path) else {
+                continue;
+            };
+            if !rgit_pack::revindex::trailer_ok(&data, repo.hash) {
+                eprintln!(
+                    "error: {}",
+                    msg::bitmap_invalid_checksum(&path.display().to_string())
+                );
+                errors |= ERROR_PACK;
+            }
+        }
+    }
+    errors
 }
 
 /// Verify the multi-pack index of the object directory and of every

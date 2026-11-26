@@ -115,7 +115,11 @@ impl Repo {
         let dir = tmp.path().join("r");
         std::fs::create_dir(&dir).unwrap();
         git(&dir, &["init", "-q", "-b", "main"]);
-        git_input(&dir, &["fast-import", "--quiet"], &history(commits, same_date));
+        git_input(
+            &dir,
+            &["fast-import", "--quiet"],
+            &history(commits, same_date),
+        );
         Repo { _tmp: tmp, dir }
     }
 
@@ -153,29 +157,17 @@ fn compare(repo: &Repo, config: &[&str], opts: Options) {
         .collect();
     let written =
         write_pack_bitmap(&pack, &source, Some(&order), &|id| prefs.contains(id), opts).unwrap();
-    if written.bytes != expected {
-        let dir = std::env::temp_dir().join("rgit-bitmap-diff");
-        let _ = std::fs::create_dir_all(&dir);
-        std::fs::write(dir.join("git.bitmap"), &expected).unwrap();
-        std::fs::write(dir.join("rgit.bitmap"), &written.bytes).unwrap();
-        let _ = std::fs::remove_dir_all(dir.join("repo"));
-        let _ = Command::new("cp")
-            .arg("-r")
-            .arg(&repo.dir)
-            .arg(dir.join("repo"))
-            .status();
-        panic!(
-            "bitmap differs ({} vs {} bytes, first difference at {:?}); written to {}",
-            written.bytes.len(),
-            expected.len(),
-            written
-                .bytes
-                .iter()
-                .zip(&expected)
-                .position(|(a, b)| a != b),
-            dir.display()
-        );
-    }
+    assert!(
+        written.bytes == expected,
+        "bitmap differs ({} vs {} bytes, first difference at {:?})",
+        written.bytes.len(),
+        expected.len(),
+        written
+            .bytes
+            .iter()
+            .zip(&expected)
+            .position(|(a, b)| a != b)
+    );
     // rgit reads git's bitmap: every commit bitmap matches the rebuilt one.
     let index = BitmapIndex::open_pack(pack).unwrap().unwrap();
     assert!(index.num_entries() > 0);
@@ -225,4 +217,47 @@ fn equal_dates_identical() {
     }
     let repo = Repo::new(300, true);
     compare(&repo, &[], Options::default());
+}
+
+#[test]
+fn preferred_tips_identical() {
+    if !have_git() {
+        return;
+    }
+    let repo = Repo::new(250, false);
+    // Prefer some commits that fall into the windows after the first 100.
+    let ids: Vec<String> = String::from_utf8(git(&repo.dir, &["rev-list", "--all"]))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let mut prefs = Vec::new();
+    for (n, i) in [103usize, 121, 150, 199].iter().enumerate() {
+        git(
+            &repo.dir,
+            &["update-ref", &format!("refs/pref/p{n}"), &ids[*i]],
+        );
+        prefs.push(ObjectId::from_hex(HashKind::Sha1, ids[*i].as_bytes()).unwrap());
+    }
+    let (pack, expected) = repo.repack(&["pack.preferBitmapTips=refs/pref"]);
+    let set = PackSet::open(repo.pack_dir(), HashKind::Sha1);
+    let source = PackSetSource::new(&set);
+    // The walk order with the new tips (dates are not monotonic here).
+    let order: Vec<ObjectId> = String::from_utf8(git(&repo.dir, &["rev-list", "--all"]))
+        .unwrap()
+        .lines()
+        .map(|l| ObjectId::from_hex(HashKind::Sha1, l.as_bytes()).unwrap())
+        .collect();
+    let written = write_pack_bitmap(
+        &pack,
+        &source,
+        Some(&order),
+        &|id| prefs.contains(id),
+        Options::default(),
+    )
+    .unwrap();
+    assert!(
+        written.bytes == expected,
+        "bitmap with preferred tips differs"
+    );
 }

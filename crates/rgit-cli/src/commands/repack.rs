@@ -201,7 +201,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .unwrap_or_else(|| setup.is_bare() && write_midx.borrow().is_none()),
         v => v > 0,
     };
-    if write_bitmaps && !pack_everything {
+    if write_bitmaps && !pack_everything && write_midx.borrow().is_none() {
         if bitmap.get() == -1 && setup.is_bare() {
             write_bitmaps = false;
         } else {

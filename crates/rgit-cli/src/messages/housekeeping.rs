@@ -165,5 +165,6 @@ pub const REPACK_PRECIOUS: &str = "cannot delete packs in a precious-objects rep
 pub const REPACK_KEEP_AND_CRUFT: &str =
     "options '-k/--keep-unreachable' and '--cruft' cannot be used together";
 
-pub const REPACK_INCREMENTAL_BITMAP: &str = "Incremental repacks are incompatible with bitmap indexes.  Use
+pub const REPACK_INCREMENTAL_BITMAP: &str =
+    "Incremental repacks are incompatible with bitmap indexes.  Use
 --no-write-bitmap-index or disable the pack.writeBitmaps configuration.";
