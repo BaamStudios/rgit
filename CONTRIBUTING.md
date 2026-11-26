@@ -112,6 +112,39 @@ scripts/check-spdx.sh
   [ADR 0001](docs/adr/0001-conformance-strategy.md) and the README of
   rgit-conformance for how to run them.
 
+### Compatibility table in the README
+
+The table "Compatibility with git" in [README.md](README.md) is generated; do
+not edit it by hand.
+
+**Automatic refresh.** The workflow
+[`compat-table.yml`](.github/workflows/compat-table.yml) runs nightly (and on
+demand via "Run workflow"). It builds `rgit` from `main`, runs
+`scripts/compat-table.py --update-readme` against the newest successful
+Conformance run on `main`, and does nothing more when the numbers are the same
+as in `docs/compat/compat.json`. Otherwise it force-pushes the branch
+`bot/compat-table` (one signed-off commit by `github-actions[bot]`), opens or
+updates the pull request "Update compatibility table" with auto-merge (squash),
+and dispatches CI, Conformance, License guard and Acceptance on that branch.
+The dispatch is needed because a pull request opened with `GITHUB_TOKEN`
+triggers no `pull_request` workflows; dispatched runs report the required
+checks on the branch's head commit, so the pull request merges by itself once
+they are green. Do not push to `bot/compat-table` by hand; it is overwritten
+on the next refresh.
+
+**Manual refresh** (needs `gh`, a built `rgit` and `upstream/git`):
+
+```sh
+cargo build --bin rgit
+scripts/compat-table.py --update-readme   # rewrites README.md and docs/compat/compat.json
+```
+
+`--run <id>` picks another CI run, `--force` rewrites even unchanged numbers;
+a local `results/` directory of rgit-conformance's `./run` works too
+(`scripts/compat-table.py --update-readme --commit <sha> ../rgit-conformance/results`).
+`docs/compat/compat.json` keeps the raw numbers, so the next refresh shows what
+changed.
+
 ## Spec gaps
 
 When git's documentation does not describe a behaviour you need:
