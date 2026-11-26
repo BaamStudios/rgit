@@ -76,6 +76,22 @@ fn fetch_forced_updates_and_porcelain_same_as_git() {
         &["fetch", "--porcelain", "--no-show-forced-updates", "origin"],
         &["fetch", "--porcelain", "origin", "HEAD"],
         &["fetch", "--porcelain", "origin", "HEAD:refs/heads/foo"],
+        // Refused whatever comes of it; without the option the submodules
+        // are left alone.
+        &["fetch", "--porcelain", "--recurse-submodules", "origin"],
+        &[
+            "fetch",
+            "--porcelain",
+            "--recurse-submodules=on-demand",
+            "origin",
+        ],
+        &[
+            "fetch",
+            "--porcelain",
+            "--dry-run",
+            "--recurse-submodules=no",
+            "origin",
+        ],
         &["fetch", "--tags", "../one"],
         &["fetch", "../one", "tag", "t2"],
         &["fetch", "--set-upstream", "origin", "tag", "t1"],
