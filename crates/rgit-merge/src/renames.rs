@@ -88,6 +88,9 @@ impl Notes {
 struct Changes {
     deleted: Vec<(Vec<u8>, Version)>,
     added: Vec<(Vec<u8>, Version)>,
+    /// Paths in both lists because their type changed (a file became a
+    /// symbolic link): no reason to look for renames on their own.
+    typechanged: HashSet<Vec<u8>>,
 }
 
 /// The parent directory of a path ("" at the top).
@@ -182,10 +185,8 @@ impl Engine<'_> {
                 &mut changes[side],
             )?;
         }
-        if changes
-            .iter()
-            .all(|c| c.deleted.is_empty() || c.added.is_empty())
-        {
+        if changes.iter().all(|c| c.deleted.is_empty()) {
+            self.remember(&Default::default(), &BTreeMap::new());
             return Ok(None);
         }
         let mut pass = Pass {
@@ -195,9 +196,10 @@ impl Engine<'_> {
             cache: HashMap::new(),
         };
         // Directories each side added paths to directly: only they matter
-        // for directory renames of the other side.
+        // for directory renames of the other side. (git looks for the
+        // renames out of them even when directory renames are off.)
         let mut added_dirs: [HashSet<Vec<u8>>; 2] = Default::default();
-        if self.dir_renames_on() {
+        {
             for (side, c) in changes.iter().enumerate() {
                 for (p, _) in &c.added {
                     let d = dirname(p);
@@ -208,13 +210,18 @@ impl Engine<'_> {
             }
         }
         let mut renames: [BTreeMap<Vec<u8>, Vec<u8>>; 2] = Default::default();
-        for side in 0..2 {
-            renames[side] =
-                self.detect_renames(&mut pass, side, &changes[side], &added_dirs[1 - side])?;
+        {
+            let _r = rgit_trace::trace2::region("merge", "regular renames", true);
+            for side in 0..2 {
+                renames[side] =
+                    self.detect_renames(&mut pass, side, &changes[side], &added_dirs[1 - side])?;
+            }
         }
         if renames.iter().all(BTreeMap::is_empty) {
+            self.remember(&renames, &BTreeMap::new());
             return Ok(None);
         }
+        let mut moved_by_ours = BTreeMap::new();
         if self.dir_renames_on() {
             let mut dirs: [HashMap<Vec<u8>, Option<Vec<u8>>>; 2] = Default::default();
             for side in 0..2 {
@@ -249,6 +256,7 @@ impl Engine<'_> {
                     &wanted[side],
                 )?;
             }
+            moved_by_ours.clone_from(&moves[1]);
             for (other, m) in moves.iter().enumerate() {
                 for (from, to) in m {
                     let v = pass.get(self, other + 1, from)?;
@@ -279,6 +287,7 @@ impl Engine<'_> {
                 }
             }
         }
+        self.remember(&renames, &moved_by_ours);
         self.pair_renames(&mut pass, &renames)?;
         let mut out = [*base, *ours, *theirs];
         for (i, slot) in out.iter_mut().enumerate() {
@@ -294,6 +303,31 @@ impl Engine<'_> {
         Ok(Some(out))
     }
 
+    /// Notes what the next merge of a sequence may take over from our
+    /// side's renames: the remembered and the relevant sources with their
+    /// final targets (or none), and the paths the other side added that
+    /// our directory renames moved. A file both sides renamed the same
+    /// way is left out: the next merge's base has it at the new path.
+    fn remember(
+        &mut self,
+        renames: &[BTreeMap<Vec<u8>, Vec<u8>>; 2],
+        moved_by_ours: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) {
+        let mut pairs = HashMap::new();
+        for src in std::mem::take(&mut self.cacheable) {
+            match renames[0].get(&src) {
+                Some(d) if renames[1].get(&src) == Some(d) => {}
+                d => {
+                    pairs.insert(src, d.cloned());
+                }
+            }
+        }
+        for (from, to) in moved_by_ours {
+            pairs.insert(from.clone(), Some(to.clone()));
+        }
+        self.new_pairs = Some(pairs);
+    }
+
     /// The renames of one side (0 ours, 1 theirs): source to destination.
     fn detect_renames(
         &mut self,
@@ -303,35 +337,73 @@ impl Engine<'_> {
         other_added_dirs: &HashSet<Vec<u8>>,
     ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, Error> {
         let mut out = BTreeMap::new();
-        // Empty files are never rename sources.
-        let empty = self.objects.hash_kind().empty_blob();
-        let sources: Vec<&(Vec<u8>, Version)> = changes
-            .deleted
+        // Our renames remembered from the previous merge of a sequence
+        // stand for themselves: a target this side added, or no rename.
+        let remembered = if side == 0 {
+            self.remembered.take()
+        } else {
+            None
+        };
+        let added: HashSet<&[u8]> = changes
+            .added
             .iter()
-            .filter(|(_, v)| v.oid != empty)
+            .filter(|(p, _)| !changes.typechanged.contains(p))
+            .map(|(p, _)| p.as_slice())
             .collect();
-        let mut dests: Vec<&(Vec<u8>, Version)> = changes.added.iter().collect();
-        if sources.is_empty() || dests.is_empty() {
-            return Ok(out);
+        let mut taken: HashSet<Vec<u8>> = HashSet::new();
+        let mut fresh: Vec<&(Vec<u8>, Version)> = Vec::new();
+        for entry in &changes.deleted {
+            let path = &entry.0;
+            match remembered.as_ref().and_then(|m| m.get(path)) {
+                Some(Some(dst)) if added.contains(dst.as_slice()) && !taken.contains(dst) => {
+                    taken.insert(dst.clone());
+                    out.insert(path.clone(), dst.clone());
+                    self.cacheable.push(path.clone());
+                }
+                Some(None) if !changes.typechanged.contains(path) => {
+                    self.cacheable.push(path.clone());
+                }
+                _ => fresh.push(entry),
+            }
         }
+        self.remembered = remembered;
         // The sources the merge needs. Without any, nothing is detected;
         // otherwise exact renames are found for all sources and the
-        // similarity search uses the needed ones.
+        // similarity search uses the needed ones. A source whose type
+        // changed does not make git look for renames.
         let other = 2 - side;
-        let mut relevant = Vec::with_capacity(sources.len());
-        for (path, v) in sources.iter().copied() {
+        let mut relevant = Vec::with_capacity(fresh.len());
+        let mut call = false;
+        for (path, v) in fresh.iter().copied() {
             let theirs = pass.get(self, other, path)?;
             let mut needed = theirs != Some(*v);
             if !needed {
                 needed = pass.relevant_dir(self, side, dirname(path), other_added_dirs)?;
             }
+            if needed && !changes.typechanged.contains(path) {
+                call = true;
+                if side == 0 {
+                    self.cacheable.push(path.clone());
+                }
+            }
             relevant.push(needed);
         }
-        if !relevant.contains(&true) {
+        let _region = call.then(|| rgit_trace::trace2::region("diff", "diffcore_rename", true));
+        // Empty files are never rename sources.
+        let empty = self.objects.hash_kind().empty_blob();
+        let mut sources: Vec<(&(Vec<u8>, Version), bool)> = fresh
+            .into_iter()
+            .zip(relevant)
+            .filter(|((_, v), _)| v.oid != empty)
+            .collect();
+        let mut dests: Vec<&(Vec<u8>, Version)> = changes
+            .added
+            .iter()
+            .filter(|(p, _)| !taken.contains(p))
+            .collect();
+        if sources.is_empty() || dests.is_empty() || !sources.iter().any(|(_, r)| *r) {
             return Ok(out);
         }
-        let mut sources: Vec<(&(Vec<u8>, Version), bool)> =
-            sources.into_iter().zip(relevant).collect();
         sources.sort_by(|a, b| a.0.0.cmp(&b.0.0));
         dests.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -920,6 +992,7 @@ fn collect_changes(
             (Some(b), Some(s)) if kind(b.mode) != kind(s.mode) => {
                 out.deleted.push((path.clone(), b));
                 out.added.push((path.clone(), s));
+                out.typechanged.insert(path.clone());
             }
             _ => {}
         }
