@@ -111,6 +111,70 @@ fn rev_list_with_git_bitmap() {
         .run();
 }
 
+/// `--filter` with `--use-bitmap-index`: the same objects and order as
+/// git, for objects in the bitmapped pack and after it, with the named
+/// objects kept unless `--filter-provided-objects` is given.
+#[test]
+fn rev_list_bitmap_with_filters() {
+    let fx = history(12).git(["repack", "-adbq"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let mut fx = fx
+        .write("big.txt", "a much larger blob\n")
+        .write("small", "s\n")
+        .git(["add", "-A"])
+        .git(["commit", "-q", "-m", "after"])
+        .tick()
+        .write("d0/f9.txt", "again\n")
+        .git(["add", "-A"])
+        .git(["commit", "-q", "-m", "after 2"]);
+    let filters = [
+        "blob:none",
+        "blob:limit=5",
+        "tree:0",
+        "tree:1",
+        "object:type=commit",
+        "object:type=tree",
+        "object:type=blob",
+        "object:type=tag",
+        "combine:blob:limit=10+object:type=blob",
+    ];
+    let tips: [&[&str]; 6] = [
+        &["HEAD"],
+        &["HEAD", "HEAD:big.txt"],
+        &["v1", "HEAD^{tree}", "HEAD:big.txt"],
+        &["HEAD", "HEAD^{tree}", "HEAD:big.txt"],
+        &["HEAD~1", "HEAD~1^{tree}", "HEAD~5^{tree}"],
+        &["HEAD", "^HEAD~4"],
+    ];
+    for f in filters {
+        let filter = format!("--filter={f}");
+        for t in tips {
+            for provided in [false, true] {
+                let mut args = vec!["rev-list", "--use-bitmap-index", "--objects", &filter];
+                if provided {
+                    args.push("--filter-provided-objects");
+                }
+                args.extend_from_slice(t);
+                fx.compare(&args)
+                    .checks([Check::ExitCode, Check::Stdout])
+                    .run();
+            }
+        }
+    }
+    fx.compare([
+        "rev-list",
+        "--use-bitmap-index",
+        "--objects",
+        "--filter=blob:none",
+        "--count",
+        "HEAD",
+    ])
+    .checks([Check::ExitCode, Check::Stdout])
+    .run();
+}
+
 #[test]
 fn git_accepts_rgit_pack_bitmap() {
     let fx = history(40);
