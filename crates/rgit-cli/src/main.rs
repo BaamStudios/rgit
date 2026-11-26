@@ -88,6 +88,7 @@ mod untracked;
 mod untracked_cache;
 mod worktrees;
 mod wt_status;
+mod zip;
 
 use std::io::Write;
 

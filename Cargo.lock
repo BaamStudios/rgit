@@ -487,6 +487,7 @@ version = "0.1.0"
 dependencies = [
  "bstr",
  "fancy-regex",
+ "flate2",
  "libc",
  "mimalloc",
  "regex",

@@ -8,6 +8,7 @@ pub mod apply;
 pub mod bisect;
 pub mod blame;
 pub mod branch;
+pub mod bugreport;
 pub mod cat_file;
 pub mod check_attr;
 pub mod check_ignore;
