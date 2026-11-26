@@ -536,7 +536,7 @@ impl Options {
                         "sorted" => NoWalk::Sorted,
                         "unsorted" => NoWalk::Unsorted,
                         _ => {
-                            let _ = writeln!(std::io::stderr(), "error: {}", msg::INVALID_NO_WALK);
+                            crate::argv::errln(&format!("error: {}", msg::INVALID_NO_WALK));
                             return Ok(Pseudo::Invalid);
                         }
                     });

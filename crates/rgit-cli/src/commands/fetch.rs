@@ -701,7 +701,7 @@ fn fetch_main(ctx: &mut Context, argv: &[String], action: Option<&str>) -> CmdRe
             let branch_remote = repo
                 .current_branch()
                 .and_then(|b| {
-                    BranchConfig::from_config(&repo.config, &b.as_bytes()["refs/heads/".len()..])
+                    BranchConfig::from_config(&repo.config, &rgit_bstr::to_bytes(&b["refs/heads/".len()..]))
                         .ok()
                 })
                 .and_then(|b| b.remote);
@@ -962,7 +962,7 @@ fn fetch_multiple(
     let mut code = 0;
     for name in names {
         if !quiet && !args.porcelain {
-            println!("{}", msg::fetching(name));
+            crate::argv::outln(&msg::fetching(name));
         }
         let mut argv = vec!["fetch".to_owned()];
         argv.extend(args.child_options());
@@ -1224,8 +1224,8 @@ fn set_upstream(
     let short = &branch["refs/heads/".len()..];
     let path = repo.common_dir.join("config");
     for (key, value) in [("remote", remote_name.as_str()), ("merge", merge.as_str())] {
-        let key = format!("branch.{short}.{key}");
-        config_set(&path, &key, value)?;
+        let key = crate::tracking::branch_key(short, key);
+        config_set(&path, &key, &rgit_bstr::to_bytes(value))?;
     }
     Ok(0)
 }
@@ -1260,18 +1260,18 @@ fn fetch_bundle_uri_once(repo: &LocalRepo, connect: &ConnectSettings<'_>) -> Res
     if let Some(t) = o.token.filter(|t| *t > stored) {
         config_set(
             &repo.common_dir.join("config"),
-            "fetch.bundleCreationToken",
-            &t.to_string(),
+            b"fetch.bundleCreationToken",
+            t.to_string().as_bytes(),
         )?;
     }
     Ok(())
 }
 
-fn config_set(path: &std::path::Path, key: &str, value: &str) -> Result<(), Die> {
+fn config_set(path: &std::path::Path, key: &[u8], value: &[u8]) -> Result<(), Die> {
     use rgit_config::edit::{SetRequest, ValuePattern};
     let req = SetRequest {
-        key: key.as_bytes(),
-        value: Some(value.as_bytes()),
+        key,
+        value: Some(value),
         pattern: &ValuePattern::Any,
         all: false,
         comment: None,

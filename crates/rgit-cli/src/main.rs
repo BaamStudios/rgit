@@ -27,9 +27,18 @@ macro_rules! eprintln {
     }};
 }
 
+/// `eprint!` in a single write, like `eprintln!` above.
+macro_rules! eprint {
+    ($($arg:tt)*) => {
+        $crate::write_stderr(&::std::format!($($arg)*))
+    };
+}
+
 /// Writes `s` to stderr with one `write_all` (see `eprintln!` above).
+/// Names that are not UTF-8 (reference names, arguments: escaped by
+/// [`rgit_bstr`]) are printed as their raw bytes, as git prints them.
 fn write_stderr(s: &str) {
-    let _ = std::io::stderr().lock().write_all(s.as_bytes());
+    let _ = std::io::stderr().lock().write_all(&rgit_bstr::to_bytes(s));
 }
 
 mod abbrev;

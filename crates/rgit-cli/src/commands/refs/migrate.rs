@@ -202,7 +202,7 @@ fn write_files(
                 });
             }
             Target::Object(id) => write(name, format!("{}\n", id.to_hex()).as_bytes())?,
-            Target::Symbolic(t) => write(name, format!("ref: {t}\n").as_bytes())?,
+            Target::Symbolic(t) => write(name, &rgit_bstr::to_bytes(&format!("ref: {t}\n")))?,
         }
     }
     let packed = rgit_refs::packed::PackedRefs::from_refs(packed);

@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 
-use rgit_difftest::{Check, Fixture};
+use rgit_difftest::{Check, Fixture, Normalizer};
 
 const CHECKS: [Check; 5] = [
     Check::ExitCode,
@@ -235,6 +235,230 @@ fn merge_message() {
             &[b"checkout", b"-q", b"main"],
             &[b"merge", b"--no-ff", b"--no-edit", b"caf\xe9"],
             &[b"stash", b"list"],
+        ],
+    );
+}
+
+/// [`CHECKS`] and the files in the git directory (`config`, `HEAD`).
+const CONFIG_CHECKS: [Check; 6] = [
+    Check::ExitCode,
+    Check::Stdout,
+    Check::Stderr,
+    Check::Refs,
+    Check::Reflogs,
+    Check::GitFiles,
+];
+
+fn run_config_cases(fx: &mut Fixture, repo: &str, cases: &[&[&[u8]]]) {
+    for case in cases {
+        fx.compare(args(case))
+            .repo(repo)
+            .checks(CONFIG_CHECKS)
+            .run();
+    }
+}
+
+/// The `branch.<name>` sections of a branch whose name is not UTF-8 have
+/// its raw bytes in the section header, written and read like git (#738).
+#[test]
+fn branch_config() {
+    let Some(mut fx) = fixture(false) else { return };
+    run_config_cases(
+        &mut fx,
+        "",
+        &[
+            &[b"branch", b"-u", b"main", b"caf\xe9"],
+            &[b"config", b"--get-regexp", b"^branch"],
+            &[b"branch", b"-vv"],
+            &[b"rev-parse", b"--abbrev-ref", b"caf\xe9@{u}"],
+            &[
+                b"for-each-ref",
+                b"--format=%(refname) %(upstream) %(upstream:short) %(upstream:track)",
+                b"refs/heads/",
+            ],
+            &[b"checkout", b"caf\xe9"],
+            &[b"status"],
+            &[b"branch", b"--show-current"],
+            &[b"rev-parse", b"--symbolic-full-name", b"@{u}"],
+            &[b"checkout", b"-q", b"main"],
+            &[b"branch", b"-m", b"caf\xe9", b"d\xe9"],
+            &[b"branch", b"-c", b"d\xe9", b"e\xe9"],
+            &[b"checkout", b"-b", b"n\xe9", b"--track", b"main"],
+            &[b"branch", b"--track=inherit", b"i\xe9", b"n\xe9"],
+            &[b"branch", b"--unset-upstream", b"n\xe9"],
+            &[b"checkout", b"-q", b"main"],
+            &[b"branch", b"-D", b"d\xe9"],
+            &[b"config", b"--get-regexp", b"^branch"],
+        ],
+    );
+}
+
+/// `push -u`, `pull`, `remote rename` / `remove` and `clone -b` with a
+/// branch whose name is not UTF-8.
+#[test]
+fn branch_config_remote() {
+    let Some(mut fx) = fixture(false) else { return };
+    run_config_cases(
+        &mut fx,
+        "",
+        &[
+            &[b"init", b"-q", b"--bare", b"bare"],
+            &[b"remote", b"add", b"origin", b"bare"],
+            &[b"push", b"-u", b"origin", b"caf\xe9"],
+            &[b"push", b"-q", b"-u", b"origin", b"ab\x80"],
+            &[b"checkout", b"caf\xe9"],
+            &[b"status"],
+            &[b"pull"],
+            &[b"pull", b"--rebase"],
+            &[b"merge"],
+            &[
+                b"for-each-ref",
+                b"--format=%(push) %(push:short)",
+                b"refs/heads/",
+            ],
+            &[b"checkout", b"-q", b"main"],
+            &[b"remote", b"rename", b"origin", b"up"],
+            &[b"branch", b"-vv"],
+            &[b"remote", b"remove", b"up"],
+        ],
+    );
+    run_config_cases(
+        &mut fx,
+        "c",
+        &[
+            &[b"clone", b"-q", b"-b", b"caf\xe9", b"bare", b"c"],
+            &[b"-C", b"c", b"branch", b"--show-current"],
+            &[
+                b"-C",
+                b"c",
+                b"checkout",
+                b"-b",
+                b"x\xe9",
+                b"--track",
+                b"origin/ab\x80",
+            ],
+            &[b"-C", b"c", b"config", b"--get-regexp", b"^branch"],
+        ],
+    );
+}
+
+/// Messages of `checkout`, `switch`, `stash` and `worktree` print the
+/// name's raw bytes.
+#[test]
+fn messages() {
+    let Some(fx) = fixture(false) else { return };
+    let mut fx = fx.write("f", "x\n");
+    run_cases(
+        &mut fx,
+        &[
+            &[b"checkout", b"caf\xe9"],
+            &[b"switch", b"-c", b"s\xe9"],
+            &[b"switch", b"main"],
+            &[b"checkout", b"--detach", b"caf\xe9"],
+            &[b"checkout", b"-"],
+            &[b"checkout", b"-"],
+            &[b"add", b"f"],
+            &[b"stash"],
+            &[b"stash", b"list"],
+            &[b"stash", b"pop"],
+            &[b"stash", b"-q"],
+            &[b"worktree", b"add", b"w", b"caf\xe9"],
+            &[b"worktree", b"add", b"-b", b"w\xe9", b"w2"],
+            &[b"worktree", b"add", b"--orphan", b"-b", b"o\xe9", b"w3"],
+            &[b"branch", b"-vv"],
+            &[b"worktree", b"remove", b"w"],
+        ],
+    );
+    for porcelain in [false, true] {
+        let mut a = args(&[b"worktree", b"list"]);
+        if porcelain {
+            a.push("--porcelain".into());
+        }
+        fx.compare(a)
+            .checks(CHECKS)
+            .normalize_stdout(Normalizer::regex(r"(?m)^(worktree )?/\S+ *", "<path> "))
+            .run();
+    }
+    let in_worktrees: [(&str, &[&[u8]]); 2] = [
+        ("w2", &[b"-C", b"w2", b"branch", b"--show-current"]),
+        ("w3", &[b"-C", b"w3", b"symbolic-ref", b"HEAD"]),
+    ];
+    for (repo, case) in in_worktrees {
+        fx.compare(args(case)).repo(repo).checks(CHECKS).run();
+    }
+}
+
+/// `rebase`: the state files, the todo list (labels of
+/// `--rebase-merges`) and the messages hold the raw bytes.
+#[test]
+fn rebase() {
+    let Some(mut fx) = fixture(false) else { return };
+    let cases: &[&[&[u8]]] = &[
+        &[b"commit", b"-q", b"--allow-empty", b"-m", b"b"],
+        &[b"checkout", b"-q", b"caf\xe9"],
+        &[b"commit", b"-q", b"--allow-empty", b"-m", b"c"],
+        &[b"checkout", b"-q", b"-b", b"m\xe9"],
+        &[b"commit", b"-q", b"--allow-empty", b"-m", b"d"],
+        &[b"checkout", b"-q", b"caf\xe9"],
+        &[b"merge", b"-q", b"--no-ff", b"-m", b"merge", b"m\xe9"],
+        &[b"rebase", b"-i", b"--rebase-merges", b"main"],
+        &[b"rebase", b"-i", b"--update-refs", b"HEAD~2"],
+        &[b"rebase", b"main", b"m\xe9"],
+        &[b"rebase", b"main", b"caf\xe9"],
+        &[b"rebase", b"--apply", b"main", b"m\xe9"],
+    ];
+    for case in cases {
+        fx.compare(args(case))
+            .env("GIT_SEQUENCE_EDITOR", "cat")
+            .checks(CHECKS)
+            .run();
+    }
+    // A conflict stops the rebase: `head-name` names the branch.
+    let mut fx = fx.write("f", "x\n");
+    run_cases(
+        &mut fx,
+        &[
+            &[b"checkout", b"-q", b"main"],
+            &[b"add", b"f"],
+            &[b"commit", b"-q", b"-m", b"f"],
+            &[b"checkout", b"-q", b"m\xe9"],
+        ],
+    );
+    let mut fx = fx.write("f", "y\n");
+    let conflict: &[&[&[u8]]] = &[
+        &[b"add", b"f"],
+        &[b"commit", b"-q", b"-m", b"g"],
+        &[b"rebase", b"main"],
+        &[b"status"],
+        &[b"rebase", b"--abort"],
+    ];
+    for case in conflict {
+        fx.compare(args(case))
+            .checks(CONFIG_CHECKS)
+            .git_file("rebase-merge/head-name")
+            .run();
+    }
+}
+
+/// A symbolic ref that points nowhere is skipped with a warning when a
+/// name is looked up (t1430 "rev-parse skips symref pointing to broken
+/// name").
+#[test]
+fn dangling_symref() {
+    let Some(mut fx) = fixture(false) else { return };
+    run_cases(
+        &mut fx,
+        &[
+            &[b"symbolic-ref", b"refs/heads/dang", b"refs/heads/nothere"],
+            &[b"rev-parse", b"dang"],
+            &[b"rev-parse", b"--verify", b"dang"],
+            &[b"rev-parse", b"--verify", b"-q", b"dang"],
+            &[b"symbolic-ref", b"refs/heads/d\xe9", b"refs/heads/no\xe9"],
+            &[b"rev-parse", b"d\xe9"],
+            &[b"rev-parse", b"--verify", b"-q", b"d\xe9"],
+            &[b"symbolic-ref", b"refs/tags/main", b"refs/heads/nothere"],
+            &[b"rev-parse", b"--verify", b"main"],
+            &[b"branch", b"-D", b"dang", b"d\xe9"],
         ],
     );
 }

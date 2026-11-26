@@ -627,7 +627,7 @@ pub(crate) fn symrefs_as_symlinks(store: &FilesStore, symrefs: Vec<(String, Stri
     for (name, target) in symrefs {
         let path = store.ref_path(&name);
         let expected = format!("ref: {target}\n");
-        if std::fs::read(&path).is_ok_and(|c| c == expected.as_bytes()) {
+        if std::fs::read(&path).is_ok_and(|c| c == *rgit_bstr::to_bytes(&expected)) {
             let tmp = path.with_extension("symlink.tmp");
             if std::os::unix::fs::symlink(&target, &tmp).is_ok() {
                 let _ = std::fs::rename(&tmp, &path);

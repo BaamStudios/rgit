@@ -297,7 +297,7 @@ impl CommitSource for Commits<'_, '_> {
             Ok(None) => {}
             Err(e) => {
                 for l in &e.errors {
-                    let _ = writeln!(std::io::stderr(), "error: {l}");
+                    crate::argv::errln(&format!("error: {l}"));
                 }
                 return Err(*id);
             }
@@ -332,7 +332,7 @@ impl CommitSource for Commits<'_, '_> {
                 Ok(false) => return Ok(false),
                 Err(Die::Fatal(m)) => {
                     // A failing textconv filter is fatal like in git.
-                    let _ = writeln!(std::io::stderr(), "fatal: {m}");
+                    crate::argv::errln(&format!("fatal: {m}"));
                     std::process::exit(128);
                 }
                 Err(_) => return Err(*id),

@@ -1100,7 +1100,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             ),
             None => branch.as_ref().and_then(|b| {
                 repo.config
-                    .get(format!("branch.{b}.description"))
+                    .get(crate::tracking::branch_key(b, "description"))
                     .and_then(|e| e.value.as_ref().map(|v| v.to_vec()))
             }),
         };

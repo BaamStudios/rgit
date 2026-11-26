@@ -106,7 +106,7 @@ fn create_branch(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     let quiet = quiet.get() > 0;
     if !quiet {
-        println!("{}", crate::messages::branch::creating_branch(name));
+        crate::argv::outln(&crate::messages::branch::creating_branch(name));
     }
     set_tracking(&repo, name, start_name, track.get(), quiet)?;
     crate::branch_submodules::run(&subs, &c, false)?;
@@ -129,7 +129,7 @@ fn set_tracking(
 ) -> Result<(), Die> {
     let report = |upstream: &str| {
         if !quiet {
-            println!("{}", crate::messages::tracking::set_up_to_track(name, upstream, false));
+            crate::argv::outln(&crate::messages::tracking::set_up_to_track(name, upstream, false));
         }
     };
     let auto = repo
@@ -146,12 +146,12 @@ fn set_tracking(
             let from = start.strip_prefix("refs/heads/").unwrap_or(start);
             let remote = repo
                 .config
-                .get(format!("branch.{from}.remote"))
-                .and_then(|e| e.value.as_ref().map(|v| v.to_string()));
+                .get(crate::tracking::branch_key(from, "remote"))
+                .and_then(|e| e.value.as_ref().map(|v| rgit_bstr::from_bytes(v).into_owned()));
             let merge = repo
                 .config
-                .get(format!("branch.{from}.merge"))
-                .and_then(|e| e.value.as_ref().map(|v| v.to_string()));
+                .get(crate::tracking::branch_key(from, "merge"))
+                .and_then(|e| e.value.as_ref().map(|v| rgit_bstr::from_bytes(v).into_owned()));
             if let (Some(r), Some(m)) = (remote, merge) {
                 set(&format!("branch.{name}.remote"), &r)?;
                 set(&format!("branch.{name}.merge"), &m)?;
@@ -177,14 +177,14 @@ fn set_tracking(
             };
             let names: Vec<String> = remotes
                 .names()
-                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .map(|n| rgit_bstr::from_bytes(n).into_owned())
                 .collect();
             for n in names {
-                let Ok(r) = remotes.get(n.as_bytes(), Some(&repo.setup.git_dir)) else {
+                let Ok(r) = remotes.get(&rgit_bstr::to_bytes(&n), Some(&repo.setup.git_dir)) else {
                     continue;
                 };
-                if let Some(src) = r.fetch.map_dst(start.as_bytes()) {
-                    let src = String::from_utf8_lossy(&src).into_owned();
+                if let Some(src) = r.fetch.map_dst(&rgit_bstr::to_bytes(start)) {
+                    let src = rgit_bstr::from_vec(src.into());
                     set(&format!("branch.{name}.remote"), &n)?;
                     set(&format!("branch.{name}.merge"), &src)?;
                     report(&format!("{n}/{}", src.strip_prefix("refs/heads/").unwrap_or(&src)));

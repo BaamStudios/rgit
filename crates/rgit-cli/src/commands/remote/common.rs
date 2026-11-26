@@ -105,9 +105,12 @@ impl Repo {
         pattern: &ValuePattern,
         all: bool,
     ) -> Result<(), WriteError> {
+        // Names that are not UTF-8 go into the file as their raw bytes.
+        let key = rgit_bstr::to_bytes(key);
+        let value = value.map(rgit_bstr::to_bytes);
         let req = SetRequest {
-            key: key.as_bytes(),
-            value: value.map(str::as_bytes),
+            key: &key,
+            value: value.as_deref(),
             pattern,
             all,
             comment: None,
@@ -143,8 +146,8 @@ impl Repo {
         match config_write::rename_section_in_file(
             &self.config_path(),
             &Default::default(),
-            old.as_bytes(),
-            new.map(str::as_bytes),
+            &rgit_bstr::to_bytes(old),
+            new.map(rgit_bstr::to_bytes).as_deref(),
         ) {
             Ok(()) => Ok(()),
             Err(e)
@@ -162,9 +165,9 @@ impl Repo {
     /// Values of `key` from the repository's own configuration.
     pub fn repo_values(&self, key: &str) -> Vec<String> {
         self.config
-            .get_all(key)
+            .get_all(rgit_bstr::to_bytes(key))
             .filter(|e| in_repo(e))
-            .filter_map(|e| e.value.as_ref().map(|v| v.to_str_lossy().into_owned()))
+            .filter_map(|e| e.value.as_ref().map(|v| rgit_bstr::from_bytes(v).into_owned()))
             .collect()
     }
 
@@ -257,7 +260,7 @@ pub fn read_branches(config: &ConfigSet) -> Vec<Branch> {
         if !matches!(key.as_ref(), "remote" | "pushremote" | "merge" | "rebase") {
             continue;
         }
-        let name = sub.to_str_lossy().into_owned();
+        let name = rgit_bstr::from_bytes(sub).into_owned();
         let idx = match out.iter().position(|b| b.name == name) {
             Some(i) => i,
             None => {
@@ -272,7 +275,7 @@ pub fn read_branches(config: &ConfigSet) -> Vec<Branch> {
             }
         };
         let b = &mut out[idx];
-        let value = e.value.as_ref().map(|v| v.to_str_lossy().into_owned());
+        let value = e.value.as_ref().map(|v| rgit_bstr::from_bytes(v).into_owned());
         match key.as_ref() {
             "remote" => {
                 if b.remote.is_some() {

@@ -1003,7 +1003,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         let tag = format!("refs/tags/{b}");
         let found = |name: &str| {
             refs.iter()
-                .find(|r| r.name == name.as_bytes())
+                .find(|r| r.name == *rgit_bstr::to_bytes(name))
                 .and_then(|r| r.oid)
         };
         our = found(&head)
@@ -1748,9 +1748,12 @@ fn config_write(path: &Path, key: &str, value: &str, add: bool) -> Result<(), Di
     } else {
         ValuePattern::Any
     };
+    // Names that are not UTF-8 go into the file as their raw bytes.
+    let key = rgit_bstr::to_bytes(key);
+    let value = rgit_bstr::to_bytes(value);
     let req = SetRequest {
-        key: key.as_bytes(),
-        value: Some(value.as_bytes()),
+        key: &key,
+        value: Some(&value),
         pattern: &pattern,
         all: false,
         comment: None,
@@ -1796,7 +1799,7 @@ fn write_branch_config(
 fn set_head_symref(git_dir: &Path, target: &str) -> Result<(), Die> {
     let mut lock = rgit_fs::LockFile::acquire(git_dir.join("HEAD"), &rgit_fs::LockOptions::default())
         .map_err(|e| Die::Fatal(e.to_string()))?;
-    lock.write_all(format!("ref: {target}\n").as_bytes())
+    lock.write_all(&rgit_bstr::to_bytes(&format!("ref: {target}\n")))
         .and_then(|()| lock.commit())
         .map_err(|e| Die::Fatal(e.to_string()))
 }

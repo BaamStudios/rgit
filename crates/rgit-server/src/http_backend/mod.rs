@@ -365,11 +365,13 @@ impl Request<'_> {
                 return self.not_found(&msg::cannot_open("HEAD", &rgit_messages::strerror(&e)));
             }
         };
+        // A branch name that is not UTF-8 is served as its bytes.
+        let text = rgit_bstr::to_bytes(&text).into_owned();
         let mut h = self.headers();
         h.str("Content-Length", &text.len().to_string())?;
         h.str("Content-Type", "text/plain")?;
         h.end()?;
-        self.out.write_all(text.as_bytes())?;
+        self.out.write_all(&text)?;
         Ok(())
     }
 

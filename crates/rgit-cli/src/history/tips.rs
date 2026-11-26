@@ -57,7 +57,7 @@ pub struct Resolved {
 fn print_diagnostics(resolver: &Resolver<'_>) {
     let mut err = std::io::stderr();
     for d in resolver.take_diagnostics() {
-        let _ = err.write_all(d.render().as_bytes());
+        let _ = err.write_all(&rgit_bstr::to_bytes(&d.render()));
     }
 }
 
@@ -67,7 +67,7 @@ pub fn rev_error(resolver: &Resolver<'_>, e: RevError) -> Die {
         RevError::Fatal(m) => Die::Fatal(m),
         RevError::Lookup(e) => {
             for line in &e.errors {
-                let _ = writeln!(std::io::stderr(), "error: {line}");
+                crate::argv::errln(&format!("error: {line}"));
             }
             match e.fatal {
                 Some(m) => Die::Fatal(m),
@@ -168,7 +168,7 @@ impl Resolved {
                 Ok(None) => {}
                 Err(e) => {
                     for l in &e.errors {
-                        let _ = writeln!(std::io::stderr(), "error: {l}");
+                        crate::argv::errln(&format!("error: {l}"));
                     }
                     return Err(Die::Fatal(msg::bad_object(&id.to_hex())));
                 }

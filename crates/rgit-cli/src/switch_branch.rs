@@ -959,7 +959,8 @@ pub fn print_tracking(repo: &Repo, branch: &str, head: ObjectId) {
         }
         blocks.push(lines);
     }
-    let mut o = std::io::stdout().lock();
+    // Branch names that are not UTF-8 are printed as their bytes.
+    let mut o = crate::argv::stdout();
     for (i, block) in blocks.iter().enumerate() {
         if i > 0 {
             let _ = writeln!(o);
@@ -979,7 +980,7 @@ pub fn previous_checkout(repo: &Repo, n: usize) -> Option<String> {
         repo.hash,
     );
     let head = logs.read("HEAD").ok().flatten()?;
-    rgit_refs::reflog::nth_prior_checkout(&head, n).map(|b| String::from_utf8_lossy(b).into_owned())
+    rgit_refs::reflog::nth_prior_checkout(&head, n).map(|b| rgit_bstr::from_bytes(b).into_owned())
 }
 
 /// Validates a new branch name like git (`fatal:` plus the ref-syntax

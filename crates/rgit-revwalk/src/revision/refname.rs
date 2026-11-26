@@ -4,7 +4,7 @@
 
 use rgit_hash::ObjectId;
 
-use super::{Error, Resolver};
+use super::{Error, Level, Resolver, messages};
 
 /// The ref lookup rules of `gitrevisions(7)`, in order; `%s` is the name.
 pub const REF_RULES: [&str; 6] = [
@@ -112,7 +112,15 @@ impl Resolver<'_> {
             let Some(v) = found else {
                 continue;
             };
-            let Some(oid) = v.oid else { continue };
+            let Some(oid) = v.oid else {
+                // A symbolic ref whose target does not exist (or cannot be
+                // read): git skips it, with a warning, except for the
+                // `HEAD` of an unborn branch.
+                if full != "HEAD" {
+                    self.push_diag(Level::Warning, messages::ignoring_dangling_symref(&full));
+                }
+                continue;
+            };
             out.count += 1;
             if out.count == 1 {
                 out.full_name = v.name;

@@ -80,7 +80,7 @@ pub fn run(b: &mut Bisect<'_>, args: &[String]) -> CmdResult {
         };
         if !b.is_bisecting() {
             let _ = std::fs::write(b.path("BISECT_RUN"), "");
-            let _ = writeln!(std::io::stderr(), "{}", msg::NEED_START);
+            crate::argv::errln(msg::NEED_START);
             eprintln!("error: {}", msg::state_failed(&state, -1));
             return Err(Die::Exit(1));
         }

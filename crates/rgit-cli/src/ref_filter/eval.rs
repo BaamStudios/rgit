@@ -760,7 +760,7 @@ impl<'a> Env<'a> {
         let (Some(r), Some(short)) = (self.repo, it.name.strip_prefix("refs/heads/")) else {
             return Value::empty();
         };
-        let Ok(b) = BranchConfig::from_config(r.config, short.as_bytes()) else {
+        let Ok(b) = BranchConfig::from_config(r.config, &rgit_bstr::to_bytes(short)) else {
             return Value::empty();
         };
         let Some(remotes) = self.remotes() else {
@@ -773,10 +773,10 @@ impl<'a> Env<'a> {
         } else {
             rgit_remote::upstream_ref(remotes, git_dir, Some(&b)).ok()
         };
-        let target = target.map(|t| t.to_str_lossy().into_owned());
+        let target = target.map(|t| rgit_bstr::from_vec(t.into()));
         match m {
             RemoteMod::Name(nm) => match target {
-                Some(t) => Value::text(self.shorten(&t, nm)),
+                Some(t) => Value::text(rgit_bstr::to_bytes(&self.shorten(&t, nm)).into_owned()),
                 None => Value::empty(),
             },
             RemoteMod::RemoteName => {
