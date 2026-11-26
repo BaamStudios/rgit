@@ -9,6 +9,11 @@ skip -p rgit-cli --test fetch  #680 hangs
 -p rgit-cli --test cruft               #680 fixture script uses GNU touch/date options
 -p rgit-cli --test housekeeping        #680 fixture script uses GNU touch -d
 -p rgit-cli --test verify_signatures   #680 gpg socket path too long below /private/var/folders
+-p rgit-cli --test subtree             #680 git-subtree's progress counter is padded by the system wc
+
+# The file system refuses file names that are not UTF-8.
+-p rgit-cli --test refname_bytes       #680 loose references with names that are not UTF-8
+-p rgit-refs --test raw_names          #680 loose references with names that are not UTF-8
 
 # System libraries answer differently than glibc.
 -p rgit-cli --test blame               #680 message of the system regex library

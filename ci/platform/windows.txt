@@ -18,6 +18,7 @@ skip -p rgit-cli --test *  #679 not run on Windows yet
 -p rgit-repo --lib                        #681 ceiling directories, core.sharedRepository
 -p rgit-repo --test setup_cases           #681 repository discovery
 -p rgit-repo --test setup_matrix          #681 repository discovery
+-p rgit --test facade                     #681 \\?\ prefixes and backslashes in repository paths
 
 # Processes and the environment: helper programs, descriptors, system messages.
 -p rgit-http --test h2_trace              #682 helper program not found
