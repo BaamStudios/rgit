@@ -307,22 +307,75 @@ pub fn write_pack(
     objects: &[ListedObject],
     opts: &PackOptions,
 ) -> Result<Option<ObjectId>, Die> {
+    Ok(write_packs(odb, pack_dir, objects, opts, None)?
+        .into_iter()
+        .next())
+}
+
+/// [`write_pack`] with a size limit (`--max-pack-size`,
+/// `pack.packSizeLimit`): the objects may go into several packs, each at
+/// most `max_size` bytes unless one object alone is larger. Returns the
+/// names of the packs in the order they were written.
+pub fn write_packs(
+    odb: &ObjectDatabase,
+    pack_dir: &Path,
+    objects: &[ListedObject],
+    opts: &PackOptions,
+    max_size: Option<u64>,
+) -> Result<Vec<ObjectId>, Die> {
     if objects.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let hash = odb.hash_kind();
     std::fs::create_dir_all(pack_dir).map_err(|e| io_fatal(pack_dir, e))?;
     let prefix = format!(".tmp-{}-pack-", std::process::id());
-    let mut tmp = rgit_fs::TempFile::with_mode(pack_dir, &prefix, 0o444)
-        .map_err(|e| io_fatal(pack_dir, e))?;
-    let tmp_path = tmp.path().to_path_buf();
     let packs: Vec<Arc<Pack>> = odb.packs().map(|p| p.set().packs()).unwrap_or_default();
-    {
-        let out = std::io::BufWriter::with_capacity(1 << 16, tmp.file_mut());
-        let (_summary, mut out) = pw::write_pack(out, hash, objects, odb, &packs, &opts.write)
-            .map_err(|e| Die::Fatal(e.to_string()))?;
-        out.flush().map_err(|e| io_fatal(&tmp_path, e))?;
+    let mut temps: Vec<rgit_fs::TempFile> = Vec::new();
+    match max_size {
+        None => {
+            let mut tmp = rgit_fs::TempFile::with_mode(pack_dir, &prefix, 0o444)
+                .map_err(|e| io_fatal(pack_dir, e))?;
+            let tmp_path = tmp.path().to_path_buf();
+            {
+                let out = std::io::BufWriter::with_capacity(1 << 16, tmp.file_mut());
+                let (_summary, mut out) =
+                    pw::write_pack(out, hash, objects, odb, &packs, &opts.write)
+                        .map_err(|e| Die::Fatal(e.to_string()))?;
+                out.flush().map_err(|e| io_fatal(&tmp_path, e))?;
+            }
+            temps.push(tmp);
+        }
+        Some(limit) => {
+            let mut open = || -> std::io::Result<std::fs::File> {
+                let mut tmp = rgit_fs::TempFile::with_mode(pack_dir, &prefix, 0o444)?;
+                let file = tmp.file_mut().try_clone()?;
+                temps.push(tmp);
+                Ok(file)
+            };
+            let written =
+                pw::write_pack_files(&mut open, hash, objects, odb, &packs, &opts.write, limit)
+                    .map_err(|e| Die::Fatal(e.to_string()))?;
+            for (_summary, file) in written {
+                file.sync_all().map_err(|e| io_fatal(pack_dir, e))?;
+            }
+        }
     }
+    let mut names = Vec::new();
+    for tmp in temps {
+        names.push(install_pack(tmp, pack_dir, hash, opts)?);
+    }
+    Ok(names)
+}
+
+/// Index the written temporary pack `tmp` and move it into place with its
+/// `.idx` (and `.rev`).
+fn install_pack(
+    tmp: rgit_fs::TempFile,
+    pack_dir: &Path,
+    hash: HashKind,
+    opts: &PackOptions,
+) -> Result<ObjectId, Die> {
+    let tmp_path = tmp.path().to_path_buf();
     let mut ip_opts = ip::Options::new(hash);
     // Large blobs are hashed while streaming, as git does (GIT_ALLOC_LIMIT).
     ip_opts.big_file_threshold = opts.write.big_file_threshold;
@@ -339,7 +392,7 @@ pub fn write_pack(
             let bytes = indexed.rev_bytes().map_err(|e| Die::Fatal(e.to_string()))?;
             write_file(&with("rev"), "tmp_rev_", &bytes, opts.shared)?;
         }
-        return Ok(Some(checksum));
+        return Ok(checksum);
     }
     share(&tmp_path, opts.shared);
     tmp.persist(with("pack"))
@@ -352,7 +405,7 @@ pub fn write_pack(
         .index_bytes(opts.idx_version)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     write_file(&with("idx"), "tmp_idx_", &bytes, opts.shared)?;
-    Ok(Some(checksum))
+    Ok(checksum)
 }
 
 fn write_file(

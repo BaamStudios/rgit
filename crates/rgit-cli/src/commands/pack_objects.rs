@@ -11,7 +11,9 @@
 //!
 //! Selection: `--include-tag`, `--reflog`, `--indexed-objects`, and
 //! leaving out objects with `--local`, `--incremental`, `--unpacked`,
-//! `--honor-pack-keep`, `--keep-pack=<name>`.
+//! `--honor-pack-keep`, `--keep-pack=<name>`. `--unpack-unreachable`
+//! loosens the unreachable objects of the local packs (not those of kept
+//! packs, of packs older than its time, or that an alternate has).
 //!
 //! Shallow histories: the commits in the repository's `shallow` file (or
 //! the file of `git --shallow-file`) and those named by `--shallow <id>`
@@ -89,6 +91,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
     // Every option given of those (for the checks against `--cruft`).
     let given: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+    // `--unpack-unreachable[=<time>]`: `Some(time)`.
+    let unpack_unreachable: RefCell<Option<Option<String>>> = RefCell::new(None);
     let reject = |name: &'static str| {
         let unsupported = &unsupported;
         let given = &given;
@@ -184,7 +188,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "unpack-unreachable",
                 Some("time"),
                 msg::H_UNPACK_UNREACHABLE,
-                reject("unpack-unreachable"),
+                |v: Option<&str>, unset: bool| -> Result<(), CallbackError> {
+                    *unpack_unreachable.borrow_mut() = if unset {
+                        None
+                    } else {
+                        given.borrow_mut().push("unpack-unreachable");
+                        revs.set(true);
+                        Some(v.map(str::to_string))
+                    };
+                    Ok(())
+                },
             )
             .optional(None),
             Opt::flag(None, "cruft", &cruft, msg::H_CRUFT),
@@ -536,6 +549,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         eprintln!("warning: {}", msg::BITMAP_NEEDS_NAME_HASH_V1);
         bitmap = 0;
     }
+    // `--unpack-unreachable`: what is reachable, also when left out.
+    let unpack = unpack_unreachable.take().filter(|_| !stdout.get());
+    let reachable: std::collections::HashSet<ObjectId> = if unpack.is_some() {
+        listed.iter().map(|o| o.id).collect()
+    } else {
+        Default::default()
+    };
     // A cruft pack's contents are decided by its pack list alone.
     if skip.any() && !cruft.get() {
         let before = listed.len();
@@ -587,7 +607,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         show_enumerated_reused(&listed, &bases, pack_reused);
     }
     let ordered = pw::pack_order(&listed);
+    let unpack_expiry = match unpack.as_ref() {
+        Some(Some(v)) => {
+            let date_ctx = rgit_date::DateContext::from_env();
+            Some(Some(rgit_date::parse_expiry_date(v, &date_ctx).map_err(|_| {
+                Die::Fatal(crate::messages::housekeeping::malformed_expiration(v))
+            })?))
+        }
+        Some(None) => Some(None),
+        None => None,
+    };
     if ordered.is_empty() && non_empty.get() {
+        if let Some(expiry) = unpack_expiry {
+            loosen_unreachable(&odb, &setup, &skip, &reachable, expiry)?;
+        }
         return Ok(0);
     }
 
@@ -642,6 +675,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         summaries
     };
+    if let Some(expiry) = unpack_expiry {
+        loosen_unreachable(&odb, &setup, &skip, &reachable, expiry)?;
+    }
     if show_progress {
         let sum = |f: fn(&pw::PackSummary) -> u32| summaries.iter().map(f).sum::<u32>();
         eprintln!(
@@ -656,6 +692,60 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         );
     }
     Ok(0)
+}
+
+/// `--unpack-unreachable[=<time>]`: the objects of the local packs that
+/// are not reachable become loose, with the time of their pack, unless the
+/// pack is older than `expiry`, the pack is kept (`--honor-pack-keep`,
+/// `--keep-pack`) or an alternate object directory has the object.
+fn loosen_unreachable(
+    odb: &ObjectDatabase,
+    setup: &rgit_repo::Setup,
+    skip: &Skip,
+    reachable: &std::collections::HashSet<ObjectId>,
+    expiry: Option<u64>,
+) -> Result<(), Die> {
+    let objects = rgit_odb::objects_dir(&setup.cwd.join(&setup.common_dir));
+    let pack_dir = objects.join("pack");
+    let alternates = rgit_odb::resolve_alternates(&objects);
+    let alt_packs: Vec<std::sync::Arc<rgit_pack::Pack>> = alternates
+        .iter()
+        .flat_map(|alt| rgit_pack::PackSet::open(alt.join("pack"), odb.hash_kind()).packs())
+        .collect();
+    let in_alternate = |id: &ObjectId| {
+        let hex = id.to_hex();
+        alt_packs.iter().any(|p| p.contains(id))
+            || alternates
+                .iter()
+                .any(|alt| alt.join(&hex[..2]).join(&hex[2..]).is_file())
+    };
+    let local = rgit_pack::PackSet::open(&pack_dir, odb.hash_kind()).packs();
+    for p in &local {
+        let name = p
+            .path()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if (skip.kept && p.path().with_extension("keep").exists())
+            || skip.keep_packs.contains(&name)
+        {
+            continue;
+        }
+        let mtime = std::fs::metadata(p.path())
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs());
+        if expiry.is_some_and(|e| mtime < e) {
+            continue;
+        }
+        for id in p.index().ids() {
+            if !reachable.contains(&id) && !in_alternate(&id) {
+                crate::housekeeping::store::loosen(odb, &id, mtime)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The `Enumerating objects` and `Counting objects` meters (also used by
