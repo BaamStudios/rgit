@@ -655,7 +655,9 @@ impl Options {
                     o.filter_print_omitted = true;
                 }
                 "--missing-only" if cmd == Command::RevList => o.missing_only = true,
-                "--exclude-promisor-objects" => o.exclude_promisor = true,
+                "--exclude-promisor-objects" if cmd == Command::RevList => {
+                    o.exclude_promisor = true;
+                }
                 "--unpacked" => o.unpacked = true,
                 // Packs kept only in memory exist in pack-objects alone.
                 "--no-kept-objects" | "--no-kept-objects=on-disk" => o.no_kept = true,
