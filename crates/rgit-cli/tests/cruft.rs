@@ -227,6 +227,19 @@ fn expire_to_keeps_the_pruned_objects() {
     if fx.is_skipped() {
         return;
     }
+    // The unreachable objects that survive (the packed side branch and
+    // the loose `new` blob) must share one mtime: when they do not, git
+    // (2.56) also copies some of them, picked by object id, into the
+    // --expire-to pack although they are not pruned. With the fixture's
+    // timing that depended on whether `new` was written in the same
+    // second as the side pack, which made this test flaky.
+    sh(
+        &fx,
+        r#"t=$(date +%s)
+        touch -d "@$t" .git/objects/pack/*
+        new=$(echo new | "$GIT" hash-object --stdin)
+        touch -d "@$t" .git/objects/$(echo $new | cut -c1-2)/$(echo $new | cut -c3-)"#,
+    );
     let cmd = r#""$G" init -q --bare expired.git
         "$G" repack -d --cruft --cruft-expiration=1.hour.ago --expire-to=expired.git/objects/pack/pack"#;
     let (git, rgit) = both(&fx, cmd);
@@ -240,7 +253,17 @@ fn expire_to_keeps_the_pruned_objects() {
         )
     };
     assert_eq!(pruned("b"), pruned("a"));
-    assert!(!pruned("a").is_empty());
+    // Exactly the objects older than the expiration: `old`, `mid` and
+    // the tree naming `old`.
+    let expired = sh(
+        &fx,
+        r#"old=$(echo old | "$GIT" hash-object --stdin)
+        { echo $old
+          echo mid | "$GIT" hash-object --stdin
+          printf '100644 blob %s\tf\n' $old | "$GIT" mktree --missing
+        } | sort"#,
+    );
+    assert_eq!(pruned("a"), expired);
 }
 
 #[test]
