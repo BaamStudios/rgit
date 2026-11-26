@@ -16,6 +16,10 @@
 //! | `checkout -p <rev>` | `diff-index -R <rev>` | to index and work tree | Apply ... to index and worktree |
 //! | `restore -p -s HEAD` | `diff-index HEAD` | `-R` | Discard ... from worktree |
 //! | `restore -p -s <rev>` | `diff-index -R <rev>` | (work tree) | Apply ... to worktree |
+//! | `history split <commit>` | `diff-tree <parent> <commit>` | `--cached` (a temporary index holding the parent) | Stage |
+//!
+//! `history split` offers no `e` and lists only `y,n,q,a,d,?` in its
+//! prompt (the other keys still work), as git does.
 //!
 //! When the selected hunks of a file do not apply to the index in the
 //! modes that change both, the user is asked whether to apply them to the
@@ -42,12 +46,14 @@ pub(crate) enum Mode {
     CheckoutRev,
     WorktreeHead,
     WorktreeRev,
+    /// `history split`.
+    Split,
 }
 
 impl Mode {
     fn verb(self) -> msg::Verb {
         match self {
-            Mode::Stage => msg::STAGE,
+            Mode::Stage | Mode::Split => msg::STAGE,
             Mode::Stash => msg::STASH,
             Mode::ResetHead => msg::UNSTAGE,
             Mode::ResetRev => msg::APPLY_INDEX,
@@ -69,6 +75,10 @@ impl Mode {
             }
             Mode::ResetHead => vec!["diff-index".into(), "--cached".into(), r],
             Mode::ResetRev => vec!["diff-index".into(), "-R".into(), "--cached".into(), r],
+            // `rev` is `<parent> <commit>`.
+            Mode::Split => std::iter::once("diff-tree".to_owned())
+                .chain(rev.split(' ').map(str::to_owned))
+                .collect(),
             Mode::CheckoutRev | Mode::WorktreeRev => vec!["diff-index".into(), "-R".into(), r],
         }
     }
@@ -85,7 +95,7 @@ impl Mode {
     fn cached(self) -> bool {
         matches!(
             self,
-            Mode::Stage | Mode::Stash | Mode::ResetHead | Mode::ResetRev
+            Mode::Stage | Mode::Stash | Mode::ResetHead | Mode::ResetRev | Mode::Split
         )
     }
 
@@ -415,13 +425,17 @@ impl Session<'_> {
 
     /// The diff, plain and as shown.
     fn diff(&self) -> Result<(Vec<u8>, Option<Vec<u8>>), Die> {
-        let cwd = user_dir(self.repo)?;
+        // A bare repository (`history split`) has no directory of its own.
+        let cwd = if self.opts.top_relative {
+            None
+        } else {
+            Some(user_dir(self.repo)?)
+        };
         let run = |color: bool| {
             let call = self.child(&self.diff_args(color));
-            if self.opts.top_relative {
-                call.output()
-            } else {
-                call.in_dir(&cwd).output()
+            match &cwd {
+                None => call.output(),
+                Some(cwd) => call.in_dir(cwd).output(),
             }
         };
         let (code, plain) = run(false)?;
@@ -521,7 +535,7 @@ impl Session<'_> {
                 }
             }
         }
-        if out.applied {
+        if out.applied && self.opts.mode != Mode::Split {
             let _ = self
                 .child(&["update-index".into(), "-q".into(), "--refresh".into()])
                 .output();
@@ -661,7 +675,9 @@ impl Session<'_> {
             }
             let others = (0..n).any(|i| i != cur && file.hunks[i].decision == Decision::Undecided);
             let can_split = h.can_split();
-            let can_edit = h.kind == HunkKind::Text && !file.deletion && !h.lines.is_empty();
+            let split_mode = self.opts.mode == Mode::Split;
+            let can_edit =
+                h.kind == HunkKind::Text && !file.deletion && !h.lines.is_empty() && !split_mode;
             let printable = !(file.addition && h.lines.is_empty() && h.kind == HunkKind::Text);
             let mut choices = String::from("y,n,q,a,d");
             if others {
@@ -689,6 +705,9 @@ impl Session<'_> {
                 choices.push_str(",p,P");
             }
             choices.push_str(",?");
+            if split_mode {
+                choices = "y,n,q,a,d,?".into();
+            }
             let was = match h.decision {
                 Decision::Undecided => "",
                 Decision::Use => " (was: y)",
