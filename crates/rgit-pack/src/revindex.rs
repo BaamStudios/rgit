@@ -9,6 +9,7 @@ use std::path::Path;
 use rgit_hash::{HashKind, Hasher};
 
 use crate::PackIndex;
+use crate::messages as msg;
 
 /// The hash function id of a `.rev` (1: SHA-1, 2: SHA-256).
 pub fn hash_id(kind: HashKind) -> u32 {
@@ -45,29 +46,25 @@ pub fn verify(path: &Path, index: &PackIndex) -> Result<Vec<String>, String> {
     let h = kind.byte_len();
     let n = index.len() as usize;
     if data.len() < 12 + 2 * h {
-        return Err(format!("reverse-index file {shown} is too small"));
+        return Err(msg::revindex_too_small(&shown));
     }
     if &data[..4] != b"RIDX" {
-        return Err(format!("reverse-index file {shown} has unknown signature"));
+        return Err(msg::revindex_unknown_signature(&shown));
     }
     let version = be32(&data, 4);
     if version != 1 {
-        return Err(format!(
-            "reverse-index file {shown} has unsupported version {version}"
-        ));
+        return Err(msg::revindex_unsupported_version(&shown, version));
     }
     let id = be32(&data, 8);
     if id != 1 && id != 2 {
-        return Err(format!(
-            "reverse-index file {shown} has unsupported hash id {id}"
-        ));
+        return Err(msg::revindex_unsupported_hash_id(&shown, id));
     }
     if data.len() != 12 + 4 * n + 2 * h {
-        return Err(format!("reverse-index file {shown} is corrupt"));
+        return Err(msg::revindex_corrupt(&shown));
     }
     let mut problems = Vec::new();
     if !trailer_ok(&data, kind) {
-        problems.push("invalid checksum".to_owned());
+        problems.push(msg::REVINDEX_INVALID_CHECKSUM.to_owned());
     }
     let mut by_offset: Vec<(u64, u32)> = (0..index.len())
         .filter_map(|p| index.offset_at(p).ok().map(|o| (o, p)))
@@ -76,9 +73,7 @@ pub fn verify(path: &Path, index: &PackIndex) -> Result<Vec<String>, String> {
     for (i, &(_, want)) in by_offset.iter().enumerate() {
         let got = be32(&data, 12 + 4 * i);
         if got != want {
-            problems.push(format!(
-                "invalid rev-index position at {i}: {want} != {got}"
-            ));
+            problems.push(msg::revindex_invalid_position(i, want, got));
             break;
         }
     }
