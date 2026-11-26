@@ -39,7 +39,12 @@ fn help_outside_a_repository() {
                 "show" => "log",
                 _ => cmd,
             };
-            let usage = format!("usage: git {shown}");
+            // `upload-pack` names itself as the program `git-upload-pack`,
+            // like git.
+            let usage = match cmd {
+                "upload-pack" => "usage: git-upload-pack".to_owned(),
+                _ => format!("usage: git {shown}"),
+            };
             if out.status.code() != Some(0)
                 || !stdout
                     .lines()

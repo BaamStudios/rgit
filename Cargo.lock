@@ -865,10 +865,16 @@ name = "rgit-server"
 version = "0.1.0"
 dependencies = [
  "rgit-config",
+ "rgit-difftest",
  "rgit-hash",
+ "rgit-object",
+ "rgit-odb",
+ "rgit-pack",
  "rgit-protocol",
  "rgit-refs",
  "rgit-trace",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

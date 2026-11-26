@@ -131,7 +131,14 @@ pub(crate) fn usage_text(usage: &[&str], opts: &[Opt<'_>], all: bool, after_pars
     out.push('\n');
     let mut printed = false;
     for opt in opts {
-        if opt.flags.hidden && !all {
+        // While parsing, an alias is its target, hidden or not; after
+        // parsing it stands for itself.
+        let hidden = if after_parse {
+            opt.flags.hidden
+        } else {
+            opt.flags.hidden || resolve(opts, opt).flags.hidden
+        };
+        if hidden && !all {
             continue;
         }
         if opt.is_subcommand() {

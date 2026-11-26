@@ -614,7 +614,15 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
                 out.no_revisions = false;
                 let hidden = hidden.as_deref().map(|s| Hidden::new(repo, s));
                 for (refname, id) in ref_set(repo, opts, set, exclude, hidden.as_ref())? {
-                    out.add(repo, id, *negative, None, Vec::new(), &refname)?;
+                    // `--source` names the refs of `--branches`, `--tags`
+                    // and `--remotes` without that prefix.
+                    let source = match set {
+                        RefSet::Prefix { prefix, .. } => {
+                            refname.strip_prefix(prefix).unwrap_or(&refname)
+                        }
+                        _ => &refname,
+                    };
+                    out.add(repo, id, *negative, None, Vec::new(), source)?;
                 }
                 match set {
                     RefSet::Indexed => {
@@ -625,7 +633,7 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
                     RefSet::AlternateRefs => {
                         for id in alternate_refs(repo) {
                             if matches!(repo.objects.read(&id), Ok(Some(_))) {
-                                out.add(repo, id, *negative, None, Vec::new(), "")?;
+                                out.add(repo, id, *negative, None, Vec::new(), ".alternate")?;
                             }
                         }
                     }

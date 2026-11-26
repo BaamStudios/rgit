@@ -24,6 +24,9 @@ pub struct Context {
     pub work_tree: Option<String>,
     /// `--namespace`.
     pub namespace: Option<String>,
+    /// `--shallow-file <file>`: the file listing the shallow commits,
+    /// instead of the repository's `shallow` file (empty: no file).
+    pub shallow_file: Option<String>,
     /// `--bare` was given.
     pub bare: bool,
     /// `-p` (`Some(true)`) or `-P` (`Some(false)`), see [`crate::pager`].
@@ -122,6 +125,9 @@ impl Context {
         }
         if let Some(n) = &self.namespace {
             set("GIT_NAMESPACE", n);
+        }
+        if let Some(f) = &self.shallow_file {
+            set("GIT_SHALLOW_FILE", f);
         }
         if self.bare {
             set("GIT_IMPLICIT_WORK_TREE", "0");
