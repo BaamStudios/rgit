@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Dispatched on bot/compat-table by compat-table.yml (required checks).
+  workflow_dispatch:
 
 jobs:
   check:
@@ -63,13 +65,19 @@ jobs:
 
   # Developer Certificate of Origin (#86): every commit of a pull request
   # carries a Signed-off-by trailer matching its author.
+  # A dispatched run checks the commits of the branch that are not on main.
   dco:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Signed-off-by on every commit
-        run: scripts/check-dco.sh "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+        run: |
+          if test "${{ github.event_name }}" = pull_request; then
+            scripts/check-dco.sh "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            scripts/check-dco.sh "origin/main..HEAD"
+          fi
