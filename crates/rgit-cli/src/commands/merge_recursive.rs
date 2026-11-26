@@ -16,13 +16,19 @@ use crate::repository::Repo;
 use crate::sequencer::{self, Fail};
 
 pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
+    run_with(ctx, argv, None, msg::MERGE_RECURSIVE_USAGE)
+}
+
+/// `merge-recursive` with the engine's `strategy` (`subtree` for
+/// `merge-subtree`) and that command's `usage`.
+pub(crate) fn run_with(ctx: &mut Context, argv: &[String], strategy: Option<&str>, usage: &str) -> CmdResult {
     let args = &argv[1..];
     if matches!(args.first().map(String::as_str), Some("-h" | "--help-all")) {
-        println!("{}", msg::MERGE_RECURSIVE_USAGE);
+        println!("{usage}");
         return Ok(0);
     }
     if args.len() < 3 {
-        eprintln!("{}", msg::MERGE_RECURSIVE_USAGE);
+        eprintln!("{usage}");
         return Ok(129);
     }
     let mut xopts = Vec::new();
@@ -38,6 +44,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
     }
     let heads: Vec<&String> = rest.collect();
+    for x in &xopts {
+        use crate::commands::merge_tree::{StrategyOptionError, apply_strategy_option};
+        let mut probe = rgit_merge::Options::default();
+        if let Err(StrategyOptionError::Unknown) = apply_strategy_option(&mut probe, x) {
+            return Err(Die::Fatal(msg::merge_recursive_unknown_option(x)));
+        }
+    }
     if heads.len() != 2 {
         return Err(Die::Fatal(msg::MERGE_RECURSIVE_TWO_HEADS.to_owned()));
     }
@@ -74,7 +87,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .unwrap_or_else(|| "empty tree".to_owned());
     let result = sequencer::merge_with(
         &repo,
-        None,
+        strategy,
         &xopts,
         &base_tree,
         &head_tree,

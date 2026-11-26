@@ -728,6 +728,10 @@ pub static CATALOG: &[Entry] = &[
 /// for `whatchanged`, which rgit implements).
 pub const DEPRECATED: &[&str] = &["pack-redundant", "whatchanged"];
 
+/// Commands rgit implements natively that git ships as scripts: they are
+/// not listed by `--list-cmds=builtins` (as with git).
+pub const SCRIPTS: &[&str] = &["merge-octopus", "merge-one-file", "merge-resolve"];
+
 /// The catalogue entry of `name`.
 pub fn lookup(name: &str) -> Option<&'static Entry> {
     CATALOG.iter().find(|e| e.name == name)
