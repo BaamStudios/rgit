@@ -200,3 +200,36 @@ pub fn hash_mismatch(f: &mut fmt::Formatter<'_>, id: &ObjectId, pack: &Path) -> 
 pub fn mtimes(f: &mut fmt::Formatter<'_>, path: &Path, what: &str) -> fmt::Result {
     write!(f, "mtimes file {} {what}", path.display())
 }
+
+/// git: a `.rev` file shorter than its fixed parts.
+pub fn revindex_too_small(path: &str) -> String {
+    format!("reverse-index file {path} is too small")
+}
+
+/// git: a `.rev` file that does not start with `RIDX`.
+pub fn revindex_unknown_signature(path: &str) -> String {
+    format!("reverse-index file {path} has unknown signature")
+}
+
+/// git: unknown `.rev` version.
+pub fn revindex_unsupported_version(path: &str, version: u32) -> String {
+    format!("reverse-index file {path} has unsupported version {version}")
+}
+
+/// git: unknown hash function id in a `.rev` file.
+pub fn revindex_unsupported_hash_id(path: &str, id: u32) -> String {
+    format!("reverse-index file {path} has unsupported hash id {id}")
+}
+
+/// git: a `.rev` file whose size does not fit the index.
+pub fn revindex_corrupt(path: &str) -> String {
+    format!("reverse-index file {path} is corrupt")
+}
+
+/// git (`fsck`): the trailing checksum of a `.rev` file is wrong.
+pub const REVINDEX_INVALID_CHECKSUM: &str = "invalid checksum";
+
+/// git (`fsck`): the first wrong position of a `.rev` file.
+pub fn revindex_invalid_position(at: usize, want: u32, got: u32) -> String {
+    format!("invalid rev-index position at {at}: {want} != {got}")
+}
