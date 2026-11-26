@@ -1,0 +1,26 @@
+[package]
+name = "rgit-server"
+description = "Server side of the git wire protocol for rgit: upload-pack, receive-pack (clean-room, not affiliated with the Git project)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rgit-config = { path = "../rgit-config" }
+rgit-hash = { path = "../rgit-hash" }
+rgit-object = { path = "../rgit-object" }
+rgit-odb = { path = "../rgit-odb" }
+rgit-pack = { path = "../rgit-pack" }
+rgit-protocol = { path = "../rgit-protocol" }
+rgit-refs = { path = "../rgit-refs" }
+rgit-trace = { path = "../rgit-trace" }
+thiserror = "2"
+
+[dev-dependencies]
+rgit-difftest = { path = "../rgit-difftest" }
+tempfile = "3"

@@ -85,6 +85,13 @@ pub fn parse(ctx: &mut Context, args: &[String]) -> Result<Action, Die> {
                 };
                 ctx.config_parameters.push(entry);
             }
+            "--shallow-file" => {
+                i += 1;
+                let Some(file) = args.get(i) else {
+                    return Err(usage_error(msg::NO_SHALLOW_FILE));
+                };
+                ctx.shallow_file = Some(file.clone());
+            }
             "-p" | "--paginate" => ctx.paginate = Some(true),
             "-P" | "--no-pager" => ctx.paginate = Some(false),
             "--bare" => {

@@ -28,6 +28,7 @@
 mod encode;
 mod entry;
 mod error;
+mod filter;
 pub mod messages;
 mod output;
 mod pack;
@@ -36,6 +37,7 @@ mod source;
 mod walk;
 
 pub use error::{SourceError, WriteError};
+pub use filter::{FilterError, ObjectFilter};
 pub use output::PackStream;
 pub use pack::{
     DEFAULT_BIG_FILE_THRESHOLD, DEFAULT_DEPTH, DEFAULT_WINDOW, MAX_DEPTH, PackSummary,
@@ -43,6 +45,6 @@ pub use pack::{
 };
 pub use source::{ObjectSource, PackSetSource, ShallowSource};
 pub use walk::{
-    ListedObject, Tip, describe, enumerate, enumerate_with_edges, enumerate_with_edges_aggressive,
-    name_hash, pack_order,
+    EnumerateOptions, ListedObject, Tip, describe, enumerate, enumerate_with,
+    enumerate_with_edges, enumerate_with_edges_aggressive, name_hash, pack_order,
 };

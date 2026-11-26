@@ -81,6 +81,7 @@ pub mod tracking;
 pub mod unpack_objects;
 pub mod update_index;
 pub mod update_ref;
+pub mod upload_pack;
 pub mod userdiff;
 pub mod var;
 pub mod verify_pack;
@@ -109,6 +110,7 @@ pub fn no_directory_given(opt: &str) -> String {
 
 pub const C_EXPECTS_CONFIG: &str = "-c expects a configuration string";
 pub const NO_NAMESPACE: &str = "no namespace given for --namespace";
+pub const NO_SHALLOW_FILE: &str = "no file given for '--shallow-file' option";
 pub const NO_CONFIG_KEY: &str = "no config key given for --config-env";
 pub const NO_ATTR_SOURCE: &str = "no attribute source given for --attr-source";
 

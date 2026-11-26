@@ -54,6 +54,8 @@ pub enum WriteError {
     TooManyObjects,
     /// The trailing checksum hit a SHA-1 collision attack pattern.
     Collision,
+    /// The object filter cannot be applied.
+    Filter(super::FilterError),
 }
 
 impl WriteError {
@@ -86,6 +88,7 @@ impl fmt::Display for WriteError {
             WriteError::Mismatch(id) => m::hash_mismatch(f, id),
             WriteError::TooManyObjects => m::too_many_objects(f),
             WriteError::Collision => m::trailer_collision(f),
+            WriteError::Filter(e) => fmt::Display::fmt(e, f),
         }
     }
 }

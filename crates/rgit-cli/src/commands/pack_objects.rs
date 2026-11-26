@@ -13,8 +13,14 @@
 //! leaving out objects with `--local`, `--incremental`, `--unpacked`,
 //! `--honor-pack-keep`, `--keep-pack=<name>`.
 //!
-//! Not yet: `--shallow`, `--stdin-packs`, the `delta` attribute, filters,
-//! bitmaps.
+//! Shallow histories: the commits in the repository's `shallow` file (or
+//! the file of `git --shallow-file`) and those named by `--shallow <id>`
+//! lines before the revisions have no parents; `--shallow` builds the
+//! thin pack for a reader with a shallow history. `--filter=<spec>`
+//! leaves objects out (partial clone), see `rgit_pack::write::ObjectFilter`
+//! (`sparse:oid` is not supported).
+//!
+//! Not yet: `--stdin-packs`, the `delta` attribute, bitmaps.
 
 use std::io::{BufRead, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -54,6 +60,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let stdout = Cell::new(false);
     let sparse = Cell::new(-1);
     let thin = Cell::new(false);
+    let shallow = Cell::new(false);
+    let filters: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let include_tag = Cell::new(false);
     let reflog = Cell::new(false);
     let indexed_objects = Cell::new(false);
@@ -162,7 +170,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Opt::bool(None, "sparse", &sparse, msg::H_SPARSE),
             Opt::flag(None, "thin", &thin, msg::H_THIN),
             Opt::flag(None, "path-walk", &path_walk, msg::H_PATH_WALK),
-            Opt::callback(None, "shallow", None, msg::H_SHALLOW, reject("shallow")).noarg(),
+            Opt::flag(None, "shallow", &shallow, msg::H_SHALLOW),
             Opt::flag(None, "honor-pack-keep", &honor_pack_keep, msg::H_HONOR_PACK_KEEP),
             Opt::string_list(None, "keep-pack", &keep_pack, "name", msg::H_KEEP_PACK),
             Opt::integer(None, "compression", &compression, msg::H_COMPRESSION),
@@ -178,7 +186,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 reject("write-bitmap-index"),
             )
             .noarg(),
-            Opt::callback(None, "filter", Some("args"), msg::H_FILTER, reject("filter")),
+            Opt::callback(None, "filter", Some("args"), msg::H_FILTER, |arg, unset| {
+                match arg {
+                    Some(spec) if !unset => filters.borrow_mut().push(spec.to_owned()),
+                    _ => filters.borrow_mut().clear(),
+                }
+                Ok(())
+            }),
             Opt::callback(None, "missing", Some("action"), msg::H_MISSING, reject("missing"))
                 .noneg(),
             Opt::callback(
@@ -234,6 +248,19 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if thin.get() && !stdout.get() {
         return Err(Die::Fatal(msg::THIN_NOT_INDEXABLE.into()));
     }
+    // Several `--filter` options combine.
+    let filter = {
+        let specs = filters.borrow();
+        let mut parsed = Vec::new();
+        for spec in specs.iter() {
+            parsed.push(pw::ObjectFilter::parse(spec).map_err(|e| Die::Fatal(e.to_string()))?);
+        }
+        match parsed.len() {
+            0 => None,
+            1 => parsed.pop(),
+            _ => Some(pw::ObjectFilter::Combine(parsed)),
+        }
+    };
     let idx_version = match index_version.borrow().as_deref() {
         Some(v) => Some(parse_index_version(v)?),
         None => None,
@@ -310,12 +337,26 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 tips.push(Tip { id, exclude: false });
             }
         }
-        read_revs(&mut input, &repo, &mut tips)?;
+        let mut shallow_commits: std::collections::HashSet<ObjectId> =
+            shallow_file_commits(ctx, &setup).into_iter().collect();
+        read_revs(&mut input, &repo, &mut tips, &mut shallow_commits)?;
         let sparse = match sparse.get() {
             -1 => config.bool("pack.usesparse").ok().flatten().unwrap_or(true),
             v => v > 0,
         };
-        let (listed, bases) = pw::enumerate_with_edges(&repo.source, hash, &tips, sparse)
+        let source = pw::ShallowSource {
+            inner: repo.source,
+            shallow: shallow_commits,
+        };
+        // For a reader with a shallow history the edge also holds the
+        // trees of the excluded tips (see `--shallow`).
+        let aggressive = shallow.get() && thin.get();
+        let walk = pw::EnumerateOptions {
+            sparse: sparse && !aggressive,
+            aggressive,
+            filter: filter.as_ref(),
+        };
+        let (listed, bases) = pw::enumerate_with(&source, hash, &tips, &walk)
             .map_err(|e| Die::Fatal(e.to_string()))?;
         (listed, if thin.get() { bases } else { Vec::new() })
     } else {
@@ -745,9 +786,27 @@ struct Repo<'a> {
     hash: HashKind,
 }
 
-/// Revision arguments, one per line: `<rev>`, `^<rev>`, `--not`. An empty
+/// The shallow commits of the repository: the file of `git
+/// --shallow-file <file>` (empty: none), else `$GIT_SHALLOW_FILE`, else
+/// `<common dir>/shallow`.
+fn shallow_file_commits(ctx: &Context, setup: &rgit_repo::Setup) -> Vec<ObjectId> {
+    let file = match ctx.shallow_file.as_deref() {
+        Some("") => return Vec::new(),
+        Some(f) => PathBuf::from(f),
+        None => rgit_fetch::shallow::file_for(&setup.common_dir),
+    };
+    rgit_fetch::shallow::read(&file, setup.format.object_format)
+}
+
+/// Revision arguments, one per line: `<rev>`, `^<rev>`, `--not`, and
+/// `--shallow <id>` for a commit to treat as having no parents. An empty
 /// line ends the revisions.
-fn read_revs(input: &mut dyn BufRead, repo: &Repo<'_>, tips: &mut Vec<Tip>) -> Result<(), Die> {
+fn read_revs(
+    input: &mut dyn BufRead,
+    repo: &Repo<'_>,
+    tips: &mut Vec<Tip>,
+    shallow: &mut std::collections::HashSet<ObjectId>,
+) -> Result<(), Die> {
     let mut not = false;
     while let Some(line) = read_line(input)? {
         let line = line.strip_suffix('\n').unwrap_or(&line);
@@ -756,6 +815,12 @@ fn read_revs(input: &mut dyn BufRead, repo: &Repo<'_>, tips: &mut Vec<Tip>) -> R
         }
         if line == "--not" {
             not = !not;
+            continue;
+        }
+        if let Some(name) = line.strip_prefix("--shallow ") {
+            let id = ObjectId::from_hex(repo.hash, name.as_bytes())
+                .map_err(|_| Die::Fatal(msg::not_an_object_name(name)))?;
+            shallow.insert(id);
             continue;
         }
         if line.starts_with('-') {

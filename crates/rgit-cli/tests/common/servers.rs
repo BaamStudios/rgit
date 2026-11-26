@@ -127,6 +127,12 @@ pub fn start_daemon(fx: &Fixture) -> Option<(Server, String)> {
 /// http-backend`) in background threads; returns the
 /// `http://127.0.0.1:<port>` base URL.
 pub fn start_http(fx: &Fixture) -> String {
+    start_http_with(fx, Vec::new())
+}
+
+/// [`start_http`] with more environment variables for `git http-backend`
+/// (e.g. `GIT_EXEC_PATH`, to choose the `git upload-pack` it runs).
+pub fn start_http_with(fx: &Fixture, env: Vec<(String, std::ffi::OsString)>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let git = fx.reference_git().to_path_buf();
@@ -134,15 +140,21 @@ pub fn start_http(fx: &Fixture) -> String {
     let home = fx.home_dir();
     std::thread::spawn(move || {
         for s in listener.incoming().flatten() {
-            let (g, r, h) = (git.clone(), root.clone(), home.clone());
-            std::thread::spawn(move || serve_cgi(&g, &r, &h, s));
+            let (g, r, h, e) = (git.clone(), root.clone(), home.clone(), env.clone());
+            std::thread::spawn(move || serve_cgi(&g, &r, &h, &e, s));
         }
     });
     format!("http://127.0.0.1:{port}")
 }
 
 /// Answer one HTTP/1.0 request by running `git http-backend` as CGI.
-fn serve_cgi(git: &Path, root: &Path, fx_home: &Path, mut stream: TcpStream) {
+fn serve_cgi(
+    git: &Path,
+    root: &Path,
+    fx_home: &Path,
+    env: &[(String, std::ffi::OsString)],
+    mut stream: TcpStream,
+) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut line = String::new();
     if reader.read_line(&mut line).unwrap_or(0) == 0 {
@@ -202,6 +214,7 @@ fn serve_cgi(git: &Path, root: &Path, fx_home: &Path, mut stream: TcpStream) {
         .env("HTTP_CONTENT_ENCODING", header("content-encoding"))
         .env("GIT_PROTOCOL", header("git-protocol"))
         .env("REMOTE_ADDR", "127.0.0.1")
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())))
         .arg("http-backend")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -319,7 +319,11 @@ fn run(args: Vec<String>) -> CmdResult {
         exec_path: context::default_exec_path(&argv0),
         ..Default::default()
     };
-    if let Some(cmd) = prog.strip_prefix("git-") {
+    // `git-<cmd>` and `rgit-<cmd>` (ADR 0004: the dashed service programs).
+    let dashed = prog
+        .strip_prefix("git-")
+        .or_else(|| prog.strip_prefix("rgit-"));
+    if let Some(cmd) = dashed {
         // A dashed name runs the built-in; there is nothing else to look
         // up (a `git-<cmd>` link to rgit would find itself again).
         if commands::find(cmd).is_none() {

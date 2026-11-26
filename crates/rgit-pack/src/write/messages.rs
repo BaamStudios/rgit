@@ -65,3 +65,32 @@ pub const PROGRESS_WRITING: &str = "Writing objects";
 pub fn delta_threads(n: usize) -> String {
     format!("Delta compression using up to {n} threads")
 }
+
+/// git: a filter spec that is none.
+pub fn invalid_filter_spec(spec: &str) -> String {
+    format!("invalid filter-spec '{spec}'")
+}
+
+/// git: `tree:` without a depth.
+pub const EXPECTED_TREE_DEPTH: &str = "expected 'tree:<depth>'";
+
+/// git: `object:type=` with an unknown type.
+pub fn invalid_filter_object_type(name: &str) -> String {
+    format!("'{name}' for 'object:type=<type>' is not a valid object type")
+}
+
+/// git: `sparse:path=` filters.
+pub const SPARSE_PATH_DROPPED: &str = "sparse:path filters support has been dropped";
+
+/// git: `combine:` without filters.
+pub const EXPECTED_AFTER_COMBINE: &str = "expected something after combine:";
+
+/// git: a reserved character in a filter inside `combine:`.
+pub fn must_escape_char(c: char) -> String {
+    format!("must escape char in sub-filter-spec: '{c}'")
+}
+
+/// git (upload-pack's wording for a filter it does not serve).
+pub fn filter_not_supported(spec: &str) -> String {
+    format!("filter '{spec}' not supported")
+}

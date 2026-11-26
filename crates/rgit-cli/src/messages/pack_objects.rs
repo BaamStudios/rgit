@@ -87,6 +87,11 @@ pub fn not_a_rev(line: &str) -> String {
     format!("not a rev '{line}'")
 }
 
+/// git: a `--shallow <id>` line on standard input without an object id.
+pub fn not_an_object_name(name: &str) -> String {
+    format!("not an object name '{name}'")
+}
+
 /// git: a full object id on standard input (`--revs`) that does not exist.
 pub fn bad_object(hex: &str) -> String {
     format!("bad object {hex}")

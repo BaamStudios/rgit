@@ -19,7 +19,8 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use rgit_hash::{HashKind, ObjectId};
 use rgit_object::{Commit, Tag, TreeIter};
 
-use super::{ObjectSource, WriteError};
+use super::filter::Compiled;
+use super::{ObjectFilter, ObjectSource, WriteError};
 use crate::ObjectKind;
 
 /// One tip of a walk.
@@ -406,13 +407,206 @@ pub fn enumerate_with_edges_aggressive<S: ObjectSource + ?Sized>(
     Ok((listed, edges))
 }
 
+/// How [`enumerate_with`] walks.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnumerateOptions<'a> {
+    /// See [`enumerate_with_edges`].
+    pub sparse: bool,
+    /// See [`enumerate_with_edges_aggressive`].
+    pub aggressive: bool,
+    /// Leave out the objects this filter does not accept (`--filter`).
+    /// The tips themselves are always listed. The edge then only holds
+    /// what a reader that got its objects through the same filter has:
+    /// trees for the filters that keep all trees, else nothing.
+    pub filter: Option<&'a ObjectFilter>,
+}
+
+/// [`enumerate_with_edges`] with all options: the listed objects and the
+/// edge.
+pub fn enumerate_with<S: ObjectSource + ?Sized>(
+    source: &S,
+    hash: HashKind,
+    tips: &[Tip],
+    opts: &EnumerateOptions<'_>,
+) -> Result<(Vec<ListedObject>, Vec<ListedObject>), WriteError> {
+    let filter = match opts.filter {
+        Some(f) => Some(f.compile().map_err(WriteError::Filter)?),
+        None => None,
+    };
+    let mut edges = Vec::new();
+    let listed = walk_objects_filtered(
+        source,
+        hash,
+        tips,
+        opts.sparse,
+        opts.aggressive,
+        Some(&mut edges),
+        filter.as_ref(),
+    )?;
+    if let Some(f) = &filter {
+        let trees = f.keeps_all_trees();
+        edges.retain(|e| trees && e.kind == ObjectKind::Tree);
+    }
+    Ok((listed, edges))
+}
+
 fn walk_objects<S: ObjectSource + ?Sized>(
     source: &S,
     hash: HashKind,
     tips: &[Tip],
     sparse: bool,
     aggressive: bool,
+    edge_objects: Option<&mut Vec<ListedObject>>,
+) -> Result<Vec<ListedObject>, WriteError> {
+    walk_objects_filtered(source, hash, tips, sparse, aggressive, edge_objects, None)
+}
+
+/// What the filtered tree walk has done so far.
+#[derive(Default)]
+struct FilterState {
+    /// Objects in the output.
+    listed: HashSet<ObjectId>,
+    /// Blobs the filter left out. A blob named as a tip after a tree
+    /// that holds it is not listed either (as `rev-list` behaves).
+    omitted: HashSet<ObjectId>,
+    /// The smallest depth each tree was expanded at.
+    expanded: HashMap<ObjectId, u64>,
+}
+
+impl<S: ObjectSource + ?Sized> Walker<'_, S> {
+    /// [`Walker::walk_tree`] with a filter: list `root` and what is below
+    /// it as far as `filter` accepts it. `seen` holds what the reader has
+    /// and is not changed.
+    ///
+    /// A `provided` root (a tree named as a tip) is listed whatever the
+    /// filter says, and for `tree:<depth>` its entries have depth 0, like
+    /// the root tree of a commit.
+    fn walk_tree_filtered(
+        &self,
+        root: ObjectId,
+        provided: bool,
+        filter: &Compiled,
+        seen: &HashSet<ObjectId>,
+        state: &mut FilterState,
+        out: &mut Vec<ListedObject>,
+    ) -> Result<(), WriteError> {
+        fn push(
+            state: &mut FilterState,
+            out: &mut Vec<ListedObject>,
+            id: ObjectId,
+            kind: ObjectKind,
+            name: &[u8],
+        ) {
+            if state.listed.insert(id) {
+                out.push(ListedObject {
+                    name_hash: name_hash(name),
+                    ..ListedObject::new(id, kind)
+                });
+            }
+        }
+        // Depths here are one more than the filter's: a provided tree is
+        // at 0, the root tree of a commit at 1. Without a depth limit
+        // every tree is expanded once, at "depth 0".
+        let limit = filter.tree_depth;
+        let step = u64::from(limit.is_some());
+        let too_deep = |depth: u64| limit.is_some_and(|d| depth > d);
+        let wants_blobs = filter.allows(ObjectKind::Blob) && filter.blob_limit != Some(0);
+        // Trees are only read for what they hold.
+        let descends = filter.allows(ObjectKind::Tree) || wants_blobs;
+        // Enter a tree: list it and say whether to look at its entries.
+        // Entries that are all too deep are not looked at, except with
+        // `tree:0`, as `rev-list` behaves (see `FilterState::omitted`).
+        let enter = |state: &mut FilterState,
+                     out: &mut Vec<ListedObject>,
+                     id: ObjectId,
+                     name: &[u8],
+                     depth: u64,
+                     provided: bool|
+         -> bool {
+            if seen.contains(&id) || too_deep(depth) || !(provided || descends) {
+                return false;
+            }
+            match state.expanded.get(&id) {
+                Some(&prev) if prev <= depth => return false,
+                _ => state.expanded.insert(id, depth),
+            };
+            if provided || filter.allows(ObjectKind::Tree) {
+                push(state, out, id, ObjectKind::Tree, name);
+            }
+            limit == Some(0) || !too_deep(depth + 1)
+        };
+        let root_depth = if provided { 0 } else { step };
+        if !enter(state, out, root, b"", root_depth, provided) {
+            return Ok(());
+        }
+        let mut stack: Vec<(ObjectId, Vec<u8>, usize, u64)> = vec![(
+            root,
+            self.read_kind(&root, ObjectKind::Tree)?,
+            0,
+            root_depth,
+        )];
+        while let Some((tree_id, data, pos, depth)) = stack.last_mut() {
+            let entry = match TreeIter::new(self.hash, &data[*pos..]).next() {
+                None => {
+                    stack.pop();
+                    continue;
+                }
+                Some(Err(_)) => {
+                    return Err(WriteError::Corrupt {
+                        id: *tree_id,
+                        kind: ObjectKind::Tree,
+                    });
+                }
+                Some(Ok(e)) => e,
+            };
+            *pos += entry.mode_digits.len() + entry.name.len() + 2 + self.hash.byte_len();
+            let id = entry.oid;
+            let child_depth = *depth + step;
+            match entry.mode_bits & 0o170000 {
+                0o160000 => {}
+                0o040000 => {
+                    let name = entry.name.to_vec();
+                    if enter(state, out, id, &name, child_depth, false) {
+                        let sub = self.read_kind(&id, ObjectKind::Tree)?;
+                        stack.push((id, sub, 0, child_depth));
+                    }
+                }
+                _ => {
+                    if seen.contains(&id) || state.listed.contains(&id) {
+                        continue;
+                    }
+                    if !wants_blobs || too_deep(child_depth) {
+                        state.omitted.insert(id);
+                        continue;
+                    }
+                    if let Some(max) = filter.blob_limit {
+                        let size = match self.source.header(&id) {
+                            Ok(Some((_, size))) => size,
+                            Ok(None) => return Err(WriteError::Missing(id)),
+                            Err(e) => return Err(WriteError::read(id, e)),
+                        };
+                        if size >= max {
+                            state.omitted.insert(id);
+                            continue;
+                        }
+                    }
+                    let name = entry.name.to_vec();
+                    push(state, out, id, ObjectKind::Blob, &name);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn walk_objects_filtered<S: ObjectSource + ?Sized>(
+    source: &S,
+    hash: HashKind,
+    tips: &[Tip],
+    sparse: bool,
+    aggressive: bool,
     mut edge_objects: Option<&mut Vec<ListedObject>>,
+    filter: Option<&Compiled>,
 ) -> Result<Vec<ListedObject>, WriteError> {
     let mut w = Walker {
         source,
@@ -573,6 +767,40 @@ fn walk_objects<S: ObjectSource + ?Sized>(
 
     let mut out: Vec<ListedObject> = Vec::with_capacity(commits.len() * 4);
     let mut listed: HashSet<ObjectId> = HashSet::new();
+    if let Some(filter) = filter {
+        // The tips are listed whatever the filter says.
+        let provided: HashSet<ObjectId> = include_commits.iter().copied().collect();
+        let all_commits = filter.allows(ObjectKind::Commit);
+        for id in &commits {
+            if all_commits || provided.contains(id) {
+                out.push(ListedObject::new(*id, ObjectKind::Commit));
+            }
+        }
+        // The objects named as tips, in their order.
+        let mut state = FilterState::default();
+        for o in pending {
+            match o.kind {
+                ObjectKind::Tree => {
+                    w.walk_tree_filtered(o.id, true, filter, &seen, &mut state, &mut out)?;
+                }
+                _ => {
+                    if !seen.contains(&o.id)
+                        && !state.omitted.contains(&o.id)
+                        && state.listed.insert(o.id)
+                    {
+                        out.push(o);
+                    }
+                }
+            }
+        }
+        if filter.walks_trees() {
+            for id in &commits {
+                let tree = w.commit(id)?.tree;
+                w.walk_tree_filtered(tree, false, filter, &seen, &mut state, &mut out)?;
+            }
+        }
+        return Ok(out);
+    }
     for id in &commits {
         out.push(ListedObject::new(*id, ObjectKind::Commit));
     }
