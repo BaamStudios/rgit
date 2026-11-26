@@ -78,6 +78,7 @@ pub(crate) fn parse_split(
             base,
         });
     }
+    crate::fsmonitor::apply_dirty(&mut index);
     Ok(index)
 }
 
@@ -166,13 +167,18 @@ fn parse_one(
             b"sdir" => index.sparse = true,
             // Written anew from the entries when asked for.
             b"EOIE" | b"IEOT" => {}
-            // Known optional extensions that rgit does not keep yet:
-            // fsmonitor data (and an untracked cache it cannot parse).
+            // An untracked cache rgit cannot parse is dropped.
             b"UNTR" => match crate::UntrackedCache::parse(ext, kind) {
                 Some(uc) => index.untracked = Some(uc),
                 None => index.dropped.push(sig),
             },
-            b"FSMN" => index.dropped.push(sig),
+            b"FSMN" => match crate::fsmonitor::parse(ext) {
+                Some((token, dirty)) => {
+                    index.fsmonitor = Some(token);
+                    index.fsmonitor_dirty = Some(dirty);
+                }
+                None => index.dropped.push(sig),
+            },
             _ if sig[0].is_ascii_uppercase() => index.ignored.push(sig),
             _ => return Err(Error::UnknownExtension(sig)),
         }
@@ -289,6 +295,8 @@ fn parse_entries(
             stage,
             path,
             base: 0,
+            fsm_valid: false,
+            read_stat: Some(stat),
         });
     }
     Ok((entries, pos))

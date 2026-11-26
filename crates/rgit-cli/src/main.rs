@@ -58,6 +58,7 @@ mod grep;
 mod history;
 mod hooks;
 mod housekeeping;
+mod fsmonitor;
 mod index_config;
 mod interactive;
 mod large;

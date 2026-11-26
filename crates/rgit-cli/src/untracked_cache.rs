@@ -153,7 +153,9 @@ impl CachedWalk<'_> {
             node.dirs.clear();
             return false;
         };
-        if node.valid {
+        // A directory the file system monitor reported nothing in is
+        // trusted as cached.
+        if node.valid && !self.index.fsmonitor_has_run() {
             if node.stat != stat {
                 self.stats.directory_invalidation += 1;
                 node.invalidate();

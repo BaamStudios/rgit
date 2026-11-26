@@ -548,7 +548,7 @@ impl WorkTree<'_> {
     /// entry, `Some(None)` when the file is gone, else the file.
     fn changed(&self, e: &Entry) -> Result<Option<Option<Side>>, Die> {
         let io = |err: std::io::Error| Die::Fatal(err.to_string());
-        if e.flags.skip_worktree || e.flags.assume_valid {
+        if e.flags.skip_worktree || e.flags.assume_valid || self.checker.fsmonitor_valid(e) {
             return Ok(None);
         }
         let Some(meta) = self.checker.lstat(e.path()).map_err(io)? else {

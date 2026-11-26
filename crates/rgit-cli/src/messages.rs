@@ -44,6 +44,7 @@ pub mod grafts;
 pub mod grep;
 pub mod hash_object;
 pub mod help;
+pub mod fsmonitor;
 pub mod helpers;
 pub mod history;
 pub mod hook;

@@ -191,6 +191,12 @@ pub struct Entry {
     /// came from, 0 for an entry the shared index does not have. Not part
     /// of the entry's value (ignored by `==`).
     pub(crate) base: u32,
+    /// `CE_FSMONITOR_VALID`: the file system monitor reported no change
+    /// since the entry was last checked. Not part of the entry's value.
+    pub(crate) fsm_valid: bool,
+    /// The stat data the entry was read with (`None` for an entry made in
+    /// memory): an entry whose stat data was filled anew counts as checked.
+    pub(crate) read_stat: Option<Stat>,
 }
 
 impl PartialEq for Entry {
@@ -228,7 +234,26 @@ impl Entry {
             stage,
             path: path.into(),
             base: 0,
+            fsm_valid: false,
+            read_stat: None,
         }
+    }
+
+    /// Whether the file system monitor vouches for the entry
+    /// (`CE_FSMONITOR_VALID`): marked valid, or given stat data from the
+    /// work tree since it was read or created.
+    pub fn fsmonitor_valid(&self) -> bool {
+        self.fsm_valid
+            || match self.read_stat {
+                Some(s) => s != self.stat,
+                None => self.stat != Stat::default(),
+            }
+    }
+
+    /// Marks the entry valid or invalid for the file system monitor.
+    pub fn set_fsmonitor_valid(&mut self, valid: bool) {
+        self.fsm_valid = valid;
+        self.read_stat = Some(self.stat);
     }
 
     /// Path relative to the top of the worktree, `/` separated.

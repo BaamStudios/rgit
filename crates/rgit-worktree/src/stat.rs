@@ -81,6 +81,9 @@ pub struct StatOptions {
     pub nsec: bool,
     /// Compare the device number (git's `USE_STDEV`, off by default).
     pub dev: bool,
+    /// A file system monitor is in use (`core.fsmonitor`): entries it
+    /// vouches for ([`Entry::fsmonitor_valid`]) count as unchanged.
+    pub fsmonitor: bool,
 }
 
 impl Default for StatOptions {
@@ -92,6 +95,7 @@ impl Default for StatOptions {
             symlinks: true,
             nsec: false,
             dev: false,
+            fsmonitor: false,
         }
     }
 }
@@ -537,6 +541,13 @@ impl Checker {
             .is_some_and(|t| is_racy(entry, t, &self.opts))
     }
 
+    /// Whether a file system monitor in use vouches for `entry`, so that
+    /// its file need not be examined.
+    #[must_use]
+    pub fn fsmonitor_valid(&self, entry: &Entry) -> bool {
+        self.opts.fsmonitor && !entry.mode.is_gitlink() && entry.fsmonitor_valid()
+    }
+
     /// How many files [`Checker::content_differs`] has read and hashed.
     #[must_use]
     pub fn files_hashed(&self) -> usize {
@@ -555,16 +566,21 @@ impl Checker {
     /// [`Checker::lstat`] for every entry of `entries`, in order, spread
     /// over up to `threads` threads (git's `core.preloadIndex`). `None`
     /// for a file that is missing, lies beyond a symbolic link or cannot
-    /// be examined.
+    /// be examined, and for an entry [`Checker::fsmonitor_valid`] vouches
+    /// for (it is not examined).
     #[must_use]
     pub fn preload(&self, entries: &[Entry], threads: usize) -> Vec<Option<FileStat>> {
         let root = os::Root::open(&self.root);
         let root = &root;
+        let fsmonitor = self.opts.fsmonitor;
         let run = move |chunk: &[Entry], out: &mut [Option<FileStat>]| {
             let mut cache = Vec::new();
             let is_real_dir =
                 |rel: &[u8]| root.lstat(rel).is_ok_and(|m| m.is_some_and(|m| m.is_dir()));
             for (e, slot) in chunk.iter().zip(out) {
+                if fsmonitor && !e.mode.is_gitlink() && e.fsmonitor_valid() {
+                    continue;
+                }
                 if !beyond_symlink(e.path(), &mut cache, is_real_dir) {
                     *slot = root.lstat(e.path()).ok().flatten();
                 }
@@ -591,7 +607,7 @@ impl Checker {
     /// # Errors
     /// If the file cannot be examined or read.
     pub fn check(&self, entry: &Entry) -> io::Result<Status> {
-        if entry.flags.skip_worktree || entry.flags.assume_valid {
+        if entry.flags.skip_worktree || entry.flags.assume_valid || self.fsmonitor_valid(entry) {
             return Ok(Status::Unchanged);
         }
         let Some(meta) = self.lstat(entry.path())? else {
@@ -832,6 +848,7 @@ pub fn smudge_racy_entries(
     for &pos in &smudge {
         if let Some(e) = index.entry_mut(pos) {
             e.stat.size = 0;
+            e.set_fsmonitor_valid(false);
         }
     }
     Ok(smudge.len())
