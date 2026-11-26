@@ -174,6 +174,12 @@ pub fn not_a_git_command(cmd: &str) -> String {
     format!("git: '{cmd}' is not a git command. See 'git --help'.")
 }
 
+/// A command rgit hands off to an installed git (#710) that is not
+/// installed.
+pub fn not_built_in(cmd: &str, install: &str) -> String {
+    format!("'{cmd}' is not built into rgit; install git-{cmd} ({install}) to use it")
+}
+
 /// An external `git-<cmd>` was killed by a signal.
 #[cfg_attr(not(unix), allow(dead_code))]
 pub fn died_of_signal(prog: &str, sig: i32) -> String {

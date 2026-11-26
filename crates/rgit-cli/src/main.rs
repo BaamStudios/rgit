@@ -55,6 +55,7 @@ mod format;
 mod global;
 mod grafts;
 mod grep;
+mod handoff;
 mod history;
 mod hooks;
 mod housekeeping;
@@ -282,6 +283,9 @@ fn dispatch(ctx: &mut Context, mut argv: Vec<String>) -> CmdResult {
     let early = alias::EarlyConfig::load(ctx)?;
     if alias::lookup(&early.config, &argv[0])?.is_some() {
         return expand_alias(ctx, early, argv);
+    }
+    if let Some(h) = handoff::lookup(&argv[0]) {
+        return Err(Die::Fatal(messages::not_built_in(h.name, h.install)));
     }
     match autocorrect::unknown(ctx, &early, &argv[0]) {
         Ok(Some(corrected)) => {
