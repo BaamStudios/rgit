@@ -20,7 +20,13 @@
 //! leaves objects out (partial clone), see `rgit_pack::write::ObjectFilter`
 //! (`sparse:oid` is not supported).
 //!
-//! Not yet: `--stdin-packs`, the `delta` attribute, bitmaps.
+//! `--stdin-packs[=follow]` packs the objects of listed packs (see
+//! `housekeeping::stdin_packs`).
+//!
+//! `--write-bitmap-index` writes the reachability bitmap of a pack of
+//! everything reachable (see `crate::bitmaps`).
+//!
+//! Not yet: the `delta` attribute.
 
 use std::io::{BufRead, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -93,6 +99,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Ok(())
         }
     };
+    // `--stdin-packs`: `Some(follow)`.
+    let stdin_packs: Cell<Option<bool>> = Cell::new(None);
+    let bad_stdin_packs: RefCell<Option<String>> = RefCell::new(None);
     let cruft = Cell::new(false);
     let cruft_expiration: RefCell<Option<String>> = RefCell::new(None);
     let mut parser = Parser::new(
@@ -137,7 +146,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "stdin-packs",
                 Some("mode"),
                 msg::H_STDIN_PACKS,
-                reject("stdin-packs"),
+                |v: Option<&str>, unset: bool| {
+                    stdin_packs.set(match (unset, v) {
+                        (true, _) => None,
+                        (false, None) => Some(false),
+                        (false, Some("follow")) => Some(true),
+                        (false, Some(other)) => {
+                            bad_stdin_packs.borrow_mut().get_or_insert_with(|| other.to_string());
+                            Some(false)
+                        }
+                    });
+                    Ok(())
+                },
             )
             .optional(None),
             Opt::flag(None, "stdout", &stdout, msg::H_STDOUT),
@@ -264,9 +284,22 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if stdout.get() != args.is_empty() || args.len() > 1 {
         return Err(parser.usage_error().into());
     }
+    if let Some(v) = bad_stdin_packs.borrow().as_deref() {
+        return Err(Die::Fatal(msg::invalid_stdin_packs(v)));
+    }
+    if stdin_packs.get().is_some() {
+        let given = given.borrow();
+        let walks = ["keep-unreachable", "pack-loose-unreachable", "unpack-unreachable"];
+        if revs.get() || given.iter().any(|g| walks.contains(g)) {
+            return Err(Die::Fatal(msg::STDIN_PACKS_REVS.into()));
+        }
+        if !filters.borrow().is_empty() {
+            return Err(Die::Fatal(msg::STDIN_PACKS_FILTER.into()));
+        }
+    }
     if cruft.get() {
         let given = given.borrow();
-        if given.contains(&"stdin-packs") {
+        if stdin_packs.get().is_some() {
             return Err(Die::Fatal(msg::CRUFT_STDIN_PACKS.into()));
         }
         let walks = ["keep-unreachable", "pack-loose-unreachable", "unpack-unreachable"];
@@ -381,6 +414,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         )?;
         cruft_mtimes = Some(selection.mtimes);
         (selection.objects, Vec::new())
+    } else if let Some(follow) = stdin_packs.get() {
+        let objects = crate::housekeeping::stdin_packs::select(&odb, &mut input, follow, unpacked.get())?;
+        (objects, Vec::new())
     } else if revs.get() {
         let mut tips = Vec::new();
         if all.get() {
@@ -446,7 +482,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let mut listed = listed;
     let skip = Skip {
         local: local.get(),
-        packed: incremental.get() || unpacked.get(),
+        // With `--stdin-packs`, `--unpacked` adds the loose objects.
+        packed: incremental.get() || (unpacked.get() && stdin_packs.get().is_none()),
         kept: honor_pack_keep.get(),
         keep_packs: keep_pack.borrow().clone(),
     };
@@ -976,6 +1013,17 @@ fn read_revs(
         }
         if line.starts_with('-') {
             return Err(Die::Fatal(msg::not_a_rev(line)));
+        }
+        // `<a>..<b>`: `^<a> <b>` (an empty side is HEAD).
+        if let Some((a, b)) = line.split_once("..").filter(|(_, b)| !b.starts_with('.')) {
+            fn side(s: &str) -> &str {
+                if s.is_empty() { "HEAD" } else { s }
+            }
+            let from = resolve(repo, side(a))?;
+            let to = resolve(repo, side(b))?;
+            tips.push(Tip { id: from, exclude: !not });
+            tips.push(Tip { id: to, exclude: not });
+            continue;
         }
         let (exclude, name) = match line.strip_prefix('^') {
             Some(rest) => (!not, rest),
