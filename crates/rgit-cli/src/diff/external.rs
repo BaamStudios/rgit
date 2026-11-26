@@ -135,8 +135,7 @@ pub fn run(
     let arg_refs: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_os_str()).collect();
     let mut cmd = rgit_ident::editor::shell_command(&prog.cmd, &arg_refs);
     cmd.env("GIT_DIFF_PATH_COUNTER", call.counter.to_string())
-        .env("GIT_DIFF_PATH_TOTAL", call.total.to_string())
-        .stdin(Stdio::null());
+        .env("GIT_DIFF_PATH_TOTAL", call.total.to_string());
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
