@@ -301,6 +301,44 @@ fn repair() {
         .run();
 }
 
+/// `rev-parse --git-path`: repeated slashes and `.lock` do not change
+/// whether a path is per worktree, and `GIT_INDEX_FILE`,
+/// `GIT_GRAFT_FILE` and `GIT_OBJECT_DIRECTORY` relocate their paths.
+#[test]
+fn git_path_rules() {
+    let mut fx = with_worktrees();
+    let paths = [
+        "logs/HEAD.lock",
+        "info//sparse-checkout",
+        "info/sparse-checkout",
+        "packed-refs.lock",
+        "config.lock",
+        "index",
+        "index/foo",
+        "info/grafts",
+        "info/////grafts",
+        "objects",
+        "objects/foo",
+        "objects2",
+    ];
+    let mut args = vec!["rev-parse"];
+    for p in paths {
+        args.extend(["--git-path", p]);
+    }
+    fx.compare(&args).in_dir("w1").output_only().run();
+    for (var, value) in [
+        ("GIT_INDEX_FILE", "foo"),
+        ("GIT_GRAFT_FILE", "foo"),
+        ("GIT_OBJECT_DIRECTORY", "foo"),
+    ] {
+        fx.compare(&args)
+            .in_dir("w1")
+            .env(var, value)
+            .output_only()
+            .run();
+    }
+}
+
 /// Commands inside a linked worktree use its own `HEAD`, index and
 /// per-worktree refs, and see the other worktrees' refs by name.
 #[test]

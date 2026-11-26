@@ -886,25 +886,69 @@ fn is_common_path(path: &str) -> bool {
     let under = |p: &str, d: &str| {
         p == d || p.strip_prefix(d).is_some_and(|r| r.starts_with('/'))
     };
+    // Repeated slashes do not count, nor does a `.lock` suffix.
+    let norm = collapse_slashes(path);
+    let path = norm.strip_suffix(".lock").unwrap_or(&norm);
     if PRIVATE.iter().any(|d| under(path, d)) {
         return false;
     }
     DIRS.iter().any(|d| under(path, d))
-        || FILES.iter().any(|f| path == *f || path.strip_prefix(f) == Some(".lock"))
+        || FILES.contains(&path)
+}
+
+/// `path` with runs of slashes collapsed to one.
+fn collapse_slashes(path: &str) -> String {
+    let mut norm = String::with_capacity(path.len());
+    for c in path.chars() {
+        if !(c == '/' && norm.ends_with('/')) {
+            norm.push(c);
+        }
+    }
+    norm
+}
+
+/// `path` relocated by `GIT_INDEX_FILE` (`index`), `GIT_GRAFT_FILE`
+/// (`info/grafts`) or `GIT_OBJECT_DIRECTORY` (`objects` and below), as
+/// given in the environment.
+fn relocated_path(path: &str) -> Option<String> {
+    let norm = collapse_slashes(path);
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    match norm.as_str() {
+        "index" => var("GIT_INDEX_FILE"),
+        "info/grafts" => var("GIT_GRAFT_FILE"),
+        _ => {
+            let rest = norm.strip_prefix("objects")?;
+            if !rest.is_empty() && !rest.starts_with('/') {
+                return None;
+            }
+            var("GIT_OBJECT_DIRECTORY").map(|d| format!("{d}{rest}"))
+        }
+    }
 }
 
 /// `--git-path <path>`: `path` in the git directory or, for shared files,
 /// the common directory.
 fn git_path(setup: &Setup, path: &str) -> String {
-    let base = if is_common_path(path) {
+    if let Some(p) = relocated_path(path) {
+        return p;
+    }
+    let common = is_common_path(path);
+    let base = if common {
         &setup.common_dir
     } else {
         &setup.git_dir
     };
-    let full = if base.as_os_str() == "." {
-        std::path::PathBuf::from(path)
+    // A path moved to the common directory of a linked worktree loses
+    // its repeated slashes.
+    let path = if common && setup.common_dir != setup.git_dir {
+        collapse_slashes(path)
     } else {
-        base.join(path)
+        path.to_string()
+    };
+    let full = if base.as_os_str() == "." {
+        std::path::PathBuf::from(&path)
+    } else {
+        base.join(&path)
     };
     from_original_cwd(setup, &full)
 }
