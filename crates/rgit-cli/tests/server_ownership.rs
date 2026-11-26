@@ -372,14 +372,30 @@ chown -R 4242:4242 root/p
 show "status p explicit" sh -c 'cd root/p && GIT_DIR=.git GIT_WORK_TREE=. "$0" status --porcelain' "$G"
 "#;
 
+/// Whether a directory can be given to the other user of
+/// [`USERNS_SCRIPT`] and then has that owner.
+const USERNS_PROBE: &str = r#"
+mkdir userns-probe || exit 1
+chown 4242:4242 userns-probe && test "$(stat -c %u userns-probe)" = 4242
+code=$?
+rmdir userns-probe
+exit $code
+"#;
+
 #[test]
 fn real_owners_in_a_user_namespace() {
     let fx = fixture();
     if fx.is_skipped() {
         return;
     }
+    // The test needs a user namespace in which files can be given to
+    // another user. `unshare` alone can succeed with only our own user
+    // mapped (the CI runners); `chown` to the other user then fails and
+    // no repository would have a foreign owner.
     let probe = Command::new("unshare")
-        .args(["--map-auto", "--map-root-user", "true"])
+        .args(["--map-auto", "--map-root-user", "sh", "-c", USERNS_PROBE])
+        .current_dir(fx.work_dir())
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
