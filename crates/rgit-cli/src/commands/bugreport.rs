@@ -64,7 +64,7 @@ fn system_info() -> String {
     s += &format!("compiler info: rustc ({})\n", std::env::consts::ARCH);
     s += &format!("libc info: {}\n", libc_info());
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "<unset>".into());
-    s += &format!("$SHELL (typically, interactive shell): {shell}\n");
+    s += &msg::shell_line(&shell);
     s
 }
 

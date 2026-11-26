@@ -6,6 +6,8 @@
 use std::io::{self, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::messages as msg;
+
 /// One year: how long objects and packs may be cached.
 const FOREVER: u64 = 31_536_000;
 
@@ -31,7 +33,7 @@ impl<'w> Headers<'w> {
     pub fn nocache(&mut self) -> io::Result<()> {
         self.str("Expires", "Fri, 01 Jan 1980 00:00:00 GMT")?;
         self.str("Pragma", "no-cache")?;
-        self.str("Cache-Control", "no-cache, max-age=0, must-revalidate")
+        self.str("Cache-Control", msg::CACHE_CONTROL_NO_CACHE)
     }
 
     /// The response never changes (objects and packs are named by their

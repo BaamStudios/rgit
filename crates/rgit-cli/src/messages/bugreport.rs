@@ -96,3 +96,8 @@ pub fn object_dir_stats(dir: &str) -> String {
 pub fn total_loose(n: usize) -> String {
     format!("Total: {n} loose objects")
 }
+
+/// The last line of the system information of a bug report.
+pub fn shell_line(shell: &str) -> String {
+    format!("$SHELL (typically, interactive shell): {shell}\n")
+}

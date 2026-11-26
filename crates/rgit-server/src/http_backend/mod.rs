@@ -330,10 +330,7 @@ impl Request<'_> {
             }
             {
                 let mut h = self.headers();
-                h.str(
-                    "Content-Type",
-                    &format!("application/x-git-{}-advertisement", svc.name()),
-                )?;
+                h.str("Content-Type", &msg::advertisement_content_type(svc.name()))?;
                 h.end()?;
             }
             let v2 = self
