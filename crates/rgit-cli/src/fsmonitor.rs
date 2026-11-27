@@ -11,7 +11,6 @@
 //! `<hook> 1 <nanoseconds>` prints the paths) or, with `core.fsmonitor`
 //! true, the built-in `fsmonitor--daemon`, asked over its socket.
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -254,6 +253,7 @@ pub fn socket_path(git_dir: &Path) -> PathBuf {
 /// concatenated payload of its answer.
 #[cfg(unix)]
 pub fn ipc_request(socket: &Path, request: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
     let mut s = crate::commands::credential_cache::imp::with_short_path(socket, |p| {
         UnixStream::connect(p)
