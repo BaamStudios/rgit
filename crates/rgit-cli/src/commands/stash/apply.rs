@@ -268,8 +268,11 @@ fn do_apply(
         match checkout_result(repo, c_tree, &result)? {
             Ok(()) => {
                 // Like every merge, the application records its result.
-                let auto_merge = repo.setup.cwd.join(&repo.setup.git_dir).join("AUTO_MERGE");
-                let _ = std::fs::write(auto_merge, format!("{}\n", result.tree.to_hex()));
+                let _ = rgit_refs::write_root_ref_file(
+                    &repo.setup.cwd.join(&repo.setup.git_dir),
+                    "AUTO_MERGE",
+                    format!("{}\n", result.tree.to_hex()).as_bytes(),
+                );
                 if !quiet {
                     let mut out = Vec::new();
                     for m in &result.messages {

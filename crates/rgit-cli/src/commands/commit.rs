@@ -1106,8 +1106,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if args.reset_author && args.author.is_some() {
         return Err(fatal(msg::RESET_AUTHOR_AND_AUTHOR));
     }
-    let picking = std::fs::read_to_string(repo.setup.cwd.join(&repo.setup.git_dir).join("CHERRY_PICK_HEAD"))
-        .ok()
+    let picking = rgit_refs::read_root_ref_text(
+        &repo.setup.cwd.join(&repo.setup.git_dir),
+        "CHERRY_PICK_HEAD",
+    )
+    .ok()
         .and_then(|s| ObjectId::from_hex(repo.hash, s.trim_end().as_bytes()).ok())
         .is_some();
     if args.reset_author
@@ -1183,7 +1186,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Concluding a cherry-pick: CHERRY_PICK_HEAD names the picked commit,
     // whose author the commit keeps.
     let pseudo_head = |name: &str| -> Option<ObjectId> {
-        std::fs::read_to_string(git_dir.join(name))
+        rgit_refs::read_root_ref_text(&git_dir, name)
             .ok()
             .and_then(|s| ObjectId::from_hex(repo.hash, s.trim_end().as_bytes()).ok())
     };
@@ -2094,18 +2097,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     if merging {
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
-            let _ = std::fs::remove_file(git_dir.join(f));
+            let _ = rgit_refs::remove_root_ref_file(&git_dir, f);
         }
     }
     if cherry_pick_head.is_some() || reverting || git_dir.join("MERGE_MSG").exists() {
         for f in ["MERGE_MSG", "AUTO_MERGE"] {
-            let _ = std::fs::remove_file(git_dir.join(f));
+            let _ = rgit_refs::remove_root_ref_file(&git_dir, f);
         }
         crate::sequencer::post_commit_cleanup(&git_dir);
     }
     if git_dir.join("SQUASH_MSG").exists() {
         for f in ["SQUASH_MSG", "MERGE_MSG", "AUTO_MERGE"] {
-            let _ = std::fs::remove_file(git_dir.join(f));
+            let _ = rgit_refs::remove_root_ref_file(&git_dir, f);
         }
     }
     if deferred {

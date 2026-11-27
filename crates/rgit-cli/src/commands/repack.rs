@@ -823,8 +823,8 @@ fn check_drop_safe(setup: &rgit_repo::Setup, candidates: &[ObjectId]) -> Result<
     let busy = dir.join("MERGE_HEAD").is_file()
         || dir.join("rebase-apply").is_dir()
         || dir.join("rebase-merge").is_dir()
-        || dir.join("CHERRY_PICK_HEAD").is_file()
-        || dir.join("REVERT_HEAD").is_file()
+        || rgit_refs::root_ref_exists(dir, "CHERRY_PICK_HEAD")
+        || rgit_refs::root_ref_exists(dir, "REVERT_HEAD")
         || dir.join("BISECT_LOG").is_file();
     if busy {
         return Err(Die::Fatal(msg::REPACK_DROP_IN_PROGRESS.into()));

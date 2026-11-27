@@ -523,7 +523,7 @@ impl Merge<'_> {
             if wt.current {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(wt.git_dir.join(MERGE_REF)) else {
+            let Ok(text) = rgit_refs::read_root_ref_text(&wt.git_dir, MERGE_REF) else {
                 continue;
             };
             if text.trim_end().strip_prefix("ref: ") == Some(local) {
