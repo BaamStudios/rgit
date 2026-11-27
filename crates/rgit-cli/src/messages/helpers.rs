@@ -35,18 +35,23 @@ pub fn fsmonitor_already_running(work_tree: &str) -> String {
     format!("fsmonitor--daemon is already running '{work_tree}'")
 }
 /// rgit wording: the background daemon exited before it answered.
+#[cfg(target_os = "linux")]
 pub const FSMONITOR_FAILED_TO_START: &str = "fsmonitor--daemon failed to start";
 /// rgit wording: the background daemon did not answer in time.
+#[cfg(target_os = "linux")]
 pub const FSMONITOR_NOT_ONLINE: &str = "fsmonitor--daemon not online yet";
 /// rgit wording.
+#[cfg(target_os = "linux")]
 pub fn fsmonitor_could_not_spawn(err: &str) -> String {
     format!("could not spawn fsmonitor--daemon in the background: {err}")
 }
 /// rgit wording.
+#[cfg(target_os = "linux")]
 pub fn fsmonitor_could_not_watch(work_tree: &str, err: &str) -> String {
     format!("could not watch '{work_tree}': {err}")
 }
 /// rgit wording.
+#[cfg(target_os = "linux")]
 pub fn fsmonitor_could_not_listen(socket: &str, err: &str) -> String {
     format!("could not start IPC server on '{socket}': {err}")
 }
