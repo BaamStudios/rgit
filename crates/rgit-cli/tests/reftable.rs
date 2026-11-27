@@ -606,6 +606,26 @@ fn clone_and_fetch_write_tables_like_gits() {
     .concat();
     p.ok("empty", &[&fetch]);
     p.same_state("after fetch", "empty");
+    // Without --atomic the whole fetch is still one transaction (one table).
+    p.ok("", &[&["init", "-q", "--ref-format=reftable", "plain"]]);
+    let fetch: Vec<&str> = fetch.into_iter().filter(|a| *a != "--atomic").collect();
+    p.ok("plain", &[&fetch]);
+    p.same_state("after fetch without --atomic", "plain");
+}
+
+#[test]
+fn clone_points_head_at_the_remote_branch() {
+    // The remote's HEAD (`main`) differs from the initial branch of the new
+    // repository (`master`): HEAD in the stack follows the remote.
+    let Some(p) = Pair::new(false) else { return };
+    p.ok("", &[INIT]);
+    p.ok("repo", &[COMMIT_ONE]);
+    p.ok(
+        "",
+        &[&["clone", "-q", "--ref-format=reftable", "repo", "copy"]],
+    );
+    p.same_state("after clone", "copy");
+    p.ok("copy", &[&["symbolic-ref", "HEAD"]]);
 }
 
 #[test]

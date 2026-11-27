@@ -499,9 +499,10 @@ impl CliBackend {
     }
 }
 
-/// The target of the symbolic `HEAD` in the git directory `dir`.
+/// The target of the symbolic `HEAD` in the git directory `dir` (the file,
+/// or in a reftable repository the value in the stack).
 fn symbolic_head(dir: &Path) -> Option<String> {
-    let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
+    let head = rgit_refs::read_head_text(dir).ok()?;
     head.strip_prefix("ref: ").map(|t| t.trim_end().to_string())
 }
 
@@ -1024,7 +1025,7 @@ impl Backend for CliBackend {
         let refs = crate::refs::Refs::new(&self.setup);
         let head = match symbolic_head(&wt_git_dir) {
             Some(target) => refs.resolve(&target),
-            None => std::fs::read_to_string(wt_git_dir.join("HEAD"))
+            None => rgit_refs::read_head_text(&wt_git_dir)
                 .ok()
                 .and_then(|h| ObjectId::from_hex(self.hash, h.trim().as_bytes()).ok()),
         };

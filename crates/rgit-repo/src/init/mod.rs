@@ -671,14 +671,16 @@ fn reftable_head(
 }
 
 /// Start the reftable stack of the still empty repository `git_dir` again
-/// with object format `hash`; `HEAD` points to the reference `head`.
-/// `clone` uses this when the remote turns out to use another object
-/// format than the repository was initialised with.
+/// with object format `hash`; `HEAD` points to the reference `head`, or,
+/// for `None`, is not stored yet. `clone` uses this to leave `HEAD` out
+/// of the stack until it knows the remote's branch (git's stack starts
+/// with the fetched references), and again when the remote turns out to
+/// use another object format than the repository was initialised with.
 pub fn restart_reftable(
     git_dir: &Path,
     hash: HashKind,
     shared: SharedRepository,
-    head: &str,
+    head: Option<&str>,
 ) -> Result<(), InitError> {
     let git_dir = &rgit_refs::location::resolve(git_dir);
     let dir = rgit_fs::path::join(git_dir, "reftable");
@@ -687,7 +689,11 @@ pub fn restart_reftable(
             let _ = fs::remove_file(entry.path());
         }
     }
-    reftable_head_ref(git_dir, hash, shared, head)
+    match head {
+        Some(head) => reftable_head_ref(git_dir, hash, shared, head),
+        None => rgit_refs::reftable::backend::create(git_dir, hash, shared)
+            .map_err(|e| InitError::Fatal(messages::cannot_write(git_dir.display(), io_text(&e)))),
+    }
 }
 
 fn reftable_head_ref(

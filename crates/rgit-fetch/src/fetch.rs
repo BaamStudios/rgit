@@ -768,15 +768,41 @@ pub fn fetch(
     } else {
         &entries[..]
     };
-    for e in one_by_one {
-        let old = local_value(repo, e);
-        let decided = update::decide_with(repo, e, opts.force, !opts.no_show_forced_updates);
-        let status = match (&e.local, opts.dry_run) {
-            (Some(local), false) => {
-                update::apply(repo, local.as_bstr(), e.oid, decided, &opts.reflog_action)
+    // Without --atomic: one transaction for all updates, in which single
+    // references may fail (see `update::apply_all`).
+    let olds: Vec<Option<ObjectId>> = one_by_one.iter().map(|e| local_value(repo, e)).collect();
+    let decided: Vec<Status> = one_by_one
+        .iter()
+        .map(|e| update::decide_with(repo, e, opts.force, !opts.no_show_forced_updates))
+        .collect();
+    let written: Vec<Status> = if opts.dry_run {
+        decided
+    } else {
+        let mut items = Vec::new();
+        let mut slots = Vec::new();
+        let mut out: Vec<Option<Status>> = Vec::new();
+        for (e, status) in one_by_one.iter().zip(decided) {
+            match &e.local {
+                Some(local) => {
+                    slots.push(out.len());
+                    out.push(None);
+                    items.push((local.clone(), e.oid, status));
+                }
+                None => out.push(Some(status)),
             }
-            _ => decided,
-        };
+        }
+        for (slot, status) in
+            slots
+                .into_iter()
+                .zip(update::apply_all(repo, items, &opts.reflog_action))
+        {
+            out[slot] = Some(status);
+        }
+        out.into_iter()
+            .map(|s| s.unwrap_or(Status::UpToDate))
+            .collect()
+    };
+    for ((e, old), status) in one_by_one.iter().zip(olds).zip(written) {
         result.lines.push(RefLine {
             remote: Some(e.remote.clone()),
             local: e.local.clone(),
