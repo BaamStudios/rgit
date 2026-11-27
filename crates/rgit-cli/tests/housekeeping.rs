@@ -1078,6 +1078,107 @@ diff ../g.out ../r.out && cat ../g.out
     assert!(out.contains("Nothing new to pack."));
 }
 
+/// The packs of a MIDX in `objects/pack`: per pack the number of objects
+/// the MIDX takes from it (`c` for a cruft pack), sorted, and whether a
+/// MIDX bitmap exists.
+fn midx_summary(pack_dir: &Path) -> String {
+    let mut errors = Vec::new();
+    let midx = rgit_pack::midx::MultiPackIndex::open(
+        pack_dir.join("multi-pack-index"),
+        rgit_hash::HashKind::Sha1,
+        &mut errors,
+    )
+    .ok()
+    .flatten();
+    let Some(midx) = midx else {
+        return "no midx".into();
+    };
+    let mut counts = vec![0u32; midx.num_packs() as usize];
+    for pos in 0..midx.len() {
+        counts[midx.pack_id(pos).unwrap() as usize] += 1;
+    }
+    let mut packs: Vec<String> = midx
+        .pack_names()
+        .iter()
+        .zip(&counts)
+        .map(|(name, n)| {
+            let cruft = pack_dir.join(name).with_extension("mtimes").exists();
+            format!("{n}{}", if cruft { "c" } else { "" })
+        })
+        .collect();
+    packs.sort();
+    let bitmap = std::fs::read_dir(pack_dir).unwrap().flatten().any(|e| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n.starts_with("multi-pack-index") && n.ends_with(".bitmap")
+    });
+    format!("{} bitmap={bitmap}", packs.join(" "))
+}
+
+/// `repack --geometric --write-midx`, run by git and by rgit: with
+/// `repack.midxMustContainCruft=false` the reachable objects only a cruft
+/// pack has go into the new pack and the cruft pack stays out of the MIDX
+/// (unless the existing MIDX has it); `-l` with an alternate's packs gives
+/// up the bitmap. (The preferred pack is checked by t7703 and t7704.)
+#[test]
+fn repack_geometric_midx_matches_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let script = r#"
+t=1112911993
+tc() { t=$((t+60)); GIT_AUTHOR_DATE="$t -0700" GIT_COMMITTER_DATE="$t -0700" && export GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+  echo "$1" >"$1.t" && "$GIT" add "$1.t" && "$GIT" commit -qm "$1" && { test "$2" = notag || "$GIT" tag "$1"; }; }
+packs() { for i in .git/objects/pack/*.idx; do m=; test -f ${i%.idx}.mtimes && m=c; echo $("$GIT" show-index <$i | wc -l)$m; done | sort -n | tr '\n' ' '; echo; }
+cruft_setup() { "$GIT" init -q $1 && cd $1 && "$GIT" config repack.midxMustContainCruft false
+  tc one && tc two notag && two=$("$GIT" rev-parse HEAD) && tc three notag
+  "$GIT" reset -q --hard one && "$GIT" reflog expire --all --expire=all
+  "$GIT" repack -q --cruft -d && "$GIT" merge -q $two && tc four; }
+run() {
+  X=$1 D=$2
+  rm -rf $D && mkdir $D && cd $D
+  "$GIT" init -q gl && cd gl
+  tc a1 && "$GIT" repack -qd && tc b1 && tc b2 && "$GIT" repack -qd
+  tc c1 && tc c2 && tc c3 && tc c4 && "$GIT" repack -qd
+  "$X" repack --geometric 2 -dbm 2>&1; packs; cd ..
+  (cruft_setup c22 && "$X" repack -d --geometric=2 --write-midx -b 2>&1; packs)
+  (cruft_setup c22n && "$X" repack -d --geometric=2 --write-midx 2>&1; packs)
+  (cruft_setup c24 && "$GIT" multi-pack-index write --bitmap && tc five &&
+   "$X" repack -d --geometric=2 --write-midx -b 2>&1; packs)
+  (cruft_setup c22t && "$X" -c repack.midxMustContainCruft=true repack -d --geometric=2 --write-midx -b 2>&1; packs)
+  "$GIT" init -q shared && (cd shared && tc s1 && "$GIT" repack -adq) && "$GIT" clone -q --shared shared member && cd member && tc m1
+  "$X" repack -l --geometric=2 --write-midx -b 2>&1
+  mkdir ../member-l && cp -R .git ../member-l/.git
+  "$X" repack --geometric=2 --write-midx -b 2>&1
+}
+(run "$GIT" ../g) >../g.out
+(run "$RGIT" ../r) >../r.out
+diff ../g.out ../r.out && cat ../g.out
+"#;
+    let out = sh(&fx, script);
+    assert!(
+        out.contains("warning: disabling bitmap writing, as some objects are not being packed"),
+        "{out}"
+    );
+    let work = fx.work_dir();
+    let root = work.parent().unwrap();
+    let mut seen = Vec::new();
+    for repo in ["gl", "c22", "c22n", "c24", "c22t", "member-l", "member"] {
+        let g = midx_summary(&root.join("g").join(repo).join(".git/objects/pack"));
+        let r = midx_summary(&root.join("r").join(repo).join(".git/objects/pack"));
+        assert_eq!(g, r, "{repo}");
+        seen.push(format!("{repo}: {g}"));
+    }
+    // The cases did what they are meant to check.
+    let seen = seen.join("\n");
+    assert!(seen.contains("c22: 3 6 bitmap=true"), "{seen}");
+    assert!(seen.contains("c24: 3 3c 9 bitmap=true"), "{seen}");
+    assert!(
+        seen.contains("member-l: ") && seen.contains("bitmap=false"),
+        "{seen}"
+    );
+}
+
 /// `pack-objects --unpack-unreachable` loosens the unreachable objects of
 /// the packs it reads, except those an alternate has.
 #[test]

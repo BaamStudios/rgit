@@ -32,7 +32,13 @@
 //! geometric progression: the smallest packs that break it are rolled up,
 //! with the loose objects, into one new pack. Cruft packs and kept packs
 //! do not take part; without `-l` the packs of alternates do (their
-//! objects are copied, the packs stay).
+//! objects are copied, the packs stay). With `--write-midx` the MIDX
+//! leaves out the rolled-up packs (also without `-d`) and prefers the
+//! largest pack left of the progression (else the new one); `-l` with
+//! alternates gives up its bitmap. `repack.midxMustContainCruft=false`
+//! puts the reachable objects only cruft packs have into the new pack and
+//! leaves the cruft packs out of the MIDX, unless the existing MIDX has
+//! them.
 //!
 //! In a repository with a promisor remote (partial clone,
 //! Documentation/technical/partial-clone.adoc) promisor packs and other
@@ -331,20 +337,71 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             delete,
             quiet: quiet.get(),
         };
-        g.run(&odb, &pack_dir, &objects_dir, &keep_names, &opts)?;
+        let midx_mode = write_midx.take();
+        // `repack.midxMustContainCruft=false`: the reachable objects only
+        // cruft packs have go into the new pack, and the cruft packs stay
+        // out of the MIDX (unless the existing one has them).
+        let exclude_cruft = midx_mode.is_some()
+            && !config
+                .bool("repack.midxmustcontaincruft")
+                .ok()
+                .flatten()
+                .unwrap_or(true);
+        let mut rescue = Vec::new();
+        let mut cruft_idx: Vec<std::path::PathBuf> = Vec::new();
+        let mut old_midx = HashSet::new();
+        if exclude_cruft {
+            let local_packs = store::local_packs(&odb, &keep_names);
+            old_midx = existing_midx_packs(&pack_dir, kind);
+            cruft_idx = local_packs
+                .iter()
+                .filter(|p| p.pack.is_cruft())
+                .map(|p| p.base().with_extension("idx"))
+                .collect();
+            rescue = cruft_only_reachable(&setup, &odb, &objects_dir, &local_packs)?;
+        }
+        let (preferred, redundant) =
+            g.run(&odb, &pack_dir, &objects_dir, &keep_names, &opts, &rescue)?;
+        // The cruft packs left (one whose objects were all rescued may now
+        // be the new pack).
+        let mut midx_drop: std::collections::BTreeSet<String> = cruft_idx
+            .iter()
+            .filter(|p| p.with_extension("mtimes").exists())
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .filter(|n| !old_midx.contains(n))
+            .collect();
+        midx_drop.extend(redundant);
         if delete {
             store::remove_pack_garbage(&pack_dir);
             let packs_now = store::local_packs(&odb, &keep_names);
             store::prune_packed(&objects_dir, &objects_dir, kind, &packs_now, false)?;
         }
+        // With -l, the objects of an alternate are not in the MIDX: a bitmap
+        // would not cover everything.
+        let mut midx_bitmap = write_bitmaps;
+        if midx_bitmap
+            && midx_mode.is_some()
+            && local.get()
+            && !rgit_odb::resolve_alternates(&objects_dir).is_empty()
+        {
+            eprintln!(
+                "warning: {}",
+                crate::messages::pack_objects::BITMAP_DISABLED_NOT_PACKED
+            );
+            midx_bitmap = false;
+        }
         write_midx_after(
             ctx,
             &setup,
             &config,
-            write_midx.take(),
+            midx_mode,
             &pack_dir,
-            write_bitmaps,
+            midx_bitmap,
             quiet.get(),
+            MidxChoice {
+                preferred,
+                drop: midx_drop,
+            },
         )?;
         update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
         return Ok(0);
@@ -719,13 +776,77 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         &pack_dir,
         write_bitmaps,
         quiet.get(),
+        MidxChoice::default(),
     )?;
     update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
     Ok(0)
 }
 
+/// What `--geometric` decides about the MIDX it writes.
+#[derive(Default)]
+struct MidxChoice {
+    /// The preferred pack (`.pack` name): the largest one of the
+    /// progression.
+    preferred: Option<String>,
+    /// `.idx` names left out (cruft packs, `repack.midxMustContainCruft`).
+    drop: std::collections::BTreeSet<String>,
+}
+
+/// The `.idx` names in the existing (non-incremental) MIDX of `pack_dir`.
+fn existing_midx_packs(pack_dir: &std::path::Path, kind: rgit_hash::HashKind) -> HashSet<String> {
+    let mut errors = Vec::new();
+    match rgit_pack::midx::MultiPackIndex::open(pack_dir.join("multi-pack-index"), kind, &mut errors)
+    {
+        Ok(Some(m)) => m.pack_names().iter().cloned().collect(),
+        _ => HashSet::new(),
+    }
+}
+
+/// The reachable objects that only cruft packs have (no other local pack,
+/// not loose).
+fn cruft_only_reachable(
+    setup: &rgit_repo::Setup,
+    odb: &rgit_odb::ObjectDatabase,
+    objects_dir: &std::path::Path,
+    local_packs: &[store::LocalPack],
+) -> Result<Vec<ObjectId>, Die> {
+    if !local_packs.iter().any(|p| p.pack.is_cruft()) {
+        return Ok(Vec::new());
+    }
+    let kind = odb.hash_kind();
+    let common = setup.absolute_common_dir();
+    let mut walk = Walk::new(odb, reach::shallow_commits(&common, kind));
+    let roots = reach::roots(setup, odb).map_err(|e| match e {
+        BadRef::Unparsable(n) | BadRef::Missing(n) => Die::Fatal(msg::bad_object(&n)),
+    })?;
+    let strict: Vec<ObjectId> = roots.refs.iter().map(|(_, id)| *id).collect();
+    walk.walk(&strict, false)?;
+    walk.walk(&roots.weak, true)?;
+    let loose: HashSet<ObjectId> = store::loose_objects(objects_dir, kind)
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    let mut out: Vec<ObjectId> = walk
+        .listed
+        .iter()
+        .map(|o| o.id)
+        .filter(|id| {
+            !loose.contains(id)
+                && !local_packs
+                    .iter()
+                    .any(|p| !p.pack.is_cruft() && p.pack.contains(id))
+                && local_packs
+                    .iter()
+                    .any(|p| p.pack.is_cruft() && p.pack.contains(id))
+        })
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 /// `--write-midx[=<mode>]`: write the multi-pack index of the packs left,
 /// with its bitmap when bitmaps are written.
+#[allow(clippy::too_many_arguments)]
 fn write_midx_after(
     ctx: &Context,
     setup: &rgit_repo::Setup,
@@ -734,6 +855,7 @@ fn write_midx_after(
     pack_dir: &std::path::Path,
     bitmap: bool,
     quiet: bool,
+    choice: MidxChoice,
 ) -> Result<(), Die> {
     let Some(mode) = mode else {
         return Ok(());
@@ -760,6 +882,8 @@ fn write_midx_after(
                     .filter(|n| !pack_dir.join(n).with_extension("keep").exists())
                     .collect()
             }),
+        preferred: choice.preferred,
+        drop: choice.drop,
         ..Default::default()
     };
     let display = pack_dir.display().to_string();
@@ -1094,7 +1218,8 @@ impl Geometric {
         objects_dir: &std::path::Path,
         keep_names: &[String],
         opts: &store::PackOptions,
-    ) -> Result<(), Die> {
+        rescue: &[ObjectId],
+    ) -> Result<(Option<String>, Vec<String>), Die> {
         let kind = odb.hash_kind();
         let local_packs = store::local_packs(odb, keep_names);
         // The packs taking part, with whether they are local.
@@ -1160,6 +1285,8 @@ impl Geometric {
 
         let mut wrote = false;
         let mut removed = false;
+        let mut rolled_up: Option<String> = None;
+        let mut redundant: Vec<String> = Vec::new();
         for (promisor, packs, split) in &groups {
             let rolled = &packs[..*split];
             let mut ids: Vec<ObjectId> = Vec::new();
@@ -1192,6 +1319,12 @@ impl Geometric {
                         ids.push(id);
                     }
                 }
+                // Reachable objects only cruft packs have.
+                for id in rescue {
+                    if !excluded(id) && seen.insert(*id) {
+                        ids.push(*id);
+                    }
+                }
             }
             let described = rgit_pack::write::describe(odb, kind, &ids)
                 .map_err(|e| Die::Fatal(e.to_string()))?;
@@ -1201,10 +1334,33 @@ impl Geometric {
             };
             wrote = true;
             let new_name = format!("pack-{}.pack", new_pack.to_hex());
+            if !*promisor {
+                rolled_up = Some(new_name.clone());
+                // Rescued objects that make up a whole cruft pack give the
+                // same pack: it holds reachable objects now.
+                let mtimes = pack_dir.join(&new_name).with_extension("mtimes");
+                if !rescue.is_empty() && mtimes.exists() {
+                    let _ = std::fs::remove_file(&mtimes);
+                }
+            }
             if *promisor {
                 let marker = pack_dir.join(&new_name).with_extension("promisor");
                 if !marker.exists() {
                     let _ = std::fs::write(&marker, b"");
+                }
+            }
+            // The rolled-up packs are redundant now: not in a MIDX, also
+            // when they stay without -d.
+            for (p, is_local) in rolled {
+                let name = file_name(p);
+                if *is_local && name != new_name {
+                    redundant.push(
+                        p.path()
+                            .with_extension("idx")
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    );
                 }
             }
             if self.delete {
@@ -1225,7 +1381,16 @@ impl Geometric {
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out, "{}", msg::REPACK_NOTHING_NEW);
         }
-        Ok(())
+        // The preferred pack of a MIDX: the largest local pack left of the
+        // progression, else the pack rolled up.
+        let preferred = groups
+            .iter()
+            .filter(|(promisor, _, _)| !promisor)
+            .flat_map(|(_, packs, split)| packs[*split..].iter())
+            .rfind(|(_, is_local)| *is_local)
+            .map(|(p, _)| file_name(p))
+            .or(rolled_up);
+        Ok((preferred, redundant))
     }
 }
 
