@@ -162,6 +162,13 @@ pub fn check_connected(
             }
             return Err(id);
         }
+        // Blobs link to nothing: their header is enough (a large one is
+        // not read into memory).
+        match odb.header(&id) {
+            Ok(Some(h)) if h.kind == ObjectKind::Blob => continue,
+            Ok(Some(_)) => {}
+            _ => return Err(id),
+        }
         let Ok(Some(raw)) = odb.read(&id) else {
             return Err(id);
         };

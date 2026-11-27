@@ -476,17 +476,17 @@ impl Walk<'_, '_> {
                 .map(|h| h.size)
                 .ok_or_else(bad)?;
             if size > self.job.big_file_threshold {
-                if let Ok(Some(mut reader)) = repo.odb().loose().open(oid) {
-                    let mut head = vec![0u8; size.min(8000) as usize];
-                    reader.read_exact(&mut head).map_err(|_| bad())?;
-                    let text = self.writer.wants_text() && self.is_text(full, &head);
-                    let mut chained = (&head[..]).chain(reader);
-                    return self.emit(apath, kind, &hex, Body::Stream(&mut chained, size), text);
+                // Loose objects and whole pack entries are inflated while
+                // being written (deltas are resolved in memory).
+                let mut reader = repo.odb().stream(oid).ok().flatten().ok_or_else(bad)?;
+                if reader.kind() != ObjectKind::Blob {
+                    return Err(bad());
                 }
-                let raw = repo.odb().read(oid).ok().flatten().ok_or_else(bad)?;
-                let text = self.writer.wants_text() && self.is_text(full, &raw.data);
-                let mut r = &raw.data[..];
-                return self.emit(apath, kind, &hex, Body::Stream(&mut r, size), text);
+                let mut head = vec![0u8; size.min(8000) as usize];
+                reader.read_exact(&mut head).map_err(|_| bad())?;
+                let text = self.writer.wants_text() && self.is_text(full, &head);
+                let mut chained = (&head[..]).chain(reader);
+                return self.emit(apath, kind, &hex, Body::Stream(&mut chained, size), text);
             }
         }
         let raw = repo.odb().read(oid).ok().flatten().ok_or_else(bad)?;
