@@ -1028,6 +1028,90 @@ fn pack_garbage_is_removed() {
     assert_eq!(left, "fake3.keep\nfoo.keep\nfoo.pack\n");
 }
 
+/// Bitmaps of `repack -a` in a bare repository, run by git and by rgit:
+/// a pack written again under its old name loses the `.bitmap` (and the
+/// `.rev`) this run does not write; the default bitmaps of a bare
+/// repository leave kept packs alone and give up quietly, asked-for ones
+/// pack kept objects or warn; packs split by `pack.packSizeLimit` get no
+/// bitmap.
+#[test]
+fn repack_bitmaps_in_bare_repositories_match_git() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let script = r#"
+packs() { ls "$1"/objects/pack | sed 's/pack-[0-9a-f]*/pack-X/' | sort | uniq -c; }
+run() {
+  X=$1 D=$2
+  rm -rf $D && "$GIT" clone -q --bare . $D
+  "$X" -C $D repack -ad 2>&1; packs $D
+  "$X" -C $D -c repack.writeBitmaps=false repack -ad 2>&1; packs $D
+  "$X" -C $D repack -ad 2>&1
+  "$X" -C $D -c pack.writeReverseIndex=false -c repack.writeBitmaps=false repack -ad 2>&1; packs $D
+  "$X" -C $D repack -adq
+  p=$(ls $D/objects/pack/*.pack) && >${p%.pack}.keep
+  "$X" -C $D repack -ad 2>&1; packs $D
+  "$X" -C $D repack -adb --no-pack-kept-objects 2>&1; packs $D
+  "$X" -C $D -c repack.writeBitmaps=true repack -ad 2>&1; packs $D
+  rm -f $D/objects/pack/*.keep
+  awk 'BEGIN { srand(1); for (i = 0; i < 300000; i++) printf "%08x", rand() * 4294967295 }' >big
+  b=$("$GIT" -C $D hash-object -w "$PWD/big") && "$GIT" -C $D update-ref refs/tags/big $b
+  "$X" -C $D -c pack.packSizeLimit=1m repack -ad 2>&1; packs $D
+  "$X" -C $D repack -adb --max-pack-size=1m 2>&1; packs $D
+}
+run "$GIT" ../g.git >../g.out
+run "$RGIT" ../r.git >../r.out
+diff ../g.out ../r.out && cat ../g.out
+"#;
+    let out = sh(&fx, script);
+    // The cases did what they are meant to check.
+    assert!(
+        out.contains("warning: disabling bitmap writing, as some objects are not being packed")
+    );
+    assert!(
+        out.contains(
+            "warning: disabling bitmap writing, packs are split due to pack.packSizeLimit"
+        ),
+        "{out}"
+    );
+    assert!(out.contains("Nothing new to pack."));
+}
+
+/// `pack-objects --unpack-unreachable` loosens the unreachable objects of
+/// the packs it reads, except those an alternate has.
+#[test]
+fn pack_objects_unpack_unreachable_matches_git() {
+    let fx = repo();
+    if fx.is_skipped() {
+        return;
+    }
+    let script = r#"
+run() {
+  X=$1 D=$2
+  rm -rf $D $D.alt && "$GIT" clone -q --bare . $D && "$GIT" -C $D repack -adq
+  "$GIT" clone -q --bare . $D.alt && "$GIT" -C $D.alt repack -adq
+  "$GIT" -C $D update-ref -d refs/heads/main
+  "$GIT" -C $D for-each-ref --format='%(refname)' | while read r; do "$GIT" -C $D update-ref -d $r; done
+  "$GIT" -C $D commit-tree -m x $("$GIT" -C $D mktree </dev/null) >/dev/null
+  n=$(cd $D && "$X" pack-objects --honor-pack-keep --non-empty --all --reflog --unpack-unreachable </dev/null pack)
+  "$GIT" -C $D count-objects | cut -d, -f1
+  echo "$(cd $D.alt/objects && pwd)" >$D/objects/info/alternates
+  rm -f $D/objects/??/*
+  n=$(cd $D && "$X" pack-objects --honor-pack-keep --non-empty --all --reflog --unpack-unreachable </dev/null pack)
+  "$GIT" -C $D count-objects | cut -d, -f1
+}
+run "$GIT" ../g.git >../g.out
+run "$RGIT" ../r.git >../r.out
+diff ../g.out ../r.out && cat ../g.out
+"#;
+    let out = sh(&fx, script);
+    let counts: Vec<&str> = out.lines().collect();
+    assert_eq!(counts.len(), 2);
+    assert_ne!(counts[0], "0 objects");
+    assert_eq!(counts[1], "0 objects");
+}
+
 /// `repack --filter`: the reachable objects the filter keeps go into one
 /// pack, the others (of the replaced packs) into a second one, here or at
 /// `--filter-to`.
