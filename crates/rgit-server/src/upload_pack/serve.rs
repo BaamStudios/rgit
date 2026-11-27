@@ -14,7 +14,7 @@ use rgit_protocol::{Packet, Reader, Writer};
 use rgit_trace::trace2;
 
 use super::{Error, Options, Repository, Result, Settings, Unborn, messages as msg};
-use super::{fetch, ls_refs, object_info, promisor};
+use super::{bundle_uri, fetch, ls_refs, object_info, promisor};
 
 /// The commands of protocol v2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,8 +283,7 @@ impl<R: Read, W: Write> Session<'_, R, W> {
             Command::LsRefs => ls_refs::run(self, &args)?,
             Command::Fetch => fetch::run(self, &args)?,
             Command::ObjectInfo => object_info::run(self, &args)?,
-            // The list of bundles (rgit #172) is empty.
-            Command::BundleUri => self.out.flush()?,
+            Command::BundleUri => bundle_uri::run(self, &args)?,
         }
         Ok(Served::Command)
     }

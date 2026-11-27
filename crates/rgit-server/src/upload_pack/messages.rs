@@ -177,3 +177,17 @@ pub fn bad_config_variable(name: &str, file: &str, line: usize) -> String {
 pub fn unable_to_parse_config(name: &str, source: &str) -> String {
     format!("unable to parse '{name}' from {source}")
 }
+
+/// The arguments of `bundle-uri` do not end with a flush packet (after
+/// `bundle-uri: `).
+pub const EXPECTED_FLUSH_AFTER_ARGUMENTS: &str = "expected flush after arguments";
+
+/// `bundle-uri` was sent an argument; it takes none.
+pub fn bundle_uri_unexpected_argument(arg: &str) -> String {
+    format!("bundle-uri: unexpected argument: '{arg}'")
+}
+
+/// A `bundle.*` key without a value is left out of the bundle list.
+pub fn config_has_no_value(key: &str) -> String {
+    format!("warning: config '{key}' has no value")
+}
