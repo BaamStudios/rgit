@@ -1047,10 +1047,16 @@ fn stash_entries(repo: &mut Repo) -> usize {
     if repo.resolve("refs/stash").is_none() {
         return 0;
     }
-    let log = repo.setup.common_dir.join("logs/refs/stash");
-    std::fs::read(log)
-        .map(|t| t.split(|&b| b == b'\n').filter(|l| !l.is_empty()).count())
-        .unwrap_or(0)
+    // The log file, or in a reftable repository the log in the stack.
+    let logs = rgit_refs::reflog::FilesReflog::new(
+        repo.setup.git_dir.clone(),
+        repo.setup.common_dir.clone(),
+        repo.hash,
+    );
+    match logs.read("refs/stash") {
+        Ok(Some(entries)) => entries.len(),
+        _ => 0,
+    }
 }
 
 /// How many threads look at the work tree files: `core.preloadIndex`
