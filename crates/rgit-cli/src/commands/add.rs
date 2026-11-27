@@ -551,7 +551,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let root = repo.work_tree()?;
     if let Some(name) = &from_file {
         // A relative file name is relative to the original directory.
-        let full = if name == "-" || Path::new(name).is_absolute() {
+        let full = if name == "-" || rgit_fs::path::is_absolute(Path::new(name)) {
             PathBuf::from(name)
         } else {
             os_path(&root, &repo.prefix()).join(name)

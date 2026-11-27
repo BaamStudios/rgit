@@ -98,3 +98,44 @@ done have their own issues:
 
 macOS: #680 lists the test targets that fail on the macOS runner
 (`ci/platform/macos.txt`). Remaining `core.ignoreCase` cases are in #685.
+
+## Paths and system messages: one place for the platform rules
+
+git keeps paths in one form on every platform, and Git for Windows converts
+what the system reports to that form. rgit has these rules in one module,
+`rgit_fs::path`, instead of at each call:
+
+| Rule | Helper |
+|---|---|
+| A path is absolute when it starts with `/`; on Windows also with `\` or a drive (`C:/x`, `C:x`) | `is_absolute`, `is_absolute_bytes` (not `Path::is_absolute`, which wants a drive and a root on Windows) |
+| Components are joined with `/` on every platform | `join` (not `Path::join`, which inserts `\` on Windows) |
+| The current directory and resolved paths have `/` and no `\\?\` prefix | `current_dir`, `canonicalize` (not `std::fs::canonicalize`, whose `\\?\C:\...` result switches off `/` and `..`), `to_slash`, `simplified` |
+| What the user typed (environment, configuration, command line) stays as typed | no conversion; `HOME` and `GIT_CONFIG_SYSTEM` are the exceptions Git for Windows makes (`rgit_config::Environment::home`) |
+
+The text of a failed system call is `rgit_fs::messages::strerror` everywhere
+(the other crates' helpers call it). On Windows it gives the C library's words
+for the `errno` value a system error code stands for ("No such file or
+directory", not "The system cannot find the file specified."), as Git for
+Windows prints them. `rgit_fs::set_modified` sets the time of a read-only
+file (objects, packs) on every platform.
+
+Texts that come from the C library and differ between platforms are chosen at
+compile time where rgit words them itself: the `regerror` reasons
+(`rgit-revwalk/src/walk/messages.rs`), the padded count of `wc -l` in the
+progress of `subtree split` on macOS.
+
+## Running the Windows unit tests on Linux
+
+The unit tests of most crates run under Wine, without a Windows machine:
+
+```sh
+rustup target add x86_64-pc-windows-gnu          # needs x86_64-w64-mingw32-gcc
+cargo test --target x86_64-pc-windows-gnu -p rgit-fs -p rgit-repo --lib --no-run
+wine target/x86_64-pc-windows-gnu/debug/deps/rgit_repo-*.exe
+cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+```
+
+Differential tests need Git for Windows and a POSIX shell and return early
+without them; they run on the Windows runner only. Wine is not Windows (it
+words system errors differently, for one), so a test that passes there is a
+hint, not proof.

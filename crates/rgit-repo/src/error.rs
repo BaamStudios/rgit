@@ -183,12 +183,6 @@ pub(crate) fn io_text(err: &std::io::Error) -> String {
         PermissionDenied => "Permission denied".into(),
         AlreadyExists => "File exists".into(),
         NotADirectory => "Not a directory".into(),
-        _ => {
-            let s = err.to_string();
-            match s.find(" (os error") {
-                Some(i) => s[..i].to_string(),
-                None => s,
-            }
-        }
+        _ => rgit_fs::messages::strerror(err),
     }
 }

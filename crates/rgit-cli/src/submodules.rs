@@ -682,7 +682,7 @@ pub fn moved(repo: &Repo, index: &mut Index, src: &[u8], dst: &[u8]) -> Result<(
             if let Some(rest) = data.strip_prefix(b"gitdir:") {
                 let target = String::from_utf8_lossy(rest.trim_ascii()).into_owned();
                 let target = Path::new(&target);
-                let git_dir = rgit_repo::path::normalize(&if target.is_absolute() {
+                let git_dir = rgit_repo::path::normalize(&if rgit_fs::path::is_absolute(target) {
                     target.to_path_buf()
                 } else {
                     old_dir.join(target)

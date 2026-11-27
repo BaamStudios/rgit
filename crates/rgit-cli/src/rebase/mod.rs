@@ -2692,11 +2692,7 @@ impl<'c> Rebase<'c> {
         let ok = match command.status() {
             Ok(s) => s.success(),
             Err(e) => {
-                let reason = e.to_string();
-                let reason = match reason.find(" (os error") {
-                    Some(i) => reason[..i].to_owned(),
-                    None => reason,
-                };
+                let reason = rgit_fs::messages::strerror(&e);
                 eprintln!("error: {}", msg::cannot_run(cmd, &reason));
                 false
             }

@@ -19,7 +19,9 @@ impl Scratch {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Canonical path, so messages compare equal to what git prints.
-        Self(dir.canonicalize().unwrap())
+        Self(rgit_fs::path::to_slash(
+            rgit_fs::path::canonicalize(&dir).unwrap(),
+        ))
     }
 
     pub fn path(&self) -> &Path {

@@ -83,7 +83,8 @@ impl Git {
     }
 
     pub fn objects(&self) -> PathBuf {
-        self.dir.join(".git/objects")
+        // Joined with `/`, as git joins paths (also on Windows).
+        rgit_fs::path::join(&self.dir, ".git/objects")
     }
 }
 

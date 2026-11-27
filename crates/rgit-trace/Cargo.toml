@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+rgit-fs = { path = "../rgit-fs" }
 jiff = "0.2.35"
 
 [target.'cfg(unix)'.dependencies]

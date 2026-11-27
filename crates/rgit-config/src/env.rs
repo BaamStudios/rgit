@@ -26,6 +26,20 @@ pub trait Environment {
     fn var_bytes(&self, name: &str) -> Option<BString> {
         self.var(name).map(|v| path_bytes(std::path::Path::new(&v)))
     }
+
+    /// The home directory (`HOME`), `None` when unset or empty. Git for
+    /// Windows turns the backslashes of `HOME` into slashes when it starts,
+    /// so every path built from it (`~/.gitconfig`, `~/` in values) has
+    /// them.
+    fn home(&self) -> Option<BString> {
+        let mut home = self.var_bytes("HOME").filter(|h| !h.is_empty())?;
+        if cfg!(windows) {
+            for b in home.iter_mut().filter(|b| **b == b'\\') {
+                *b = b'/';
+            }
+        }
+        Some(home)
+    }
 }
 
 /// The real process environment.

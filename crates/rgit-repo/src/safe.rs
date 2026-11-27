@@ -134,7 +134,7 @@ pub fn is_safe_directory(
                 _ => continue,
             }
         };
-        if !value.is_absolute() {
+        if !rgit_fs::path::is_absolute(&value) {
             warnings.push(messages::safe_directory_not_absolute(raw.as_bstr()));
             continue;
         }
@@ -194,7 +194,8 @@ pub fn bare_repository_setting(protected: &ConfigSet) -> Result<BareRepository, 
 /// repository (its `.git` directory, a linked work tree's or a submodule's
 /// git directory) is not subject to `safe.bareRepository=explicit`.
 pub(crate) fn is_embedded_git_dir(dir: &Path) -> bool {
-    dir.components().any(|c| c.as_os_str() == ".git") || dir.join("commondir").is_file()
+    dir.components().any(|c| c.as_os_str() == ".git")
+        || rgit_fs::path::join(dir, "commondir").is_file()
 }
 
 /// The ownership check of a server entering a repository it was asked

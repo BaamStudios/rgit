@@ -71,7 +71,7 @@ fn os_path(root: &Path, rel: &[u8]) -> PathBuf {
 /// command was started in; the process runs at the top of the work tree.
 fn from_start_dir(repo: &Repo, arg: &str) -> PathBuf {
     match &repo.setup.prefix {
-        Some(p) if !Path::new(arg).is_absolute() => Path::new(p).join(arg),
+        Some(p) if !rgit_fs::path::is_absolute(Path::new(arg)) => Path::new(p).join(arg),
         _ => PathBuf::from(arg),
     }
 }

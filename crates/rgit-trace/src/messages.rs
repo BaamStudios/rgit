@@ -54,11 +54,7 @@ pub fn trace2_cannot_connect(path: &str, key: &str, err: &io::Error) -> String {
 /// The C library style error text: `io::Error`'s display without the
 /// trailing ` (os error N)`.
 pub fn strerror(err: &io::Error) -> String {
-    let s = err.to_string();
-    match s.rfind(" (os error ") {
-        Some(i) if s.ends_with(')') => s[..i].to_string(),
-        _ => s,
-    }
+    rgit_fs::messages::strerror(err)
 }
 
 #[cfg(test)]

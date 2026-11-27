@@ -151,13 +151,6 @@ pub(crate) fn io_error_text(err: &std::io::Error) -> String {
         PermissionDenied => "Permission denied".into(),
         NotADirectory => "Not a directory".into(),
         IsADirectory => "Is a directory".into(),
-        _ => {
-            // std appends " (os error N)"; strip it to match strerror().
-            let s = err.to_string();
-            match s.find(" (os error") {
-                Some(i) => s[..i].to_string(),
-                None => s,
-            }
-        }
+        _ => rgit_fs::messages::strerror(err),
     }
 }

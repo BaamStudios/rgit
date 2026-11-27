@@ -131,7 +131,7 @@ fn read_file(objects_dir: &Path) -> Vec<PathBuf> {
             line.to_vec()
         };
         let p = path_of(path);
-        out.push(if p.is_absolute() {
+        out.push(if rgit_fs::path::is_absolute(&p) {
             p
         } else {
             objects_dir.join(p)
@@ -183,7 +183,7 @@ fn unquote_prefix(s: &[u8]) -> Option<(Vec<u8>, &[u8])> {
 }
 
 fn canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    rgit_fs::path::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 #[cfg(test)]
@@ -205,7 +205,13 @@ mod tests {
             "# comment\n../../a/objects\n\n/does/not/exist\n",
         )
         .unwrap();
-        std::fs::write(a.join("info/alternates"), format!("\"{}\"\n", b.display())).unwrap();
+        // Quoted: a backslash would start an escape sequence.
+        let quoted = rgit_fs::path::to_slash(b.clone());
+        std::fs::write(
+            a.join("info/alternates"),
+            format!("\"{}\"\n", quoted.display()),
+        )
+        .unwrap();
         // A cycle back to the main directory is ignored.
         std::fs::write(b.join("info/alternates"), format!("{}\n", main.display())).unwrap();
         let got: Vec<PathBuf> = read_file(&main);

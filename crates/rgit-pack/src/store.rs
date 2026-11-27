@@ -201,9 +201,7 @@ impl PackSet {
         }
         for pack in self.packs() {
             if pack.contains(id) && !pack.is_cruft() {
-                if let Ok(f) = std::fs::File::open(pack.path()) {
-                    let _ = f.set_modified(SystemTime::now());
-                }
+                let _ = rgit_fs::set_modified(pack.path(), SystemTime::now());
                 return true;
             }
         }

@@ -177,7 +177,10 @@ impl FilesStore {
         }
         if let Some(rest) = name.strip_prefix("worktrees/") {
             if let Some((id, r)) = rest.split_once('/') {
-                return (self.git_dir.join("worktrees").join(id), r);
+                return (
+                    rgit_fs::path::join(rgit_fs::path::join(&self.git_dir, "worktrees"), id),
+                    r,
+                );
             }
         }
         match &self.worktree_dir {
@@ -202,12 +205,12 @@ impl FilesStore {
     /// Path of the loose file for `name`.
     pub fn ref_path(&self, name: &str) -> PathBuf {
         let (dir, rel) = self.locate(name);
-        dir.join(rgit_bstr::to_os(rel))
+        rgit_fs::path::join(&dir, rgit_bstr::to_os(rel))
     }
 
     /// Path of `packed-refs`.
     pub fn packed_refs_path(&self) -> PathBuf {
-        self.git_dir.join("packed-refs")
+        rgit_fs::path::join(&self.git_dir, "packed-refs")
     }
 
     /// Reads and parses `packed-refs`; an absent file is empty.
@@ -332,7 +335,7 @@ impl FilesStore {
         dir_rel: &str,
         out: &mut BTreeMap<String, LooseRead>,
     ) -> Result<(), Error> {
-        let dir = base.join(rgit_bstr::to_os(dir_rel.trim_end_matches('/')));
+        let dir = rgit_fs::path::join(base, rgit_bstr::to_os(dir_rel.trim_end_matches('/')));
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e)

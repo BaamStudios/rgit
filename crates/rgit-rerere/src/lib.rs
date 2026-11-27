@@ -86,11 +86,7 @@ fn parse(host: &mut dyn Host, path: &[u8], kind: HashKind) -> Parsed {
 
 /// The C library's text for an I/O error (without the " (os error N)").
 fn strerror(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error") {
-        Some(i) => s[..i].to_owned(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 /// Merges the recorded resolution of a variant into the current conflict;

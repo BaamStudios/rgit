@@ -927,7 +927,9 @@ fn bogus_index_offsets() {
     let p = Pack::open(&idx, HashKind::Sha1).unwrap();
     assert!(p.read(&first, &mut DeltaBaseCache::default()).is_err());
 
-    // v2, msb set but no 64-bit table.
+    // v2, msb set but no 64-bit table. (A file that is still mapped cannot
+    // be rewritten on Windows.)
+    drop(p);
     munge(&idx, ofs_table, b"\xff\0\0\0");
     let p = Pack::open(&idx, HashKind::Sha1).unwrap();
     let err = p.read(&first, &mut DeltaBaseCache::default()).unwrap_err();

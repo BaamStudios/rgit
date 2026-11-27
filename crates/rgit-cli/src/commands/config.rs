@@ -832,11 +832,7 @@ fn blob_error(m: String) -> Die {
 }
 
 fn io_text(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 /// State shared by all actions.
@@ -887,7 +883,7 @@ impl<'o> Cmd<'o> {
             location = Location::Blob(name, found);
         }
         if let Location::File(f) = &mut location {
-            if f != "-" && !Path::new(f.as_str()).is_absolute() && !prefix.is_empty() {
+            if f != "-" && !rgit_fs::path::is_absolute(Path::new(f.as_str())) && !prefix.is_empty() {
                 *f = format!("{prefix}{f}");
             }
         }

@@ -15,7 +15,7 @@ use crate::{messages, path};
 /// linked work tree's `.git` file at `new/worktrees/<id>` and update the
 /// `gitdir` files. `relative` writes relative paths.
 pub(super) fn repair_after_move(old: &Path, new: &Path, relative: bool) -> Result<(), InitError> {
-    let Ok(entries) = fs::read_dir(new.join("worktrees")) else {
+    let Ok(entries) = fs::read_dir(rgit_fs::path::join(new, "worktrees")) else {
         return Ok(());
     };
     for entry in entries.filter_map(Result::ok) {
@@ -23,7 +23,7 @@ pub(super) fn repair_after_move(old: &Path, new: &Path, relative: bool) -> Resul
         if !admin.is_dir() {
             continue;
         }
-        let Ok(data) = fs::read(admin.join("gitdir")) else {
+        let Ok(data) = fs::read(rgit_fs::path::join(&admin, "gitdir")) else {
             continue;
         };
         let text = trim(&data);
@@ -31,13 +31,14 @@ pub(super) fn repair_after_move(old: &Path, new: &Path, relative: bool) -> Resul
             continue;
         }
         // A relative entry was relative to the old location.
-        let old_admin = old.join("worktrees").join(entry.file_name());
+        let old_admin =
+            rgit_fs::path::join(rgit_fs::path::join(old, "worktrees"), entry.file_name());
         let dot_git = path::normalize(&path::absolute(&bytes_to_path(text), &old_admin));
         let Some(wt) = dot_git.parent() else {
             continue;
         };
         let wt = path::real_path_lossy(wt, Path::new("/"));
-        let dot_git = wt.join(dot_git.file_name().unwrap_or_default());
+        let dot_git = rgit_fs::path::join(&wt, dot_git.file_name().unwrap_or_default());
         let admin = path::real_path_lossy(&admin, Path::new("/"));
         let (link, back) = if relative {
             (relative_path(&admin, &wt), relative_path(&dot_git, &admin))
@@ -45,7 +46,10 @@ pub(super) fn repair_after_move(old: &Path, new: &Path, relative: bool) -> Resul
             (admin.clone(), dot_git.clone())
         };
         write(&dot_git, format!("gitdir: {}\n", link.display()))?;
-        write(&admin.join("gitdir"), format!("{}\n", back.display()))?;
+        write(
+            &rgit_fs::path::join(&admin, "gitdir"),
+            format!("{}\n", back.display()),
+        )?;
     }
     Ok(())
 }

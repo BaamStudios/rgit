@@ -231,7 +231,7 @@ impl Mergetool<'_> {
         {
             cmd.args(["diff", "--name-only", "--diff-filter=U"]);
             if let Some(o) = order {
-                let p = if o.is_empty() || Path::new(o).is_absolute() {
+                let p = if o.is_empty() || rgit_fs::path::is_absolute(Path::new(o)) {
                     o.to_owned()
                 } else {
                     self.repo

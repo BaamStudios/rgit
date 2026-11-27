@@ -351,13 +351,8 @@ fn realpath_parent(abs: &[u8]) -> Result<Vec<u8>, PathspecError> {
             continue;
         }
         acc.push(bytes_to_path(comp));
-        acc = std::fs::canonicalize(&acc).map_err(|e| {
-            let reason = e.to_string();
-            // Rust appends " (os error N)" to the C library text.
-            let reason = match reason.rfind(" (os error ") {
-                Some(i) => reason[..i].to_owned(),
-                None => reason,
-            };
+        acc = rgit_fs::path::canonicalize(&acc).map_err(|e| {
+            let reason = rgit_fs::messages::strerror(&e);
             PathspecError::InvalidPath {
                 path: path_to_bytes(&acc),
                 reason,

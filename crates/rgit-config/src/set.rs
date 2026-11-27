@@ -467,12 +467,12 @@ impl<'a> Loader<'a> {
                 path: value.clone(),
             }
         })?;
-        let path = if expanded.is_absolute() {
+        let path = if rgit_fs::path::is_absolute(&expanded) {
             expanded
         } else {
             match &ctx.source.origin {
                 Origin::File(f) => match f.parent() {
-                    Some(dir) if !dir.as_os_str().is_empty() => dir.join(&expanded),
+                    Some(dir) if !dir.as_os_str().is_empty() => rgit_fs::path::join(dir, &expanded),
                     _ => expanded,
                 },
                 _ => return Err(Error::RelativeInclude),

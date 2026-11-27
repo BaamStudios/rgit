@@ -159,13 +159,7 @@ fn strerror(e: &std::io::Error) -> String {
     match e.kind() {
         std::io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
         std::io::ErrorKind::NotFound => "No such file or directory".to_string(),
-        _ => {
-            let s = e.to_string();
-            match s.find(" (os error") {
-                Some(i) => s[..i].to_string(),
-                None => s,
-            }
-        }
+        _ => rgit_fs::messages::strerror(e),
     }
 }
 

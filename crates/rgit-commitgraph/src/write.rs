@@ -707,7 +707,7 @@ pub fn write(
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let canon = |p: &Path| rgit_fs::path::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     canon(a) == canon(b)
 }
 

@@ -898,11 +898,7 @@ fn local_value(repo: &LocalRepo, e: &Entry) -> Option<ObjectId> {
 }
 
 fn rgit_transport_strerror(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.rfind(" (os error ") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 /// Add tags of `refs` that point into the fetched history: tags missing

@@ -21,8 +21,10 @@ pub fn system_config_path(env: &dyn Environment) -> Option<PathBuf> {
     if env_bool(env, "GIT_CONFIG_NOSYSTEM") {
         return None;
     }
+    // Git for Windows reports this file with `/` however the variable
+    // spells it.
     match env.var("GIT_CONFIG_SYSTEM") {
-        Some(p) => Some(PathBuf::from(p)),
+        Some(p) => Some(rgit_fs::path::to_slash(PathBuf::from(p))),
         None => Some(PathBuf::from(DEFAULT_SYSTEM_CONFIG)),
     }
 }
@@ -34,20 +36,18 @@ pub fn global_config_paths(env: &dyn Environment) -> Vec<PathBuf> {
         return vec![PathBuf::from(p)];
     }
     let mut out = Vec::new();
-    let home = env
-        .var_bytes("HOME")
-        .filter(|h| !h.is_empty())
-        .map(|h| bytes_to_path(&h));
+    use rgit_fs::path::join;
+    let home = env.home().map(|h| bytes_to_path(&h));
     match env.var_bytes("XDG_CONFIG_HOME").filter(|x| !x.is_empty()) {
-        Some(x) => out.push(bytes_to_path(&x).join("git").join("config")),
+        Some(x) => out.push(join(bytes_to_path(&x), "git/config")),
         None => {
             if let Some(h) = &home {
-                out.push(h.join(".config").join("git").join("config"));
+                out.push(join(h, ".config/git/config"));
             }
         }
     }
     if let Some(h) = home {
-        out.push(h.join(".gitconfig"));
+        out.push(join(&h, ".gitconfig"));
     }
     out
 }
@@ -146,7 +146,7 @@ pub fn load_standard(
         }
     }
     if let Some(repo) = repo {
-        let local = repo.common_dir.join("config");
+        let local = rgit_fs::path::join(&repo.common_dir, "config");
         let worktree = match repo.worktree_config {
             Some(b) => b,
             None => worktree_config_enabled(&local),
@@ -156,7 +156,7 @@ pub fn load_standard(
         }
         if filter.worktree && worktree {
             loader.add(file(
-                repo.git_dir.join("config.worktree"),
+                rgit_fs::path::join(&repo.git_dir, "config.worktree"),
                 Scope::Worktree,
                 true,
             ));

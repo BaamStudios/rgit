@@ -475,9 +475,7 @@ pub fn loosen(odb: &ObjectDatabase, id: &ObjectId, mtime: u64) -> Result<(), Die
     }
     let path = loose.path_of(id);
     let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime);
-    if let Ok(f) = std::fs::File::open(&path) {
-        let _ = f.set_modified(when);
-    }
+    let _ = rgit_fs::set_modified(&path, when);
     Ok(())
 }
 

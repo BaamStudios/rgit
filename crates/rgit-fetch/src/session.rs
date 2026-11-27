@@ -1780,7 +1780,7 @@ impl ReceivedPack {
 /// written verbatim to the named file (an absolute path; appended to).
 fn trace_packfile() -> Option<std::fs::File> {
     let path = std::env::var_os("GIT_TRACE_PACKFILE")?;
-    if !std::path::Path::new(&path).is_absolute() {
+    if !rgit_fs::path::is_absolute(std::path::Path::new(&path)) {
         return None;
     }
     std::fs::OpenOptions::new()

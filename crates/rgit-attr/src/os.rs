@@ -47,9 +47,5 @@ pub(crate) fn open_read(path: &Path, nofollow: bool) -> io::Result<std::fs::File
 /// The text of an I/O error as `strerror` prints it, without Rust's
 /// ` (os error N)` suffix.
 pub(crate) fn strerror(e: &io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }

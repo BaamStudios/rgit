@@ -567,7 +567,11 @@ fn status_reads_the_user_configuration_only_through_its_environment() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join(".gitconfig"),
-        format!("[core]\n\texcludesFile = {}\n", ignore.display()),
+        // With `/`: a backslash starts an escape sequence in a value.
+        format!(
+            "[core]\n\texcludesFile = {}\n",
+            rgit_fs::path::to_slash(ignore.clone()).display()
+        ),
     )
     .unwrap();
     let env = MapEnv::new([

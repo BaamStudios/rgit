@@ -102,7 +102,7 @@ impl PreparedTransaction for Prepared<'_> {
             // Like git, the new contents go to `packed-refs.new` (created
             // exclusively) and are renamed over `packed-refs` while the lock
             // is held.
-            let path = self.store.git_dir.join("packed-refs.new");
+            let path = rgit_fs::path::join(&self.store.git_dir, "packed-refs.new");
             let mut created = false;
             let result = std::fs::OpenOptions::new()
                 .write(true)
@@ -202,7 +202,7 @@ pub(super) fn prune_empty_parents(git_dir: &Path, path: &Path) {
         if rel.components().count() < 3 {
             break;
         }
-        if std::fs::remove_dir(git_dir.join(&rel)).is_err() {
+        if std::fs::remove_dir(rgit_fs::path::join(git_dir, &rel)).is_err() {
             break;
         }
     }
@@ -228,7 +228,9 @@ fn find_ref_below(dir: &Path, rel: &str) -> Option<String> {
     for (n, is_dir) in names {
         let child_rel = format!("{rel}/{n}");
         if is_dir {
-            if let Some(found) = find_ref_below(&dir.join(rgit_bstr::to_os(&n)), &child_rel) {
+            if let Some(found) =
+                find_ref_below(&rgit_fs::path::join(dir, rgit_bstr::to_os(&n)), &child_rel)
+            {
                 return Some(found);
             }
         } else if !n.ends_with(".lock") {

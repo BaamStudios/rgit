@@ -797,7 +797,11 @@ fn gc_log_stops_background_runs() {
          old trouble\n\n"
     );
     // An old log is removed and the run goes to the background.
-    sh(&fx, "touch -d '3 days ago' .git/gc.log");
+    // Three days ago (`touch -d` with such a date is GNU only).
+    sh(
+        &fx,
+        "perl -e '$t = time - 3 * 86400; utime($t, $t, @ARGV) == 1 or die' .git/gc.log",
+    );
     sh(&fx, "\"$RGIT\" gc --auto --quiet");
     sh(
         &fx,
@@ -1226,7 +1230,8 @@ fn repack_filter_splits_the_pack() {
         &fx,
         r#"G="$GIT" R="$RGIT"
 "$R" -c repack.writeBitmaps=false repack -a -d -q --filter=blob:none
-ls .git/objects/pack/*.pack | wc -l
+count () { echo $(($(wc -l))); }  # BSD wc pads its output
+ls .git/objects/pack/*.pack | count
 commit=$("$G" rev-parse HEAD)
 blob=$("$G" rev-parse HEAD:a.txt)
 for p in .git/objects/pack/*.idx; do
@@ -1237,8 +1242,8 @@ done
 "$G" fsck --no-dangling 2>&1
 "$G" init -q --bare ../filtered.git
 "$R" -c repack.writeBitmaps=false repack -a -d -q --filter=blob:none --filter-to=../filtered.git/objects/pack/pack
-ls .git/objects/pack/*.pack | wc -l
-ls ../filtered.git/objects/pack/*.pack | wc -l
+ls .git/objects/pack/*.pack | count
+ls ../filtered.git/objects/pack/*.pack | count
 "$G" cat-file -e $blob 2>/dev/null || echo blob-gone
 echo "$(cd ../filtered.git/objects && pwd)" >.git/objects/info/alternates
 "$G" cat-file -p $blob
