@@ -182,7 +182,14 @@ impl Dest {
     /// The destination as a buffered writer.
     pub fn into_writer(self) -> Box<dyn Write> {
         match self {
-            Dest::Stdout => Box::new(io::BufWriter::with_capacity(1 << 16, io::stdout())),
+            // Not through std's line-buffered `Stdout`, which would split a
+            // record at its last newline: `upload-archive` relays what
+            // it reads from this output packet by packet, and git's
+            // archiver writes a record at once.
+            Dest::Stdout => Box::new(io::BufWriter::with_capacity(
+                1 << 16,
+                crate::commands::receive_pack::RawStdout,
+            )),
             Dest::File(f) => Box::new(io::BufWriter::with_capacity(1 << 16, f)),
         }
     }

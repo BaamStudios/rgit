@@ -70,8 +70,10 @@ impl Read for RawStdin {
 }
 
 /// Writes to file descriptor 1 directly: packets reach the client
-/// without a buffer in between (and from relay threads).
-struct RawStdout;
+/// without a buffer in between (and from relay threads). Also for other
+/// binary output that must go out as it is written: std's `Stdout` cuts
+/// every write at its last newline.
+pub(crate) struct RawStdout;
 
 impl Write for RawStdout {
     #[cfg(not(unix))]
