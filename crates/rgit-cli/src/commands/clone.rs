@@ -674,6 +674,9 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     } else {
         git_dir
     };
+    // A reftable stack starts without HEAD: git's first table holds the
+    // fetched references, HEAD follows once the remote's branch is known.
+    let initial_head = defer_reftable_head(ctx, &git_dir, work_tree.as_deref())?;
 
     if !opts.quiet {
         if opts.bare {
@@ -1345,6 +1348,15 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             .and_then(|()| tx.commit(hooks))
             .map_err(|e| Die::Fatal(e.to_string()))
     };
+    // HEAD as a symbolic reference: a file, or in a reftable repository an
+    // update of the stack (seen by the reference-transaction hook).
+    let set_head = |target: &str, hooks: &mut UpdateHooks<'_>| -> Result<(), Die> {
+        if initial_head.is_some() {
+            commit(RefUpdate::symref_update("HEAD", target, None).no_deref(true), hooks)
+        } else {
+            set_head_symref(&git_dir, target)
+        }
+    };
     if let Some(r) = &remote_head_ref {
         let name = format!("refs/remotes/{origin}/HEAD");
         hooks.mark_symbolic(&name);
@@ -1364,11 +1376,11 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
                 (None, None) => None,
             };
             if let Some(b) = &branch {
-                set_head_symref(&git_dir, b)?;
+                set_head(b, &mut hooks)?;
             }
             // Without the remote's HEAD (protocol v0/v1), the branch the
             // new repository was created with.
-            let branch = branch.or_else(|| {
+            let branch = branch.or_else(|| initial_head.clone()).or_else(|| {
                 let head = rgit_refs::read_head_file(&git_dir).ok()?;
                 let target = head.strip_prefix(b"ref: ")?.trim_ascii_end();
                 Some(rgit_bstr::from_bytes(target).into_owned())
@@ -1378,7 +1390,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             }
         }
         Some(Our::Branch(name, oid)) => {
-            set_head_symref(&git_dir, name)?;
+            set_head(name, &mut hooks)?;
             if !opts.bare {
                 commit(
                     RefUpdate::update("HEAD", *oid, None).message(reflog_msg.as_str()),
@@ -1418,11 +1430,17 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             // Without one (v0/v1 do not advertise an unborn HEAD) the
             // initial branch stays.
             if let Some(t) = &head_target {
-                set_head_symref(&git_dir, t)?;
+                set_head(t, &mut hooks)?;
             }
             if !opts.bare {
                 eprintln!("warning: {}", msg::REMOTE_HEAD_NONEXISTENT);
             }
+        }
+    }
+    // Nothing named a branch: HEAD keeps the initial one.
+    if let Some(h) = &initial_head {
+        if matches!(rgit_refs::RefStore::read_raw(&store, "HEAD"), Ok(None)) {
+            set_head(h, &mut hooks)?;
         }
     }
     // The refs are written: the packs need no `.keep` any more.
@@ -1735,16 +1753,17 @@ fn switch_object_format(
     if setup.format.ref_storage == rgit_repo::RefStorage::Reftable {
         // The tables name their hash function: start the stack again.
         let store = refs_support::ref_store(setup, config);
+        // HEAD is not in the stack yet (see `defer_reftable_head`).
         let head = match rgit_refs::RefStore::read_raw(&store, "HEAD") {
-            Ok(Some(rgit_refs::Target::Symbolic(t))) => t.to_string(),
-            _ => "refs/heads/master".to_owned(),
+            Ok(Some(rgit_refs::Target::Symbolic(t))) => Some(t.to_string()),
+            _ => None,
         };
         drop(store);
         repo_init::restart_reftable(
             &setup.common_dir,
             hash,
             refs_support::shared_repository(config),
-            &head,
+            head.as_deref(),
         )
         .map_err(|e| Die::Fatal(e.to_string()))?;
     }
@@ -1831,6 +1850,35 @@ fn write_branch_config(
         config_set(path, &format!("branch.{short}.rebase"), "true")?;
     }
     Ok(())
+}
+
+/// Takes `HEAD` out of the reftable stack of the new repository in
+/// `git_dir` (the stack starts empty, as git's) and returns the branch it
+/// named; `None` for the files format.
+fn defer_reftable_head(
+    ctx: &Context,
+    git_dir: &Path,
+    work_tree: Option<&Path>,
+) -> Result<Option<String>, Die> {
+    if !rgit_refs::reftable::backend::uses_reftable(&rgit_refs::location::resolve(git_dir)) {
+        return Ok(None);
+    }
+    let setup = open_new_repository(ctx, git_dir, work_tree)?;
+    let config = refs_support::load_config(ctx, &setup)?;
+    let store = refs_support::ref_store(&setup, &config);
+    let head = match rgit_refs::RefStore::read_raw(&store, "HEAD") {
+        Ok(Some(rgit_refs::Target::Symbolic(t))) => t.to_string(),
+        _ => "refs/heads/master".to_owned(),
+    };
+    drop(store);
+    repo_init::restart_reftable(
+        &setup.common_dir,
+        setup.format.object_format,
+        refs_support::shared_repository(&config),
+        None,
+    )
+    .map_err(|e| Die::Fatal(e.to_string()))?;
+    Ok(Some(head))
 }
 
 fn set_head_symref(git_dir: &Path, target: &str) -> Result<(), Die> {
