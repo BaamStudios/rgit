@@ -165,8 +165,24 @@ fn rename_refs(repo: &Repo, old: &str, new: &str, show_progress: bool) -> Result
     }
     meter.stop();
     let objects = Objects::open(&repo.setup);
+    let hooks = UpdateHooks::new(&repo.setup, &repo.config, &objects);
+    // A reftable transaction drops the logs of the deleted references:
+    // their logs move first (and back when the transaction fails).
+    let early: Vec<(String, String)> = match hooks.reflogs() {
+        Some(logs) if logs.is_reftable() => renamed
+            .iter()
+            .filter(|(from, to, _)| logs.exists(from) && logs.rename(from, to).is_ok())
+            .map(|(from, to, _)| (from.clone(), to.clone()))
+            .collect(),
+        _ => Vec::new(),
+    };
     let mut quiet = UpdateHooks::new(&repo.setup, &repo.config, &objects).without_reflogs();
     if let Err(e) = result.and_then(|()| tx.commit(&mut quiet)) {
+        if let Some(logs) = hooks.reflogs() {
+            for (from, to) in &early {
+                let _ = logs.rename(to, from);
+            }
+        }
         eprintln!("error: {}", msg::rename_refs_failed(&e.to_string()));
         for line in msg::RENAME_CONFLICT_HINT.lines() {
             if line.is_empty() {
@@ -177,13 +193,10 @@ fn rename_refs(repo: &Repo, old: &str, new: &str, show_progress: bool) -> Result
         }
         return Err(Die::Exit(128));
     }
-    let hooks = UpdateHooks::new(&repo.setup, &repo.config, &objects);
     if let Some(logs) = hooks.reflogs() {
         for (from, to, oid) in &renamed {
-            if !logs.exists(from) {
-                continue;
-            }
-            if logs.rename(from, to).is_err() {
+            let moved = early.iter().any(|(f, _)| f == from);
+            if !moved && (!logs.exists(from) || logs.rename(from, to).is_err()) {
                 continue;
             }
             let id = oid.unwrap_or_else(|| ObjectId::null(hash));

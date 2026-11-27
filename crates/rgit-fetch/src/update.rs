@@ -199,6 +199,74 @@ pub fn apply_with_message(
     }
 }
 
+/// [`apply`] for several updates at once, as git writes a fetch without
+/// `--atomic`: one transaction for all of them (in a reftable repository
+/// one table). When that transaction fails on a single reference (a
+/// lock, a name conflict), the updates are written one by one, so that
+/// only the failing ones fail; a transaction refused as a whole (by the
+/// `reference-transaction` hook) fails every update.
+pub fn apply_all(
+    repo: &LocalRepo,
+    items: Vec<(BString, ObjectId, Status)>,
+    action: &str,
+) -> Vec<Status> {
+    let mut out: Vec<Option<Status>> = Vec::with_capacity(items.len());
+    let mut batch = Vec::new();
+    for (i, (local, new, status)) in items.iter().enumerate() {
+        if !status.changes_ref() {
+            out.push(Some(status.clone()));
+        } else if local.starts_with(b"refs/heads/") && repo.kind(new) != Some(ObjectKind::Commit) {
+            eprintln!(
+                "error: {}",
+                messages::non_commit_to_branch(&new.to_hex(), &rgit_bstr::from_bytes(local))
+            );
+            out.push(Some(Status::NotCommit(Box::new(status.clone()))));
+        } else {
+            out.push(None);
+            batch.push(i);
+        }
+    }
+    let result = match batch.len() {
+        0 => Ok(()),
+        _ => {
+            let mut hooks = FetchHooks {
+                reflog: repo.reflog_hooks(),
+                transaction: repo.transaction_hook.as_deref(),
+                odb: &repo.odb,
+            };
+            let store: &dyn RefStore = &repo.refs;
+            let mut tx = Transaction::new(store);
+            batch
+                .iter()
+                .map(|&i| {
+                    let (local, new, status) = &items[i];
+                    ref_update(local.as_bstr(), *new, status, action)
+                })
+                .try_for_each(|u| tx.push(u))
+                .and_then(|()| tx.commit(&mut hooks))
+        }
+    };
+    match result {
+        Ok(()) => {}
+        Err(rgit_refs::TransactionError::Rejected(e)) => {
+            eprintln!("error: {e}");
+            for &i in &batch {
+                out[i] = Some(Status::Failed(Box::new(items[i].2.clone())));
+            }
+        }
+        Err(_) => {
+            for &i in &batch {
+                let (local, new, status) = &items[i];
+                out[i] = Some(apply(repo, local.as_bstr(), *new, status.clone(), action));
+            }
+        }
+    }
+    out.into_iter()
+        .zip(items)
+        .map(|(done, (_, _, status))| done.unwrap_or(status))
+        .collect()
+}
+
 /// The [`RefUpdate`] that [`apply`] would write for `status`.
 pub fn ref_update(local: &BStr, new: ObjectId, status: &Status, action: &str) -> RefUpdate {
     let old = match status {
