@@ -17,7 +17,7 @@ use std::process::{Command, Output, Stdio};
 use rgit_difftest::Fixture;
 
 mod common;
-use common::servers::{isolated, start_http_with};
+use common::servers::{isolated, start_cgi, start_http_with};
 
 fn rgit() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_rgit"))
@@ -560,6 +560,110 @@ fn object_info_equals_git() {
         same(&fx, on, "srv", &lines);
     }
     same(&fx, on, "srv", &["command=object-info", "0000"]);
+}
+
+/// `bundle-uri` answers with the `bundle.*` configuration in its order,
+/// leaving out keys without a value (with a warning), and refuses
+/// arguments.
+#[test]
+fn bundle_uri_equals_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let on = "uploadpack.advertiseBundleURIs=true";
+    let lists: &[&[&str]] = &[
+        &[on],
+        &[on, "bundle.version=1", "bundle.mode=all"],
+        &[
+            on,
+            "bundle.version=1",
+            "bundle.mode=any",
+            "bundle.heuristic=creationToken",
+            "bundle.One.uri=https://example.com/one.bdl",
+            "bundle.One.creationToken=1",
+            "bundle.one.extra=bogus",
+            "bundle.two.uri=",
+            "bundle.a.b.uri=dotted",
+            "bundle.One.uri=again",
+            "other.key=value",
+        ],
+    ];
+    for config in lists {
+        same(&fx, config, "srv", &["command=bundle-uri", "0000"]);
+        same(&fx, config, "srv", &["command=bundle-uri", "0001", "0000"]);
+        same(
+            &fx,
+            config,
+            "srv",
+            &["command=bundle-uri", "0001", "x", "0000"],
+        );
+        same(&fx, config, "srv", &["command=bundle-uri", "0001", "0001"]);
+    }
+    // The repository's own configuration, a key without `=` among it.
+    let fx = fx.git(["-C", "srv", "config", "bundle.version", "1"]).git([
+        "-C",
+        "srv",
+        "config",
+        "bundle.b.uri",
+        "file:///b.bdl",
+    ]);
+    let config = fx.work_dir().join("srv/.git/config");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str("[bundle \"c\"]\n\tnovalue\n");
+    std::fs::write(&config, text).unwrap();
+    same(&fx, &[on], "srv", &["command=bundle-uri", "0000"]);
+}
+
+/// Over smart HTTP with rgit's `http-backend`: the list reaches the
+/// client, and a bundle whose empty URI the server leaves out is
+/// reported by the client as having no URI (t5558).
+#[test]
+fn bundle_uri_over_http() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let fx = fx
+        .git(["clone", "-q", "--bare", "srv", "srv.git"])
+        .git([
+            "-C",
+            "srv.git",
+            "config",
+            "uploadpack.advertiseBundleURIs",
+            "true",
+        ])
+        .git(["-C", "srv.git", "config", "bundle.version", "1"])
+        .git(["-C", "srv.git", "config", "bundle.mode", "all"])
+        .git(["-C", "srv.git", "config", "bundle.bundle-1.uri", ""])
+        .git([
+            "-C",
+            "srv.git",
+            "config",
+            "bundle.bundle-1.creationToken",
+            "1",
+        ]);
+    let work = fx.work_dir();
+    let base = start_cgi(&fx, rgit(), Vec::new(), true);
+    let url = format!("{base}/srv.git");
+    for (name, program) in [("git", fx.reference_git().to_path_buf()), ("rgit", rgit())] {
+        let target = format!("target-{name}");
+        let out = run(
+            &fx,
+            &program,
+            &["-c", "transfer.bundleURI=true", "clone", &url, &target],
+            &[],
+            &work,
+            b"",
+        );
+        let err = text(&out.stderr);
+        assert!(out.status.success(), "{name}: {err}");
+        assert!(
+            err.contains("bundle 'bundle-1' has no uri"),
+            "{name}: {err}"
+        );
+        assert!(!err.contains("expected packfile"), "{name}: {err}");
+    }
 }
 
 /// `wait-for-done` without `want`: a client that only negotiates
