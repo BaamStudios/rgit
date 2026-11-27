@@ -49,6 +49,37 @@ struct TxFlags {
     no_deref: bool,
     force_create_reflog: bool,
     skip_refname_verification: bool,
+    skip_oid_verification: bool,
+}
+
+/// The reflog writer plus git's checks of a new object value: it has to
+/// exist, and a branch has to point to a commit
+/// (`REF_SKIP_OID_VERIFICATION` turns them off).
+struct VerifyingHooks {
+    writer: ReflogWriter,
+    objects: rgit_odb::ObjectDatabase,
+}
+
+impl RefHooks for VerifyingHooks {
+    fn check_object(&mut self, name: &str, oid: &ObjectId) -> Result<(), String> {
+        match self.objects.header(oid) {
+            Ok(Some(h))
+                if h.kind != rgit_object::ObjectKind::Commit && name.starts_with("refs/heads/") =>
+            {
+                Err(rgit_refs::messages::non_commit_on_branch(oid, name))
+            }
+            Ok(Some(_)) => Ok(()),
+            _ => Err(rgit_refs::messages::nonexistent_object(name, oid)),
+        }
+    }
+
+    fn reflog_append(&mut self, update: &rgit_refs::ReflogUpdate) -> Result<(), String> {
+        self.writer.reflog_append(update)
+    }
+
+    fn reflog_delete(&mut self, name: &str) {
+        self.writer.reflog_delete(name);
+    }
 }
 
 /// Dies like the reference: `fatal: <msg>`, exit 128.
@@ -120,6 +151,8 @@ struct Store {
     logs: FilesReflog,
     config: ConfigSet,
     bare: bool,
+    /// The object directory, for the checks of new values.
+    objects: PathBuf,
 }
 
 impl Store {
@@ -278,6 +311,7 @@ fn open_store(setup: &Setup, spec: &str) -> Result<Store, Fatal> {
         logs: FilesReflog::new(&git_dir, &common, kind),
         config,
         bare,
+        objects: rgit_odb::objects_dir(&common),
     })
 }
 
@@ -297,7 +331,8 @@ fn tx_flags(text: &str) -> Result<TxFlags, Fatal> {
             "REF_NO_DEREF" => f.no_deref = true,
             "REF_FORCE_CREATE_REFLOG" => f.force_create_reflog = true,
             "REF_SKIP_REFNAME_VERIFICATION" => f.skip_refname_verification = true,
-            "REF_SKIP_OID_VERIFICATION" | "REF_SKIP_CREATE_REFLOG" => {}
+            "REF_SKIP_OID_VERIFICATION" => f.skip_oid_verification = true,
+            "REF_SKIP_CREATE_REFLOG" => {}
             _ => return Err(Fatal(messages::unknown_flag(word))),
         }
     }
@@ -607,9 +642,21 @@ fn update_ref(store: &Store, a: &[String]) -> Res {
         .create_reflog(flags.force_create_reflog)
         .skip_name_check(flags.skip_refname_verification)
         .message(msg);
-    let mut hooks = store.writer()?;
-    store
-        .commit(update, &mut hooks)
+    let writer = store.writer()?;
+    let result = if flags.skip_oid_verification {
+        let mut hooks = writer;
+        store.commit(update, &mut hooks)
+    } else {
+        let mut objects = rgit_odb::ObjectDatabase::open_with_packs(
+            store.objects.clone(),
+            store.kind(),
+            rgit_odb::LooseOptions::default(),
+        );
+        objects.quiet();
+        let mut hooks = VerifyingHooks { writer, objects };
+        store.commit(update, &mut hooks)
+    };
+    result
         .map(|()| 0)
         .map_err(|e| Fatal(messages::update_ref_failed(name, &e)))
 }

@@ -31,6 +31,49 @@ fn unborn_repository() {
     );
 }
 
+/// `reflog --all` and `log -g` with ref sets walk the reflog of every
+/// reference of the set (under its full name, `HEAD` last for `--all`).
+#[test]
+fn all_reflogs() {
+    let mut fx = Fixture::new()
+        .rgit(env!("CARGO_BIN_EXE_rgit"))
+        .git(["init", "-q", "-b", "main"])
+        .git(["commit", "-q", "--allow-empty", "-m", "one"])
+        .tick()
+        .git(["branch", "b"])
+        .git(["commit", "-q", "--allow-empty", "-m", "two"])
+        .tick()
+        .git(["tag", "t"])
+        .git(["update-ref", "refs/remotes/o/x", "HEAD"])
+        .git([
+            "update-ref",
+            "--create-reflog",
+            "-m",
+            "tg",
+            "refs/tags/tt",
+            "HEAD",
+        ])
+        .git(["commit", "-q", "--allow-empty", "-m", "three"]);
+    if fx.is_skipped() {
+        return;
+    }
+    compare(
+        &mut fx,
+        &[
+            &["reflog", "--all"],
+            &["reflog", "show", "--all", "main"],
+            &["log", "-g", "--all", "--format=%gd %gD %gs"],
+            &["log", "-g", "--branches", "--oneline"],
+            &["log", "-g", "--remotes", "--oneline"],
+            &["log", "-g", "--tags", "--oneline"],
+            &["log", "-g", "--glob=refs/heads/m*", "--oneline"],
+            &["log", "-g", "--branches=m*", "--oneline"],
+            &["log", "-g", "--branches=b", "--oneline"],
+            &["log", "-g", "--all", "--exclude=refs/heads/*", "--oneline"],
+        ],
+    );
+}
+
 #[test]
 fn show_list_exists() {
     let mut fx = Fixture::new()
