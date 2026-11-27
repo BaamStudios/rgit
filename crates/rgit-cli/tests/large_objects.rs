@@ -147,6 +147,28 @@ fn diff_treats_large_files_as_binary() {
     ] {
         fx.compare(args).checks(Check::OUTPUT).run();
     }
+    // `--binary` and `--text` read large contents and diff them (#654).
+    for args in [
+        &["diff", "--binary", "HEAD^", "HEAD"][..],
+        &["diff", "-a", "HEAD^", "HEAD"],
+        &["diff", "--binary", "--stat", "HEAD^", "HEAD"],
+        &["format-patch", "--stdout", "-1", "HEAD"],
+    ] {
+        fx.compare(args)
+            .checks(Check::OUTPUT)
+            .normalize(Normalizer::regex(r"(?m)^2\.[0-9]+\.[0-9]+.*$", "VERSION"))
+            .run();
+    }
+    let mut bin = content(4, 3000);
+    bin[0] = 0;
+    let mut fx = fx
+        .write("bin", &bin)
+        .git(["add", "bin"])
+        .git(["commit", "-q", "-m", "bin"])
+        .tick();
+    bin[1] = 0;
+    fx = fx.write("bin", &bin);
+    fx.compare(["diff", "--binary"]).checks(Check::OUTPUT).run();
     let mut fx = committed().write("big3", content(3, 150_000));
     fx.compare(["diff"]).checks(Check::OUTPUT).run();
     fx.compare(["diff", "--stat"]).checks(Check::OUTPUT).run();
@@ -296,6 +318,83 @@ fn alloc_limit_stops_whole_reads() {
     assert!(
         String::from_utf8_lossy(&out.stderr)
             .contains("attempting to allocate 300001 over limit 102400"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `archive`, a `file://` clone and `index-pack` outside a repository
+/// read large packed blobs as streams (t1050 23, 26-28; #654).
+#[test]
+fn archive_clone_and_index_pack_stream() {
+    let r = Repo::new();
+    // As in t1050 (the reference upload-pack, which a file:// clone
+    // runs, needs some memory too).
+    std::fs::write(r.root.join("a"), " ".repeat(2_000_000) + "X").unwrap();
+    std::fs::write(r.root.join("b"), "small\n").unwrap();
+    r.ok(&["config", "core.bigFileThreshold", "1k"]);
+    r.ok(&["add", "a", "b"]);
+    r.ok(&["commit", "-q", "-m", "one"]);
+    assert_eq!(
+        r.files("pack", ".pack").len(),
+        1,
+        "the large blob is packed"
+    );
+    let limited = |args: &[&str]| {
+        let out = r
+            .cmd(args)
+            .env("GIT_ALLOC_LIMIT", "1500k")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    };
+    for format in [
+        &["--format=tar"][..],
+        &["--format=zip", "-0"],
+        &["--format=zip"],
+    ] {
+        let mut args = vec!["archive"];
+        args.extend_from_slice(format);
+        args.push("HEAD");
+        let whole = r.cmd(&args).output().unwrap().stdout;
+        assert_eq!(limited(&args), whole, "{format:?}");
+    }
+    let url = format!("file://{}", r.root.join(".git").display());
+    let dest = r.root.join("clone");
+    limited(&[
+        "-c",
+        "core.bigFileThreshold=1k",
+        "clone",
+        "-q",
+        &url,
+        dest.to_str().unwrap(),
+    ]);
+    let pack = std::fs::read_dir(dest.join(".git/objects/pack"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "pack"))
+        .expect("a pack");
+    let out = r
+        .cmd(&[
+            "-c",
+            "core.bigFileThreshold=1k",
+            "index-pack",
+            "--object-format=sha1",
+            "--strict",
+            "--verify",
+            pack.to_str().unwrap(),
+        ])
+        .env("GIT_DIR", "non-existent")
+        .env("GIT_ALLOC_LIMIT", "1500k")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );

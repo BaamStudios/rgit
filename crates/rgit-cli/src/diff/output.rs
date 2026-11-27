@@ -936,8 +936,19 @@ impl<'a> Output<'a> {
     /// [`Output::load`] for a pair to be shown: contents above
     /// `core.bigFileThreshold` are not read (only hashed when they come
     /// from the work tree), as git treats such files as binary.
-    fn load_shown(&self, side: &Side, path: &[u8]) -> Result<Loaded, Die> {
-        if let Some(l) = self.load_big(side, path) {
+    ///
+    /// With `whole` large contents are read and judged like others (as
+    /// git does for `--text`, and for `--binary` without a diffstat).
+    fn load_shown(&self, side: &Side, path: &[u8], whole: bool) -> Result<Loaded, Die> {
+        if whole {
+            return self.load(side, path);
+        }
+        if let Some(mut l) = self.load_big(side, path) {
+            // A binary patch needs the contents; the file still counts
+            // as binary.
+            if self.patch.binary && self.formats.patch {
+                l.data = self.load(side, path)?.data;
+            }
             return Ok(l);
         }
         self.load(side, path)
@@ -1362,6 +1373,7 @@ impl<'a> Output<'a> {
             )));
         }
         let f = self.formats;
+        let whole = self.patch.text || (self.patch.binary && !(f.stat || f.numstat || f.shortstat));
         // Load contents where needed.
         // `-w`, `-I` and friends drop pairs whose differences are all
         // ignored, from every format (not `--ignore-blank-lines` alone).
@@ -1382,11 +1394,11 @@ impl<'a> Output<'a> {
                 (
                     p.old
                         .as_ref()
-                        .map(|s| self.load_shown(s, &p.old_path))
+                        .map(|s| self.load_shown(s, &p.old_path, whole))
                         .transpose()?,
                     p.new
                         .as_ref()
-                        .map(|s| self.load_shown(s, &p.path))
+                        .map(|s| self.load_shown(s, &p.path, whole))
                         .transpose()?,
                 )
             } else {

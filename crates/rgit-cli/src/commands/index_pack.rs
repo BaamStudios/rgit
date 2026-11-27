@@ -242,6 +242,9 @@ fn discover(ctx: &Context) -> Result<Option<Repo>, Die> {
     let mut protected =
         rgit_repo::StandardProtectedConfig::new(&env, crate::repo::command_line(ctx));
     match rgit_repo::discover(&opts, &mut protected) {
+        // As with git, a `GIT_DIR` that is no repository means no
+        // repository here (t1050 "index-pack").
+        Err(rgit_repo::Error::NotAGitDir(_)) => Ok(None),
         Err(e) => Err(crate::repo::die(e)),
         Ok(Err(_)) => Ok(None),
         Ok(Ok(setup)) => {
