@@ -347,7 +347,14 @@ pub fn fetch(
         url: shown_url,
         ..FetchResult::default()
     };
-    let mut entries = refmap::map_refspecs(&specs, &refs, repo.hash, &mut result.errors)?;
+    let is_symref = |local: &BString| {
+        matches!(
+            repo.refs.read_raw(&local.to_str_lossy()),
+            Ok(Some(rgit_refs::Target::Symbolic(_)))
+        )
+    };
+    let mut entries =
+        refmap::map_refspecs_skipping(&specs, &refs, repo.hash, &mut result.errors, &is_symref)?;
     if cmdline {
         for e in &mut entries {
             e.for_merge = true;
