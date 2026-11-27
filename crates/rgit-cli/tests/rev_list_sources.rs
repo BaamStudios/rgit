@@ -293,7 +293,8 @@ fn verify_objects_checks_blobs_and_tips() {
     let path = loose_path(&work, &big);
     let data = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
-    std::fs::write(&path, &data[..64]).unwrap();
+    // (How long the file is depends on the zlib of the platform.)
+    std::fs::write(&path, &data[..data.len() * 3 / 4]).unwrap();
     for args in [
         &["rev-list", "--verify-objects", "HEAD"][..],
         &["rev-list", "--verify-objects", "--all"],

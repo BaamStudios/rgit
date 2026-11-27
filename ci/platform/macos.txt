@@ -35,3 +35,6 @@ skip -p rgit-cli --test fetch  #680 hangs
 
 # The file system folds case.
 -p rgit-cli --test diff_routing_fixes  #685 a fixture commits paths that differ only in case
+
+# Sparse index.
+-p rgit-cli --test sparse_index        #673 add inside a sparse directory: "index file corrupt"
