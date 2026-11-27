@@ -345,3 +345,9 @@ pub const H2_REFUSED: &str = "HTTP/2 stream was refused by the server";
 pub fn h2_stream_error(stream: u32, name: &str, code: u32) -> String {
     format!("HTTP/2 stream {stream} was not closed cleanly: {name} (err {code})")
 }
+
+/// `fatal:` for `archive --remote` over HTTP when the server does not
+/// speak protocol v2.
+pub fn cannot_connect_to_subservice(service: &str) -> String {
+    format!("can't connect to subservice {service}")
+}

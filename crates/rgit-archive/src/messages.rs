@@ -11,6 +11,10 @@ pub const ARGUMENT_EXPECTED: &str = "'argument' token or flush expected";
 /// The client got neither `ACK` nor `NACK`.
 pub const PROTOCOL_ERROR: &str = "git archive: protocol error";
 
+/// The client got a flush (or delimiter, response-end) packet instead of
+/// `ACK` or `NACK`.
+pub const EXPECTED_ACK_GOT_FLUSH: &str = "git archive: expected ACK/NAK, got a flush packet";
+
 /// The `ACK` was not followed by a flush packet.
 pub const EXPECTED_FLUSH: &str = "git archive: expected a flush";
 
