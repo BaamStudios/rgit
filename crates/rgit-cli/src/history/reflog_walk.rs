@@ -45,17 +45,55 @@ pub(super) fn run_reflogs<S: CommitSource<Error = ObjectId>>(
         return Err(Die::Fatal(msg::REFLOG_HISTORY_LIMITING.to_string()));
     }
     let mut args = Vec::new();
+    let mut ref_sets = false;
     for t in &opts.tips {
-        if let options::Tip::Rev { arg, negate } = t {
-            if *negate || arg.starts_with('^') || arg.contains("..") {
-                let name = arg.trim_start_matches('^');
-                let name = name.split("..").next().unwrap_or(name);
-                return Err(Die::Fatal(msg::cannot_walk_reflogs(name)));
+        match t {
+            options::Tip::Rev { arg, negate } => {
+                if *negate || arg.starts_with('^') || arg.contains("..") {
+                    let name = arg.trim_start_matches('^');
+                    let name = name.split("..").next().unwrap_or(name);
+                    return Err(Die::Fatal(msg::cannot_walk_reflogs(name)));
+                }
+                args.push(arg.clone());
             }
-            args.push(arg.clone());
+            // `--all`, `--branches`, ...: the reflog of every ref of the
+            // set under its full name (`HEAD` last for `--all`); refs
+            // without a reflog add nothing.
+            options::Tip::Refs {
+                set,
+                negative: false,
+                exclude,
+                hidden,
+            } if matches!(
+                set,
+                options::RefSet::All | options::RefSet::Prefix { .. } | options::RefSet::Glob(_)
+            ) =>
+            {
+                ref_sets = true;
+                let hidden = hidden
+                    .as_deref()
+                    .map(|s| super::tips::Hidden::new(p.repo, s));
+                let names = super::tips::ref_set(p.repo, opts, set, exclude, hidden.as_ref())?;
+                let mut seen = std::collections::HashSet::new();
+                for (name, _) in names {
+                    // `--branches` names its refs without `refs/heads/`
+                    // (the other sets keep the full name).
+                    let name = match set {
+                        options::RefSet::Prefix {
+                            prefix: "refs/heads/",
+                            ..
+                        } => name.strip_prefix("refs/heads/").unwrap_or(&name).to_owned(),
+                        _ => name,
+                    };
+                    if seen.insert(name.clone()) {
+                        args.push(name);
+                    }
+                }
+            }
+            options::Tip::Refs { .. } => {}
         }
     }
-    if args.is_empty() {
+    if args.is_empty() && !ref_sets {
         args.push("HEAD".to_string());
     }
     let mut walks = Vec::new();

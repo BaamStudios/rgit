@@ -130,6 +130,10 @@ pub(crate) struct Env<'a> {
     is_base_of: HashMap<String, String>,
     /// References whose non-commit object was reported already.
     reported: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// The type each object was first known as while peeling tags (the
+    /// `type` a tag claims for its target): a later tag that claims
+    /// another type for the same object is broken.
+    claimed: std::cell::RefCell<HashMap<ObjectId, ObjectKind>>,
 }
 
 impl<'a> Env<'a> {
@@ -150,6 +154,7 @@ impl<'a> Env<'a> {
             is_bases: HashMap::new(),
             is_base_of: HashMap::new(),
             reported: Default::default(),
+            claimed: Default::default(),
         }
     }
 
@@ -256,6 +261,19 @@ impl<'a> Env<'a> {
             let (Ok(next), Ok(claimed)) = (tag.object(), tag.target_kind()) else {
                 return Err(self.missing(it));
             };
+            let known = *self.claimed.borrow_mut().entry(next).or_insert(claimed);
+            if known != claimed {
+                let hex = next.to_hex();
+                eprintln!(
+                    "error: {}",
+                    msg::object_type_mismatch(&hex, known.name(), claimed.name())
+                );
+                eprintln!("error: {}", msg::bad_tag_pointer(&hex, &cur.id.to_hex()));
+                return Err(Die::Fatal(msg::parse_object_buffer_failed(
+                    &cur.id.to_hex(),
+                    &it.name,
+                )));
+            }
             let loaded = self.load(&next).ok_or_else(|| self.missing(it))?;
             if loaded.kind != claimed {
                 eprintln!(

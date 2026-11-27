@@ -49,7 +49,9 @@ impl Pair {
             return None;
         }
         let base = fx.home_dir().join("sides");
-        let (git, rgit) = (base.join("git"), base.join("rgit"));
+        // Names of the same length: paths in reflog messages (`clone`)
+        // then give blocks of the same size.
+        let (git, rgit) = (base.join("gitx"), base.join("rgit"));
         std::fs::create_dir_all(&git).unwrap();
         std::fs::create_dir_all(&rgit).unwrap();
         Some(Pair {
@@ -200,7 +202,8 @@ impl Pair {
             out.push_str(&self.inspect(root, dir, &["fsck", "--no-dangling"]));
             out
         };
-        rgit_difftest::assert_same_text(label, &state(&self.git), &state(&self.rgit));
+        let clean = |root: &Path| state(root).replace(&root.display().to_string(), "ROOT");
+        rgit_difftest::assert_same_text(label, &clean(&self.git), &clean(&self.rgit));
     }
 }
 
@@ -563,6 +566,46 @@ fn worktrees_have_their_own_stack() {
     p.ok("repo", &[&["pack-refs"]]);
     p.same_state("pack-refs in the main worktree", "repo");
     p.both("repo", &["refs", "migrate", "--ref-format=files"]);
+}
+
+/// `clone` and `fetch --atomic` write their tables like git, with the
+/// `reftable.*` settings of the configuration; the initial transaction of
+/// a clone logs the remote-tracking branches with an empty message.
+/// (Without `--atomic` rgit writes one table per reference, git one for
+/// all.)
+#[test]
+fn clone_and_fetch_write_tables_like_gits() {
+    let Some(p) = Pair::new(false) else { return };
+    let input: String = (1..=60)
+        .map(|i| format!("create refs/heads/branch-{i} HEAD\n"))
+        .collect();
+    p.ok("", &[INIT]);
+    p.ok("repo", &[COMMIT_ONE, &["tag", "-m", "t", "v1"]]);
+    let run = p.both_in("repo", &["update-ref", "--stdin"], &input, &[]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let settings: &[&str] = &[
+        "-c",
+        "reftable.blockSize=512",
+        "-c",
+        "reftable.restartInterval=3",
+    ];
+    let clone = [settings, &["clone", "-q", "--no-local", "repo", "copy"]].concat();
+    p.ok("", &[&clone]);
+    p.same_state("after clone", "copy");
+    p.ok("", &[&["init", "-q", "--ref-format=reftable", "empty"]]);
+    let fetch = [
+        settings,
+        &[
+            "fetch",
+            "-q",
+            "--atomic",
+            "../repo",
+            "refs/heads/*:refs/remotes/o/*",
+        ],
+    ]
+    .concat();
+    p.ok("empty", &[&fetch]);
+    p.same_state("after fetch", "empty");
 }
 
 #[test]

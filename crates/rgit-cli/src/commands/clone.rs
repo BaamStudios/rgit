@@ -1842,21 +1842,24 @@ fn set_head_symref(git_dir: &Path, target: &str) -> Result<(), Die> {
 }
 
 /// The initial reference transaction: every fetched reference goes into a
-/// new `packed-refs` file, without reflog entries.
+/// new `packed-refs` file, without reflog entries. A reftable repository
+/// takes them as one transaction, which logs the references that get a
+/// reflog (remote-tracking branches) with an empty message, as git does.
 fn write_packed_refs(setup: &Setup, config: &ConfigSet, refs: &[PackedRef]) -> Result<(), Die> {
     if refs.is_empty() {
         return Ok(());
     }
     let store = refs_support::ref_store(setup, config);
     if rgit_refs::reftable::backend::uses_reftable(store.git_dir()) {
-        // A reftable repository takes them as one transaction.
+        let objects = refs_support::Objects::open(setup);
+        let mut hooks = refs_support::UpdateHooks::new(setup, config, &objects);
         let mut tx = rgit_refs::Transaction::new(&store);
         for r in refs {
             tx.push(rgit_refs::RefUpdate::create(r.name.clone(), r.oid))
                 .map_err(|e| Die::Fatal(e.to_string()))?;
         }
         return tx
-            .commit(&mut rgit_refs::NoHooks)
+            .commit(&mut hooks)
             .map_err(|e| Die::Fatal(e.to_string()));
     }
     let packed = PackedRefs::from_refs(refs.to_vec());
