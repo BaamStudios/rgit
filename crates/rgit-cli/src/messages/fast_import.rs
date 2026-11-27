@@ -255,9 +255,10 @@ const RULE: &str = "------------------------------------------------------------
 
 /// `--stats`: per kind `(stored, duplicates)` for blobs, trees, commits and
 /// tags.
-pub fn statistics(kinds: &[(u64, u64); 4], branches: usize, marks: usize) -> String {
-    let total: u64 = kinds.iter().map(|k| k.0).sum();
-    let dups: u64 = kinds.iter().map(|k| k.1).sum();
+/// `kinds`: stored, duplicates, deltas and delta attempts per type.
+pub fn statistics(kinds: &[[u64; 4]; 4], branches: usize, loads: usize, marks: usize) -> String {
+    let total: u64 = kinds.iter().map(|k| k[0]).sum();
+    let dups: u64 = kinds.iter().map(|k| k[1]).sum();
     let mut s = format!("fast-import statistics:\n{RULE}\n");
     s += &format!("Alloc'd objects: {:>10}\n", 5000.max(total));
     s += &format!("Total objects:   {total:>10} ({dups:>10} duplicates                  )\n");
@@ -267,10 +268,10 @@ pub fn statistics(kinds: &[(u64, u64); 4], branches: usize, marks: usize) -> Str
     {
         s += &format!(
             "      {name}:   {:>10} ({:>10} duplicates {:>10} deltas of {:>10} attempts)\n",
-            k.0, k.1, 0, 0
+            k[0], k[1], k[2], k[3]
         );
     }
-    s += &format!("Total branches:  {branches:>10} ({branches:>10} loads     )\n");
+    s += &format!("Total branches:  {branches:>10} ({loads:>10} loads     )\n");
     s += &format!("      marks:     {:>10} ({marks:>10} unique    )\n", 1024);
     s += RULE;
     s.push('\n');

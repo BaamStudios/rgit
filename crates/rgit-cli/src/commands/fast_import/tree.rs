@@ -19,7 +19,9 @@ pub trait Loader {
 
 /// Writes tree objects.
 pub trait Writer {
-    fn write_tree(&mut self, data: &[u8]) -> Result<ObjectId, Die>;
+    /// Write `data`; `prev` is the previous version of the directory (the
+    /// delta base).
+    fn write_tree(&mut self, data: &[u8], prev: Option<ObjectId>) -> Result<ObjectId, Die>;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -27,6 +29,8 @@ pub struct Tree {
     pub entries: Vec<Entry>,
     /// The tree object, while nothing changed since it was read or written.
     pub oid: Option<ObjectId>,
+    /// The tree object last read or written for this directory.
+    pub prev: Option<ObjectId>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +65,7 @@ impl Tree {
         Ok(Tree {
             entries,
             oid: Some(oid),
+            prev: Some(oid),
         })
     }
 
@@ -230,8 +235,9 @@ pub fn write(tree: &mut Tree, writer: &mut dyn Writer) -> Result<ObjectId, Die> 
             .push(TreeEntry::new(EntryMode::from_bits(e.mode), e.name.clone(), e.oid));
     }
     obj.entries.sort_by(TreeEntry::cmp_tree_order);
-    let oid = writer.write_tree(&obj.serialize())?;
+    let oid = writer.write_tree(&obj.serialize(), tree.prev)?;
     tree.oid = Some(oid);
+    tree.prev = Some(oid);
     Ok(oid)
 }
 

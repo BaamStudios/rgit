@@ -129,10 +129,10 @@ impl Loader for Objects<'_> {
 }
 
 impl Writer for Objects<'_> {
-    fn write_tree(&mut self, data: &[u8]) -> Result<ObjectId, Die> {
+    fn write_tree(&mut self, data: &[u8], prev: Option<ObjectId>) -> Result<ObjectId, Die> {
         let closed = &mut *self.closed;
         self.store
-            .store(self.repo, ObjectKind::Tree, data, &mut |c| {
+            .store(self.repo, ObjectKind::Tree, data, prev, &mut |c| {
                 closed.push(ClosedPack {
                     path: c.path.clone(),
                     id: c.id,
@@ -175,6 +175,11 @@ struct Importer<'c> {
 
     // State.
     seen_data: bool,
+    /// `--active-branches`, the active branches (least recently used
+    /// first) and how often a branch became active.
+    max_active: usize,
+    active: std::collections::VecDeque<String>,
+    loads: usize,
     /// Options the stream set (the command line overrides them).
     stream_set: std::collections::HashSet<String>,
     marks_failed: bool,
@@ -258,7 +263,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         .or_else(|| int("core.compression"))
         .filter(|&l| (0..=9).contains(&l))
         .map(|l| l as u32);
-    let mut store = Store::new(hash, &crate::repo_objects::objects_dir(&repo.setup), level);
+    let mut store = Store::new(
+        hash,
+        &crate::repo_objects::objects_dir(&repo.setup),
+        level,
+        repo.odb.big_file_threshold(),
+    );
     store.unpack_limit = int("fastimport.unpacklimit")
         .or_else(|| int("transfer.unpacklimit"))
         .map_or(100, |v| v.max(0) as u64);
@@ -285,6 +295,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         marks: BTreeMap::new(),
         branches: HashMap::new(),
         branch_order: Vec::new(),
+        max_active: 5,
+        active: std::collections::VecDeque::new(),
+        loads: 0,
         tags: Vec::new(),
         revs: None,
         closed: Vec::new(),
@@ -511,10 +524,14 @@ impl<'c> Importer<'c> {
                 self.store.max_pack_size = n;
             }
             "big-file-threshold" => {
-                parse_size(v).ok_or_else(|| Die::Fatal(msg::not_non_negative(name)))?;
+                self.store.big_file_threshold =
+                    parse_size(v).ok_or_else(|| Die::Fatal(msg::not_non_negative(name)))?;
             }
-            "depth" | "active-branches" => {
-                non_negative(name, value)?;
+            "depth" => {
+                self.store.max_depth = non_negative(name, value)?.min(u64::from(u32::MAX)) as u32;
+            }
+            "active-branches" => {
+                self.max_active = non_negative(name, value)?.max(1) as usize;
             }
             "cat-blob-fd" => {
                 let fd = non_negative(name, value)?;
@@ -766,12 +783,40 @@ impl<'c> Importer<'c> {
 
     fn store_object(&mut self, kind: ObjectKind, data: &[u8]) -> Result<ObjectId, Die> {
         let closed = &mut self.closed;
-        self.store.store(&self.repo, kind, data, &mut |c| {
+        self.store.store(&self.repo, kind, data, None, &mut |c| {
             closed.push(ClosedPack {
                 path: c.path.clone(),
                 id: c.id,
             })
         })
+    }
+
+    /// The blob of the `data` command in the current line. Blobs above
+    /// the big-file threshold are streamed into the pack.
+    fn read_blob(&mut self) -> Result<ObjectId, Die> {
+        match self.input.data_count() {
+            Some(len) if len > self.store.big_file_threshold => {
+                let closed = &mut self.closed;
+                let input = &mut self.input;
+                let oid = self.store.store_stream(
+                    &self.repo,
+                    len,
+                    &mut |sink| input.stream_data(len, sink),
+                    &mut |c| {
+                        closed.push(ClosedPack {
+                            path: c.path.clone(),
+                            id: c.id,
+                        })
+                    },
+                )?;
+                self.input.skip_optional_lf()?;
+                Ok(oid)
+            }
+            _ => {
+                let data = self.input.read_data()?;
+                self.store_object(ObjectKind::Blob, &data)
+            }
+        }
     }
 
     fn objects(&mut self) -> Objects<'_> {
@@ -937,8 +982,7 @@ impl<'c> Importer<'c> {
         self.input.next()?;
         let mark = self.parse_mark()?;
         self.skip_original_oid()?;
-        let data = self.input.read_data()?;
-        let oid = self.store_object(ObjectKind::Blob, &data)?;
+        let oid = self.read_blob()?;
         self.set_mark(mark, oid);
         Ok(())
     }
@@ -946,6 +990,22 @@ impl<'c> Importer<'c> {
     fn check_branch_name(name: &str) -> Result<(), Die> {
         check_refname_format(name.as_bytes(), RefNameFlags::ONELEVEL)
             .map_err(|_| Die::Fatal(msg::bad_branch_name(name)))
+    }
+
+    /// A commit to `name` makes it active; git keeps at most
+    /// `--active-branches` branches loaded and counts each load for
+    /// `--stats`.
+    fn activate(&mut self, name: &str) {
+        if let Some(i) = self.active.iter().position(|n| n == name) {
+            let n = self.active.remove(i).expect("listed");
+            self.active.push_back(n);
+            return;
+        }
+        self.loads += 1;
+        self.active.push_back(name.to_string());
+        if self.active.len() > self.max_active {
+            self.active.pop_front();
+        }
     }
 
     fn take_branch(&mut self, name: &str) -> Branch {
@@ -1000,6 +1060,7 @@ impl<'c> Importer<'c> {
         let name = lossy(&self.input.line["commit ".len()..]);
         Self::check_branch_name(&name)?;
         let mut b = self.take_branch(&name);
+        self.activate(&name);
         let result = self.parse_commit_body(&name, &mut b);
         self.branches.insert(name, b);
         result
@@ -1116,6 +1177,7 @@ impl<'c> Importer<'c> {
                 };
                 self.note_modify(b, &line, name, fanout)?;
             } else if line == b"deleteall" {
+                // As with git, the new root is no delta of the old one.
                 b.tree = Some(Tree::default());
             } else if starts(&line, "ls ") {
                 self.parse_ls(Some(b))?;
@@ -1338,8 +1400,7 @@ impl<'c> Importer<'c> {
                     self.parse_cat_blob()?;
                     self.input.next()?;
                 }
-                let data = self.input.read_data()?;
-                self.store_object(ObjectKind::Blob, &data)?
+                self.read_blob()?
             }
             Data::Oid(oid, is_mark) => {
                 let want = tree::mode_kind(mode);
@@ -1504,8 +1565,7 @@ impl<'c> Importer<'c> {
         let blob = match blob {
             None => {
                 self.input.next()?;
-                let data = self.input.read_data()?;
-                Some(self.store_object(ObjectKind::Blob, &data)?)
+                Some(self.read_blob()?)
             }
             Some(oid) if oid.is_null() => None,
             Some(oid) => {
@@ -1933,10 +1993,11 @@ impl<'c> Importer<'c> {
 
     fn print_stats(&self) {
         let c = &self.store.counts;
-        let kinds: [(u64, u64); 4] = std::array::from_fn(|i| (c[i].stored, c[i].duplicates));
+        let kinds: [[u64; 4]; 4] =
+            std::array::from_fn(|i| [c[i].stored, c[i].duplicates, c[i].deltas, c[i].attempts]);
         eprint!(
             "{}",
-            msg::statistics(&kinds, self.branches.len(), self.marks.len())
+            msg::statistics(&kinds, self.branches.len(), self.loads, self.marks.len())
         );
     }
 
