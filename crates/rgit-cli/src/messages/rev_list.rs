@@ -285,3 +285,8 @@ pub fn bad_tree_object(id: &str) -> String {
 pub fn unable_to_access_sparse_blob(spec: &str) -> String {
     format!("unable to access sparse blob in '{spec}'")
 }
+
+/// The object `sparse:oid=<spec>` names is no readable blob.
+pub fn unable_to_parse_sparse_data(id: &str) -> String {
+    format!("unable to parse sparse filter data in {id}")
+}

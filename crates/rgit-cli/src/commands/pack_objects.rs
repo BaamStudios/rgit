@@ -17,8 +17,9 @@
 //! the file of `git --shallow-file`) and those named by `--shallow <id>`
 //! lines before the revisions have no parents; `--shallow` builds the
 //! thin pack for a reader with a shallow history. `--filter=<spec>`
-//! leaves objects out (partial clone), see `rgit_pack::write::ObjectFilter`
-//! (`sparse:oid` is not supported).
+//! leaves objects out (partial clone), see `rgit_pack::write::ObjectFilter`;
+//! `--exclude-promisor-objects[-best-effort]` leaves out the objects of
+//! the promisor remote (the input is read as revisions then).
 //!
 //! `--stdin-packs[=follow]` packs the objects of listed packs (see
 //! `housekeeping::stdin_packs`).
@@ -87,8 +88,9 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Options that change what is packed or written, not implemented yet:
     // remember the first one given and refuse to run.
     let unsupported: RefCell<Option<String>> = RefCell::new(None);
-    // `--exclude-promisor-objects`, so far only with `--stdin-packs`.
+    // `--exclude-promisor-objects` and `--exclude-promisor-objects-best-effort`.
     let exclude_promisor = Cell::new(false);
+    let best_effort = Cell::new(false);
     // Every option given of those (for the checks against `--cruft`).
     let given: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
     let reject = |name: &'static str| {
@@ -255,7 +257,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "exclude-promisor-objects-best-effort",
                 None,
                 msg::H_EXCLUDE_PROMISOR_OBJECTS_BEST_EFFORT,
-                reject("exclude-promisor-objects-best-effort"),
+                |_, unset| {
+                    best_effort.set(!unset);
+                    Ok(())
+                },
             )
             .noarg(),
             Opt::callback(
@@ -318,11 +323,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             return Err(Die::Fatal(msg::CRUFT_REVS.into()));
         }
     }
-    if exclude_promisor.get() && stdin_packs.get().is_none() {
-        unsupported
-            .borrow_mut()
-            .get_or_insert_with(|| "--exclude-promisor-objects".to_owned());
+    // `--exclude-promisor-objects` walks the revisions read (as observed:
+    // the input is read as with `--revs`), leaving out the promisor
+    // objects (`--stdin-packs` leaves out promisor packs instead).
+    if exclude_promisor.get() && best_effort.get() {
+        return Err(Die::Fatal(msg::PROMISOR_BEST_EFFORT.into()));
     }
+    let omit_promisor = (exclude_promisor.get() || best_effort.get()) && stdin_packs.get().is_none();
     if let Some(opt) = unsupported.borrow().as_deref() {
         return Err(Die::Fatal(msg::not_supported(opt)));
     }
@@ -402,13 +409,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let odb = repo::odb_with_config(&setup, &config)?;
     let missing_action = match missing.borrow().as_deref() {
+        // `--exclude-promisor-objects-best-effort` implies `allow-any`.
+        None if best_effort.get() => Missing::AllowAny,
         None | Some("error") => Missing::Error,
         Some("allow-any") => Missing::AllowAny,
         Some("allow-promisor") => Missing::AllowPromisor,
         Some(other) => return Err(Die::Fatal(msg::invalid_missing(other))),
     };
-    // Allowing missing objects means not fetching them.
-    if missing_action != Missing::Error {
+    // Allowing missing objects means not fetching them; so does leaving
+    // out the promisor objects.
+    if missing_action != Missing::Error || omit_promisor {
         rgit_odb::lazy::set_enabled(false);
     }
     let allow_missing = |id: &ObjectId| match missing_action {
@@ -417,6 +427,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         Missing::AllowPromisor => odb.is_promisor_object(id),
     };
     let repo = Repo {
+        ctx,
         source: &odb,
         refs: Refs::new(&setup),
         hash,
@@ -464,7 +475,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             exclude_promisor.get(),
         )?;
         (objects, Vec::new())
-    } else if revs.get() {
+    } else if revs.get() || omit_promisor {
         let mut tips = Vec::new();
         if all.get() {
             for id in repo.refs.all() {
@@ -488,7 +499,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         // Tips from `--all`, `--reflog` and `--indexed-objects`, as opposed
         // to the revisions read next.
         let from_sets: Vec<ObjectId> = tips.iter().map(|t| t.id).collect();
-        read_revs(&mut input, &repo, &mut tips, &mut shallow_commits)?;
+        let mut tip_names = std::collections::HashMap::new();
+        read_revs(
+            &mut input,
+            &repo,
+            &mut tips,
+            &mut shallow_commits,
+            &mut tip_names,
+        )?;
         let sparse = match sparse.get() {
             -1 => config.bool("pack.usesparse").ok().flatten().unwrap_or(true),
             v => v > 0,
@@ -504,11 +522,34 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             inner: &source,
             allow: &allow_missing,
         };
+        // Blobs in promisor packs are packed all the same (as observed).
+        let in_promisor_packs: std::collections::HashSet<ObjectId> = if best_effort.get() {
+            odb.promisor_pack_objects()
+                .into_iter()
+                .filter(|id| !matches!(odb.header(id), Ok(Some(h)) if h.kind == ObjectKind::Blob))
+                .collect()
+        } else {
+            Default::default()
+        };
+        // The patterns of `sparse:oid=<blob-ish>` filters.
+        let patterns = match &filter {
+            Some(f) => sparse_patterns(ctx, f)?,
+            None => Vec::new(),
+        };
+        let pattern_refs: Vec<&dyn pw::SparsePatterns> =
+            patterns.iter().map(|p| p as &dyn pw::SparsePatterns).collect();
         let walk = pw::EnumerateOptions {
             sparse: sparse && !aggressive,
             aggressive,
             filter: filter.as_ref(),
             unnamed_tips: &from_sets,
+            sparse_patterns: &pattern_refs,
+            tip_names: Some(&tip_names),
+            leave_out: match (omit_promisor, best_effort.get()) {
+                (false, _) => pw::LeaveOut::Nothing,
+                (true, false) => pw::LeaveOut::Objects(odb.promisor_objects()),
+                (true, true) => pw::LeaveOut::BestEffort(&in_promisor_packs),
+            },
         };
         let (mut listed, bases) = pw::enumerate_with(&source, hash, &tips, &walk)
             .map_err(|e| Die::Fatal(e.to_string()))?;
@@ -1028,6 +1069,7 @@ fn edge_objects(repo: &Repo<'_>, edges: &[ObjectId]) -> Vec<ListedObject> {
 
 /// What resolving revisions needs.
 struct Repo<'a> {
+    ctx: &'a crate::Context,
     source: &'a ObjectDatabase,
     refs: Refs,
     hash: HashKind,
@@ -1045,14 +1087,39 @@ fn shallow_file_commits(ctx: &Context, setup: &rgit_repo::Setup) -> Vec<ObjectId
     rgit_fetch::shallow::read(&file, setup.format.object_format)
 }
 
+/// The patterns of the `sparse:oid=<blob-ish>` filters in `filter`, in
+/// order.
+fn sparse_patterns(
+    ctx: &crate::Context,
+    filter: &pw::ObjectFilter,
+) -> Result<Vec<crate::history::SparseBlob>, Die> {
+    let specs = filter.sparse_specs();
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    crate::revisions::with_resolver(ctx, "", |resolver, objects| {
+        use rgit_revwalk::revision::ObjectLookup as _;
+        specs
+            .iter()
+            .map(|spec| {
+                let id = resolver.resolve(spec).ok();
+                crate::history::SparseBlob::load(spec, id, |id| objects.read(id).ok().flatten())
+            })
+            .collect()
+    })
+    .unwrap_or_else(|| Err(Die::Fatal(msg::unable_to_access_sparse_blob(specs[0]))))
+}
+
 /// Revision arguments, one per line: `<rev>`, `^<rev>`, `--not`, and
 /// `--shallow <id>` for a commit to treat as having no parents. An empty
-/// line ends the revisions.
+/// line ends the revisions. `names` gets the name each included object
+/// was given by first.
 fn read_revs(
     input: &mut dyn BufRead,
     repo: &Repo<'_>,
     tips: &mut Vec<Tip>,
     shallow: &mut std::collections::HashSet<ObjectId>,
+    names: &mut std::collections::HashMap<ObjectId, Vec<u8>>,
 ) -> Result<(), Die> {
     let mut not = false;
     while let Some(line) = read_line(input)? {
@@ -1089,6 +1156,11 @@ fn read_revs(
             None => (not, line),
         };
         let id = resolve(repo, name)?;
+        if !exclude {
+            names
+                .entry(id)
+                .or_insert_with(|| name.as_bytes().to_vec());
+        }
         tips.push(Tip { id, exclude });
     }
     Ok(())
@@ -1098,6 +1170,12 @@ fn read_revs(
 /// `^{}`, `^{commit}` or `^{tree}` (`git-rev-parse(1)`, "SPECIFYING
 /// REVISIONS").
 fn resolve(repo: &Repo<'_>, rev: &str) -> Result<ObjectId, Die> {
+    // `<rev>:<path>` and `:<path>`: the revision parser of rev-parse.
+    if rev.contains(':') {
+        return crate::revisions::with_resolver(repo.ctx, "", |r, _| r.resolve(rev).ok())
+            .flatten()
+            .ok_or_else(|| Die::Fatal(msg::bad_revision(rev)));
+    }
     let split = rev.find(['~', '^']).unwrap_or(rev.len());
     let (name, mut suffix) = rev.split_at(split);
     let mut id = resolve_name(repo, name, rev)?;

@@ -264,8 +264,26 @@ impl TreeSource for Trees<'_, '_> {
     }
 }
 
-/// Sparse-checkout patterns read from a blob.
-struct Patterns(rgit_worktree::ignore::PatternList);
+/// Sparse-checkout patterns read from a blob (`--filter=sparse:oid=`).
+pub struct Patterns(rgit_worktree::ignore::PatternList);
+
+impl Patterns {
+    /// The patterns of `sparse:oid=<spec>`: `id` is what `spec` resolves
+    /// to, `read` reads an object.
+    pub fn load(
+        spec: &str,
+        id: Option<ObjectId>,
+        read: impl FnOnce(&ObjectId) -> Option<(ObjectKind, Vec<u8>)>,
+    ) -> Result<Patterns, Die> {
+        let id = id.ok_or_else(|| Die::Fatal(msg::unable_to_access_sparse_blob(spec)))?;
+        match read(&id) {
+            Some((ObjectKind::Blob, data)) => Ok(Patterns(
+                rgit_worktree::ignore::PatternList::from_bytes(&data, None, Vec::new()),
+            )),
+            _ => Err(Die::Fatal(msg::unable_to_parse_sparse_data(&id.to_hex()))),
+        }
+    }
+}
 
 impl SparsePatterns for Patterns {
     fn decide(&self, path: &[u8], is_dir: bool) -> Option<bool> {
@@ -281,14 +299,9 @@ pub fn object_filter(repo: &Repo<'_>, opts: &Options) -> Result<Option<FilterSta
         return Ok(None);
     };
     let mut sparse = |spec: &str| -> Result<Box<dyn SparsePatterns>, Die> {
-        let unable = || Die::Fatal(msg::unable_to_access_sparse_blob(spec));
-        let id = repo.resolver.resolve(spec).map_err(|_| unable())?;
-        match repo.objects.read(&id).ok().flatten() {
-            Some((ObjectKind::Blob, data)) => Ok(Box::new(Patterns(
-                rgit_worktree::ignore::PatternList::from_bytes(&data, None, Vec::new()),
-            ))),
-            _ => Err(unable()),
-        }
+        let id = repo.resolver.resolve(spec).ok();
+        let p = Patterns::load(spec, id, |id| repo.objects.read(id).ok().flatten())?;
+        Ok(Box::new(p))
     };
     FilterState::new(&filter, opts.filter_print_omitted, &mut sparse).map(Some)
 }
