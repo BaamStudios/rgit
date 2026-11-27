@@ -453,6 +453,110 @@ fn cgi_equals_git() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
+/// CGI variables and a request body.
+type ArchiveCase = (Vec<(&'static str, String)>, Vec<u8>);
+
+/// `POST .../git-upload-archive` (`archive --remote` over protocol v2):
+/// enabled by `http.uploadarchive`, by default for authenticated users
+/// only; `info/refs?service=git-upload-archive` as git answers it.
+#[test]
+fn upload_archive_cgi_equals_git() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let root = fx.work_dir().display().to_string();
+    let request = format!(
+        "{}{}0000",
+        pkt("argument --format=tar\n"),
+        pkt("argument HEAD\n")
+    );
+    let post = |extra: &[(&'static str, &str)]| -> Vec<(&'static str, String)> {
+        let mut v: Vec<(&'static str, String)> = vec![
+            ("REQUEST_METHOD", "POST".into()),
+            ("GIT_PROJECT_ROOT", root.clone()),
+            ("PATH_INFO", "/repo.git/git-upload-archive".into()),
+            (
+                "CONTENT_TYPE",
+                "application/x-git-upload-archive-request".into(),
+            ),
+            ("GIT_HTTP_EXPORT_ALL", "1".into()),
+        ];
+        for (k, val) in extra {
+            v.retain(|(n, _)| n != k);
+            v.push((k, (*val).to_owned()));
+        }
+        v
+    };
+    let user = ("REMOTE_USER", "user");
+    let v2 = ("HTTP_GIT_PROTOCOL", "version=2");
+    let info = |extra: &[(&'static str, &str)]| {
+        let mut v = post(&[
+            ("REQUEST_METHOD", "GET"),
+            ("PATH_INFO", "/repo.git/info/refs"),
+            ("QUERY_STRING", "service=git-upload-archive"),
+        ]);
+        v.retain(|(n, _)| *n != "CONTENT_TYPE");
+        for (k, val) in extra {
+            v.push((k, (*val).to_owned()));
+        }
+        v
+    };
+    let bad = format!("{}0000", pkt("argument nope\n"));
+    let mut cases: Vec<ArchiveCase> = vec![
+        (post(&[user, v2]), request.clone().into_bytes()),
+        (post(&[user]), request.clone().into_bytes()),
+        (post(&[v2]), request.clone().into_bytes()),
+        (post(&[user, v2]), bad.into_bytes()),
+        (
+            post(&[user, v2, ("CONTENT_TYPE", "text/plain")]),
+            request.clone().into_bytes(),
+        ),
+        (
+            post(&[user, v2, ("REQUEST_METHOD", "GET")]),
+            request.clone().into_bytes(),
+        ),
+        (info(&[user, v2]), vec![]),
+        (info(&[user]), vec![]),
+        (info(&[v2]), vec![]),
+    ];
+    // The first request is served: an archive follows the `ACK`.
+    let served = cgi(&fx, &rgit(), &cases[0].0, &cases[0].1);
+    assert!(
+        text(&served.stdout).contains("0008ACK\n0000") && served.stdout.len() > 1024,
+        "{}",
+        text(&served.stdout)
+    );
+    let mut failures = Vec::new();
+    let mut check = |cases: &mut Vec<ArchiveCase>| {
+        for (vars, body) in cases.drain(..) {
+            let g = cgi(&fx, fx.reference_git(), &vars, &body);
+            let r = cgi(&fx, &rgit(), &vars, &body);
+            let (gs, rs) = (
+                normalize_stdout(&g.stdout, true),
+                normalize_stdout(&r.stdout, true),
+            );
+            let (ge, re) = (normalize_stderr(&g.stderr), normalize_stderr(&r.stderr));
+            if gs != rs || ge != re || g.status.code() != r.status.code() {
+                failures.push(format!(
+                    "{vars:?}\n--- git ({:?})\n{gs}{ge:?}\n--- rgit ({:?})\n{rs}{re:?}",
+                    g.status.code(),
+                    r.status.code()
+                ));
+            }
+        }
+    };
+    check(&mut cases);
+    for (value, extra) in [("true", None), ("false", Some(user))] {
+        let out = fx.git_output(["-C", "repo.git", "config", "http.uploadarchive", value]);
+        assert!(out.status.success());
+        let mut vars = vec![v2];
+        vars.extend(extra);
+        check(&mut vec![(post(&vars), request.clone().into_bytes())]);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
 /// Run `program` (a git client) in `dir`.
 fn client(fx: &Fixture, program: &Path, args: &[&str], env: &[(&str, &str)], dir: &Path) -> Output {
     let mut cmd = Command::new(program);

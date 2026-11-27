@@ -62,6 +62,9 @@ pub enum Service {
     UploadPack,
     /// `git-receive-pack` (push).
     ReceivePack,
+    /// `git-upload-archive` (`archive --remote`, protocol v2 only; its
+    /// discovery goes to `git-upload-pack`).
+    UploadArchive,
 }
 
 impl Service {
@@ -70,6 +73,7 @@ impl Service {
         match self {
             Service::UploadPack => "git-upload-pack",
             Service::ReceivePack => "git-receive-pack",
+            Service::UploadArchive => "git-upload-archive",
         }
     }
 }

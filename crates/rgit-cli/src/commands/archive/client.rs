@@ -75,6 +75,12 @@ pub fn run(
     let mut options = ConnectOptions::new(Service::UploadArchive);
     options.program = exec;
     options.trace_name = Some("archive".into());
+    // Over HTTP `git-upload-archive` is reached through protocol v2
+    // (`protocol.version`); the other transports run it directly.
+    if matches!(rgit_fetch::protocol_name(&url).as_str(), "http" | "https") {
+        options.protocol_version =
+            rgit_fetch::protocol_version(&config, &env).map_err(|e| fatal(&e))?;
+    }
     let mut conn = transport.connect(&options).map_err(|e| fatal(&e))?;
     {
         let (_, w) = conn.split();
@@ -89,6 +95,7 @@ pub fn run(
         Ack::Ack => {}
         Ack::Nack(reason) => return Err(Die::Fatal(amsg::nack(&reason))),
         Ack::MissingFlush => return Err(Die::Fatal(amsg::EXPECTED_FLUSH.into())),
+        Ack::NoAnswer => return Err(Die::Fatal(amsg::EXPECTED_ACK_GOT_FLUSH.into())),
         Ack::Other(_) => return Err(Die::Fatal(amsg::PROTOCOL_ERROR.into())),
     }
 
