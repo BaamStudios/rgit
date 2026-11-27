@@ -40,6 +40,7 @@ pub mod for_each_ref;
 pub mod format_patch;
 pub mod format_rev;
 pub mod fsck;
+pub mod fsmonitor;
 pub mod grafts;
 pub mod grep;
 pub mod hash_object;

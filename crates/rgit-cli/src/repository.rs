@@ -76,6 +76,10 @@ pub struct Repo {
     /// [`Repo::read_index`] added or removed the untracked cache
     /// (`core.untrackedCache`), so the index wants to be written.
     pub untracked_toggled: std::cell::Cell<bool>,
+    /// [`Repo::read_index`] changed the file system monitor data (a new
+    /// token, the extension added or dropped), so the index wants to be
+    /// written.
+    pub fsmonitor_changed: std::cell::Cell<bool>,
 }
 
 impl Deref for Repo {
@@ -142,6 +146,7 @@ impl Repo {
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
             untracked_toggled: std::cell::Cell::new(false),
+            fsmonitor_changed: std::cell::Cell::new(false),
         };
         crate::sparse_index::install(&repo);
         Ok(repo)
@@ -161,6 +166,7 @@ impl Repo {
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
             untracked_toggled: std::cell::Cell::new(false),
+            fsmonitor_changed: std::cell::Cell::new(false),
         };
         crate::sparse_index::install(&repo);
         Ok(repo)
@@ -177,6 +183,7 @@ impl Repo {
             converter: OnceCell::new(),
             trees: RefCell::new(crate::objects::Recent::new(4096, 16 << 20)),
             untracked_toggled: std::cell::Cell::new(false),
+            fsmonitor_changed: std::cell::Cell::new(false),
         };
         crate::sparse_index::install(&repo);
         Ok(Some(repo))
@@ -326,6 +333,7 @@ impl Repo {
             check_stat,
             file_mode: self.config_bool("core.filemode", true),
             symlinks: self.config_bool("core.symlinks", true),
+            fsmonitor: crate::fsmonitor::enabled(self),
             ..StatOptions::default()
         }
     }
@@ -371,6 +379,7 @@ impl Repo {
             self.untracked_toggled.set(true);
         }
         crate::sparse_index::after_read(&mut index);
+        crate::fsmonitor::after_read(self, &mut index);
         // Skip-worktree entries whose files are present after all
         // (config/sparse.adoc, sparse.expectFilesOutsideOfPatterns).
         if let Some(wt) = &self.setup.work_tree {

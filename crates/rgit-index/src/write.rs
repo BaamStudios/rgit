@@ -210,6 +210,11 @@ pub(crate) fn write(index: &Index, opts: &WriteOptions, content: Content<'_>) ->
         uc.write(&mut data);
         push_extension(&mut out, &mut written, b"UNTR", &data);
     }
+    if let Some(token) = &index.fsmonitor {
+        let mut data = Vec::new();
+        crate::fsmonitor::write(index, token, &mut data);
+        push_extension(&mut out, &mut written, b"FSMN", &data);
+    }
     if index.sparse || entries.iter().any(|(e, _)| e.mode.is_dir()) {
         push_extension(&mut out, &mut written, b"sdir", &[]);
     }

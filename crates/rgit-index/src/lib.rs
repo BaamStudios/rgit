@@ -17,8 +17,10 @@
 //!   written; `REUC` (resolve undo) is parsed, written, and filled whenever
 //!   a conflict stage leaves the index; `UNTR` (untracked cache) is parsed,
 //!   written and invalidated when paths appear in or vanish from the
-//!   index. `FSMN` and unknown optional (uppercase) extensions are dropped
-//!   on write. Unknown required (lowercase) extensions are refused.
+//!   index. `FSMN` (file system monitor) is parsed into per-entry
+//!   validity ([`Entry::fsmonitor_valid`]) and written with the token
+//!   [`Index::fsmonitor_token`]. Unknown optional (uppercase) extensions
+//!   are dropped on write. Unknown required (lowercase) extensions are refused.
 //! - Sparse index (`sdir`): sparse directory entries are read and written;
 //!   see [`Index::expand_sparse`] and [`Index::collapse_sparse`].
 //! - Split index (`link`): read together with its `sharedindex.<hash>`;
@@ -48,6 +50,7 @@ mod entry;
 mod error;
 mod ewah;
 mod file;
+mod fsmonitor;
 mod index;
 pub mod messages;
 mod name_hash;

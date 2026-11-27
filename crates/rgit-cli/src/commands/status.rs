@@ -805,6 +805,20 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             checker.refresh_stat(entry, meta);
         }
     }
+    // A file system monitor need not look at clean files again.
+    let mut fsm_changed = repo.fsmonitor_changed.get();
+    if checker.options().fsmonitor {
+        for (pos, st) in statuses.status.iter().enumerate() {
+            if matches!(st, Some(Status::Unchanged | Status::StatOnly)) {
+                if let Some(e) = index.entry_mut(pos) {
+                    if !e.fsmonitor_valid() && !e.flags.skip_worktree && !e.flags.assume_valid {
+                        e.set_fsmonitor_valid(true);
+                        fsm_changed = true;
+                    }
+                }
+            }
+        }
+    }
     if let Some(lock) = lock {
         let racy = index.entries().iter().any(|e| checker.is_racy(e));
         if racy {
@@ -812,7 +826,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 let _ = rgit_worktree::stat::smudge_racy_entries(&mut index, reference, &checker);
             }
         }
-        if racy || !statuses.refresh.is_empty() || uc_changed {
+        if racy || !statuses.refresh.is_empty() || uc_changed || fsm_changed {
             let _ = crate::switch_branch::write_index(&repo, &index, lock);
         }
     }
@@ -871,7 +885,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         let mut wt = Change::default();
         let status = statuses.status[pos].unwrap_or(Status::Modified);
-        check_worktree_with(&repo, &work_tree, e, &mut wt, sub_ctx.as_ref(), meta, || Ok(status))?;
+        if meta.is_none() && checker.fsmonitor_valid(e) && !e.flags.intent_to_add {
+            // Not examined: the file system monitor saw no change.
+            wt.wt_mode = Some(e.mode.0);
+        } else {
+            check_worktree_with(&repo, &work_tree, e, &mut wt, sub_ctx.as_ref(), meta, || Ok(status))?;
+        }
         let c = if listed {
             changes.entry(e.path().to_vec()).or_default()
         } else if wt.wt != b' ' || e.flags.intent_to_add || e.mode.is_gitlink() {
@@ -1088,7 +1107,8 @@ fn compare_worktree(
         if e.stage().is_conflict() || e.flags.intent_to_add || e.mode.is_gitlink() {
             continue;
         }
-        let status = if e.flags.skip_worktree || e.flags.assume_valid {
+        let status = if e.flags.skip_worktree || e.flags.assume_valid || checker.fsmonitor_valid(e)
+        {
             Status::Unchanged
         } else {
             match meta {

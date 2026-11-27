@@ -149,8 +149,3 @@ pub fn outside_repository(path: &str, root: &str) -> String {
 pub fn badly_quoted(line: &str) -> String {
     format!("line is badly quoted: {line}")
 }
-
-/// rgit wording: an option that is not implemented yet.
-pub fn not_supported(what: &str) -> String {
-    format!("rgit update-index: {what} is not supported yet")
-}
