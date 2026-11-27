@@ -673,16 +673,13 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         }
         v => v > 0,
     };
-    let allow_reuse = config
-        .string("pack.allowpackreuse")
-        .ok()
-        .flatten()
-        .is_none_or(|v| !matches!(v.to_string().to_ascii_lowercase().as_str(), "false" | "no" | "off" | "0"));
-    let pack_reused = if use_bitmaps && allow_reuse && stdout.get() && revs.get() && !skip.any() {
-        crate::bitmaps::reusable_count(&odb, &listed)
+    let reuse_mode = crate::bitmaps::PackReuse::from_config(&config);
+    let reused = if use_bitmaps && stdout.get() && revs.get() && !skip.any() {
+        crate::bitmaps::reusable(&odb, &listed, reuse_mode)
     } else {
-        0
+        crate::bitmaps::Reused::default()
     };
+    let pack_reused = reused.ids.len();
     if show_progress {
         show_enumerated_reused(&listed, &bases, pack_reused);
     }
@@ -758,18 +755,40 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if let Some(expiry) = unpack_expiry {
         loosen_unreachable(&odb, &setup, &skip, &reachable, expiry)?;
     }
+    // Objects sent verbatim are not counted as written by the pack
+    // writer (git copies them before its own entries).
+    let objects: usize = summaries.iter().map(|s| s.entries.len()).sum();
+    let verbatim_deltas = summaries
+        .iter()
+        .flat_map(|s| &s.entries)
+        .filter(|e| e.delta && reused.ids.contains(&e.id))
+        .count() as u32;
+    let sum = |f: fn(&pw::PackSummary) -> u32| summaries.iter().map(f).sum::<u32>();
+    let deltas = sum(|s| s.deltas).saturating_sub(verbatim_deltas);
+    let reused_objects = sum(|s| s.reused).saturating_sub(pack_reused as u32);
+    let reused_deltas = sum(|s| s.reused_deltas).saturating_sub(verbatim_deltas);
     if show_progress {
-        let sum = |f: fn(&pw::PackSummary) -> u32| summaries.iter().map(f).sum::<u32>();
         eprintln!(
             "{}",
             msg::total_reused(
-                summaries.iter().map(|s| s.entries.len()).sum(),
-                sum(|s| s.deltas),
-                sum(|s| s.reused).saturating_sub(pack_reused as u32),
-                sum(|s| s.reused_deltas),
+                objects,
+                deltas,
+                reused_objects,
+                reused_deltas,
                 pack_reused,
+                reused.packs,
             )
         );
+    }
+    for (key, value) in [
+        ("written", objects),
+        ("written/delta", deltas as usize),
+        ("reused", reused_objects as usize),
+        ("reused/delta", reused_deltas as usize),
+        ("pack-reused", pack_reused),
+        ("packs-reused", reused.packs),
+    ] {
+        rgit_trace::trace2::data("pack-objects", key, &value.to_string(), true);
     }
     Ok(0)
 }
