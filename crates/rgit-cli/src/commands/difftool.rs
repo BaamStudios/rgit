@@ -13,6 +13,7 @@
 //! Messages and exit codes were taken from the behaviour of the `git`
 //! binary.
 
+use crate::argv::CommandArgs as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -132,7 +133,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         crate::context::sq_quote(&exe.to_string_lossy())
     );
     let mut cmd = Command::new(&exe);
-    cmd.arg("diff").args(&args).envs(ctx.child_env());
+    cmd.raw_arg("diff").raw_args(&args).envs(ctx.child_env());
     cmd.env("GIT_EXTERNAL_DIFF", helper);
     cmd.env_remove("GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE");
     match prompt.get() {
@@ -205,8 +206,8 @@ impl DirDiff<'_> {
     fn changes(&self, args: &[String]) -> Result<Vec<Change>, Die> {
         let out = self
             .git()
-            .args(["diff", "--raw", "--no-abbrev", "-z"])
-            .args(args)
+            .raw_args(["diff", "--raw", "--no-abbrev", "-z"])
+            .raw_args(args)
             .stderr(Stdio::inherit())
             .output()
             .map_err(|e| Die::Fatal(e.to_string()))?;
@@ -247,7 +248,7 @@ impl DirDiff<'_> {
 
     fn blob(&self, id: &str) -> Vec<u8> {
         self.git()
-            .args(["cat-file", "-p", id])
+            .raw_args(["cat-file", "-p", id])
             .stderr(Stdio::null())
             .output()
             .map(|o| o.stdout)
@@ -392,7 +393,7 @@ impl DirDiff<'_> {
         use std::io::Write as _;
         let _ = std::io::stdout().flush();
         if let Some(x) = self.extcmd {
-            return match Command::new(x).args([left, right]).current_dir(root).status() {
+            return match Command::new(x).raw_args([left, right]).current_dir(root).status() {
                 Ok(s) => Ok(self.finish(s.code().unwrap_or(128))),
                 Err(e) => {
                     eprintln!("error: {}", msg::cannot_run(x, &rgit_messages::strerror(&e)));

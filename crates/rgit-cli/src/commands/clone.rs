@@ -19,6 +19,7 @@
 //! refs or refspec; a detached remote `HEAD` is attached to the branch at
 //! the same commit when there is one.
 
+use crate::argv::CommandArgs as _;
 use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -1043,6 +1044,14 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         }
     }
 
+    // `--single-branch` without a branch to follow (the remote's HEAD is
+    // unborn): nothing is fetched, as from an empty repository.
+    let empty = empty
+        || (our.is_none()
+            && opts.revision.is_none()
+            && !opts.mirror
+            && opts.single_branch.unwrap_or(shallow_clone));
+
     // The refspec, now that the branch for --single-branch is known.
     // A shallow clone is a single-branch clone unless told otherwise.
     let single_ref = match (&our, opts.single_branch.unwrap_or(shallow_clone)) {
@@ -1068,7 +1077,13 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     if opts.mirror || !opts.tags {
         cfg.push((format!("remote.{origin}.tagOpt"), "--no-tags".to_owned()));
     }
-    if let (Some(f), false) = (&spec.configured, detached_single) {
+    // `--single-branch` with no branch at all to follow (the remote's HEAD
+    // is unborn): no refspec either.
+    let unborn_single = our.is_none()
+        && opts.branch.is_none()
+        && !opts.mirror
+        && opts.single_branch.unwrap_or(shallow_clone);
+    if let (Some(f), false) = (&spec.configured, detached_single || unborn_single) {
         cfg.push((format!("remote.{origin}.fetch"), f.clone()));
     }
     if opts.mirror {
@@ -1142,13 +1157,21 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     let mut remote_head_ref: Option<String> = None;
     // Every object the new refs and HEAD point to.
     let mut all_tips: Vec<ObjectId> = Vec::new();
+    // Neither the remote nor `--branch` names the branch HEAD is to be.
+    let keeps_initial_branch = our.is_none() && head_target.is_none() && opts.branch.is_none();
     if empty {
         session.close().map_err(|e| fatal(&e))?;
         eprintln!("warning: {}", msg::EMPTY_REPOSITORY);
+        if keeps_initial_branch {
+            default_branch_advice(ctx, &repo.config, &env)?;
+        }
         if local_mode && !opts.quiet {
             eprintln!("{}", msg::DONE);
         }
     } else {
+        if keeps_initial_branch {
+            default_branch_advice(ctx, &repo.config, &env)?;
+        }
         let default_spec = (!detached_single).then_some(spec.fetch.as_str());
         let all_specs = extra_fetch.iter().map(String::as_str).chain(default_spec);
         let specs = RefspecSet::parse_with_hash(all_specs, Direction::Fetch, hash)
@@ -1386,11 +1409,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             }
             // Without the remote's HEAD (protocol v0/v1), the branch the
             // new repository was created with.
-            let branch = branch.or_else(|| {
-                let head = rgit_refs::read_head_file(&git_dir).ok()?;
-                let target = head.strip_prefix(b"ref: ")?.trim_ascii_end();
-                Some(rgit_bstr::from_bytes(target).into_owned())
-            });
+            let branch = branch.or_else(|| unborn_head(&git_dir));
             if let (Some(b), false) = (branch, opts.bare) {
                 write_branch_config(&config_path, config, &origin, &b)?;
             }
@@ -1440,6 +1459,10 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
             }
             if !opts.bare {
                 eprintln!("warning: {}", msg::REMOTE_HEAD_NONEXISTENT);
+                // The unborn branch tracks its namesake on the remote.
+                if let Some(b) = head_target.clone().or_else(|| unborn_head(&git_dir)) {
+                    write_branch_config(&config_path, config, &origin, &b)?;
+                }
             }
         }
     }
@@ -1559,7 +1582,7 @@ fn update_submodules(ctx: &Context, opts: &Options, root: &Path) -> CmdResult {
     cmd.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
     let _ = std::io::stdout().flush();
     let status = cmd
-        .args(&args)
+        .raw_args(&args)
         .current_dir(root)
         .status()
         .map_err(|e| Die::Fatal(e.to_string()))?;
@@ -1852,6 +1875,33 @@ fn write_branch_config(
         config_set(path, &format!("branch.{short}.rebase"), "true")?;
     }
     Ok(())
+}
+
+/// The new repository keeps the initial branch it was created with
+/// because the remote did not name its unborn `HEAD` (protocol v0/v1):
+/// like `git init`, the `defaultBranchName` advice when that name is the
+/// built-in one, even with `--quiet`.
+fn default_branch_advice(
+    ctx: &Context,
+    config: &ConfigSet,
+    env: &dyn rgit_config::Environment,
+) -> Result<(), Die> {
+    let from_env = std::env::var_os("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME")
+        .is_some_and(|v| !v.is_empty());
+    if from_env || config.string("init.defaultbranch").ok().flatten().is_some() {
+        return Ok(());
+    }
+    ctx.advisor_with_env(config, env)?
+        .without_color_ui()
+        .advise(Advice::DefaultBranchName, crate::messages::init::DEFAULT_BRANCH_ADVICE)
+        .map_err(Die::Fatal)
+}
+
+/// The branch `HEAD` of the new repository names.
+fn unborn_head(git_dir: &Path) -> Option<String> {
+    let head = rgit_refs::read_head_file(git_dir).ok()?;
+    let target = head.strip_prefix(b"ref: ")?.trim_ascii_end();
+    Some(rgit_bstr::from_bytes(target).into_owned())
 }
 
 fn set_head_symref(git_dir: &Path, target: &str) -> Result<(), Die> {

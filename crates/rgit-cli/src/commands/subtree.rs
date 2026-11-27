@@ -13,6 +13,7 @@
 //! (the main project side of an `add` or `split --rejoin` merge) and
 //! `git-subtree-split: <commit>` (the subproject side).
 
+use crate::argv::CommandArgs as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -140,7 +141,7 @@ impl Subtree {
         use std::io::Write as _;
         let _ = std::io::stdout().flush();
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args)
+        cmd.raw_args(args)
             .current_dir(&self.top)
             .envs(self.env.iter().map(|(k, v)| (k, v)));
         cmd

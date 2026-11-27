@@ -13,6 +13,7 @@
 //! The child gets `--detach` unless `maintenance.autoDetach` (else
 //! `gc.autoDetach`, else `GIT_TEST_MAINT_AUTO_DETACH`) is false.
 
+use crate::argv::CommandArgs as _;
 pub mod schedule;
 pub mod tasks;
 
@@ -72,7 +73,7 @@ fn run_auto_with(ctx: &Context, quiet: bool, refetch: bool) {
         if detach { "--detach" } else { "--no-detach" },
     ];
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(args).stdin(std::process::Stdio::null());
+    cmd.raw_args(args).stdin(std::process::Stdio::null());
     for (k, v) in ctx.child_env() {
         cmd.env(k, v);
     }

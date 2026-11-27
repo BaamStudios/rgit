@@ -21,7 +21,7 @@
 //! (`update-index`, `checkout-index`, `merge-file`), run in the top of the
 //! work tree.
 
-use std::ffi::OsStr;
+use crate::argv::CommandArgs as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -284,12 +284,12 @@ impl Plumbing {
     fn command<I, S>(&self, args: I) -> Command
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
+        S: crate::argv::ChildArg,
     {
         use std::io::Write as _;
         let _ = std::io::stdout().flush();
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args)
+        cmd.raw_args(args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .current_dir(&self.root);
         cmd
@@ -299,7 +299,7 @@ impl Plumbing {
     pub fn run<I, S>(&self, args: I) -> CmdResult
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
+        S: crate::argv::ChildArg,
     {
         let status = self
             .command(args)
@@ -313,7 +313,7 @@ impl Plumbing {
     pub fn output<I, S>(&self, args: I) -> Result<(i32, Vec<u8>), Die>
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
+        S: crate::argv::ChildArg,
     {
         let out = self
             .command(args)
@@ -327,7 +327,7 @@ impl Plumbing {
     pub fn output_quiet<I, S>(&self, args: I) -> Result<(i32, Vec<u8>), Die>
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
+        S: crate::argv::ChildArg,
     {
         let out = self
             .command(args)

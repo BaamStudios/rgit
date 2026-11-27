@@ -18,6 +18,7 @@
 //! timers are available and a `crontab` program on `PATH` whether cron is.
 //! A crontab is rewritten only when the git maintenance region changes.
 
+use crate::argv::CommandArgs as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -119,7 +120,7 @@ impl Programs {
         let cmd = self.command(s)?;
         let (prog, rest) = cmd.split_first()?;
         let mut c = Command::new(prog);
-        c.args(rest).args(args);
+        c.raw_args(rest).raw_args(args);
         Some(c)
     }
 }
@@ -131,7 +132,7 @@ fn available_natively(s: Scheduler) -> bool {
         Scheduler::Systemd => {
             cfg!(target_os = "linux")
                 && Command::new("systemctl")
-                    .args(["--user", "list-timers"])
+                    .raw_args(["--user", "list-timers"])
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())

@@ -303,7 +303,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             delete,
             quiet: quiet.get(),
         };
-        g.run(&odb, &pack_dir, &objects_dir, &keep_names, &opts)?;
+        let largest = g.run(&odb, &pack_dir, &objects_dir, &keep_names, &opts)?;
         if delete {
             store::remove_pack_garbage(&pack_dir);
             let packs_now = store::local_packs(&odb, &keep_names);
@@ -317,6 +317,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             &pack_dir,
             write_bitmaps,
             quiet.get(),
+            largest,
         )?;
         update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
         return Ok(0);
@@ -667,6 +668,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         &pack_dir,
         write_bitmaps,
         quiet.get(),
+        None,
     )?;
     update_server_info(&setup, &config, &odb, &keep_names, no_server_info.get(), &opts);
     Ok(0)
@@ -674,6 +676,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
 /// `--write-midx[=<mode>]`: write the multi-pack index of the packs left,
 /// with its bitmap when bitmaps are written.
+#[allow(clippy::too_many_arguments)]
 fn write_midx_after(
     ctx: &Context,
     setup: &rgit_repo::Setup,
@@ -682,6 +685,7 @@ fn write_midx_after(
     pack_dir: &std::path::Path,
     bitmap: bool,
     quiet: bool,
+    preferred: Option<String>,
 ) -> Result<(), Die> {
     let Some(mode) = mode else {
         return Ok(());
@@ -708,6 +712,7 @@ fn write_midx_after(
                     .filter(|n| !pack_dir.join(n).with_extension("keep").exists())
                     .collect()
             }),
+        preferred,
         ..Default::default()
     };
     let display = pack_dir.display().to_string();
@@ -1042,7 +1047,7 @@ impl Geometric {
         objects_dir: &std::path::Path,
         keep_names: &[String],
         opts: &store::PackOptions,
-    ) -> Result<(), Die> {
+    ) -> Result<Option<String>, Die> {
         let kind = odb.hash_kind();
         let local_packs = store::local_packs(odb, keep_names);
         // The packs taking part, with whether they are local.
@@ -1106,6 +1111,23 @@ impl Geometric {
                 || (!self.pack_kept && local_packs.iter().any(|p| p.keep && p.pack.contains(id)))
         };
 
+        // The largest local pack afterwards (object count, the first one
+        // of equal ones): the preferred pack of the multi-pack index, so
+        // that objects also found elsewhere are taken from it (observed:
+        // regardless of the packs' age, with or without a bitmap).
+        let mut largest: Option<(u64, String)> = None;
+        let mut consider = |count: u64, name: String| {
+            if largest.as_ref().is_none_or(|(c, _)| count > *c) {
+                largest = Some((count, name));
+            }
+        };
+        for (_, packs, split) in &groups {
+            for (p, is_local) in &packs[*split..] {
+                if *is_local {
+                    consider(u64::from(p.index().len()), file_name(p));
+                }
+            }
+        }
         let mut wrote = false;
         let mut removed = false;
         for (promisor, packs, split) in &groups {
@@ -1149,6 +1171,7 @@ impl Geometric {
             };
             wrote = true;
             let new_name = format!("pack-{}.pack", new_pack.to_hex());
+            consider(ordered.len() as u64, new_name.clone());
             if *promisor {
                 let marker = pack_dir.join(&new_name).with_extension("promisor");
                 if !marker.exists() {
@@ -1173,7 +1196,7 @@ impl Geometric {
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out, "{}", msg::REPACK_NOTHING_NEW);
         }
-        Ok(())
+        Ok(largest.map(|(_, name)| name))
     }
 }
 

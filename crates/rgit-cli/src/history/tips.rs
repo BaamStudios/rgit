@@ -612,6 +612,16 @@ pub fn resolve_with(repo: &Repo<'_>, opts: &Options, paths: bool) -> Result<Reso
                             out.paths.push(arg.clone());
                             continue;
                         }
+                        // Neither a revision nor a path: git looks the
+                        // name up once more to explain why (its warnings,
+                        // such as a dangling symref, come again).
+                        if matches!(&e, Die::Fatal(m) if *m == msg::ambiguous_argument(arg)) {
+                            let reason = repo.resolver.diagnose(arg);
+                            print_diagnostics(repo.resolver);
+                            if let Some(reason) = reason {
+                                return Err(Die::Fatal(reason));
+                            }
+                        }
                         return Err(e);
                     }
                     // After `--` an argument can only be a revision.

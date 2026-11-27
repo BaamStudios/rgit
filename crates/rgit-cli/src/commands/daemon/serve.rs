@@ -13,6 +13,7 @@
 //! `safe.directory` ends the process with git's `fatal:` message on
 //! standard error (not through the log); the client is told nothing.
 
+use crate::argv::CommandArgs as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::ToSocketAddrs;
 use std::process::{Command, Stdio};
@@ -311,7 +312,7 @@ impl Connection<'_> {
         let (canonical, ip) = lookup(&host.name);
         let mut command = Command::new(hook);
         command
-            .args([service.name(), path, &host.name, &canonical, &ip, &host.port])
+            .raw_args([service.name(), path, &host.name, &canonical, &ip, &host.port])
             .stdin(Stdio::null())
             .stdout(Stdio::piped());
         self.environment(&mut command);
@@ -355,14 +356,14 @@ impl Connection<'_> {
         let log = self.log;
         let exe = std::env::current_exe().map_err(|e| log.fatal(e.to_string()))?;
         let mut command = Command::new(exe);
-        command.arg(service.name());
+        command.raw_arg(service.name());
         if service == Service::UploadPack {
             command
-                .arg("--strict")
-                .arg(format!("--timeout={}", self.opts.timeout));
+                .raw_arg("--strict")
+                .raw_arg(format!("--timeout={}", self.opts.timeout));
         }
         command
-            .arg(".")
+            .raw_arg(".")
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .stderr(Stdio::piped());
         self.environment(&mut command);

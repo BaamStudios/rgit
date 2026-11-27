@@ -5,6 +5,7 @@
 //! `~/` is the home directory. Without `--keep-going` the first failure
 //! ends the run with its exit code; with it the result is 1.
 
+use crate::argv::CommandArgs as _;
 use bstr::ByteSlice;
 
 use crate::messages::maintenance as msg;
@@ -77,7 +78,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let mut args = vec!["-C".to_string(), path];
         args.extend(rest.iter().cloned());
         let mut cmd = std::process::Command::new(&exe);
-        cmd.args(&args);
+        cmd.raw_args(&args);
         for l in LOCAL_ENV {
             cmd.env_remove(l);
         }

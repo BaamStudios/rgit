@@ -12,6 +12,7 @@
 //! with the wanted ids on standard input, remote after remote until every
 //! object arrived (the command line git uses, seen with `GIT_TRACE`).
 
+use crate::argv::CommandArgs as _;
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -229,7 +230,7 @@ fn run_fetch(ctx: &Context, git_dir: &Path, remote: &str, quiet: bool, ids: &[Ob
     let traced = rgit_trace::trace2::git_argv(&args);
     rgit_trace::trace_run_command::<String>(&[], &traced);
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(&args);
+    cmd.raw_args(&args);
     for (k, v) in ctx.child_env() {
         cmd.env(k, v);
     }

@@ -103,6 +103,7 @@ fn is_valid_command_name(name: &str) -> bool {
 
 #[cfg(unix)]
 mod imp {
+    use crate::argv::CommandArgs as _;
     use std::ffi::CString;
     use std::io::{BufRead, Read, Write};
     use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -168,7 +169,7 @@ mod imp {
             };
             let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
             let mut command = Command::new(exe);
-            command.arg(&service["git-".len()..]).arg(arg);
+            command.raw_arg(&service["git-".len()..]).raw_arg(arg);
             return Err(exec(command, service));
         }
 
@@ -179,7 +180,7 @@ mod imp {
         let path = format!("{COMMAND_DIR}/{name}");
         if is_valid_command_name(name) && access(&path, libc::X_OK) {
             let mut command = Command::new(&path);
-            command.args(&words[1..]);
+            command.raw_args(&words[1..]);
             // What cannot be run (a directory) is no command either.
             let _ = command.exec();
         }
@@ -188,7 +189,7 @@ mod imp {
 
     /// Run a program of `git-shell-commands` and wait for it.
     fn run_command(path: &str, args: &[String]) {
-        match Command::new(path).args(args).status() {
+        match Command::new(path).raw_args(args).status() {
             Ok(status) => {
                 if let Some(signal) = status.signal() {
                     eprintln!("error: {}", msg::died_of_signal(path, signal));

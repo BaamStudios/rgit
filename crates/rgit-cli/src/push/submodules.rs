@@ -11,6 +11,7 @@
 //! them and not the superproject. A submodule without any remote is not
 //! checked.
 
+use crate::argv::CommandArgs as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -307,7 +308,7 @@ fn run_in(git_dir: &Path, args: &[&str]) -> Option<String> {
     cmd.env_remove("GIT_PREFIX");
     cmd.env("GIT_DIR", git_dir)
         .current_dir(git_dir)
-        .args(args)
+        .raw_args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     let out = cmd.output().ok()?;
@@ -330,7 +331,7 @@ fn push_check(u: &Unpushed, remote: &str, req: &Request<'_>) -> Result<(), Die> 
         crate::submodules::prepare_env(&mut cmd);
         cmd.env_remove("GIT_PREFIX");
         cmd.current_dir(&u.dir)
-            .args(args)
+            .raw_args(args)
             .stdin(Stdio::null())
             .stderr(Stdio::null());
         let out = cmd.output().ok()?;
@@ -373,16 +374,16 @@ fn push_one(u: &Unpushed, req: &Request<'_>) -> bool {
     let mut cmd = Command::new(exe);
     crate::submodules::prepare_env(&mut cmd);
     cmd.env_remove("GIT_PREFIX");
-    cmd.current_dir(&u.dir).arg("push");
+    cmd.current_dir(&u.dir).raw_arg("push");
     if req.dry_run {
-        cmd.arg("--dry-run");
+        cmd.raw_arg("--dry-run");
     }
     for o in req.push_options {
-        cmd.arg(format!("--push-option={o}"));
+        cmd.raw_arg(format!("--push-option={o}"));
     }
-    cmd.arg("--recurse-submodules=only-is-on-demand");
+    cmd.raw_arg("--recurse-submodules=only-is-on-demand");
     if let Some(r) = req.remote {
-        cmd.arg(r).args(req.refspecs);
+        cmd.raw_arg(r).raw_args(req.refspecs);
     }
     let _ = std::io::Write::flush(&mut std::io::stdout());
     cmd.stdin(Stdio::null()).status().is_ok_and(|s| s.success())

@@ -20,6 +20,7 @@
 //! Not yet: the interactive "start for you?" question, and `gitk` for
 //! `visualize` (it always runs `log`).
 
+use crate::argv::CommandArgs as _;
 #[path = "bisect/next.rs"]
 mod next;
 #[path = "bisect/runner.rs"]
@@ -362,7 +363,7 @@ impl<'c> Bisect<'c> {
     pub fn child(&self, args: &[&str]) -> std::process::Command {
         let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("git"));
         let mut c = std::process::Command::new(exe);
-        c.args(args)
+        c.raw_args(args)
             .envs(self.ctx.child_env())
             .current_dir(self.work_dir());
         c

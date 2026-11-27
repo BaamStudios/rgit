@@ -7,7 +7,10 @@
 //! use characters U+10FF00 + byte ([`rgit_bstr`]), so that [`bytes`] gives
 //! the original argument back where it is stored verbatim.
 
-use std::ffi::OsString;
+use std::borrow::Cow;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// `arg` as a `String`, invalid bytes escaped ([`rgit_bstr::from_os_string`]).
 pub fn to_string(arg: OsString) -> String {
@@ -45,6 +48,88 @@ pub fn errln(line: &str) {
     let _ = std::io::stderr().lock().write_all(&bytes);
 }
 
+/// An argument for a child process. Strings may hold escaped bytes and
+/// are passed as their raw bytes ([`rgit_bstr::to_os`]), so that a child
+/// rgit reads back the same argument; paths and `OsStr`s go as they are.
+pub trait ChildArg {
+    fn child_arg(&self) -> Cow<'_, OsStr>;
+}
+
+impl ChildArg for str {
+    fn child_arg(&self) -> Cow<'_, OsStr> {
+        rgit_bstr::to_os(self)
+    }
+}
+
+impl ChildArg for String {
+    fn child_arg(&self) -> Cow<'_, OsStr> {
+        rgit_bstr::to_os(self)
+    }
+}
+
+impl ChildArg for Cow<'_, str> {
+    fn child_arg(&self) -> Cow<'_, OsStr> {
+        rgit_bstr::to_os(self)
+    }
+}
+
+impl ChildArg for OsStr {
+    fn child_arg(&self) -> Cow<'_, OsStr> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl ChildArg for OsString {
+    fn child_arg(&self) -> Cow<'_, OsStr> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl ChildArg for Path {
+    fn child_arg(&self) -> Cow<'_, OsStr> {
+        Cow::Borrowed(self.as_os_str())
+    }
+}
+
+impl ChildArg for PathBuf {
+    fn child_arg(&self) -> Cow<'_, OsStr> {
+        Cow::Borrowed(self.as_os_str())
+    }
+}
+
+impl<T: ChildArg + ?Sized> ChildArg for &T {
+    fn child_arg(&self) -> Cow<'_, OsStr> {
+        (**self).child_arg()
+    }
+}
+
+/// `Command::arg` / `Command::args` taking [`ChildArg`]s: what spawns a
+/// child rgit (or any program) with arguments that may hold escapes.
+pub trait CommandArgs {
+    fn raw_arg<A: ChildArg>(&mut self, arg: A) -> &mut Self;
+    fn raw_args<I>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator,
+        I::Item: ChildArg;
+}
+
+impl CommandArgs for Command {
+    fn raw_arg<A: ChildArg>(&mut self, arg: A) -> &mut Self {
+        self.arg(arg.child_arg())
+    }
+
+    fn raw_args<I>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator,
+        I::Item: ChildArg,
+    {
+        for a in args {
+            self.arg(a.child_arg());
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -59,5 +144,18 @@ mod tests {
         assert!(s.contains('\u{e9}'));
         assert_eq!(bytes(&s), raw);
         assert_eq!(bytes("plain"), b"plain");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_args_are_raw() {
+        use std::os::unix::ffi::OsStrExt;
+        let s = to_string(std::ffi::OsStr::from_bytes(b"m\xe9").to_owned());
+        let mut cmd = Command::new("true");
+        cmd.raw_arg(&s)
+            .raw_args([s.as_str()])
+            .raw_arg(Path::new("p"));
+        let got: Vec<&[u8]> = cmd.get_args().map(OsStr::as_bytes).collect();
+        assert_eq!(got, [&b"m\xe9"[..], b"m\xe9", b"p"]);
     }
 }

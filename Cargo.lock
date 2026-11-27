@@ -1144,6 +1144,7 @@ version = "0.1.0"
 dependencies = [
  "bstr",
  "libc",
+ "rgit-bstr",
  "rgit-config",
  "rgit-difftest",
  "rgit-protocol",

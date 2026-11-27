@@ -27,6 +27,7 @@
 //! Not yet: the merge strategies `resolve`, `octopus` and `subtree`
 //! (#153), `-S` (#51).
 
+use crate::argv::CommandArgs as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -954,8 +955,8 @@ impl<'c> Sequencer<'c> {
         let _ = std::io::stdout().flush();
         let exe = std::env::current_exe().map_err(|e| Fail::Die(Die::Fatal(e.to_string())))?;
         let status = std::process::Command::new(exe)
-            .arg("commit")
-            .args(args)
+            .raw_arg("commit")
+            .raw_args(args)
             .envs(self.ctx.child_env())
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .status()

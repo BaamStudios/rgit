@@ -12,6 +12,7 @@
 //! file names were taken black-box from the `git` binary; tools come from
 //! [`tools`].
 
+use crate::argv::CommandArgs as _;
 #[path = "mergetool/tools.rs"]
 pub(crate) mod tools;
 
@@ -204,7 +205,7 @@ impl Mergetool<'_> {
     fn git_ok(&self, args: &[&str]) -> bool {
         use std::io::Write as _;
         let _ = std::io::stdout().flush();
-        self.git().args(args).status().is_ok_and(|s| s.success())
+        self.git().raw_args(args).status().is_ok_and(|s| s.success())
     }
 
     /// The unmerged paths to work on, in diff order.
@@ -214,7 +215,7 @@ impl Mergetool<'_> {
         if paths.is_empty() && self.rerere_enabled() {
             let out = self
                 .git()
-                .args(["rerere", "remaining"])
+                .raw_args(["rerere", "remaining"])
                 .stderr(std::process::Stdio::null())
                 .output();
             if let Some(o) = out.ok().filter(|o| o.status.success()) {
@@ -229,7 +230,7 @@ impl Mergetool<'_> {
         }
         let mut cmd = self.git();
         {
-            cmd.args(["diff", "--name-only", "--diff-filter=U"]);
+            cmd.raw_args(["diff", "--name-only", "--diff-filter=U"]);
             if let Some(o) = order {
                 let p = if o.is_empty() || Path::new(o).is_absolute() {
                     o.to_owned()
@@ -241,18 +242,18 @@ impl Mergetool<'_> {
                         .to_string_lossy()
                         .into_owned()
                 };
-                cmd.arg(format!("-O{p}"));
+                cmd.raw_arg(format!("-O{p}"));
             }
             if let Some(list) = &remaining {
-                cmd.arg("--");
-                cmd.args(list.iter().map(|p| format!(":(top,literal){p}")));
+                cmd.raw_arg("--");
+                cmd.raw_args(list.iter().map(|p| format!(":(top,literal){p}")));
             } else if !paths.is_empty() {
-                cmd.arg("--");
+                cmd.raw_arg("--");
                 for p in paths {
                     match self.repo.prefix_path(p.as_bytes()) {
-                        Ok(full) if full.is_empty() => cmd.arg(":/"),
-                        Ok(full) => cmd.arg(format!(":(top){}", String::from_utf8_lossy(&full))),
-                        Err(()) => cmd.arg(p),
+                        Ok(full) if full.is_empty() => cmd.raw_arg(":/"),
+                        Ok(full) => cmd.raw_arg(format!(":(top){}", String::from_utf8_lossy(&full))),
+                        Err(()) => cmd.raw_arg(p),
                     };
                 }
             }
@@ -290,7 +291,7 @@ impl Mergetool<'_> {
             Some((MODE_LINK, id)) => {
                 let target = self
                     .git()
-                    .args(["cat-file", "blob", id])
+                    .raw_args(["cat-file", "blob", id])
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
                     .unwrap_or_default();
@@ -412,7 +413,7 @@ impl Mergetool<'_> {
         for (favor, target) in [("--ours", &n.local), ("--theirs", &n.remote)] {
             if let Ok(out) = self
                 .git()
-                .args(["merge-file", favor, "-p", &n.local, &n.base, &n.remote])
+                .raw_args(["merge-file", favor, "-p", &n.local, &n.base, &n.remote])
                 .output()
             {
                 let _ = std::fs::write(self.root.join(target), out.stdout);
@@ -429,7 +430,7 @@ impl Mergetool<'_> {
         if side.is_some() {
             let out = self
                 .git()
-                .args(["checkout-index", "--temp", &format!("--stage={stage}"), "--", path])
+                .raw_args(["checkout-index", "--temp", &format!("--stage={stage}"), "--", path])
                 .output();
             if let Ok(o) = out {
                 let text = String::from_utf8_lossy(&o.stdout);
@@ -537,7 +538,7 @@ impl Mergetool<'_> {
     fn remove_path(&self, path: &str) {
         let _ = self
             .git()
-            .args(["rm", "-q", "--", path])
+            .raw_args(["rm", "-q", "--", path])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();

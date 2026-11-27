@@ -5,6 +5,7 @@
 //! rgit hands off to an installed git (`svn`, `p4`, ...) are also looked
 //! up in that git's exec path (see `handoff`).
 
+use crate::argv::CommandArgs as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -72,7 +73,7 @@ pub fn run(ctx: &Context, argv: &[String]) -> Option<CmdResult> {
     shown.extend(argv[1..].iter().map(Into::into));
     rgit_trace::trace_start_command(&shown);
     let mut cmd = Command::new(&prog);
-    cmd.args(&argv[1..]);
+    cmd.raw_args(&argv[1..]);
     // The child sees `argv[0]` as `git-<name>`, like an execvp of it.
     #[cfg(unix)]
     {

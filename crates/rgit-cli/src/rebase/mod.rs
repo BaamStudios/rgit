@@ -41,6 +41,7 @@
 //! [`edit_todo`] are the entry points for `git rebase` and
 //! `git pull --rebase`.
 
+use crate::argv::CommandArgs as _;
 mod apply;
 mod merges;
 pub(crate) mod todo;
@@ -523,7 +524,7 @@ fn run_child(ctx: &Context, args: &[&str], capture: bool) -> Result<(i32, Vec<u8
     let _ = std::io::stdout().flush();
     let exe = std::env::current_exe().map_err(io_die)?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(args).envs(ctx.child_env());
+    cmd.raw_args(args).envs(ctx.child_env());
     if capture {
         cmd.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -2143,12 +2144,12 @@ impl<'c> Rebase<'c> {
     ) -> Result<Option<Option<rgit_merge::MergeResult>>, Fail> {
         let mut cmd = std::process::Command::new(format!("git-merge-{name}"));
         for x in &self.state.xopts {
-            cmd.arg(format!("--{x}"));
+            cmd.raw_arg(format!("--{x}"));
         }
         if let Some(p) = parent {
-            cmd.arg(p.to_hex());
+            cmd.raw_arg(p.to_hex());
         }
-        cmd.arg("--").arg("HEAD").arg(id.to_hex());
+        cmd.raw_arg("--").raw_arg("HEAD").raw_arg(id.to_hex());
         cmd.envs(self.ctx.child_env());
         let _ = std::io::stdout().flush();
         let code = match cmd.status() {
@@ -2681,7 +2682,7 @@ impl<'c> Rebase<'c> {
             std::process::Command::new(cmd)
         } else {
             let mut c = std::process::Command::new(rgit_ident::editor::SHELL_PATH);
-            c.arg("-c").arg(cmd);
+            c.raw_arg("-c").raw_arg(cmd);
             c
         };
         command.current_dir(&work_tree).envs(self.ctx.child_env());
@@ -3084,7 +3085,7 @@ impl<'c> Rebase<'c> {
         let _ = std::io::stdout().flush();
         let exe = std::env::current_exe().map_err(io_die)?;
         let status = std::process::Command::new(exe)
-            .args(&args)
+            .raw_args(&args)
             .envs(self.ctx.child_env())
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .status()
@@ -3288,9 +3289,9 @@ impl<'c> Rebase<'c> {
             None => "--no-gpg-sign".to_owned(),
         };
         let mut cmd = std::process::Command::new(exe);
-        cmd.arg("commit")
-            .arg(sign)
-            .args(args)
+        cmd.raw_arg("commit")
+            .raw_arg(sign)
+            .raw_args(args)
             .envs(self.ctx.child_env())
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         // `--committer-date-is-author-date`: the date of the author the

@@ -9,6 +9,7 @@
 //! point to the same object as locally, else a warning is printed and the
 //! exit status is 1.
 
+use crate::argv::CommandArgs as _;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -25,7 +26,7 @@ fn rgit(ctx: &Context) -> Command {
 
 /// Run an rgit command; its standard output when it succeeds.
 fn output(ctx: &Context, args: &[&str]) -> Option<Vec<u8>> {
-    let out = rgit(ctx).args(args).stderr(Stdio::null()).output().ok()?;
+    let out = rgit(ctx).raw_args(args).stderr(Stdio::null()).output().ok()?;
     out.status.success().then_some(out.stdout)
 }
 
