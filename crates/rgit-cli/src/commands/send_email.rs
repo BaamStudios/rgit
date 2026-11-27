@@ -15,6 +15,7 @@
 //! prompts, which header fields of a patch are kept and in which order)
 //! follows the `git` binary, checked with t9001.
 
+use crate::argv::CommandArgs as _;
 #[path = "send_email/address.rs"]
 mod address;
 #[path = "send_email/aliases.rs"]
@@ -753,8 +754,8 @@ fn default_sender(ctx: &Context) -> Result<String, Die> {
     let mut last_status = 128;
     for var in ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
         let out = rgit_command(ctx)
-            .arg("var")
-            .arg(var)
+            .raw_arg("var")
+            .raw_arg(var)
             .stdin(Stdio::null())
             .stderr(Stdio::inherit())
             .output()
@@ -889,10 +890,10 @@ fn collect_files(
     if !revs.is_empty() {
         let dir = TempDir::new("rgit-send-email-").map_err(|e| Die::Fatal(e.to_string()))?;
         let out = rgit_command(ctx)
-            .arg("format-patch")
-            .arg("-o")
-            .arg(&dir.0)
-            .args(&revs)
+            .raw_arg("format-patch")
+            .raw_arg("-o")
+            .raw_arg(&dir.0)
+            .raw_args(&revs)
             .current_dir(&state.cwd)
             .stdin(Stdio::null())
             .stderr(Stdio::inherit())
@@ -923,7 +924,7 @@ fn collect_files(
 
 fn is_revision(ctx: &Context, arg: &str) -> bool {
     rgit_command(ctx)
-        .args(["rev-parse", "--verify", "--quiet", arg])
+        .raw_args(["rev-parse", "--verify", "--quiet", arg])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -955,9 +956,9 @@ fn run_validate_hook(
         cmd.current_dir(w);
     }
     let status = cmd
-        .args(["hook", "run", "--ignore-missing", "sendemail-validate", "--"])
-        .arg(&abs)
-        .arg(&header)
+        .raw_args(["hook", "run", "--ignore-missing", "sendemail-validate", "--"])
+        .raw_arg(&abs)
+        .raw_arg(&header)
         .env("GIT_DIR", git_dir)
         .env("GIT_SENDEMAIL_FILE_COUNTER", counter.to_string())
         .env("GIT_SENDEMAIL_FILE_TOTAL", total.to_string())

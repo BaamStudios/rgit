@@ -2,6 +2,7 @@
 //! The values of atoms for one reference, and expanding a parsed format
 //! (opening atoms `%(if)` and `%(align)`, quoting, colours).
 
+use crate::argv::CommandArgs as _;
 use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -1289,9 +1290,9 @@ fn describe(id: &ObjectId, args: &[String]) -> Vec<u8> {
         return Vec::new();
     };
     let out = std::process::Command::new(exe)
-        .arg("describe")
-        .args(args)
-        .arg(id.to_hex())
+        .raw_arg("describe")
+        .raw_args(args)
+        .raw_arg(id.to_hex())
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output();

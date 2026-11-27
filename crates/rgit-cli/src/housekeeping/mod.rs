@@ -5,6 +5,7 @@
 //! ([`store`]), writing a pack into `objects/pack` ([`store::write_pack`])
 //! and the catalog files of `update-server-info` ([`server_info`]).
 
+use crate::argv::CommandArgs as _;
 pub mod cruft;
 pub mod reach;
 pub mod server_info;
@@ -26,8 +27,8 @@ pub fn recent_objects_hook(
         let Ok(cmd) = entry.string() else { continue };
         let cmd = cmd.to_string();
         let result = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
+            .raw_arg("-c")
+            .raw_arg(&cmd)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
             .output()
@@ -67,7 +68,7 @@ pub fn run_pack_objects(
     let mut argv: Vec<String> = vec!["pack-objects".into()];
     argv.extend(args.iter().cloned());
     let mut cmd = Command::new(exe);
-    cmd.args(&argv).current_dir(&setup.cwd);
+    cmd.raw_args(&argv).current_dir(&setup.cwd);
     for (k, v) in ctx.child_env() {
         cmd.env(k, v);
     }

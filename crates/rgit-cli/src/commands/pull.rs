@@ -36,6 +36,7 @@
 //!   `--rebase=merges` adds `--rebase-merges`, `--rebase=interactive`
 //!   adds `--interactive` (after the verbosity, as git).
 
+use crate::argv::CommandArgs as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -570,7 +571,7 @@ impl Children {
         use std::io::Write as _;
         let _ = std::io::stdout().flush();
         let status = Command::new(&self.exe)
-            .args(argv)
+            .raw_args(argv)
             .current_dir(&self.dir)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::inherit())

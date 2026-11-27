@@ -594,10 +594,20 @@ impl<'a> Resolver<'a> {
             Some(format!("refs/remotes/{name}")),
             Some(format!("refs/remotes/{name}/HEAD")),
         ];
-        candidates
-            .into_iter()
-            .flatten()
-            .find(|c| self.repo.refs.resolve(c).is_some())
+        candidates.into_iter().flatten().find(|c| {
+            if self.repo.refs.resolve(c).is_some() {
+                return true;
+            }
+            // Skipped with a warning, except the `HEAD` of an unborn
+            // branch.
+            if c != "HEAD" && self.repo.refs.is_dangling_symref(c) {
+                eprintln!(
+                    "warning: {}",
+                    crate::messages::branch::ignoring_dangling_symref(c)
+                );
+            }
+            false
+        })
     }
 
     /// A name without suffixes: hex id or ref.

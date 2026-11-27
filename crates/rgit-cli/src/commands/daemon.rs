@@ -46,6 +46,7 @@ pub fn run(_ctx: &mut Context, _argv: &[String]) -> CmdResult {
 
 #[cfg(unix)]
 mod imp {
+    use crate::argv::CommandArgs as _;
     use std::process::{Command, Stdio};
 
     use rgit_server::daemon::{Service, Services, messages as msg};
@@ -295,8 +296,8 @@ mod imp {
         let exe = std::env::current_exe().map_err(|e| log.fatal(e.to_string()))?;
         let mut command = Command::new(exe);
         command
-            .arg("daemon")
-            .args(args)
+            .raw_arg("daemon")
+            .raw_args(args)
             .env(DETACHED, "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())

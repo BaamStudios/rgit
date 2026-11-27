@@ -76,6 +76,7 @@ pub fn default_socket() -> PathBuf {
 
 #[cfg(unix)]
 pub(crate) mod imp {
+    use crate::argv::CommandArgs as _;
     use std::io::{self, Read, Write};
     use std::net::Shutdown;
     use std::os::unix::net::UnixStream;
@@ -138,8 +139,8 @@ pub(crate) mod imp {
     fn start_daemon(socket: &Path) -> Result<(), Die> {
         let exe = std::env::current_exe().map_err(|e| Die::Fatal(strerror(&e)))?;
         let mut child = Command::new(exe)
-            .arg("credential-cache--daemon")
-            .arg(socket)
+            .raw_arg("credential-cache--daemon")
+            .raw_arg(socket)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()

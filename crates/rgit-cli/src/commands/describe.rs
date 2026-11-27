@@ -3,6 +3,7 @@
 //! reference) of a commit, `--contains` through name-rev, `--dirty` and
 //! `--broken`, and blobs as `<commit-ish>:<path>`.
 
+use crate::argv::CommandArgs as _;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
@@ -215,7 +216,7 @@ fn work_tree_suffix(
     let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
     let run = |args: &[&str]| -> Option<i32> {
         std::process::Command::new(&exe)
-            .args(args)
+            .raw_args(args)
             .envs(ctx.child_env())
             .status()
             .ok()

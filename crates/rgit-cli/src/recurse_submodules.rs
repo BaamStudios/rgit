@@ -19,6 +19,7 @@
 //! - a removed one is emptied, an embedded `.git` directory absorbed into
 //!   the superproject first, and disconnected from its git directory.
 
+use crate::argv::CommandArgs as _;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -213,7 +214,7 @@ impl<'r> Updater<'r> {
             return false;
         };
         let mut cmd = Command::new(exe);
-        cmd.current_dir(dir).args(args).stdin(Stdio::null());
+        cmd.current_dir(dir).raw_args(args).stdin(Stdio::null());
         crate::submodules::prepare_env(&mut cmd);
         cmd.env_remove("GIT_PREFIX");
         cmd.status().is_ok_and(|s| s.success())

@@ -35,14 +35,15 @@ pub fn pretty_ref(name: &BStr) -> String {
 }
 
 /// The URL as shown in the summary and in `FETCH_HEAD`: without
-/// credentials, trailing slashes and a final `.git`.
+/// credentials, trailing slashes and a final `.git`. Like git, the
+/// suffix stays when only one character would remain (`b.git`).
 pub fn display_url(url: &str) -> String {
     let mut u = anonymize(url);
     while u.len() > 1 && u.ends_with('/') {
         u.pop();
     }
-    if let Some(s) = u.strip_suffix(".git") {
-        u = s.to_string();
+    if u.len() > 5 && u.ends_with(".git") {
+        u.truncate(u.len() - 4);
     }
     u
 }
@@ -270,6 +271,10 @@ mod tests {
         assert_eq!(display_url("../srv/.git/"), "../srv/");
         assert_eq!(display_url("https://u:p@h/x.git"), "https://h/x");
         assert_eq!(display_url("."), ".");
+        assert_eq!(display_url("b.git"), "b.git");
+        assert_eq!(display_url("b.git//"), "b.git");
+        assert_eq!(display_url("ab.git"), "ab");
+        assert_eq!(display_url("b.git.git"), "b.git");
     }
 
     fn oid(c: char) -> ObjectId {

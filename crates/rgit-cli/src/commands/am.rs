@@ -27,6 +27,7 @@
 //! rerere runs after a three-way merge with conflicts, before the commit
 //! of `--continue` and is cleared by `--skip` and `--abort`.
 
+use crate::argv::CommandArgs as _;
 use std::ffi::OsString;
 use std::io::{IsTerminal as _, Read, Write};
 use std::path::{Path, PathBuf};
@@ -535,7 +536,7 @@ impl<'c> Am<'c> {
         let _ = std::io::stdout().flush();
         let exe = std::env::current_exe().map_err(io_die)?;
         let mut cmd = std::process::Command::new(exe);
-        cmd.args(args)
+        cmd.raw_args(args)
             .current_dir(&self.work_tree)
             .envs(self.ctx.child_env())
             .envs(env.iter().map(|(k, v)| (*k, v)));

@@ -21,6 +21,7 @@
 //! - recorded commits still missing afterwards (outside the refspecs) are
 //!   fetched by id from the submodule's default remote.
 
+use crate::argv::CommandArgs as _;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -459,7 +460,9 @@ fn missing(git_dir: &Path, ids: &[ObjectId]) -> bool {
     let Some(mut cmd) = git_in(git_dir) else {
         return true;
     };
-    cmd.args(&args).stdin(Stdio::null()).stderr(Stdio::null());
+    cmd.raw_args(&args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
     match cmd.output() {
         Ok(out) => !out.status.success() || !out.stdout.is_empty(),
         Err(_) => true,
@@ -517,7 +520,7 @@ fn run_all(tasks: &[Task], opts: &Options, jobs: usize) -> Vec<bool> {
                 let Some(mut cmd) = task_cmd(t) else {
                     return false;
                 };
-                cmd.args(fetch_args(t, opts)).stdin(Stdio::null());
+                cmd.raw_args(fetch_args(t, opts)).stdin(Stdio::null());
                 // The submodule's standard output goes to standard error.
                 cmd.stdout(Stdio::from(std::io::stderr()));
                 cmd.status().is_ok_and(|s| s.success())
@@ -535,7 +538,7 @@ fn run_all(tasks: &[Task], opts: &Options, jobs: usize) -> Vec<bool> {
             let spawned = task_cmd(t).and_then(|mut cmd| {
                 let (reader, writer) = std::io::pipe().ok()?;
                 let w2 = writer.try_clone().ok()?;
-                cmd.args(fetch_args(t, opts))
+                cmd.raw_args(fetch_args(t, opts))
                     .stdin(Stdio::null())
                     .stdout(Stdio::from(writer))
                     .stderr(Stdio::from(w2));
@@ -583,7 +586,7 @@ fn fetch_by_id(t: &Task, opts: &Options) -> bool {
         return false;
     };
     let remote = Command::new(&exe)
-        .args(["submodule--helper", "get-default-remote", &t.path])
+        .raw_args(["submodule--helper", "get-default-remote", &t.path])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -598,7 +601,7 @@ fn fetch_by_id(t: &Task, opts: &Options) -> bool {
     let mut args = fetch_args(t, opts);
     args.push(remote);
     args.extend(t.wanted.iter().map(ObjectId::to_hex));
-    cmd.args(args).stdin(Stdio::null());
+    cmd.raw_args(args).stdin(Stdio::null());
     cmd.stdout(Stdio::from(std::io::stderr()));
     cmd.status().is_ok_and(|s| s.success())
 }

@@ -21,6 +21,7 @@
 //!   placeholder.
 //! - `%w(...)` wraps everything from it to the next `%w` or the end.
 
+use crate::argv::CommandArgs as _;
 use rgit_config::value::parse_bool_text;
 use rgit_date::{DateContext, DateMode, DateStyle};
 use rgit_hash::ObjectId;
@@ -946,7 +947,7 @@ fn describe(id: &ObjectId, opts: &[u8], out: &mut Vec<u8>) -> bool {
         return true;
     };
     let output = std::process::Command::new(exe)
-        .args(&args)
+        .raw_args(&args)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output();

@@ -27,6 +27,7 @@
 //! progress output. The `pre-push` hook runs unless `--no-verify` is given
 //! (#76).
 
+use crate::argv::CommandArgs as _;
 use std::io::IsTerminal;
 
 use bstr::ByteSlice;
@@ -708,7 +709,7 @@ fn negotiate_common(ctx: &Context, url: &str, commands: &[Command], hash: rgit_h
     args.push(url.to_owned());
     let output = std::env::current_exe().and_then(|exe| {
         let mut cmd = std::process::Command::new(exe);
-        cmd.args(&args)
+        cmd.raw_args(&args)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit());
         for (k, v) in ctx.child_env() {

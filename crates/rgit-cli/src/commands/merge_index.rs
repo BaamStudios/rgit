@@ -14,6 +14,7 @@
 //! run (`fatal: merge program failed`) unless `-o`; `-q` drops that
 //! message and exits with the number of failures.
 
+use crate::argv::CommandArgs as _;
 use std::process::Command;
 
 use rgit_index::Entry;
@@ -172,12 +173,12 @@ impl Runner {
         let mut cmd = if self.program == "git-merge-one-file" {
             let exe = std::env::current_exe().unwrap_or_else(|_| "git".into());
             let mut c = Command::new(exe);
-            c.arg("merge-one-file");
+            c.raw_arg("merge-one-file");
             c
         } else {
             Command::new(&self.program)
         };
-        cmd.args(args)
+        cmd.raw_args(args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .current_dir(&self.dir);
         match cmd.status() {

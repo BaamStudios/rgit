@@ -4,6 +4,7 @@
 //! --recurse-submodules`) are provided; the subcommands of `git
 //! submodule` itself are built in.
 
+use crate::argv::CommandArgs as _;
 use crate::commands::submodule::common::{self, Super};
 use crate::messages::submodule_cmd as msg;
 use crate::prelude::*;
@@ -93,14 +94,14 @@ fn create_branch(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // The branch itself (`branch` does the checks once more).
     let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(["branch", "--no-recurse-submodules", "--no-track", "--quiet"]);
+    cmd.raw_args(["branch", "--no-recurse-submodules", "--no-track", "--quiet"]);
     if force.get() {
-        cmd.arg("--force");
+        cmd.raw_arg("--force");
     }
     if create_reflog.get() {
-        cmd.arg("--create-reflog");
+        cmd.raw_arg("--create-reflog");
     }
-    cmd.args([name.as_str(), start_hex.as_str()]);
+    cmd.raw_args([name.as_str(), start_hex.as_str()]);
     if !cmd.status().is_ok_and(|s| s.success()) {
         return Ok(128);
     }

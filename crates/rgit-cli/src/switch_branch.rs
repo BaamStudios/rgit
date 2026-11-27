@@ -10,6 +10,7 @@
 //! `--force`/`--discard-changes` a one-way merge with `reset` replaces
 //! everything.
 
+use crate::argv::CommandArgs as _;
 use std::io::Write as _;
 
 use rgit_fs::{LockFile, LockOptions};
@@ -124,10 +125,11 @@ fn run_stash(mode: &MergeMode, args: &[&str]) -> Result<(i32, Vec<u8>, Vec<u8>),
     let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
     let mut cmd = std::process::Command::new(exe);
     if let Some(style) = &mode.style {
-        cmd.arg("-c").arg(format!("merge.conflictStyle={style}"));
+        cmd.raw_arg("-c")
+            .raw_arg(format!("merge.conflictStyle={style}"));
     }
     let out = cmd
-        .args(args)
+        .raw_args(args)
         .envs(mode.env.iter().map(|(k, v)| (k, v)))
         .stdin(std::process::Stdio::null())
         .output()

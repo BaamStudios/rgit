@@ -8,6 +8,7 @@
 //! their options and the messages were taken from the behaviour of the
 //! `git` binary (`GIT_TRACE`).
 
+use crate::argv::CommandArgs as _;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
@@ -60,9 +61,9 @@ fn am_args(state: &State) -> Vec<String> {
 fn run_am(ctx: &Context, args: &[String], stdin: Option<&[u8]>) -> Result<i32, Die> {
     let _ = std::io::stdout().flush();
     let mut cmd = Command::new(exe()?);
-    cmd.arg("am")
-        .args(args)
-        .arg(format!("--resolvemsg={}", msg::APPLY_RESOLVE_MSG))
+    cmd.raw_arg("am")
+        .raw_args(args)
+        .raw_arg(format!("--resolvemsg={}", msg::APPLY_RESOLVE_MSG))
         .envs(ctx.child_env())
         .env(
             "GIT_REFLOG_ACTION",
