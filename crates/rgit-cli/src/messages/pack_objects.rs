@@ -162,6 +162,9 @@ pub fn total(objects: usize, deltas: u32, reused: u32, reused_deltas: u32) -> St
 pub const BITMAP_DISABLED_NOT_PACKED: &str =
     "disabling bitmap writing, as some objects are not being packed";
 
+pub const BITMAP_DISABLED_SPLIT: &str =
+    "disabling bitmap writing, packs are split due to pack.packSizeLimit";
+
 pub fn total_reused(
     objects: usize,
     deltas: u32,

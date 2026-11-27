@@ -46,7 +46,12 @@
 //!
 //! `-b` (else `repack.writeBitmaps`, on by default in bare repositories)
 //! writes a reachability bitmap for the pack of everything reachable, or
-//! for the multi-pack index with `--write-midx`.
+//! for the multi-pack index with `--write-midx`. Asked-for bitmaps (not
+//! the bare default) make `repack.packKeptObjects` default to true, and a
+//! bitmap that cannot be written (objects left out, or the pack split by
+//! `--max-pack-size` / `pack.packSizeLimit`) is warned about; the bare
+//! default gives up quietly. A pack written again under its old name loses
+//! the `.bitmap` and `.rev` files this run does not write.
 //!
 //! `--filter=<spec>` writes the pack of everything reachable through a
 //! `pack-objects --filter` child, like git, and with `-a` the objects
@@ -57,7 +62,8 @@
 //! promisor packs out of the rewritten promisor pack instead; they can be
 //! fetched again from the promisor remote. `--dry-run` lists them.
 //!
-//! Not yet: `--max-pack-size` for the reachable pack without `--filter`.
+//! `--max-pack-size` (else `pack.packSizeLimit`, at least 1 MiB) splits
+//! the pack of what is reachable into several packs.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -95,7 +101,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let window_memory: RefCell<Option<String>> = RefCell::new(None);
     let depth: RefCell<Option<String>> = RefCell::new(None);
     let threads: RefCell<Option<String>> = RefCell::new(None);
-    let pack_kept = Cell::new(false);
+    let pack_kept = Cell::new(-1);
     let keep_packs: RefCell<Vec<String>> = RefCell::new(Vec::new());
     let path_walk = Cell::new(false);
     let name_hash_version: RefCell<Option<String>> = RefCell::new(None);
@@ -172,7 +178,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                     Ok(())
                 },
             ),
-            Opt::flag(None, "pack-kept-objects", &pack_kept, msg::REPACK_H_PACK_KEPT),
+            Opt::bool(None, "pack-kept-objects", &pack_kept, msg::REPACK_H_PACK_KEPT),
             Opt::string_list(None, "keep-pack", &keep_packs, "name", msg::REPACK_H_KEEP_PACK),
             Opt::integer('g', "geometric", &geometric, msg::REPACK_H_GEOMETRIC),
             Opt::callback(
@@ -240,13 +246,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let pack_everything = all.get() || all_loosen || cruft;
     // `-b`, else `repack.writeBitmaps` (`pack.writeBitmaps`), else true in
     // bare repositories.
+    let configured_bitmaps = config
+        .bool("repack.writebitmaps")
+        .ok()
+        .flatten()
+        .or_else(|| config.bool("pack.writebitmaps").ok().flatten());
     let mut write_bitmaps = match bitmap.get() {
-        -1 => config
-            .bool("repack.writebitmaps")
-            .ok()
-            .flatten()
-            .or_else(|| config.bool("pack.writebitmaps").ok().flatten())
+        -1 => configured_bitmaps
             .unwrap_or_else(|| setup.is_bare() && write_midx.borrow().is_none()),
+        v => v > 0,
+    };
+    // Asked for by -b or the configuration, not just the default of a bare
+    // repository: kept objects are packed too, and a bitmap that cannot be
+    // written is warned about.
+    let explicit_bitmaps = match bitmap.get() {
+        -1 => configured_bitmaps == Some(true),
         v => v > 0,
     };
     // A bitmap setting from the configuration is quietly off with
@@ -280,13 +294,27 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         let d: i64 = d.trim().parse().unwrap_or(50);
         opts.write.max_depth = d.clamp(0, i64::from(rgit_pack::write::MAX_DEPTH)) as u32;
     }
-    // `repack.packKeptObjects` defaults to true when bitmaps are written.
-    let pack_kept = pack_kept.get()
-        || config
+    // `repack.packKeptObjects` defaults to true when bitmaps are asked for
+    // (the default bitmaps of a bare repository leave kept packs alone).
+    let pack_kept = match pack_kept.get() {
+        -1 => config
             .bool("repack.packkeptobjects")
             .ok()
             .flatten()
-            .unwrap_or(write_bitmaps && write_midx.borrow().is_none());
+            .unwrap_or(explicit_bitmaps && write_bitmaps && write_midx.borrow().is_none()),
+        v => v > 0,
+    };
+    // `--max-pack-size`, else `pack.packSizeLimit`; at least 1 MiB.
+    let size_limit = match max_pack_size.get() {
+        u64::MAX => config
+            .int64("pack.packsizelimit")
+            .map_err(|e| Die::Fatal(e.to_string()))?
+            .filter(|&v| v > 0)
+            .map(|v| v as u64),
+        0 => None,
+        v => Some(v),
+    }
+    .map(|v| v.max(1 << 20));
     let keep_names = keep_packs.take();
 
     let odb = repo::odb_with_config(&setup, &config)?;
@@ -427,10 +455,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let ordered = rgit_pack::write::pack_order(&chosen);
     // With --filter, pack-objects writes the pack(s) (and its bitmap).
     let filtered = !filters.is_empty() && !drop_filtered;
-    let new_pack = if filtered {
-        None
+    let new_packs = if filtered {
+        Vec::new()
     } else {
-        store::write_pack(&odb, &pack_dir, &ordered, &opts)?
+        store::write_packs(&odb, &pack_dir, &ordered, &opts, size_limit)?
     };
     let mut filter_names: Vec<String> = Vec::new();
     if filtered {
@@ -469,13 +497,26 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         filter_names = hashes.iter().map(|h| format!("pack-{h}.pack")).collect();
     }
     // A pack that leaves out reachable objects (kept or non-local ones)
-    // gets no bitmap; git disables it quietly.
+    // gets no bitmap, nor do packs split by the size limit; git disables it
+    // quietly unless bitmaps were asked for.
     let complete = chosen.len() >= walk.listed.len();
-    if let Some(sum) = &new_pack
-        && write_bitmaps
+    let pack_bitmap = !filtered && write_bitmaps && write_midx.borrow().is_none();
+    if pack_bitmap && explicit_bitmaps {
+        if !complete {
+            eprintln!(
+                "warning: {}",
+                crate::messages::pack_objects::BITMAP_DISABLED_NOT_PACKED
+            );
+        } else if new_packs.len() > 1 {
+            eprintln!("warning: {}", crate::messages::pack_objects::BITMAP_DISABLED_SPLIT);
+        }
+    }
+    let mut bitmap_written = false;
+    if let [sum] = new_packs.as_slice()
+        && pack_bitmap
         && complete
-        && write_midx.borrow().is_none()
     {
+        bitmap_written = true;
         let walk_commits: Vec<ObjectId> = chosen
             .iter()
             .filter(|o| o.kind == rgit_object::ObjectKind::Commit)
@@ -491,13 +532,24 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             !quiet.get() && rgit_progress::stderr_is_terminal(),
         )?;
     }
-    if new_pack.is_none() && filter_names.is_empty() && !quiet.get() {
+    // A pack written again under its old name keeps only the files this run
+    // writes: a `.bitmap` or `.rev` from before goes.
+    for sum in &new_packs {
+        let base = pack_dir.join(format!("pack-{}", sum.to_hex()));
+        if !bitmap_written {
+            let _ = std::fs::remove_file(base.with_extension("bitmap"));
+        }
+        if !opts.rev {
+            let _ = std::fs::remove_file(base.with_extension("rev"));
+        }
+    }
+    if new_packs.is_empty() && filter_names.is_empty() && !quiet.get() {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{}", msg::REPACK_NOTHING_NEW);
     }
-    let mut new_names: Vec<String> = new_pack
+    let mut new_names: Vec<String> = new_packs
+        .iter()
         .map(|c| format!("pack-{}.pack", c.to_hex()))
-        .into_iter()
         .collect();
     new_names.extend(promisor_name);
     new_names.extend(filter_names);
