@@ -804,14 +804,14 @@ mod tests {
         assert_eq!(find(r"\(z\)\1*", Syntax::Basic, b"zzz"), Some((0, 3)));
         assert_eq!(find("(a)\\10", Syntax::Extended, b"aa0"), Some((0, 3)));
         let err = |p: &str, syn: Syntax| Atom::new(p, syn, false, false, false).err();
-        assert_eq!(
-            err(r"\(a\)\2", Syntax::Basic).as_deref(),
-            Some("Invalid back reference")
-        );
-        assert_eq!(
-            err(r"\(a\1\)", Syntax::Basic).as_deref(),
-            Some("Invalid back reference")
-        );
+        // The reason is worded as the platform's C library words it.
+        let reason = if cfg!(target_os = "macos") {
+            "invalid backreference number"
+        } else {
+            "Invalid back reference"
+        };
+        assert_eq!(err(r"\(a\)\2", Syntax::Basic).as_deref(), Some(reason));
+        assert_eq!(err(r"\(a\1\)", Syntax::Basic).as_deref(), Some(reason));
         assert!(err("(a)\\1", Syntax::Fixed).is_none());
     }
 
