@@ -273,7 +273,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let (mut pairs, mnemonic) = match (trees.len(), cached) {
         (0, false) => {
             let root = repo.work_tree()?;
-            let (index, mtime) = repo.read_index()?;
+            // Sparse directory entries are skip-worktree: never compared.
+            let (index, mtime) = repo.read_index_sparse()?;
             let checker = repo.checker(mtime)?;
             let submodules =
                 crate::submodules::IgnoreRules::for_index(&repo, &index, opts.ignore_submodules()?, true)?;
@@ -313,7 +314,11 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 Some(t) => *t,
                 None => head,
             };
-            let (index, mtime) = repo.read_index()?;
+            // Sparse directory entries holding what `tree` has there are
+            // skipped by the comparison.
+            let (mut index, mtime) = repo.read_index_sparse()?;
+            crate::sparse_index::expand_unless_same(&repo, &mut index, Some(tree))?;
+            let index = index;
             if cached {
                 let ita_invisible = opts.ita_invisible.unwrap_or(true);
                 let pairs = collect::index(&repo, &tree, &index, &pathspec, None, ita_invisible)?;
@@ -411,7 +416,7 @@ fn auto_refresh_index(repo: &Repo) {
     let Ok(lock) = rgit_fs::LockFile::acquire(&index_path, &repo.index_lock_options()) else {
         return;
     };
-    let Ok((mut index, mtime)) = repo.read_index() else {
+    let Ok((mut index, mtime)) = repo.read_index_sparse() else {
         return;
     };
     let Ok(checker) = repo.checker(mtime) else {

@@ -161,6 +161,17 @@ pub fn print_notice(n: Notice) {
     }
 }
 
+/// The sparse directory entries of `index`: path (with trailing `/`) and
+/// tree.
+fn sparse_dirs(index: &Index) -> Vec<(Vec<u8>, ObjectId)> {
+    index
+        .entries()
+        .iter()
+        .filter(|e| e.mode.is_dir())
+        .map(|e| (e.path().to_vec(), e.id))
+        .collect()
+}
+
 /// Where the index (for `.gitattributes` fall-backs and the CR LF check)
 /// comes from.
 enum IndexSource {
@@ -197,6 +208,13 @@ pub struct Converter {
     /// The index, once loaded (`None` inside: there is none).
     index: RefCell<Option<Option<Rc<Index>>>>,
     snapshot: RefCell<Option<HashMap<Vec<u8>, Vec<u8>>>>,
+    /// The sparse directory entries of the index (path with trailing
+    /// `/`, tree): their `.gitattributes` files join the snapshot when a
+    /// path below them is looked up.
+    sparse_dirs: RefCell<Vec<(Vec<u8>, ObjectId)>>,
+    /// The directories below sparse directory entries whose
+    /// `.gitattributes` has been read into the snapshot.
+    sparse_read: RefCell<std::collections::HashSet<Vec<u8>>>,
     odb: OnceCell<Option<ObjectDatabase>>,
     lookup: RefCell<Option<Lookup>>,
     drivers: RefCell<HashMap<Vec<u8>, Option<Driver>>>,
@@ -219,6 +237,8 @@ impl Converter {
             index_source,
             index: RefCell::new(None),
             snapshot: RefCell::new(None),
+            sparse_dirs: RefCell::new(Vec::new()),
+            sparse_read: RefCell::new(std::collections::HashSet::new()),
             odb: OnceCell::new(),
             lookup: RefCell::new(None),
             drivers: RefCell::new(HashMap::new()),
@@ -296,6 +316,7 @@ impl Converter {
     fn with_index(repo: &Repo, index: &Index, order: Order) -> Result<Converter, Die> {
         let c = Converter::base(repo, order, IndexSource::Given)?;
         *c.snapshot.borrow_mut() = Some(rgit_attr::snapshot(index, &repo.odb));
+        *c.sparse_dirs.borrow_mut() = sparse_dirs(index);
         *c.index.borrow_mut() = Some(None);
         Ok(c)
     }
@@ -306,6 +327,7 @@ impl Converter {
     pub fn use_index(&self, index: &Index) {
         *self.index.borrow_mut() = Some(Some(Rc::new(index.clone())));
         *self.snapshot.borrow_mut() = None;
+        self.sparse_read.borrow_mut().clear();
         *self.lookup.borrow_mut() = None;
     }
 
@@ -328,9 +350,17 @@ impl Converter {
             return i.clone();
         }
         let loaded = match &self.index_source {
-            IndexSource::File(p) => Index::read_file(p, self.hash, &ReadOptions::default())
-                .ok()
-                .map(Rc::new),
+            // Sparse directory entries stay (see `sparse_dirs`).
+            IndexSource::File(p) => Index::read_file(
+                p,
+                self.hash,
+                &ReadOptions {
+                    keep_sparse: true,
+                    ..ReadOptions::default()
+                },
+            )
+            .ok()
+            .map(Rc::new),
             IndexSource::Given => None,
         };
         *self.index.borrow_mut() = Some(loaded.clone());
@@ -342,7 +372,10 @@ impl Converter {
             return s.clone();
         }
         let s = match (self.index(), self.odb()) {
-            (Some(i), Some(o)) => rgit_attr::snapshot(&i, o),
+            (Some(i), Some(o)) => {
+                *self.sparse_dirs.borrow_mut() = sparse_dirs(&i);
+                rgit_attr::snapshot(&i, o)
+            }
             _ => HashMap::new(),
         };
         *self.snapshot.borrow_mut() = Some(s.clone());
@@ -351,6 +384,9 @@ impl Converter {
 
     /// The conversion attributes of `path`.
     pub fn attrs(&self, path: &[u8]) -> rgit_convert::Attrs {
+        if self.read_sparse_attributes(path) {
+            *self.lookup.borrow_mut() = None;
+        }
         if self.lookup.borrow().is_none() {
             let snapshot = self.snapshot();
             let source = Source::Snapshot {
@@ -369,6 +405,56 @@ impl Converter {
             eprintln!("{w}");
         }
         rgit_convert::Attrs::from_states(l.ids.map(|id| out.get(id)))
+    }
+
+    /// Adds the `.gitattributes` files of the directories above `path`
+    /// inside a sparse directory entry to the snapshot, as an expanded
+    /// index would have them. True if the snapshot changed.
+    fn read_sparse_attributes(&self, path: &[u8]) -> bool {
+        use rgit_attr::ObjectReader;
+        if self.snapshot.borrow().is_none() {
+            self.snapshot();
+        }
+        let found = self
+            .sparse_dirs
+            .borrow()
+            .iter()
+            .find(|(d, _)| path.len() > d.len() && path.starts_with(d))
+            .cloned();
+        let Some((mut dir, mut tree)) = found else {
+            return false;
+        };
+        let Some(odb) = self.odb() else {
+            return false;
+        };
+        let mut changed = false;
+        loop {
+            let entries = odb.tree(&tree).unwrap_or_default();
+            if self.sparse_read.borrow_mut().insert(dir.clone()) {
+                let file = entries.iter().find(|e| {
+                    e.name == b".gitattributes" && e.mode.canonical().bits() & 0o170000 == 0o100000
+                });
+                if let Some(data) = file.and_then(|e| odb.blob(&e.oid)) {
+                    let mut key = dir.clone();
+                    key.extend_from_slice(b".gitattributes");
+                    if let Some(s) = self.snapshot.borrow_mut().as_mut() {
+                        s.insert(key, data);
+                        changed = true;
+                    }
+                }
+            }
+            let rest = &path[dir.len()..];
+            let Some(slash) = rest.iter().position(|&b| b == b'/') else {
+                return changed;
+            };
+            let name = &rest[..slash];
+            let Some(sub) = entries.iter().find(|e| e.name == name && e.mode.is_tree()) else {
+                return changed;
+            };
+            tree = sub.oid;
+            dir.extend_from_slice(name);
+            dir.push(b'/');
+        }
     }
 
     /// The state of attribute `name` for `path`, from the same files as
@@ -578,6 +664,29 @@ impl Converter {
         print_notice(n);
     }
 
+    /// The regular file `path` inside a sparse directory entry of `index`
+    /// (the entry an expanded index would have).
+    fn sparse_file(&self, index: &Index, path: &[u8]) -> Option<ObjectId> {
+        use rgit_attr::ObjectReader;
+        let pos = index.entries().partition_point(|e| e.path() <= path);
+        let dir = index.entries()[..pos].last()?;
+        if !dir.mode.is_dir() || !path.starts_with(dir.path()) {
+            return None;
+        }
+        let odb = self.odb()?;
+        let mut tree = dir.id;
+        let mut comps = path[dir.path().len()..].split(|&b| b == b'/').peekable();
+        while let Some(name) = comps.next() {
+            let e = odb.tree(&tree)?.into_iter().find(|e| e.name == name)?;
+            if comps.peek().is_none() {
+                let file = e.mode.canonical().bits() & 0o170000 == 0o100000;
+                return file.then_some(e.oid);
+            }
+            tree = e.oid;
+        }
+        None
+    }
+
     /// Whether the stage-0 index entry of `path` is text with CR LF.
     fn index_has_crlf(&self, path: &[u8]) -> bool {
         if self.renormalize.get() {
@@ -586,13 +695,15 @@ impl Converter {
         let Some(index) = self.index() else {
             return false;
         };
-        let Some(e) = index.get(path, Stage::MERGED) else {
-            return false;
+        let id = match index.get(path, Stage::MERGED) {
+            Some(e) if e.mode.is_file() => e.id,
+            Some(_) => return false,
+            None => match self.sparse_file(&index, path) {
+                Some(id) => id,
+                None => return false,
+            },
         };
-        if !e.mode.is_file() {
-            return false;
-        }
-        match self.odb().and_then(|o| o.read(&e.id).ok().flatten()) {
+        match self.odb().and_then(|o| o.read(&id).ok().flatten()) {
             Some(raw) if raw.kind == ObjectKind::Blob => Stats::new(&raw.data).is_text_with_crlf(),
             _ => false,
         }

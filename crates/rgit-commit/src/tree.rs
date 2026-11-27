@@ -145,6 +145,15 @@ fn build(
                 tree.entries.push(TreeEntry::new(mode, rest, items[i].2));
                 i += 1;
             }
+            // A sparse directory entry (gitformat-index(5)): the tree as
+            // it is, a cache tree leaf covering this one entry.
+            Some(slash) if slash + 1 == rest.len() && items[i].1 & 0o170000 == 0o040000 => {
+                let dir = &rest[..slash];
+                let mode = EntryMode::from_octal(b"40000").ok_or(WriteTreeError::BadMode)?;
+                tree.entries.push(TreeEntry::new(mode, dir, items[i].2));
+                children.push(TreeNode::new_valid(dir.to_vec(), 1, items[i].2));
+                i += 1;
+            }
             Some(slash) => {
                 let name = &rest[..=slash];
                 let mut j = i + 1;

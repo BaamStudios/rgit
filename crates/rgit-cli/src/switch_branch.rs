@@ -293,7 +293,8 @@ fn move_index_inner(
     let work_tree = repo.work_tree()?;
     let index_path = repo.setup.cwd.join(repo.index_path());
     let lock = LockFile::acquire(&index_path, &LockOptions::default()).map_err(lock_failed)?;
-    let (mut index, mtime) = repo.read_index()?;
+    // Unpacking keeps sparse directory entries the trees agree with.
+    let (mut index, mtime) = repo.read_index_sparse()?;
     let checker = repo.checker(mtime)?;
     refresh_stat(&mut index, &checker);
     let mut excludes = crate::commands::add::build_excludes(repo, &work_tree);
@@ -413,7 +414,15 @@ fn local_changes(
     tree: ObjectId,
     checker: &Checker,
 ) -> Result<Vec<u8>, Die> {
-    let tree = rgit_unpack::tree_entries(repo.odb(), &tree).map_err(unpack_failed)?;
+    // Sparse directory entries of the index hold what `tree` has there
+    // (unpacking kept them only then): both sides skip them.
+    let sparse_dir = |dir: &[u8]| {
+        index
+            .get(dir, Stage::MERGED)
+            .is_some_and(|e| e.mode.is_dir())
+    };
+    let tree = rgit_unpack::tree_entries_skipping(repo.odb(), &tree, &sparse_dir)
+        .map_err(unpack_failed)?;
     let quote = repo.quote_path();
     let mut rules = None;
     let mut out = Vec::new();
@@ -426,6 +435,7 @@ fn local_changes(
     let groups: Vec<&[Entry]> = index
         .entries()
         .chunk_by(|a, b| a.path() == b.path())
+        .filter(|g| !g[0].mode.is_dir())
         .collect();
     let (mut gi, mut ti) = (0, 0);
     loop {

@@ -1245,25 +1245,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             _ => None,
         }
     };
-    let tree_of = |id: &ObjectId| -> Result<Flat, Die> {
+    // The files of a commit's tree; the directories `sparse` (an index
+    // read with `read_index_sparse`) holds as sparse directory entries
+    // are kept whole, as the index has them.
+    let tree_of = |id: &ObjectId, sparse: Option<&Index>| -> Result<Flat, Die> {
         let mut flat = Flat::new();
         if let Some(t) = tree_id_of(id) {
-            tree_changes::flatten_tree(&repo, &t, &mut flat)?;
+            match sparse.filter(|i| i.is_sparse()) {
+                Some(i) => tree_changes::flatten_tree_sparse(&repo, &t, i, &mut flat)?,
+                None => tree_changes::flatten_tree(&repo, &t, &mut flat)?,
+            }
         }
         Ok(flat)
-    };
-    let base = match parents.first() {
-        Some(p) => tree_of(p)?,
-        None => Flat::new(),
     };
     let base_tree = parents
         .first()
         .and_then(tree_id_of)
         .unwrap_or_else(|| ObjectId::empty_tree(repo.hash));
-    let head_flat = match head {
-        Some(h) => tree_of(&h)?,
-        None => Flat::new(),
-    };
 
     // Identities. The author comes from the amended commit or the one of
     // -C/-c, unless --reset-author.
@@ -1369,7 +1367,23 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     };
     // The index to commit.
     let root = repo.work_tree()?;
-    let (mut index, index_mtime) = repo.read_index()?;
+    let (mut index, index_mtime) = repo.read_index_sparse()?;
+    // Sparse directory entries stay when they hold what the parent has
+    // there and no paths are picked file by file.
+    if args.patch.is_some() || !args.paths.is_empty() || args.only {
+        crate::sparse_index::expand(&repo, &mut index)?;
+    } else {
+        crate::sparse_index::expand_unless_same(&repo, &mut index, Some(base_tree))?;
+    }
+    let mut base = match parents.first() {
+        Some(p) => tree_of(p, Some(&index))?,
+        None => Flat::new(),
+    };
+    let base_sparse = index.is_sparse();
+    let head_flat = match head {
+        Some(h) if !args.paths.is_empty() || args.only => tree_of(&h, None)?,
+        _ => Flat::new(),
+    };
     let checker = repo.checker(index_mtime)?;
     let mut commit_index: Option<Index> = None;
     // With -a, -i and -o the updated index is only written once the
@@ -1594,6 +1608,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 index = reread(&hook_index_file)?;
             } else {
                 index = repo.read_index()?.0;
+            }
+            // The index the hook left is compared file by file.
+            if let Some(p) = parents.first().filter(|_| base_sparse && !index.is_sparse()) {
+                base = tree_of(p, None)?;
             }
         }
     }
