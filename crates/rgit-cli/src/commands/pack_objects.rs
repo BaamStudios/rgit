@@ -97,6 +97,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let given: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
     // `--unpack-unreachable[=<time>]`: `Some(time)`.
     let unpack_unreachable: RefCell<Option<Option<String>>> = RefCell::new(None);
+    let pack_loose_unreachable = Cell::new(false);
     let reject = |name: &'static str| {
         let unsupported = &unsupported;
         let given = &given;
@@ -184,7 +185,14 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 "pack-loose-unreachable",
                 None,
                 msg::H_PACK_LOOSE_UNREACHABLE,
-                reject("pack-loose-unreachable"),
+                |_: Option<&str>, unset: bool| -> Result<(), CallbackError> {
+                    pack_loose_unreachable.set(!unset);
+                    if !unset {
+                        given.borrow_mut().push("pack-loose-unreachable");
+                        revs.set(true);
+                    }
+                    Ok(())
+                },
             )
             .noarg(),
             Opt::callback(
@@ -589,6 +597,21 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         (listed, bases)
     };
     let mut listed = listed;
+    if pack_loose_unreachable.get() {
+        // `--pack-loose-unreachable`: the loose objects not listed go in too.
+        let objects = rgit_odb::objects_dir(&setup.cwd.join(&setup.common_dir));
+        let have: std::collections::HashSet<ObjectId> = listed.iter().map(|o| o.id).collect();
+        let mut extra: Vec<ObjectId> =
+            crate::housekeeping::store::loose_objects(&objects, hash)
+                .into_iter()
+                .map(|(id, _, _)| id)
+                .filter(|id| !have.contains(id))
+                .collect();
+        extra.sort();
+        listed.extend(
+            pw::describe(&repo.source, hash, &extra).map_err(|e| Die::Fatal(e.to_string()))?,
+        );
+    }
     let skip = Skip {
         local: local.get(),
         // With `--stdin-packs`, `--unpacked` adds the loose objects.
