@@ -10,6 +10,7 @@
 //! Children and hooks that write to standard error while the client gets
 //! a sideband have their output relayed to sideband 2.
 
+use crate::argv::CommandArgs as _;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -426,7 +427,7 @@ impl CliBackend {
     /// A child running this binary with `args`.
     fn child(&self, args: &[&str]) -> Command {
         let mut c = Command::new(&self.exe);
-        c.args(args);
+        c.raw_args(args);
         c.envs(self.ctx.child_env());
         c.envs(self.quarantine_env());
         // The server works on the objects as stored: no replace refs
@@ -621,8 +622,8 @@ impl Backend for CliBackend {
                 }
                 None => {
                     let mut c = Command::new(&self.exe);
-                    c.args(["for-each-ref", "--format=%(objectname)"])
-                        .args(&prefixes)
+                    c.raw_args(["for-each-ref", "--format=%(objectname)"])
+                        .raw_args(&prefixes)
                         .env("GIT_DIR", &repo);
                     c
                 }
@@ -1010,7 +1011,7 @@ impl Backend for CliBackend {
         ];
         let run = |args: &[&str], stdout_null: bool| -> bool {
             let mut c = Command::new(&self.exe);
-            c.args(args)
+            c.raw_args(args)
                 .envs(self.ctx.child_env())
                 .envs(base_env.iter().cloned())
                 .current_dir(&work_tree)

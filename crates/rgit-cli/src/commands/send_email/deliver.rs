@@ -4,6 +4,7 @@
 //! `git credential`), or nowhere with `--dry-run`. Each message is
 //! reported with a log of what was (or would have been) done.
 
+use crate::argv::CommandArgs as _;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -256,7 +257,7 @@ fn run_sendmail(program: &str, shell: bool, args: &[String], message: &[u8]) -> 
         rgit_ident::editor::shell_command(program, &a)
     } else {
         let mut c = Command::new(program);
-        c.args(args);
+        c.raw_args(args);
         c
     };
     let mut child = cmd
@@ -319,7 +320,7 @@ fn credential(ctx: &Context, action: &str, input: &str) -> Option<Vec<(String, S
     let exe = std::env::current_exe().ok()?;
     let mut child = Command::new(exe)
         .envs(ctx.child_env())
-        .args(["credential", action])
+        .raw_args(["credential", action])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -516,7 +517,7 @@ pub fn store_imap(ctx: &Context, folder: &str, message: &[u8], id: &str) {
     mbox.extend_from_slice(message);
     let child = Command::new(exe)
         .envs(ctx.child_env())
-        .args(["imap-send", "--quiet", "--folder", folder])
+        .raw_args(["imap-send", "--quiet", "--folder", folder])
         .stdin(Stdio::piped())
         .spawn();
     let ok = match child {

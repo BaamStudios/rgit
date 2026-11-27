@@ -9,6 +9,7 @@
 //! `PATH`, and when no `git` there is rgit, a temporary `git` link to rgit
 //! is put in front of that.
 
+use crate::argv::CommandArgs as _;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -71,7 +72,7 @@ fn installed_exec_path() -> Option<&'static Path> {
             .map(|d| d.join(if cfg!(windows) { "git.exe" } else { "git" }))
             .find(|p| is_executable(p) && !is_self(p))?;
         let out = Command::new(&git)
-            .arg("--exec-path")
+            .raw_arg("--exec-path")
             .env_remove("GIT_EXEC_PATH")
             .stdin(Stdio::null())
             .stderr(Stdio::null())

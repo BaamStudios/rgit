@@ -82,6 +82,11 @@ impl Refs {
         None
     }
 
+    /// `name` is a symbolic ref that resolves to nothing.
+    pub fn is_dangling_symref(&self, name: &str) -> bool {
+        matches!(self.read_raw(name), Some(Target::Symbolic(_))) && self.resolve(name).is_none()
+    }
+
     /// The ref `HEAD` points to, if it is symbolic.
     pub fn head_target(&self) -> Option<String> {
         match self.read_raw("HEAD")? {

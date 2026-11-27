@@ -10,6 +10,7 @@
 //! `Notes added by 'git notes <subcommand>'` (or `removed`), written only
 //! when the notes changed.
 
+use crate::argv::CommandArgs as _;
 #[path = "notes/merge.rs"]
 mod merge;
 
@@ -371,7 +372,7 @@ impl Cmd<'_> {
             return Vec::new();
         };
         std::process::Command::new(exe)
-            .args(["show", "--stat", "--no-notes", &object.to_hex()])
+            .raw_args(["show", "--stat", "--no-notes", &object.to_hex()])
             .envs(self.ctx.child_env())
             .env("GIT_PAGER", "cat")
             .current_dir(&self.repo.setup.cwd)

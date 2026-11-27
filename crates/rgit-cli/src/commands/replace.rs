@@ -5,6 +5,7 @@
 //! editing an object (`--edit`) or changing a commit's parents (`--graft`,
 //! `--convert-graft-file`).
 
+use crate::argv::CommandArgs as _;
 use std::io::Write;
 use std::path::Path;
 
@@ -425,7 +426,7 @@ impl Replace<'_> {
         let input = std::fs::File::open(path)
             .map_err(|e| Die::Fatal(format!("{}: {}", path.display(), crate::global::strerror(&e))))?;
         let out = std::process::Command::new(exe)
-            .arg("mktree")
+            .raw_arg("mktree")
             .envs(self.ctx.child_env())
             .stdin(input)
             .stderr(std::process::Stdio::inherit())

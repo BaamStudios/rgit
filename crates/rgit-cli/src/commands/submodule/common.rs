@@ -5,6 +5,7 @@
 //! processes that run inside a submodule (gitsubmodules.adoc,
 //! gitmodules.adoc, config/submodule.adoc).
 
+use crate::argv::CommandArgs as _;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -366,7 +367,7 @@ impl Super {
         cmd.envs(env.iter().map(|(k, v)| (k, v)));
         cmd.env("GIT_DIR", &self.git_dir);
         cmd.env("GIT_WORK_TREE", &self.work_tree);
-        cmd.args(args).current_dir(&self.work_tree);
+        cmd.raw_args(args).current_dir(&self.work_tree);
         Ok(cmd)
     }
 
@@ -376,7 +377,7 @@ impl Super {
         let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
         let mut cmd = Command::new(exe);
         self.sub_env(&mut cmd);
-        cmd.args(args).current_dir(self.work_tree.join(dir));
+        cmd.raw_args(args).current_dir(self.work_tree.join(dir));
         Ok(cmd)
     }
 

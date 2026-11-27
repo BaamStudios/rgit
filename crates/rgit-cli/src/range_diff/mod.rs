@@ -21,6 +21,7 @@
 //! the `git` binary, including the "dual" mode that keeps the colours of
 //! the inner diff and marks the outer `-`/`+` in reverse video.
 
+use crate::argv::CommandArgs as _;
 pub mod lapjv;
 pub mod patches;
 
@@ -175,7 +176,7 @@ fn read_patches(
     args.extend(opts.log_args.iter().cloned());
     args.extend(paths.iter().cloned());
     let out = Command::new(exe)
-        .args(&args)
+        .raw_args(&args)
         .envs(ctx.child_env_with(false))
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())

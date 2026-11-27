@@ -11,6 +11,7 @@
 //! nothing is created when one of them refuses. A submodule's tracking is
 //! derived from the superproject's start point (full ref name).
 
+use crate::argv::CommandArgs as _;
 use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -95,29 +96,29 @@ pub fn run(subs: &[Sub], c: &Create<'_>, dry_run: bool) -> Result<(), Die> {
         crate::submodules::prepare_env(&mut cmd);
         cmd.env_remove("GIT_PREFIX");
         cmd.env("GIT_DIR", &s.git_dir).current_dir(&s.git_dir);
-        cmd.args(["submodule--helper", "create-branch"]);
+        cmd.raw_args(["submodule--helper", "create-branch"]);
         if dry_run {
-            cmd.arg("--dry-run");
+            cmd.raw_arg("--dry-run");
         }
         if c.force {
-            cmd.arg("--force");
+            cmd.raw_arg("--force");
         }
         if c.quiet {
-            cmd.arg("--quiet");
+            cmd.raw_arg("--quiet");
         }
         match c.track {
             Track::Direct => {
-                cmd.arg("--track=direct");
+                cmd.raw_arg("--track=direct");
             }
             Track::Inherit => {
-                cmd.arg("--track=inherit");
+                cmd.raw_arg("--track=inherit");
             }
             Track::Never => {
-                cmd.arg("--no-track");
+                cmd.raw_arg("--no-track");
             }
             Track::Unspecified => {}
         }
-        cmd.args([c.name, &s.oid.to_hex(), c.start_name]);
+        cmd.raw_args([c.name, &s.oid.to_hex(), c.start_name]);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

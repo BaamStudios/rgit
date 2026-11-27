@@ -25,6 +25,7 @@
 //! needs one of them counts as done when the child reports it is missing,
 //! and automatic runs leave those tasks out.
 
+use crate::argv::CommandArgs as _;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -269,7 +270,7 @@ impl Children {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args).current_dir(&self.dir);
+        cmd.raw_args(args).current_dir(&self.dir);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }

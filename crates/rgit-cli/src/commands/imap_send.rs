@@ -9,6 +9,7 @@
 //! unless `imap.authMethod` names a SASL mechanism (PLAIN, XOAUTH2,
 //! OAUTHBEARER). Progress and status lines follow the `git` binary.
 
+use crate::argv::CommandArgs as _;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -180,7 +181,7 @@ fn credential(ctx: &Context, action: &str, input: &str) -> Result<Vec<(String, S
     let exe = std::env::current_exe().map_err(|_| 128)?;
     let mut child = Command::new(exe)
         .envs(ctx.child_env())
-        .args(["credential", action])
+        .raw_args(["credential", action])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

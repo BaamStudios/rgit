@@ -8,6 +8,7 @@
 //! messages are relayed on sideband channels 1 and 2. When the archiver
 //! fails, channel 3 says so and the service dies.
 
+use crate::argv::CommandArgs as _;
 use std::process::{Command, Stdio};
 
 use rgit_archive::messages as amsg;
@@ -24,8 +25,8 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 
     let exe = std::env::current_exe().map_err(|e| Die::Fatal(crate::global::strerror(&e)))?;
     let mut child = Command::new(exe)
-        .arg("upload-archive--writer")
-        .args(&argv[1..])
+        .raw_arg("upload-archive--writer")
+        .raw_args(&argv[1..])
         .envs(ctx.child_env())
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())

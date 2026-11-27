@@ -341,8 +341,8 @@ impl Helper {
     ) -> Result<Helper> {
         let mut cmd = Command::new(git_program(base_env));
         cmd.arg(format!("remote-{}", spec.name))
-            .arg(&spec.remote)
-            .arg(&spec.url);
+            .arg(rgit_bstr::to_os(&spec.remote))
+            .arg(rgit_bstr::to_os(&spec.url));
         cmd.base_env(base_env);
         if let Some(dir) = &ctx.git_dir {
             cmd.base_env(&[("GIT_DIR".into(), git_dir_value(dir))]);
@@ -560,7 +560,7 @@ impl Helper {
     fn git_command(&self, args: &[String]) -> Command {
         let mut cmd = Command::new(git_program(&self.base_env));
         for a in args {
-            cmd.arg(a);
+            cmd.arg(rgit_bstr::to_os(a));
         }
         cmd.base_env(&self.base_env);
         if let Some(dir) = &self.git_dir {

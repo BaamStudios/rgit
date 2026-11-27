@@ -22,6 +22,7 @@
 //! With `gc.writeCommitGraph` (default true) the commit-graph of all
 //! reachable commits is written last, as one file.
 
+use crate::argv::CommandArgs as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -428,7 +429,7 @@ impl Children {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args).current_dir(&self.dir);
+        cmd.raw_args(args).current_dir(&self.dir);
         cmd.env_remove(LOG_LOCK_ENV);
         for (k, v) in &self.env {
             cmd.env(k, v);

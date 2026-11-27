@@ -11,6 +11,7 @@
 //! (`update-ref`, `symbolic-ref`, `reset --hard`), as git-worktree(1)
 //! describes the result. Output and messages follow the `git` binary.
 
+use crate::argv::CommandArgs as _;
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -182,7 +183,7 @@ impl Child {
     fn command(&self, args: &[&str]) -> Command {
         let mut c = Command::new(&self.exe);
         // Names that are not UTF-8 go to the child as their raw bytes.
-        c.args(args.iter().map(|a| rgit_bstr::to_os(a)))
+        c.raw_args(args)
             .current_dir(&self.dir)
             .env_remove("GIT_INDEX_FILE")
             .env_remove("GIT_DIR")
@@ -1242,24 +1243,10 @@ fn prune(ctx: &mut Context, argv: &[String]) -> CmdResult {
     let expire = parse_expire(expire.take().as_deref())?;
     let show = dry_run.get() || verbose.get() > 0;
     let common = repo.setup.absolute_common_dir();
-    let mut seen = vec![worktrees::real(&worktrees::main_path(&common))];
-    // In directory order, like git.
-    for id in worktrees::linked_ids_unsorted(&common) {
-        let admin = common.join("worktrees").join(&id);
-        let mut reason = worktrees::prune_reason(&admin, expire.map(to_system_time));
-        if reason.is_none() && !admin.join("locked").exists() {
-            if let Some(target) = worktrees::gitdir_target(&admin) {
-                let path = worktrees::real(&worktrees::main_path(&target));
-                if seen.contains(&path) {
-                    reason = Some(msg::PRUNE_DUPLICATE);
-                } else {
-                    seen.push(path);
-                }
-            }
-        }
-        let Some(reason) = reason else { continue };
+    let remove = |id: &str, reason: &str| {
+        let admin = common.join("worktrees").join(id);
         if show {
-            eprintln!("{}", msg::removing(&id, reason));
+            eprintln!("{}", msg::removing(id, reason));
         }
         if !dry_run.get() {
             if admin.is_dir() {
@@ -1268,6 +1255,35 @@ fn prune(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 let _ = std::fs::remove_file(&admin);
             }
         }
+    };
+    // Stale entries go in directory order, like git; the remaining ones
+    // are then sorted by path and id, and of those sharing a path (with
+    // each other or the main worktree) all but the first are duplicates.
+    // Which one stays does not depend on the directory order (observed).
+    let mut valid: Vec<(PathBuf, String)> = Vec::new();
+    for id in worktrees::linked_ids_unsorted(&common) {
+        let admin = common.join("worktrees").join(&id);
+        if let Some(reason) = worktrees::prune_reason(&admin, expire.map(to_system_time)) {
+            remove(&id, reason);
+        } else if !admin.join("locked").exists() {
+            if let Some(target) = worktrees::gitdir_target(&admin) {
+                valid.push((worktrees::real(&worktrees::main_path(&target)), id));
+            }
+        }
+    }
+    valid.sort_by(|a, b| {
+        a.0.as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.0.as_os_str().as_encoded_bytes())
+            .then_with(|| rgit_bstr::cmp(&a.1, &b.1))
+    });
+    let main = worktrees::real(&worktrees::main_path(&common));
+    let mut previous: Option<&PathBuf> = None;
+    for (path, id) in &valid {
+        if *path == main || previous == Some(path) {
+            remove(id, msg::PRUNE_DUPLICATE);
+        }
+        previous = Some(path);
     }
     if !dry_run.get() {
         prune_worktrees_dir(&common);

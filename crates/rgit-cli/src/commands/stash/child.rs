@@ -7,6 +7,7 @@
 //! explicitly (`GIT_DIR`, `GIT_WORK_TREE`), so the caller's current
 //! directory and discovery do not matter.
 
+use crate::argv::CommandArgs as _;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -103,7 +104,7 @@ impl Call<'_> {
 
     fn command(&self) -> Command {
         let mut c = Command::new(&self.git.exe);
-        c.args(&self.args)
+        c.raw_args(&self.args)
             .current_dir(self.dir.as_ref().unwrap_or(&self.git.dir))
             .envs(self.git.env.iter().map(|(k, v)| (k, v)))
             .envs(self.env.iter().map(|(k, v)| (k, v)));

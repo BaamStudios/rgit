@@ -8,6 +8,7 @@
 //! --porcelain=2` inside the submodule (this binary, with the repository
 //! environment of the superproject removed).
 
+use crate::argv::CommandArgs as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -312,9 +313,9 @@ fn run_status(dir: &Path, untracked: bool) -> (bool, bool) {
     };
     let mut cmd = Command::new(exe);
     cmd.current_dir(dir)
-        .arg("status")
-        .arg("--porcelain=2")
-        .arg(if untracked { "-unormal" } else { "-uno" })
+        .raw_arg("status")
+        .raw_arg("--porcelain=2")
+        .raw_arg(if untracked { "-unormal" } else { "-uno" })
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     prepare_env(&mut cmd);
@@ -398,7 +399,7 @@ fn run_in(git_dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     prepare_env(&mut cmd);
     cmd.env("GIT_DIR", git_dir)
         .env("GIT_WORK_TREE", git_dir)
-        .args(args)
+        .raw_args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     let out = cmd.output().ok()?;
@@ -912,7 +913,7 @@ fn run_diff(
     let mut cmd = Command::new(exe);
     prepare_env(&mut cmd);
     cmd.current_dir(&dir)
-        .args(["diff", "--submodule=diff", &src, &dst, &base, "--"])
+        .raw_args(["diff", "--submodule=diff", &src, &dst, &base, "--"])
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     if let Ok(o) = cmd.output() {

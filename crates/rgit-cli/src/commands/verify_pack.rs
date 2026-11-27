@@ -4,6 +4,7 @@
 //! (`--verify-stat` / `--verify-stat-only` for `-v` / `-s`, which print the
 //! object list and the delta chain histogram).
 
+use crate::argv::CommandArgs as _;
 use std::process::Command;
 
 use crate::messages::verify_pack as msg;
@@ -35,16 +36,16 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             .unwrap_or(name);
         let pack = format!("{base}.pack");
         let mut cmd = Command::new(&exe);
-        cmd.arg("index-pack");
-        cmd.arg(match (verbose.get(), stat_only.get()) {
+        cmd.raw_arg("index-pack");
+        cmd.raw_arg(match (verbose.get(), stat_only.get()) {
             (_, true) => "--verify-stat-only",
             (true, false) => "--verify-stat",
             (false, false) => "--verify",
         });
         if let Some(f) = format.borrow().as_deref() {
-            cmd.arg(format!("--object-format={f}"));
+            cmd.raw_arg(format!("--object-format={f}"));
         }
-        cmd.arg(&pack).envs(ctx.child_env());
+        cmd.raw_arg(&pack).envs(ctx.child_env());
         let ok = cmd.status().is_ok_and(|s| s.success());
         if verbose.get() || stat_only.get() {
             if !ok {
