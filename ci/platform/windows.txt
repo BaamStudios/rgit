@@ -27,7 +27,6 @@ skip -p rgit-cli --test *  #679 not run on Windows yet
 -p rgit-protocol --test v2_fetch_trace    #682 helper program not found
 -p rgit-trace --lib                       #682 text of system errors
 -p rgit-trace --test targets              #682 file descriptor trace targets
--p rgit-transport --lib                   #682 text of system errors (no terminal)
 -p rgit-messages --lib                    #682 text of system errors
 
 # Files: read-only and memory-mapped files, stat data.

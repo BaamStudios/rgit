@@ -16,7 +16,6 @@ skip -p rgit-cli --test fetch  #680 hangs
 -p rgit-cli --test grep                #680 system regex library (bracket and interval expressions)
 -p rgit-cli --test convert             #680 working-tree-encoding: iconv output differs
 -p rgit-cli --test i18n                #680 --date=iso-local
--p rgit-transport --lib                #680 text of ENXIO ("Device not configured")
 
 # Differences that were not looked into yet.
 -p rgit-cli --test bitmaps             #680 multi-pack bitmap differs from git's
@@ -26,6 +25,7 @@ skip -p rgit-cli --test fetch  #680 hangs
 -p rgit-cli --test for_each_ref        #680
 -p rgit-cli --test maintenance_cmd     #680 maintenance start/stop use launchctl on macOS
 -p rgit-cli --test name_rev_ties       #680
+-p rgit-cli --test ref_backend_uri     #680 tag in a repository with an alternate ref directory: git fails to resolve HEAD
 -p rgit-cli --test var                 #680
 
 # The file system folds case.
