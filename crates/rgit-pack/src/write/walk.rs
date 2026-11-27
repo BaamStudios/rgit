@@ -192,6 +192,12 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
         let mut tags = Vec::new();
         let mut cur = id;
         loop {
+            // The final object is not read: it may be a large blob.
+            if let Ok(Some((kind, _))) = self.source.header(&cur) {
+                if kind != ObjectKind::Tag {
+                    return Ok((tags, cur, kind));
+                }
+            }
             let o = self.read(&cur)?;
             if o.kind != ObjectKind::Tag {
                 return Ok((tags, cur, o.kind));
