@@ -710,3 +710,64 @@ fn clients_through_rgit_backend() {
         );
     }
 }
+
+/// With an explicit exec path (`GIT_EXEC_PATH`, as web server
+/// configurations set it), the services are that directory's `git`, as
+/// with git; otherwise rgit runs them itself.
+#[cfg(unix)]
+#[test]
+fn services_run_from_explicit_exec_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let work = fx.work_dir();
+    let exec = work.join("exec");
+    std::fs::create_dir_all(&exec).unwrap();
+    let log = work.join("exec.log");
+    let script = exec.join("git");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$*\" >>'{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            rgit().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let vars = |exec_path: Option<&Path>| {
+        let mut v = vec![
+            ("REQUEST_METHOD", "GET".to_string()),
+            (
+                "PATH_TRANSLATED",
+                format!("{}/repo.git/info/refs", work.display()),
+            ),
+            ("QUERY_STRING", "service=git-upload-pack".into()),
+            ("GIT_HTTP_EXPORT_ALL", "1".into()),
+        ];
+        if let Some(p) = exec_path {
+            v.push(("GIT_EXEC_PATH", p.display().to_string()));
+        }
+        v
+    };
+
+    let out = cgi(&fx, &rgit(), &vars(None), b"");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("# service=git-upload-pack"));
+    assert!(
+        !log.exists(),
+        "the exec path's git ran without GIT_EXEC_PATH"
+    );
+
+    let out = cgi(&fx, &rgit(), &vars(Some(&exec)), b"");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("# service=git-upload-pack"));
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        calls,
+        "upload-pack --stateless-rpc --http-backend-info-refs .\n"
+    );
+}

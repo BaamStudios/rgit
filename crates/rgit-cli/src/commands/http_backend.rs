@@ -55,8 +55,26 @@ impl CliHost<'_> {
     }
 }
 
+/// The program that runs the services: like git, the `git` of an exec path
+/// set explicitly (`GIT_EXEC_PATH`, as web server configurations do, or
+/// `--exec-path`), so that the services are that installation's programs;
+/// otherwise rgit itself.
+fn service_program(ctx: &Context) -> Result<std::path::PathBuf, Die> {
+    let explicit = ctx.exec_path_overridden
+        || std::env::var_os("GIT_EXEC_PATH").is_some_and(|p| !p.is_empty());
+    if explicit {
+        let git = ctx
+            .exec_path
+            .join(if cfg!(windows) { "git.exe" } else { "git" });
+        if crate::external::is_executable(&git) {
+            return Ok(git);
+        }
+    }
+    std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))
+}
+
 pub fn run(ctx: &mut Context, _argv: &[String]) -> CmdResult {
-    let exe = std::env::current_exe().map_err(|e| Die::Fatal(e.to_string()))?;
+    let exe = service_program(ctx)?;
     let opts = service::Options {
         git: vec![exe.into_os_string()],
         env: ctx.child_env(),
