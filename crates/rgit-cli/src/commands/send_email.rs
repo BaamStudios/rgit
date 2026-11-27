@@ -910,7 +910,7 @@ fn collect_files(
                 continue;
             }
             let p = PathBuf::from(l);
-            let path = if p.is_absolute() { p } else { state.cwd.join(p) };
+            let path = if rgit_fs::path::is_absolute(&p) { p } else { state.cwd.join(p) };
             files.push(PatchFile {
                 display: path.display().to_string(),
                 path,
@@ -947,7 +947,7 @@ fn run_validate_hook(
         text.push_str(&format!("{n}: {v}\n"));
     }
     std::fs::write(&header, text).map_err(|e| Die::Fatal(e.to_string()))?;
-    let abs = std::fs::canonicalize(&f.path)
+    let abs = rgit_fs::path::canonicalize(&f.path)
         .or_else(|_| std::path::absolute(&f.path))
         .unwrap_or_else(|_| f.path.clone());
     let mut cmd = rgit_command(ctx);

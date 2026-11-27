@@ -84,7 +84,7 @@ pub enum SetupError {
 }
 
 fn absolute(p: &Path) -> PathBuf {
-    if p.is_absolute() {
+    if rgit_fs::path::is_absolute(p) {
         p.to_path_buf()
     } else {
         std::env::current_dir()
@@ -109,12 +109,12 @@ fn read_gitfile(file: &Path) -> Option<PathBuf> {
         .strip_prefix(b"gitdir: ")?;
     let target = PathBuf::from(target.to_str().ok()?);
     let dir = file.parent().unwrap_or(Path::new("/"));
-    let full = if target.is_absolute() {
+    let full = if rgit_fs::path::is_absolute(&target) {
         target
     } else {
         dir.join(target)
     };
-    full.canonicalize().ok()
+    rgit_fs::path::canonicalize(full).ok()
 }
 
 /// The device a directory is on (`None` if unknown).
@@ -138,8 +138,8 @@ fn ceilings() -> Vec<PathBuf> {
         return Vec::new();
     };
     std::env::split_paths(&v)
-        .filter(|p| p.is_absolute())
-        .map(|p| p.canonicalize().unwrap_or(p))
+        .filter(|p| rgit_fs::path::is_absolute(p))
+        .map(|p| rgit_fs::path::canonicalize(&p).unwrap_or(p))
         .collect()
 }
 
@@ -268,7 +268,7 @@ pub fn discover(chdir: bool) -> Result<Repo, SetupError> {
             return Ok(Repo {
                 git_dir,
                 abs_git_dir,
-                worktree: worktree.map(|w| w.canonicalize().unwrap_or(w)),
+                worktree: worktree.map(|w| rgit_fs::path::canonicalize(&w).unwrap_or(w)),
             });
         }
         let Some(parent) = dir.parent() else {

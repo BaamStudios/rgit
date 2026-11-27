@@ -75,7 +75,7 @@ impl Spec {
         if let [d @ b'2'..=b'9'] = value.as_bytes() {
             return Spec::Fd(i32::from(d - b'0'));
         }
-        if value.starts_with('/') {
+        if rgit_fs::path::is_absolute_bytes(value.as_bytes()) {
             return Spec::Path(PathBuf::from(value));
         }
         if let Some(rest) = value.strip_prefix("af_unix:") {
@@ -86,7 +86,7 @@ impl Spec {
             } else {
                 (None, rest)
             };
-            if path.starts_with('/') {
+            if rgit_fs::path::is_absolute_bytes(path.as_bytes()) {
                 return Spec::Socket {
                     kind,
                     path: PathBuf::from(path),

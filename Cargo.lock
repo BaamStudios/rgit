@@ -576,6 +576,7 @@ dependencies = [
  "rgit-convert",
  "rgit-date",
  "rgit-difftest",
+ "rgit-fs",
  "rgit-hash",
  "rgit-index",
  "rgit-object",
@@ -609,6 +610,7 @@ name = "rgit-attr"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rgit-fs",
  "rgit-hash",
  "rgit-index",
  "rgit-object",
@@ -707,6 +709,7 @@ name = "rgit-commitgraph"
 version = "0.1.0"
 dependencies = [
  "memmap2",
+ "rgit-fs",
  "rgit-hash",
  "rgit-object",
  "rgit-progress",
@@ -760,6 +763,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "regex",
+ "rgit-fs",
  "tempfile",
 ]
 
@@ -814,6 +818,7 @@ dependencies = [
  "libc",
  "rgit-config",
  "rgit-difftest",
+ "rgit-fs",
  "rgit-ident",
  "rgit-messages",
  "rgit-trace",
@@ -854,6 +859,7 @@ dependencies = [
  "rgit-config",
  "rgit-date",
  "rgit-difftest",
+ "rgit-fs",
  "rgit-messages",
  "rustix",
  "tempfile",
@@ -912,6 +918,7 @@ name = "rgit-messages"
 version = "0.1.0"
 dependencies = [
  "rgit-config",
+ "rgit-fs",
  "unicode-width",
 ]
 
@@ -954,6 +961,9 @@ dependencies = [
 [[package]]
 name = "rgit-options"
 version = "0.1.0"
+dependencies = [
+ "rgit-fs",
+]
 
 [[package]]
 name = "rgit-pack"
@@ -973,6 +983,7 @@ dependencies = [
 name = "rgit-pathspec"
 version = "0.1.0"
 dependencies = [
+ "rgit-fs",
  "thiserror",
 ]
 
@@ -1043,6 +1054,7 @@ name = "rgit-rerere"
 version = "0.1.0"
 dependencies = [
  "rgit-diff",
+ "rgit-fs",
  "rgit-hash",
  "tempfile",
 ]
@@ -1091,6 +1103,7 @@ version = "0.1.0"
 dependencies = [
  "bstr",
  "rgit-config",
+ "rgit-fs",
  "rgit-object",
  "rgit-pathspec",
 ]
@@ -1105,6 +1118,7 @@ dependencies = [
  "rgit-config",
  "rgit-date",
  "rgit-difftest",
+ "rgit-fs",
  "rgit-hash",
  "rgit-ident",
  "rgit-messages",
@@ -1128,6 +1142,7 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "libc",
+ "rgit-fs",
 ]
 
 [[package]]
@@ -1157,6 +1172,7 @@ dependencies = [
 name = "rgit-unpack"
 version = "0.1.0"
 dependencies = [
+ "rgit-fs",
  "rgit-hash",
  "rgit-index",
  "rgit-object",
@@ -1181,6 +1197,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "rgit-difftest",
+ "rgit-fs",
  "rgit-hash",
  "rgit-index",
  "rgit-pathspec",

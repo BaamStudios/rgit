@@ -528,7 +528,7 @@ fn names_file(repo: &Repo, arg: &str) -> bool {
         return false;
     }
     let path = match &repo.setup.prefix {
-        Some(p) if !std::path::Path::new(arg).is_absolute() => std::path::Path::new(p).join(arg),
+        Some(p) if !rgit_fs::path::is_absolute(std::path::Path::new(arg)) => std::path::Path::new(p).join(arg),
         _ => std::path::PathBuf::from(arg),
     };
     std::fs::symlink_metadata(path).is_ok()

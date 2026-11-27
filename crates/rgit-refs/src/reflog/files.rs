@@ -28,11 +28,7 @@ pub struct FilesReflog {
 
 /// `strerror`-style text of an I/O error (without Rust's `(os error N)`).
 pub(crate) fn strerror(e: &io::Error) -> String {
-    let s = e.to_string();
-    match s.rfind(" (os error ") {
-        Some(p) => s[..p].to_string(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 impl FilesReflog {
@@ -73,7 +69,10 @@ impl FilesReflog {
         }
         if let Some(rest) = name.strip_prefix("worktrees/") {
             if let Some((id, r)) = rest.split_once('/') {
-                return (self.common_dir.join("worktrees").join(id), r.to_owned());
+                return (
+                    rgit_fs::path::join(rgit_fs::path::join(&self.common_dir, "worktrees"), id),
+                    r.to_owned(),
+                );
             }
         }
         let base = if is_per_worktree(name) {
@@ -88,7 +87,7 @@ impl FilesReflog {
     /// repository has no such file).
     pub fn path(&self, name: &str) -> PathBuf {
         let (dir, rel) = self.locate(name);
-        dir.join("logs").join(rgit_bstr::to_os(&rel))
+        rgit_fs::path::join(rgit_fs::path::join(&dir, "logs"), rgit_bstr::to_os(&rel))
     }
 
     /// Whether the logs are kept in the reftable format.
@@ -309,7 +308,10 @@ impl FilesReflog {
         let dst = self.path(to);
         // Move out of the way first: `to` may live below `from`
         // (`a` -> `a/b`) or the other way round.
-        let tmp = self.common_dir.join("logs").join(".tmp-renamed-log");
+        let tmp = rgit_fs::path::join(
+            rgit_fs::path::join(&self.common_dir, "logs"),
+            ".tmp-renamed-log",
+        );
         let _ = fs::create_dir_all(tmp.parent().unwrap_or(&self.common_dir));
         fs::rename(&src, &tmp)
             .map_err(|e| Error::Rename(src.clone(), tmp.clone(), strerror(&e)))?;
@@ -388,17 +390,25 @@ impl FilesReflog {
             out.dedup();
             return Ok(out);
         }
-        walk(&self.common_dir.join("logs"), "", &mut |name| {
-            if same || !is_per_worktree(name) {
-                out.push(name.to_string());
-            }
-        })?;
-        if !same {
-            walk(&self.git_dir.join("logs"), "", &mut |name| {
-                if is_per_worktree(name) {
+        walk(
+            &rgit_fs::path::join(&self.common_dir, "logs"),
+            "",
+            &mut |name| {
+                if same || !is_per_worktree(name) {
                     out.push(name.to_string());
                 }
-            })?;
+            },
+        )?;
+        if !same {
+            walk(
+                &rgit_fs::path::join(&self.git_dir, "logs"),
+                "",
+                &mut |name| {
+                    if is_per_worktree(name) {
+                        out.push(name.to_string());
+                    }
+                },
+            )?;
         }
         out.sort_by(|a, b| rgit_bstr::cmp(a, b));
         out.dedup();
@@ -422,7 +432,10 @@ impl FilesReflog {
 
 fn same_dir(a: &Path, b: &Path) -> bool {
     a == b
-        || match (fs::canonicalize(a), fs::canonicalize(b)) {
+        || match (
+            rgit_fs::path::canonicalize(a),
+            rgit_fs::path::canonicalize(b),
+        ) {
             (Ok(x), Ok(y)) => x == y,
             _ => false,
         }

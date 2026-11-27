@@ -208,7 +208,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         out.push_str(&format!("garbage: {}\n", garbage.count));
         out.push_str(&format!("size-garbage: {}\n", size(garbage.size)));
         for alt in repo.alternate_dirs() {
-            let abs = std::fs::canonicalize(&alt).unwrap_or(alt);
+            let abs = rgit_fs::path::canonicalize(&alt).unwrap_or(alt);
             let mut q = Vec::new();
             crate::quote::write_quoted(&mut q, abs.as_os_str().as_encoded_bytes(), true);
             out.push_str(&format!("alternate: {}\n", String::from_utf8_lossy(&q)));

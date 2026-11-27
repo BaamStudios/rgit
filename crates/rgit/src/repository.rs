@@ -171,7 +171,9 @@ impl OpenOptions {
 
     fn open_at(&self, path: &Path, search: bool) -> Result<Repository> {
         let absolute = std::path::absolute(path).map_err(|e| Error::io(path, e))?;
-        let mut start = std::fs::canonicalize(&absolute).map_err(|e| Error::io(path, e))?;
+        let mut start = rgit_fs::path::canonicalize(&absolute)
+            .map(rgit_fs::path::to_slash)
+            .map_err(|e| Error::io(path, e))?;
         if !search && start.file_name().is_some_and(|n| n == ".git") && start.is_dir() {
             // The `.git` directory of a work tree: open the repository it
             // belongs to (a bare repository of that name is still found,

@@ -61,19 +61,21 @@ age () {
 	s=$1; shift
 	for o in "$@"; do
 		p=.git/objects/$(echo $o | cut -c1-2)/$(echo $o | cut -c3-)
-		touch -d "@$(( $(date +%s) - s ))" "$p"
+		mtime "$(( $(date +%s) - s ))" "$p"
 	done
 }
+# mtime <seconds since the epoch> <file>...: `touch -d @<n>` is GNU only.
+mtime () { perl -e '$t = shift; utime($t, $t, @ARGV) == @ARGV or die "utime: $!\n"' "$@"; }
 layout () {
 	for idx in "$1"/.git/objects/pack/*.idx; do
 		test -f "$idx" || continue
 		base=${idx%.idx}
 		"$GIT" -C "$1" show-index <"$idx" | cut -d' ' -f2 | sort >objs
 		if test -f "$base.mtimes"; then
-			n=$(wc -l <objs)
+			n=$(($(wc -l <objs)))
 			test "$(head -c 12 "$base.mtimes" | od -An -tx1 | tr -d ' \n')" = 4d544d450000000100000001
-			test $(wc -c <"$base.mtimes") = $((12 + 4 * n + 40))
-			od -v -An -tu4 --endian=big -j 12 -N $((4 * n)) -w4 "$base.mtimes" | tr -d ' ' >times
+			test $(($(wc -c <"$base.mtimes"))) = $((12 + 4 * n + 40))
+			perl -e 'open F, "<", $ARGV[0] or die; binmode F; seek F, 12, 0; read F, $b, 4 * $ARGV[1]; print "$_\n" for unpack "N*", $b' "$base.mtimes" "$n" >times
 			"$GIT" -C "$1" show-index <"$idx" | cut -d' ' -f2 >ids
 			echo "cruft $(paste -d: ids times | sort | tr '\n' ' ')"
 		else
@@ -236,9 +238,9 @@ fn expire_to_keeps_the_pruned_objects() {
     sh(
         &fx,
         r#"t=$(date +%s)
-        touch -d "@$t" .git/objects/pack/*
+        mtime "$t" .git/objects/pack/*
         new=$(echo new | "$GIT" hash-object --stdin)
-        touch -d "@$t" .git/objects/$(echo $new | cut -c1-2)/$(echo $new | cut -c3-)"#,
+        mtime "$t" .git/objects/$(echo $new | cut -c1-2)/$(echo $new | cut -c3-)"#,
     );
     let cmd = r#""$G" init -q --bare expired.git
         "$G" repack -d --cruft --cruft-expiration=1.hour.ago --expire-to=expired.git/objects/pack/pack"#;

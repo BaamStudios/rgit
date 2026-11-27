@@ -262,7 +262,7 @@ pub fn init(
 ) -> Result<Outcome, InitError> {
     let link = path::normalize(&opts.git_dir);
     let mut located = locate(&link)?;
-    let existing_config = located.common_dir.join("config");
+    let existing_config = rgit_fs::path::join(&located.common_dir, "config");
     let has_config = existing_config.is_file();
     let mut config = if has_config {
         load_config(
@@ -394,17 +394,20 @@ pub fn init(
     };
     template::copy(&template, &common_dir, shared, notify)?;
 
-    let reinitialized = fs::symlink_metadata(git_dir.join("HEAD")).is_ok();
+    let reinitialized = fs::symlink_metadata(rgit_fs::path::join(&git_dir, "HEAD")).is_ok();
     let alt_refs = match &backend {
         Some((_, _, Some(p))) if !reinitialized => {
             let common = path::real_path_lossy(&common_dir, Path::new("/"));
-            Some(common.join(crate::layout::bytes_to_path(p)))
+            Some(rgit_fs::path::join(
+                &common,
+                crate::layout::bytes_to_path(p),
+            ))
         }
         _ => None,
     };
 
     // A template may have brought a configuration file.
-    let config_path = common_dir.join("config");
+    let config_path = rgit_fs::path::join(&common_dir, "config");
     if !has_config && config_path.is_file() {
         config = load_config(env, command_line, Some((&git_dir, &common_dir)))?;
         shared = shared_setting(opts, &config)?;
@@ -430,7 +433,7 @@ pub fn init(
         },
     )?;
 
-    let refs_dir = common_dir.join("refs");
+    let refs_dir = rgit_fs::path::join(&common_dir, "refs");
     template::make_dir(&refs_dir, shared)?;
     if let Some(dir) = &alt_refs {
         // The git directory keeps stand-ins; the references go to `dir`.
@@ -442,7 +445,10 @@ pub fn init(
                 "refs"
             };
             return Err(InitError::Plain {
-                message: format!("{}: No such file or directory", dir.join(sub).display()),
+                message: format!(
+                    "{}: No such file or directory",
+                    rgit_fs::path::join(dir, sub).display()
+                ),
                 code: 1,
             });
         }
@@ -450,23 +456,40 @@ pub fn init(
         let stand_in =
             |path: &Path, text: &str| template::write_new(path, text.as_bytes(), false, shared);
         stand_in(
-            &git_dir.join("HEAD"),
+            &rgit_fs::path::join(&git_dir, "HEAD"),
             rgit_refs::reftable::backend::HEAD_STAND_IN,
         )?;
-        stand_in(&refs_dir.join("heads"), rgit_refs::location::HEADS_STAND_IN)?;
+        stand_in(
+            &rgit_fs::path::join(&refs_dir, "heads"),
+            rgit_refs::location::HEADS_STAND_IN,
+        )?;
         let branch = initial_branch(opts, env, &config, notify)?;
         if refs == RefStorage::Reftable {
             reftable_head(dir, hash, shared, &branch)?;
             // Only the stack is kept there.
-            let _ = fs::remove_file(dir.join("HEAD"));
-            let _ = fs::remove_file(dir.join("refs").join("heads"));
-            let _ = fs::remove_dir(dir.join("refs"));
+            let _ = fs::remove_file(rgit_fs::path::join(dir, "HEAD"));
+            let _ = fs::remove_file(rgit_fs::path::join(
+                rgit_fs::path::join(dir, "refs"),
+                "heads",
+            ));
+            let _ = fs::remove_dir(rgit_fs::path::join(dir, "refs"));
         } else {
-            template::make_dir(&dir.join("refs"), shared)?;
-            template::make_dir(&dir.join("refs").join("heads"), shared)?;
-            template::make_dir(&dir.join("refs").join("tags"), shared)?;
+            template::make_dir(&rgit_fs::path::join(dir, "refs"), shared)?;
+            template::make_dir(
+                &rgit_fs::path::join(rgit_fs::path::join(dir, "refs"), "heads"),
+                shared,
+            )?;
+            template::make_dir(
+                &rgit_fs::path::join(rgit_fs::path::join(dir, "refs"), "tags"),
+                shared,
+            )?;
             let head = format!("ref: refs/heads/{branch}\n");
-            template::write_new(&dir.join("HEAD"), head.as_bytes(), false, shared)?;
+            template::write_new(
+                &rgit_fs::path::join(dir, "HEAD"),
+                head.as_bytes(),
+                false,
+                shared,
+            )?;
         }
     }
     let reftable = match (&existing, reinitialized) {
@@ -474,8 +497,8 @@ pub fn init(
         _ => refs == RefStorage::Reftable,
     };
     if alt_refs.is_none() && !reftable {
-        template::make_dir(&refs_dir.join("heads"), shared)?;
-        template::make_dir(&refs_dir.join("tags"), shared)?;
+        template::make_dir(&rgit_fs::path::join(&refs_dir, "heads"), shared)?;
+        template::make_dir(&rgit_fs::path::join(&refs_dir, "tags"), shared)?;
     }
 
     if reinitialized {
@@ -490,16 +513,21 @@ pub fn init(
     } else {
         let branch = initial_branch(opts, env, &config, notify)?;
         let head = format!("ref: refs/heads/{branch}\n");
-        template::write_new(&git_dir.join("HEAD"), head.as_bytes(), false, shared)?;
+        template::write_new(
+            &rgit_fs::path::join(&git_dir, "HEAD"),
+            head.as_bytes(),
+            false,
+            shared,
+        )?;
     }
 
     let objects = opts
         .object_dir
         .clone()
-        .unwrap_or_else(|| common_dir.join("objects"));
+        .unwrap_or_else(|| rgit_fs::path::join(&common_dir, "objects"));
     template::make_dir(&objects, shared)?;
-    template::make_dir(&objects.join("pack"), shared)?;
-    template::make_dir(&objects.join("info"), shared)?;
+    template::make_dir(&rgit_fs::path::join(&objects, "pack"), shared)?;
+    template::make_dir(&rgit_fs::path::join(&objects, "info"), shared)?;
 
     if let Some(at) = gitfile_at {
         let text = format!("gitdir: {}\n", git_dir.display());
@@ -653,7 +681,7 @@ pub fn restart_reftable(
     head: &str,
 ) -> Result<(), InitError> {
     let git_dir = &rgit_refs::location::resolve(git_dir);
-    let dir = git_dir.join("reftable");
+    let dir = rgit_fs::path::join(git_dir, "reftable");
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let _ = fs::remove_file(entry.path());
@@ -752,7 +780,7 @@ fn write_config(path: &Path, config: &ConfigSet, v: &ConfigValues<'_>) -> Result
         }
     }
     if let Some(wt) = v.work_tree {
-        let default_git_dir = wt.join(".git");
+        let default_git_dir = rgit_fs::path::join(wt, ".git");
         if path::normalize(&default_git_dir) != path::normalize(v.link) {
             set("core.worktree", &wt.to_string_lossy())?;
         }
@@ -808,7 +836,7 @@ fn probe_filemode(_: &Path) -> bool {
 fn probe_symlinks(dir: &Path) -> bool {
     #[cfg(unix)]
     {
-        let probe = dir.join(format!("tmp-symlink-probe-{}", std::process::id()));
+        let probe = rgit_fs::path::join(dir, format!("tmp-symlink-probe-{}", std::process::id()));
         let ok = std::os::unix::fs::symlink("testing", &probe).is_ok();
         let _ = fs::remove_file(&probe);
         ok
@@ -830,8 +858,8 @@ fn precompose_supported() -> bool {
 /// Whether the file system does not tell precomposed and decomposed names
 /// apart: a file created as `ä` (U+00E4) is also found as `a` + U+0308.
 fn probe_precompose(dir: &Path) -> bool {
-    let composed = dir.join("\u{e4}");
-    let decomposed = dir.join("a\u{308}");
+    let composed = rgit_fs::path::join(dir, "\u{e4}");
+    let decomposed = rgit_fs::path::join(dir, "a\u{308}");
     if fs::File::create(&composed).is_err() {
         return false;
     }
@@ -846,7 +874,7 @@ fn probe_ignorecase(config: &Path) -> bool {
     let Some(dir) = config.parent() else {
         return false;
     };
-    let other = dir.join("CoNfIg");
+    let other = rgit_fs::path::join(dir, "CoNfIg");
     match (fs::metadata(config), fs::metadata(&other)) {
         (Ok(_), Ok(_)) => {
             // Both names exist: case-insensitive unless both really exist.

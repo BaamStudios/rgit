@@ -429,11 +429,11 @@ fn resolve_symlinks(path: &Path) -> PathBuf {
     for _ in 0..MAX_SYMLINK_DEPTH {
         match std::fs::read_link(&current) {
             Ok(link) => {
-                current = if link.is_absolute() {
+                current = if crate::path::is_absolute(&link) {
                     link
                 } else {
                     match current.parent() {
-                        Some(dir) => dir.join(link),
+                        Some(dir) => crate::path::join(dir, link),
                         None => link,
                     }
                 };

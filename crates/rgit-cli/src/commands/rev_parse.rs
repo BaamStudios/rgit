@@ -857,7 +857,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 /// `--git-dir`: as set up, but absolute when the command moved to the top
 /// of the work tree.
 fn git_dir(setup: &Setup) -> String {
-    if setup.git_dir.is_absolute() || setup.prefix.is_none() {
+    if rgit_fs::path::is_absolute(&setup.git_dir) || setup.prefix.is_none() {
         return setup.git_dir.display().to_string();
     }
     rgit_repo::path::normalize(&setup.cwd.join(&setup.git_dir))
@@ -874,7 +874,7 @@ fn git_common_dir(setup: &Setup) -> String {
 /// `dir` (relative to the top of the work tree, or absolute) as seen from
 /// the directory the command started in.
 fn from_original_cwd(setup: &Setup, dir: &Path) -> String {
-    if dir.is_absolute() {
+    if rgit_fs::path::is_absolute(dir) {
         return dir.display().to_string();
     }
     match &setup.prefix {

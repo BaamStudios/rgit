@@ -61,7 +61,7 @@ pub fn with_context(hc: &HookContext, setup: &Setup, config: &ConfigSet) -> Resu
         .path("core.hookspath", &env)
         .map_err(|e| Die::Fatal(e.to_string()))?;
     let dir = match custom {
-        Some(p) if p.is_absolute() => HookDir {
+        Some(p) if rgit_fs::path::is_absolute(&p) => HookDir {
             shown: p.clone(),
             path: p,
         },

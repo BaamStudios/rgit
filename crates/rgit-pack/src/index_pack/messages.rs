@@ -113,11 +113,7 @@ pub fn write_error(f: &mut fmt::Formatter<'_>, e: &io::Error) -> fmt::Result {
 
 /// The C library's text for an I/O error, without Rust's ` (os error N)`.
 pub fn strerror(e: &io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error ") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 /// A byte count the way git prints sizes: `20 bytes`, `1.95 KiB`,

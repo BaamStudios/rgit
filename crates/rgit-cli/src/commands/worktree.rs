@@ -229,7 +229,7 @@ fn find_worktree<'a>(repo: &Repo, all: &'a [Worktree], arg: &str) -> Option<&'a 
         return Some(w);
     }
     let suffix = Path::new(arg);
-    if suffix.is_absolute() || suffix.components().any(|c| !matches!(c, Component::Normal(_))) {
+    if rgit_fs::path::is_absolute(suffix) || suffix.components().any(|c| !matches!(c, Component::Normal(_))) {
         return None;
     }
     let mut found = all.iter().filter(|w| w.path.ends_with(suffix));
@@ -1072,7 +1072,7 @@ fn unlock(ctx: &mut Context, argv: &[String]) -> CmdResult {
 /// Whether the worktree's links are relative (its `.git` file).
 fn links_are_relative(w: &Worktree) -> bool {
     std::fs::read_to_string(w.git_dir.join("gitdir"))
-        .map(|s| !Path::new(s.trim_end()).is_absolute())
+        .map(|s| !rgit_fs::path::is_absolute(Path::new(s.trim_end())))
         .unwrap_or(false)
 }
 
@@ -1312,13 +1312,13 @@ fn read_dot_git(wt: &Path) -> DotGit {
 /// absolute) than `relative` asks for.
 fn gitdir_is_relative(admin: &Path) -> Option<bool> {
     let text = std::fs::read_to_string(admin.join("gitdir")).ok()?;
-    Some(!Path::new(text.trim_end()).is_absolute())
+    Some(!rgit_fs::path::is_absolute(Path::new(text.trim_end())))
 }
 
 fn dot_git_is_relative(wt: &Path) -> Option<bool> {
     let text = std::fs::read_to_string(wt.join(".git")).ok()?;
     let t = text.strip_prefix("gitdir: ")?;
-    Some(!Path::new(t.trim_end()).is_absolute())
+    Some(!rgit_fs::path::is_absolute(Path::new(t.trim_end())))
 }
 
 fn repair_report(what: &str, path: &Path) {

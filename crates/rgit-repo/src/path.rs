@@ -18,13 +18,10 @@ pub struct InvalidPath {
     pub source: io::Error,
 }
 
-/// `path` joined to `base` when relative.
+/// `path` joined to `base` when relative (with `/` on every platform, see
+/// [`rgit_fs::path`]).
 pub fn absolute(path: &Path, base: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    }
+    rgit_fs::path::join(base, path)
 }
 
 /// Lexical normalisation of an absolute or relative path: removes `.`
@@ -54,7 +51,7 @@ pub fn normalize(path: &Path) -> PathBuf {
     if out.as_os_str().is_empty() {
         out.push(".");
     }
-    out
+    rgit_fs::path::to_slash(out)
 }
 
 /// Resolve `path` (relative to `base`) to an absolute path without `.`,
@@ -74,7 +71,7 @@ pub fn real_path(path: &Path, base: &Path) -> Result<PathBuf, InvalidPath> {
             resolved.pop();
             continue;
         }
-        let candidate = resolved.join(&name);
+        let candidate = rgit_fs::path::join(&resolved, &name);
         match std::fs::symlink_metadata(&candidate) {
             Err(e) if e.kind() == io::ErrorKind::NotFound && only_dots(&pending) => {
                 resolved = candidate;
@@ -97,8 +94,8 @@ pub fn real_path(path: &Path, base: &Path) -> Result<PathBuf, InvalidPath> {
                     path: candidate.clone(),
                     source: e,
                 })?;
-                if target.is_absolute() {
-                    resolved = root_of(&target);
+                if rgit_fs::path::is_absolute(&target) {
+                    resolved = root_of(&rgit_fs::path::simplified(target.clone()));
                 }
                 push_components(&target, &mut pending);
             }
@@ -129,7 +126,7 @@ fn root_of(p: &Path) -> PathBuf {
     if root.as_os_str().is_empty() {
         root.push("/");
     }
-    root
+    rgit_fs::path::to_slash(root)
 }
 
 /// Push the non-root components of `p` so that the first one is popped
@@ -185,7 +182,7 @@ pub fn ceiling_for(cwd: &Path, ceilings: &OsStr) -> Option<PathBuf> {
             continue;
         }
         let p = Path::new(&entry);
-        if !p.is_absolute() {
+        if !rgit_fs::path::is_absolute(p) {
             continue;
         }
         let dir = if resolve {
@@ -261,11 +258,16 @@ mod tests {
 
     #[test]
     fn ceilings() {
-        let c = ceiling_for(Path::new("/a/b/c"), OsStr::new(":/a:/a/b:/a/b/c:rel"));
+        // The list is separated like PATH: `;` on Windows.
+        let list = |entries: &str| {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            OsString::from(entries.replace(':', sep))
+        };
+        let c = ceiling_for(Path::new("/a/b/c"), &list(":/a:/a/b:/a/b/c:rel"));
         assert_eq!(c.as_deref(), Some(Path::new("/a/b")));
-        assert_eq!(ceiling_for(Path::new("/a"), OsStr::new(":/a/")), None);
+        assert_eq!(ceiling_for(Path::new("/a"), &list(":/a/")), None);
         assert_eq!(
-            ceiling_for(Path::new("/a"), OsStr::new(":/")).as_deref(),
+            ceiling_for(Path::new("/a"), &list(":/")).as_deref(),
             Some(Path::new("/"))
         );
     }

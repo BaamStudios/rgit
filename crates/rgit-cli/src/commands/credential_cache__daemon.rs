@@ -139,7 +139,7 @@ mod imp {
     }
 
     pub fn serve(socket: &Path, debug: bool) -> CmdResult {
-        if !socket.is_absolute() {
+        if !rgit_fs::path::is_absolute(socket) {
             return Err(Die::Fatal(msg::CACHE_SOCKET_NOT_ABSOLUTE.into()));
         }
         if let Some(dir) = socket.parent() {

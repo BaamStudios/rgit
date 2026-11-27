@@ -455,18 +455,22 @@ mod tests {
             })
             .unwrap_err()
         };
+        // The reasons are the C library's words (walk/messages.rs).
         assert_eq!(
             err(r"\(a", Syntax::Basic),
-            "command line, '\\(a': Unmatched ( or \\("
+            format!("command line, '\\(a': {}", msg::REGEX_UNMATCHED_PAREN)
         );
         assert_eq!(
             err("a{1", Syntax::Extended),
-            "command line, 'a{1': Unmatched \\{"
+            format!("command line, 'a{{1': {}", msg::REGEX_UNMATCHED_BRACE)
         );
         assert_eq!(
             err("[[:foo:]]", Syntax::Basic),
-            "command line, '[[:foo:]]': Invalid character class name"
+            format!("command line, '[[:foo:]]': {}", msg::REGEX_BAD_CLASS)
         );
+        if !cfg!(target_os = "macos") {
+            assert_eq!(msg::REGEX_UNMATCHED_PAREN, "Unmatched ( or \\(");
+        }
         let header = CommitGrep::new(&GrepOptions {
             author: vec!["[".into()],
             ..Default::default()

@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+rgit-fs = { path = "../rgit-fs" }
 regex = "1"
 tempfile = "3"
 

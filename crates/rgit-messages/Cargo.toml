@@ -8,5 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rgit-fs = { path = "../rgit-fs" }
 rgit-config = { path = "../rgit-config" }
 unicode-width = { version = "0.2", default-features = false }

@@ -55,8 +55,19 @@ fn git_ok(dir: &Path, args: &[&str], stdin: &[u8]) -> Vec<u8> {
     out.stdout
 }
 
+/// The paths of the test index: [`ALL_PATHS`] without the names Git for
+/// Windows refuses to put into an index (`core.protectNTFS`: wildcard
+/// characters, `:` and `\`).
+static PATHS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+    ALL_PATHS
+        .iter()
+        .copied()
+        .filter(|p| !cfg!(windows) || !p.contains(['*', '?', ':', '\\']))
+        .collect()
+});
+
 /// Paths in the test index. No directory/file conflicts.
-const PATHS: &[&str] = &[
+const ALL_PATHS: &[&str] = &[
     "fooo",
     "Foo2",
     "FOO3",
@@ -329,12 +340,12 @@ impl Repo {
         std::fs::create_dir_all(dir.join("sub/sub")).unwrap();
         std::fs::create_dir_all(dir.join("foo")).unwrap();
         // Canonical path, as git reports it.
-        let dir = dir.canonicalize().unwrap();
+        let dir = rgit_fs::path::to_slash(rgit_fs::path::canonicalize(&dir).unwrap());
         git_ok(&dir, &["init", "-q"], b"");
         let blob = git_ok(&dir, &["hash-object", "-w", "--stdin"], b"");
         let blob = String::from_utf8(blob).unwrap();
         let mut info = Vec::new();
-        for p in PATHS {
+        for p in PATHS.iter() {
             info.extend_from_slice(format!("100644 {}\t{p}\0", blob.trim()).as_bytes());
         }
         git_ok(&dir, &["update-index", "-z", "--index-info"], &info);

@@ -35,9 +35,11 @@
 mod fsync;
 mod lock;
 pub mod messages;
+pub mod path;
 mod perm;
 mod registry;
 mod tempfile;
+mod touch;
 
 pub use fsync::{FsyncComponents, FsyncMethod, harden};
 pub use lock::{
@@ -46,3 +48,4 @@ pub use lock::{
 pub use perm::{SharedRepository, SharedRepositoryError};
 pub use registry::{DirGuard, remove_dir_on_signal, remove_registered_files};
 pub use tempfile::{OBJECT_PREFIX, PACK_PREFIX, TempFile};
+pub use touch::set_modified;

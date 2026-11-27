@@ -225,7 +225,7 @@ pub fn create_archive(
 pub fn output_path(setup: Option<&Setup>, dir: &str, name: &str) -> (PathBuf, String) {
     let mut shown = String::new();
     if let Some(p) = setup.and_then(|s| s.prefix.as_ref()) {
-        if !Path::new(dir).is_absolute() {
+        if !rgit_fs::path::is_absolute(Path::new(dir)) {
             shown.push_str(&p.to_string_lossy());
         }
     }

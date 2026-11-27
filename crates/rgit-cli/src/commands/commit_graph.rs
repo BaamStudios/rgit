@@ -41,7 +41,7 @@ fn resolve_object_dir(local: &Path, given: Option<String>) -> Result<PathBuf, Di
     let Some(given) = given else {
         return Ok(local.to_path_buf());
     };
-    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let canon = |p: &Path| rgit_fs::path::canonicalize(p).ok();
     let want = canon(Path::new(&given));
     if want.is_some() {
         for d in cg::object_dirs(local) {

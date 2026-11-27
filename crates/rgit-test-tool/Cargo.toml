@@ -16,6 +16,7 @@ name = "rgit-test-tool"
 path = "src/main.rs"
 
 [dependencies]
+rgit-fs = { path = "../rgit-fs" }
 bstr = { version = "1.13", default-features = false, features = ["std"] }
 rgit-bundle = { path = "../rgit-bundle" }
 rgit-commitgraph = { path = "../rgit-commitgraph" }

@@ -23,13 +23,13 @@ static DIRS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
 pub const HEADS_STAND_IN: &str = crate::messages::ALTERNATE_REFS_STAND_IN;
 
 fn normalize(dir: &Path) -> PathBuf {
-    if let Ok(p) = dir.canonicalize() {
+    if let Ok(p) = rgit_fs::path::canonicalize(dir) {
         return p;
     }
-    let abs = if dir.is_absolute() {
+    let abs = if rgit_fs::path::is_absolute(dir) {
         dir.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(dir)
+        rgit_fs::path::join(rgit_fs::path::current_dir().unwrap_or_default(), dir)
     };
     let mut out = PathBuf::new();
     for c in abs.components() {
@@ -72,7 +72,7 @@ pub fn resolve(dir: &Path) -> PathBuf {
             && parent.parent() == Some(common.as_path())
             && parent.file_name() == Some(std::ffi::OsStr::new("worktrees"))
         {
-            return refs.join("worktrees").join(id);
+            return rgit_fs::path::join(rgit_fs::path::join(refs, "worktrees"), id);
         }
     }
     dir.to_path_buf()
@@ -94,7 +94,7 @@ mod tests {
         let refs = base.join("refdir");
         std::fs::create_dir_all(common.join("worktrees/wt")).unwrap();
         std::fs::create_dir_all(&refs).unwrap();
-        let refs = refs.canonicalize().unwrap();
+        let refs = rgit_fs::path::canonicalize(&refs).unwrap();
         set_ref_dir(&common, &refs);
         assert_eq!(resolve(&common), refs);
         assert_eq!(

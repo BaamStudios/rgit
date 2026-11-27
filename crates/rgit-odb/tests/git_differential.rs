@@ -188,10 +188,7 @@ fn existing_objects_are_freshened_not_rewritten() {
     let path = odb.loose().path_of(&oid);
     let before = std::fs::read(&path).unwrap();
     let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(978_307_200);
-    std::fs::File::open(&path)
-        .unwrap()
-        .set_modified(old)
-        .unwrap();
+    rgit_fs::set_modified(&path, old).unwrap();
     assert_eq!(odb.write(ObjectKind::Blob, b"fresh\n").unwrap(), oid);
     assert_eq!(std::fs::read(&path).unwrap(), before, "not rewritten");
     let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();

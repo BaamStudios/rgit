@@ -30,11 +30,11 @@ pub fn is_executable(p: &Path) -> bool {
 /// such a name rgit only runs built-ins, so the link is no command of its
 /// own (the conformance install directory has them, #359).
 pub fn is_self(p: &Path) -> bool {
-    let Ok(target) = std::fs::canonicalize(p) else {
+    let Ok(target) = rgit_fs::path::canonicalize(p) else {
         return false;
     };
     std::env::current_exe()
-        .and_then(std::fs::canonicalize)
+        .and_then(rgit_fs::path::canonicalize)
         .is_ok_and(|me| me == target)
 }
 

@@ -89,7 +89,7 @@ impl SetupOptions {
 
     /// Options from the process environment and current directory.
     pub fn from_process() -> Result<SetupOptions, Error> {
-        let cwd = std::env::current_dir().map_err(Error::Cwd)?;
+        let cwd = rgit_fs::path::current_dir().map_err(Error::Cwd)?;
         Ok(SetupOptions::from_env(
             &rgit_config::SystemEnv::default(),
             cwd,
@@ -249,6 +249,18 @@ pub fn discover(
     opts: &SetupOptions,
     protected: &mut dyn ProtectedConfig,
 ) -> Result<Result<Setup, NotFound>, Error> {
+    // The current directory in git's form (`rgit_fs::path`): Windows
+    // reports it with `\`, Git for Windows shows and joins it with `/`.
+    let slashed;
+    let opts = if cfg!(windows) {
+        slashed = SetupOptions {
+            cwd: rgit_fs::path::to_slash(rgit_fs::path::simplified(opts.cwd.clone())),
+            ..opts.clone()
+        };
+        &slashed
+    } else {
+        opts
+    };
     let found = match &opts.git_dir {
         Some(gd) => explicit(opts, gd).map(Ok),
         None => search(opts, protected),
@@ -289,7 +301,7 @@ fn explicit(opts: &SetupOptions, given: &Path) -> Result<Setup, Error> {
         })?;
         Candidate {
             display: target.clone(),
-            config_display: target.join("config"),
+            config_display: rgit_fs::path::join(&target, "config"),
             abs: target,
         }
     } else {
@@ -298,7 +310,7 @@ fn explicit(opts: &SetupOptions, given: &Path) -> Result<Setup, Error> {
         }
         Candidate {
             display: given.to_path_buf(),
-            config_display: given.join("config"),
+            config_display: rgit_fs::path::join(given, "config"),
             abs,
         }
     };
@@ -344,7 +356,7 @@ fn configured_work_tree(
     let value = layout::bytes_to_path(cfg.as_bytes());
     let base = path::real_path_lossy(&cand.abs, &opts.cwd);
     // git enters the directory, so it must exist.
-    let resolved = std::fs::canonicalize(base.join(&value)).and_then(|p| {
+    let resolved = rgit_fs::path::canonicalize(rgit_fs::path::join(&base, &value)).and_then(|p| {
         if p.is_dir() {
             Ok(p)
         } else {
@@ -363,15 +375,21 @@ fn configured_work_tree(
 fn read_format(opts: &SetupOptions, cand: &Candidate) -> Result<RepositoryFormat, Error> {
     let (file, display) = match &opts.common_dir {
         Some(c) => (
-            path::absolute(c, &opts.cwd).join("config"),
-            c.join("config"),
+            rgit_fs::path::join(path::absolute(c, &opts.cwd), "config"),
+            rgit_fs::path::join(c, "config"),
         ),
         None => match layout::common_dir_of(&cand.abs) {
             Some(c) => {
                 let c = path::real_path_lossy(&c, &opts.cwd);
-                (c.join("config"), c.join("config"))
+                (
+                    rgit_fs::path::join(&c, "config"),
+                    rgit_fs::path::join(&c, "config"),
+                )
             }
-            None => (cand.abs.join("config"), cand.config_display.clone()),
+            None => (
+                rgit_fs::path::join(&cand.abs, "config"),
+                cand.config_display.clone(),
+            ),
         },
     };
     let set = match std::fs::read(&file) {
@@ -392,7 +410,7 @@ fn read_format(opts: &SetupOptions, cand: &Candidate) -> Result<RepositoryFormat
     // (git-worktree(1), CONFIGURATION FILE).
     let own_dir = path::real_path_lossy(&cand.abs, &opts.cwd);
     if format.worktree_config {
-        let file = own_dir.join("config.worktree");
+        let file = rgit_fs::path::join(&own_dir, "config.worktree");
         if let Ok(data) = std::fs::read(&file) {
             let set = rgit_config::parse_bytes(&data, Origin::File(file), Scope::Worktree)?;
             let own = RepositoryFormat::from_config(&set)?;
@@ -403,7 +421,7 @@ fn read_format(opts: &SetupOptions, cand: &Candidate) -> Result<RepositoryFormat
                 format.worktree = own.worktree;
             }
         }
-    } else if path::real_path_lossy(&file, &opts.cwd) != own_dir.join("config") {
+    } else if path::real_path_lossy(&file, &opts.cwd) != rgit_fs::path::join(&own_dir, "config") {
         format.worktree = None;
         format.bare = None;
     }
@@ -514,7 +532,7 @@ fn search(
             let cand = match &gitfile {
                 Some(_) => Candidate {
                     display: gitdir.clone(),
-                    config_display: gitdir.join("config"),
+                    config_display: rgit_fs::path::join(&gitdir, "config"),
                     abs: gitdir.clone(),
                 },
                 None => Candidate {
@@ -615,7 +633,7 @@ fn check_ownership(
 
 /// Look for a repository at `dir`: `dir/.git` first, then `dir` itself.
 fn probe(dir: &Path, cwd: &Path, ov: &LayoutOverrides) -> Result<Option<Found>, Error> {
-    let dotgit = dir.join(".git");
+    let dotgit = rgit_fs::path::join(dir, ".git");
     match std::fs::metadata(&dotgit) {
         Ok(m) if m.is_dir() => {
             if layout::is_git_directory(&dotgit, cwd, ov) {

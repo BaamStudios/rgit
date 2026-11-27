@@ -182,7 +182,10 @@ impl RepositoryFormat {
             .ref_storage_payload
             .as_ref()
             .filter(|p| !p.is_empty())?;
-        Some(common_dir.join(crate::layout::bytes_to_path(p)))
+        Some(rgit_fs::path::join(
+            common_dir,
+            crate::layout::bytes_to_path(p),
+        ))
     }
 
     /// Refuse what `support` does not cover.

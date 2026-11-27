@@ -61,7 +61,7 @@ pub use target::{Peeled, Reference, Resolved, Source, Target};
 pub fn read_head_file(git_dir: &std::path::Path) -> std::io::Result<Vec<u8>> {
     let git_dir = &location::resolve(git_dir);
     if !reftable::backend::uses_reftable(git_dir) {
-        return std::fs::read(git_dir.join("HEAD"));
+        return std::fs::read(rgit_fs::path::join(git_dir, "HEAD"));
     }
     reftable::backend::root_ref_content(git_dir, "HEAD")
 }
@@ -85,7 +85,7 @@ pub fn read_root_ref_file(git_dir: &std::path::Path, name: &str) -> std::io::Res
     if is_stack_root_ref(name) && reftable::backend::uses_reftable(git_dir) {
         return reftable::backend::root_ref_content(git_dir, name);
     }
-    std::fs::read(git_dir.join(name))
+    std::fs::read(rgit_fs::path::join(git_dir, name))
 }
 
 /// [`read_root_ref_file`] as text (bytes that are not UTF-8 escaped as
@@ -112,7 +112,7 @@ pub fn write_root_ref_file(
 ) -> std::io::Result<()> {
     let git_dir = &location::resolve(git_dir);
     if !is_stack_root_ref(name) || !reftable::backend::uses_reftable(git_dir) {
-        return std::fs::write(git_dir.join(name), content);
+        return std::fs::write(rgit_fs::path::join(git_dir, name), content);
     }
     let text = rgit_bstr::from_bytes(content);
     let text = text.trim();
@@ -139,7 +139,7 @@ pub fn remove_root_ref_file(git_dir: &std::path::Path, name: &str) -> std::io::R
         let kind = reftable::backend::stack_hash(git_dir).unwrap_or(rgit_hash::HashKind::Sha1);
         return root_ref_transaction(git_dir, RefUpdate::delete(name, kind, None));
     }
-    match std::fs::remove_file(git_dir.join(name)) {
+    match std::fs::remove_file(rgit_fs::path::join(git_dir, name)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
     }

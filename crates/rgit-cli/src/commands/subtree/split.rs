@@ -267,9 +267,16 @@ impl Walk<'_> {
 
     /// Start on a commit: false when it is mapped already.
     fn enter(&mut self, rev: &ObjectId, parents: &[ObjectId], depth: usize) -> bool {
+        // git-subtree counts the revisions with `wc -l`, and the `wc` of
+        // macOS pads the number to eight columns.
+        let revmax = if cfg!(target_os = "macos") {
+            format!("{:>8}", self.revmax)
+        } else {
+            self.revmax.to_string()
+        };
         self.st.progress(&format!(
-            "{}/{} ({}) [{}]",
-            self.revcount, self.revmax, self.createcount, self.extracount
+            "{}/{revmax} ({}) [{}]",
+            self.revcount, self.createcount, self.extracount
         ));
         self.debug(depth, &format!("Processing commit: {rev}"));
         if let Some(prior) = self.cache.get(rev) {

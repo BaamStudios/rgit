@@ -195,7 +195,7 @@ pub fn parse_options(args: &[String]) -> i32 {
                 *file.borrow_mut() = match arg {
                     _ if unset => None,
                     None | Some("") => None,
-                    Some(a) if a == "-" || std::path::Path::new(a).is_absolute() => {
+                    Some(a) if a == "-" || rgit_fs::path::is_absolute(std::path::Path::new(a)) => {
                         Some(a.to_string())
                     }
                     Some(a) => Some(format!("{FILE_PREFIX}{a}")),

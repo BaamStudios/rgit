@@ -987,7 +987,7 @@ fn template_path(repo: &Repo, args: &Args, root: &Path, prefix: &[u8]) -> Result
     let path = rgit_config::value::interpolate_path(&raw, &env)
         .map_err(|_| fatal(msg::could_not_read_template(&lossy(&raw), "")))?;
     Ok(path.map(|p| {
-        if p.is_absolute() || args.template.is_none() {
+        if rgit_fs::path::is_absolute(&p) || args.template.is_none() {
             p
         } else {
             os_path(root, prefix).join(p)
@@ -1670,7 +1670,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                         .map_err(|_| fatal(msg::COULD_NOT_READ_STDIN))?;
                 } else {
                     let path = Path::new(f);
-                    let path = if path.is_absolute() {
+                    let path = if rgit_fs::path::is_absolute(path) {
                         path.to_path_buf()
                     } else {
                         os_path(&root, &prefix).join(path)

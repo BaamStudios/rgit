@@ -364,7 +364,7 @@ fn local_repository(repo: &str, cwd: &Path) -> Option<(PathBuf, Option<PathBuf>)
             let via_gitfile = candidate
                 .is_file()
                 .then(|| repository_git_dir(&candidate))
-                .and_then(|g| std::fs::canonicalize(g).ok());
+                .and_then(|g| rgit_fs::path::canonicalize(g).ok());
             // As given, made absolute (`.`, `..` and symbolic links stay).
             return Some((cwd.join(format!("{repo}{keep}")), via_gitfile));
         }
@@ -608,7 +608,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
         junk.work_tree_existed = wt.exists();
         junk.work_tree = Some(wt.clone());
         create_dir(wt, &wt_shown)?;
-        let wt = std::fs::canonicalize(wt).unwrap_or_else(|_| wt.clone());
+        let wt = rgit_fs::path::canonicalize(wt).unwrap_or_else(|_| wt.clone());
         init_work_tree = Some(wt.clone());
         (target.clone(), Some(wt))
     } else {
@@ -670,7 +670,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     .map_err(|e| init_failed(&e))?;
     // The separate git directory with symbolic links resolved.
     let git_dir = if separate.is_some() {
-        std::fs::canonicalize(&git_dir).unwrap_or(git_dir)
+        rgit_fs::path::canonicalize(&git_dir).unwrap_or(git_dir)
     } else {
         git_dir
     };
@@ -767,7 +767,7 @@ fn clone(ctx: &mut Context, opts: &Options, repo: &str, dir_arg: Option<&str>) -
     }
     if opts.shared && local_mode {
         let dir = common_dir_of(&repository_git_dir(Path::new(&source.url))).join("objects");
-        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let dir = rgit_fs::path::canonicalize(&dir).unwrap_or(dir);
         if !alternates.contains(&dir) {
             alternates.push(dir);
         }
@@ -1979,7 +1979,7 @@ impl LocalCopy<'_> {
                 continue;
             }
             let path = objects.join(line);
-            let path = std::fs::canonicalize(&path).unwrap_or(path);
+            let path = rgit_fs::path::canonicalize(&path).unwrap_or(path);
             if !self.alternates.contains(&path) {
                 self.alternates.push(path);
             }
@@ -2035,7 +2035,7 @@ fn repository_git_dir(path: &Path) -> PathBuf {
 /// (absolute), or why it cannot be used.
 fn reference_objects(reference: &str, cwd: &Path) -> Result<PathBuf, String> {
     let base = cwd.join(reference);
-    let path = std::fs::canonicalize(&base).unwrap_or(base);
+    let path = rgit_fs::path::canonicalize(&base).unwrap_or(base);
     let git_dir = repository_git_dir(&path);
     if git_dir.join("commondir").is_file() {
         return Err(msg::reference_linked_checkout(reference));
@@ -2050,7 +2050,7 @@ fn reference_objects(reference: &str, cwd: &Path) -> Result<PathBuf, String> {
         return Err(msg::reference_grafted(reference));
     }
     let objects = git_dir.join("objects");
-    Ok(std::fs::canonicalize(&objects).unwrap_or(objects))
+    Ok(rgit_fs::path::canonicalize(&objects).unwrap_or(objects))
 }
 
 /// `--dissociate`: write every object reachable from `tips` into a pack

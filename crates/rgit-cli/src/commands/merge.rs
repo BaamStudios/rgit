@@ -1918,7 +1918,7 @@ impl Session<'_> {
                     .map_err(|e| fatal(e.to_string()))?;
             } else {
                 let path = Path::new(f);
-                let path = if path.is_absolute() {
+                let path = if rgit_fs::path::is_absolute(path) {
                     path.to_path_buf()
                 } else {
                     self.repo.setup.original_cwd.join(path)

@@ -177,7 +177,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // Relative to where we started (setting up a repository may change
     // the directory).
     let output = output.into_inner().map(|o| match std::env::current_dir() {
-        Ok(dir) if !std::path::Path::new(&o).is_absolute() => {
+        Ok(dir) if !rgit_fs::path::is_absolute(std::path::Path::new(&o)) => {
             dir.join(&o).to_string_lossy().into_owned()
         }
         _ => o,
@@ -275,7 +275,7 @@ pub fn archive(ctx: &Context, argv: &[String], output: Option<String>, origin: O
     let start = std::env::current_dir().ok();
     let absolute = |p: &str| -> String {
         match &start {
-            Some(dir) if !std::path::Path::new(p).is_absolute() => {
+            Some(dir) if !rgit_fs::path::is_absolute(std::path::Path::new(p)) => {
                 dir.join(p).to_string_lossy().into_owned()
             }
             _ => p.to_string(),
