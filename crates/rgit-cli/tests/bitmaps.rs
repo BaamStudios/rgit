@@ -324,3 +324,128 @@ fn fsck_checks_reverse_index() {
     let out = run(&fx, rgit, &fx.work_dir(), &["fsck", "--connectivity-only"]);
     assert!(out.status.success());
 }
+
+/// Run `bin` with `args` in the work tree, `input` on standard input and
+/// `extra` added to the isolated environment.
+fn run_input(
+    fx: &Fixture,
+    bin: &Path,
+    args: &[&str],
+    input: &str,
+    extra: &[(&str, &Path)],
+) -> std::process::Output {
+    use std::io::Write;
+    let mut cmd = Command::new(bin);
+    cmd.current_dir(fx.work_dir())
+        .args(args)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", fx.home_dir())
+        .env("XDG_CONFIG_HOME", fx.home_dir())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// The `pack-reused` and `packs-reused` trace2 values of `pack-objects
+/// --stdout --revs` run by `bin` with `config`, reading `revs`.
+fn pack_reuse(fx: &Fixture, bin: &Path, config: &str, revs: &str) -> (String, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let trace = tmp.path().join("trace2.json");
+    let args = [
+        "-c",
+        config,
+        "pack-objects",
+        "--stdout",
+        "--revs",
+        "--delta-base-offset",
+    ];
+    let out = run_input(fx, bin, &args, revs, &[("GIT_TRACE2_EVENT", &trace)]);
+    assert!(out.status.success());
+    let events = std::fs::read_to_string(&trace).unwrap();
+    let value = |key: &str| {
+        let pat = format!("\"category\":\"pack-objects\",\"key\":\"{key}\",\"value\":\"");
+        let at = events.find(&pat).map(|i| i + pat.len());
+        at.map(|i| events[i..].split('"').next().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    (value("pack-reused"), value("packs-reused"))
+}
+
+/// Objects sent verbatim from bitmapped packs (`pack.allowPackReuse`):
+/// single-pack and multi-pack reuse count the same objects and packs as
+/// git, leaving out deltas whose base is not sent from the same pack.
+#[test]
+fn pack_reuse_counts_like_git() {
+    let seq = |n: usize| (1..=n).map(|i| format!("{i}\n")).collect::<String>();
+    let fx = fixture()
+        .git(["init", "-q", "-b", "main"])
+        .git(["config", "maintenance.auto", "false"])
+        .write("a.txt", "a\n")
+        .git(["add", "a.txt"])
+        .git(["commit", "-q", "-m", "A"])
+        .git(["tag", "A"])
+        .tick()
+        .write("f", seq(32))
+        .git(["add", "f"])
+        .git(["commit", "-q", "-m", "delta"])
+        .git(["tag", "delta"])
+        .tick()
+        .write("f", seq(64))
+        .git(["commit", "-q", "-a", "-m", "base"])
+        .git(["tag", "base"])
+        .tick()
+        .write("other.txt", "other\n")
+        .git(["add", "other.txt"])
+        .git(["commit", "-q", "-m", "other"])
+        .git(["tag", "other"])
+        .git(["repack", "-adbq"]);
+    if fx.is_skipped() {
+        return;
+    }
+    let rev = |r: &str| String::from_utf8(fx.git_stdout(["rev-parse", r])).unwrap();
+    let (a, delta, base, other) = (rev("A"), rev("delta"), rev("base"), rev("other"));
+    let queries = |fx: &Fixture| {
+        let rgit = Path::new(env!("CARGO_BIN_EXE_rgit"));
+        for config in [
+            "pack.allowPackReuse=single",
+            "pack.allowPackReuse=multi",
+            "pack.allowPackReuse=false",
+            "feature.experimental=true",
+        ] {
+            for revs in [
+                other.clone(),
+                format!("{other}^{base}"),
+                delta.clone(),
+                format!("{base}^{delta}"),
+                format!("{other}^{a}"),
+            ] {
+                let want = pack_reuse(fx, fx.reference_git(), config, &revs);
+                let got = pack_reuse(fx, rgit, config, &revs);
+                assert_eq!(want, got, "{config} {revs:?}");
+            }
+        }
+    };
+    // A pack bitmap.
+    queries(&fx);
+    // A MIDX bitmap preferring a pack that holds one side of a delta.
+    let input = format!("{base}^{delta}");
+    let args = ["pack-objects", "--revs", ".git/objects/pack/pack"];
+    let out = run_input(&fx, fx.reference_git(), &args, &input, &[]);
+    assert!(out.status.success());
+    let name = String::from_utf8(out.stdout).unwrap();
+    let preferred = format!("--preferred-pack=pack-{}.idx", name.trim());
+    let fx = fx.git(["multi-pack-index", "write", "--bitmap", &preferred]);
+    queries(&fx);
+}

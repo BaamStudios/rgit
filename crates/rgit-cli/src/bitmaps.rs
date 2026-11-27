@@ -443,24 +443,126 @@ pub fn write_for_midx(
     )
 }
 
-/// How many of `objects` git would send verbatim from the bitmapped pack
-/// (the preferred pack of a MIDX bitmap): those stored there.
-pub fn reusable_count(odb: &ObjectDatabase, objects: &[rgit_pack::write::ListedObject]) -> usize {
+/// `pack.allowPackReuse`: which packs objects may be sent verbatim from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackReuse {
+    /// No verbatim reuse.
+    Off,
+    /// Only the bitmapped pack, or the preferred pack of a MIDX bitmap.
+    Single,
+    /// Every pack of a MIDX bitmap.
+    Multi,
+}
+
+impl PackReuse {
+    /// From `pack.allowPackReuse`; unset is "single", or "multi" with
+    /// `feature.experimental`.
+    pub fn from_config(config: &ConfigSet) -> PackReuse {
+        let v = config.string("pack.allowpackreuse").ok().flatten();
+        match v.map(|v| v.to_string().to_ascii_lowercase()) {
+            None => {
+                if config
+                    .bool("feature.experimental")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false)
+                {
+                    PackReuse::Multi
+                } else {
+                    PackReuse::Single
+                }
+            }
+            Some(v) => match v.as_str() {
+                "multi" => PackReuse::Multi,
+                "false" | "no" | "off" | "0" => PackReuse::Off,
+                _ => PackReuse::Single,
+            },
+        }
+    }
+}
+
+/// The objects sent verbatim from bitmapped packs, and from how many packs.
+#[derive(Default)]
+pub struct Reused {
+    /// The objects.
+    pub ids: HashSet<ObjectId>,
+    /// The packs they come from.
+    pub packs: usize,
+}
+
+/// Which of `objects` git sends verbatim from the bitmapped packs: those
+/// whose copy the bitmap selects in a reusable pack (`mode`), unless they
+/// are deltas whose base is not sent verbatim from the same pack.
+pub fn reusable(
+    odb: &ObjectDatabase,
+    objects: &[rgit_pack::write::ListedObject],
+    mode: PackReuse,
+) -> Reused {
+    let mut out = Reused::default();
+    if mode == PackReuse::Off {
+        return out;
+    }
     let Some(store) = odb.packs() else {
-        return 0;
+        return out;
     };
     let Some(index) = open(store.set()) else {
-        return 0;
+        return out;
     };
     let first = (index.num_objects() > 0)
         .then(|| index.location(0))
         .flatten()
         .map(|(p, _)| p.uid());
-    objects
-        .iter()
-        .filter(|o| match index.position(&o.id) {
-            None => false,
-            Some(bit) => !index.is_midx() || index.location(bit).map(|(p, _)| p.uid()) == first,
-        })
-        .count()
+    let single = mode == PackReuse::Single || !index.is_midx();
+    let wanted: HashSet<ObjectId> = objects.iter().map(|o| o.id).collect();
+    // The pack and offset of a candidate: wanted, selected by the bitmap
+    // in a reusable pack.
+    let candidate = |id: &ObjectId| -> Option<(Arc<Pack>, u64)> {
+        if !wanted.contains(id) {
+            return None;
+        }
+        let (pack, off) = index.location(index.position(id)?)?;
+        (!single || Some(pack.uid()) == first).then_some((pack, off))
+    };
+    let mut memo: std::collections::HashMap<ObjectId, bool> = std::collections::HashMap::new();
+    let mut packs: HashSet<u64> = HashSet::new();
+    for o in objects {
+        // Follow the delta chain down to a decided object or a full one.
+        let mut chain: Vec<ObjectId> = Vec::new();
+        let mut id = o.id;
+        let verdict = loop {
+            if let Some(&v) = memo.get(&id) {
+                break v;
+            }
+            let Some((pack, off)) = candidate(&id) else {
+                break false;
+            };
+            chain.push(id);
+            match pack.delta_base(off) {
+                Ok(None) => break true,
+                Ok(Some(base)) => {
+                    // The base must be sent verbatim from the same pack.
+                    let same = candidate(&base).is_some_and(|(p, _)| p.uid() == pack.uid());
+                    if !same || chain.contains(&base) {
+                        break false;
+                    }
+                    id = base;
+                }
+                Err(_) => break false,
+            }
+        };
+        // Each object of the chain is a delta on the next one.
+        for c in chain {
+            memo.insert(c, verdict);
+        }
+    }
+    for o in objects {
+        if memo.get(&o.id) == Some(&true) {
+            if let Some((p, _)) = candidate(&o.id) {
+                packs.insert(p.uid());
+            }
+            out.ids.insert(o.id);
+        }
+    }
+    out.packs = packs.len();
+    out
 }
