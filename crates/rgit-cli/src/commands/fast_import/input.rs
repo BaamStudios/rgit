@@ -109,6 +109,36 @@ impl<R: Read> Input<R> {
         Ok(())
     }
 
+    /// The length of a `data <count>` command in `line`.
+    pub fn data_count(&self) -> Option<u64> {
+        let arg = self.line.strip_prefix(b"data ")?;
+        if arg.starts_with(b"<<") {
+            return None;
+        }
+        Some(count(arg))
+    }
+
+    /// Hand the `len` bytes of a `data <count>` payload to `sink` in
+    /// pieces (the optional LF after it is left).
+    pub fn stream_data(
+        &mut self,
+        len: u64,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), Die>,
+    ) -> Result<(), Die> {
+        let mut left = len;
+        while left > 0 {
+            let buf = self.reader.fill_buf().map_err(io_fatal)?;
+            if buf.is_empty() {
+                return Err(Die::Fatal(msg::eof_in_data_count(left)));
+            }
+            let n = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+            sink(&buf[..n])?;
+            self.reader.consume(n);
+            left -= n as u64;
+        }
+        Ok(())
+    }
+
     /// The payload of the `data` command in `line`: `data <count>` or
     /// `data <<<delim>`, then an optional LF.
     pub fn read_data(&mut self) -> Result<Vec<u8>, Die> {
@@ -134,11 +164,7 @@ impl<R: Read> Input<R> {
             }
             out
         } else {
-            let digits = arg.iter().take_while(|c| c.is_ascii_digit()).count();
-            let mut len: u64 = 0;
-            for &d in &arg[..digits] {
-                len = len.saturating_mul(10).saturating_add(u64::from(d - b'0'));
-            }
+            let len = count(arg);
             let mut out = Vec::with_capacity(len.min(1 << 24) as usize);
             let got = (&mut self.reader)
                 .take(len)
@@ -152,4 +178,14 @@ impl<R: Read> Input<R> {
         self.skip_optional_lf()?;
         Ok(out)
     }
+}
+
+/// The count of `data <count>` (leading digits; saturating).
+fn count(arg: &[u8]) -> u64 {
+    let digits = arg.iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut len: u64 = 0;
+    for &d in &arg[..digits] {
+        len = len.saturating_mul(10).saturating_add(u64::from(d - b'0'));
+    }
+    len
 }

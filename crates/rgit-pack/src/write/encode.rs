@@ -374,6 +374,13 @@ pub(crate) fn create_delta(
     Some(out)
 }
 
+/// A delta that turns `base` into `target`, or `None` when it would be
+/// longer than `max_size` bytes. For callers that pick the base
+/// themselves (`fast-import` deltifies against the previous object).
+pub fn delta(base: &[u8], target: &[u8], max_size: usize) -> Option<Vec<u8>> {
+    create_delta(base, &DeltaIndex::new(base), target, max_size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

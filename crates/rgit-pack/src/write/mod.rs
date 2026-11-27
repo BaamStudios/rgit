@@ -37,6 +37,7 @@ mod search;
 mod source;
 mod walk;
 
+pub use encode::delta;
 pub use error::{SourceError, WriteError};
 pub use filter::{FilterError, ObjectFilter};
 pub use filter_state::{FilterState, SparsePatterns, Verdict};
