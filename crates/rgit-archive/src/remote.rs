@@ -44,6 +44,8 @@ pub enum Ack {
     Nack(String),
     /// `ACK` without the flush packet after it.
     MissingFlush,
+    /// A flush, delimiter or response-end packet instead of an answer.
+    NoAnswer,
     /// Anything else.
     Other(String),
 }
@@ -65,7 +67,7 @@ pub fn read_ack<R: Read>(r: &mut Reader<R>) -> rgit_protocol::Result<Ack> {
                 Ack::Other(line)
             }
         }
-        p => Ack::Other(p.describe()),
+        _ => Ack::NoAnswer,
     };
     if ack == Ack::Ack {
         match r.read()? {

@@ -14,14 +14,17 @@
 //!   `git-receive-pack`) and `POST .../git-upload-pack` (or
 //!   `git-receive-pack`) run the service with `--stateless-rpc` as a
 //!   child process, the way git does, and pass the body through (inflated
-//!   when it is gzip-compressed).
+//!   when it is gzip-compressed). `POST .../git-upload-archive` runs
+//!   `upload-archive` (without `--stateless-rpc`): `archive --remote`
+//!   over protocol v2.
 //! - Dumb HTTP: `HEAD`, `info/refs`, `objects/info/packs`,
 //!   `objects/info/alternates`, `objects/info/http-alternates`, loose
 //!   objects, packs and their indexes, unless `http.getanyfile` is off.
 //!
 //! Which services run is decided by `http.uploadpack` (default on),
-//! `http.receivepack` (default: on for an authenticated user, i.e. when
-//! `REMOTE_USER` is set) and `http.getanyfile` (default on). A
+//! `http.receivepack` and `http.uploadarchive` (default: on for an
+//! authenticated user, i.e. when `REMOTE_USER` is set) and
+//! `http.getanyfile` (default on). A
 //! repository is only served with `GIT_HTTP_EXPORT_ALL` set or when it has
 //! a `git-daemon-export-ok` file.
 //!
@@ -107,6 +110,7 @@ pub struct Options {
 enum Route {
     UploadPack,
     ReceivePack,
+    UploadArchive,
     InfoRefs,
     Head,
     Alternates,
@@ -119,7 +123,10 @@ enum Route {
 
 impl Route {
     fn is_post(self) -> bool {
-        matches!(self, Route::UploadPack | Route::ReceivePack)
+        matches!(
+            self,
+            Route::UploadPack | Route::ReceivePack | Route::UploadArchive
+        )
     }
 }
 
@@ -128,6 +135,7 @@ impl Route {
 enum Service {
     UploadPack,
     ReceivePack,
+    UploadArchive,
 }
 
 impl Service {
@@ -135,6 +143,7 @@ impl Service {
         match self {
             Service::UploadPack => "upload-pack",
             Service::ReceivePack => "receive-pack",
+            Service::UploadArchive => "upload-archive",
         }
     }
 
@@ -142,6 +151,7 @@ impl Service {
         match name {
             "upload-pack" => Some(Service::UploadPack),
             "receive-pack" => Some(Service::ReceivePack),
+            "upload-archive" => Some(Service::UploadArchive),
             _ => None,
         }
     }
@@ -287,6 +297,7 @@ impl Request<'_> {
         match route {
             Route::UploadPack => self.service_rpc(&repo, &config, Service::UploadPack, input),
             Route::ReceivePack => self.service_rpc(&repo, &config, Service::ReceivePack, input),
+            Route::UploadArchive => self.service_rpc(&repo, &config, Service::UploadArchive, input),
             Route::InfoRefs => self.info_refs(&repo, &config),
             Route::Head => self.head(&repo, &config),
             Route::Packs => self.packs(&repo, &config),
@@ -563,7 +574,12 @@ impl Request<'_> {
             return Err(Stop::Fatal(msg::cannot_run(svc.name(), "no git command")));
         };
         let mut cmd = Command::new(program);
-        cmd.args(args).arg(svc.name()).arg("--stateless-rpc");
+        cmd.args(args).arg(svc.name());
+        // `upload-archive` has no stateless mode: one request is all it
+        // serves anyway.
+        if svc != Service::UploadArchive {
+            cmd.arg("--stateless-rpc");
+        }
         if advertise {
             cmd.arg("--http-backend-info-refs");
         }
@@ -652,6 +668,7 @@ struct Config {
     getanyfile: bool,
     upload_pack: bool,
     receive_pack: bool,
+    upload_archive: bool,
     max_request_buffer: u64,
 }
 
@@ -676,6 +693,7 @@ impl Config {
             getanyfile: flag("http.getanyfile", true)?,
             upload_pack: flag("http.uploadpack", true)?,
             receive_pack: flag("http.receivepack", authenticated)?,
+            upload_archive: flag("http.uploadarchive", authenticated)?,
             max_request_buffer,
         })
     }
@@ -684,6 +702,7 @@ impl Config {
         match svc {
             Service::UploadPack => self.upload_pack,
             Service::ReceivePack => self.receive_pack,
+            Service::UploadArchive => self.upload_archive,
         }
     }
 }
@@ -710,6 +729,7 @@ fn match_route(path: &str) -> Option<(usize, Route)> {
     const FIXED: &[(&str, Route)] = &[
         ("/git-upload-pack", Route::UploadPack),
         ("/git-receive-pack", Route::ReceivePack),
+        ("/git-upload-archive", Route::UploadArchive),
         ("/info/refs", Route::InfoRefs),
         ("/HEAD", Route::Head),
         ("/objects/info/alternates", Route::Alternates),

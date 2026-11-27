@@ -308,12 +308,7 @@ impl Transport for HttpTransport {
         let service = match options.service {
             rgit_transport::Service::UploadPack => Service::UploadPack,
             rgit_transport::Service::ReceivePack => Service::ReceivePack,
-            rgit_transport::Service::UploadArchive => {
-                return Err(TError::Refused(format!(
-                    "{} is not supported over HTTP",
-                    options.service.name()
-                )));
-            }
+            rgit_transport::Service::UploadArchive => Service::UploadArchive,
         };
         let mut opts = self.opts.clone();
         opts.verbosity = opts.verbosity.max(options.verbosity);
@@ -322,6 +317,24 @@ impl Transport for HttpTransport {
             session = session.with_credentials(p);
         }
         session.set_git_protocol(options.git_protocol());
+        if service == Service::UploadArchive {
+            // `git-upload-archive` is reached through protocol v2 only:
+            // the discovery of `git-upload-pack` must answer with
+            // `version 2`, then the requests go to `git-upload-archive`
+            // (observed with git 2.56).
+            let adv = session.discover(Service::UploadPack).map_err(other)?;
+            if !is_v2(&adv.data) {
+                return Err(TError::Other(
+                    crate::messages::cannot_connect_to_subservice(service.name()),
+                ));
+            }
+            return Ok(Box::new(HttpConnection {
+                session,
+                service,
+                request: Vec::new(),
+                response: Box::new(io::empty()),
+            }));
+        }
         let adv = session.discover(service).map_err(other)?;
         Ok(Box::new(HttpConnection {
             session,
@@ -330,6 +343,22 @@ impl Transport for HttpTransport {
             response: Box::new(io::Cursor::new(adv.data)),
         }))
     }
+}
+
+/// Whether an advertisement is protocol v2: its first packet is
+/// `version 2`.
+fn is_v2(data: &[u8]) -> bool {
+    let Some(len) = data
+        .get(..4)
+        .and_then(|h| std::str::from_utf8(h).ok())
+        .and_then(|h| usize::from_str_radix(h, 16).ok())
+    else {
+        return false;
+    };
+    len >= 4
+        && data
+            .get(4..len)
+            .is_some_and(|p| p.strip_suffix(b"\n").unwrap_or(p) == b"version 2")
 }
 
 fn other(e: crate::Error) -> TError {
@@ -373,10 +402,17 @@ impl Connection for HttpConnection {
 
     fn end_request(&mut self) -> TResult<()> {
         let body = std::mem::take(&mut self.request);
-        let resp = self
-            .session
-            .rpc(self.service, RpcBody::Bytes(&body))
-            .map_err(other)?;
+        let resp = match self.session.rpc(self.service, RpcBody::Bytes(&body)) {
+            Ok(resp) => resp,
+            // As through git's helper: the failure is reported and the
+            // response ends at once, which `archive` reports in turn.
+            Err(e @ crate::Error::Rpc { .. }) if self.service == Service::UploadArchive => {
+                eprintln!("error: {e}");
+                self.response = Box::new(io::Cursor::new(b"0000".to_vec()));
+                return Ok(());
+            }
+            Err(e) => return Err(other(e)),
+        };
         self.response = Box::new(resp);
         Ok(())
     }
