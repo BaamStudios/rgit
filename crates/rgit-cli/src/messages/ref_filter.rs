@@ -99,6 +99,12 @@ pub fn bad_tag_pointer(target: &str, tag: &str) -> String {
     format!("bad tag pointer to {target} in {tag}")
 }
 
+/// `parse_object_buffer failed on <oid> for <refname>`: a tag of the
+/// reference could not be parsed.
+pub fn parse_object_buffer_failed(oid: &str, refname: &str) -> String {
+    format!("parse_object_buffer failed on {oid} for {refname}")
+}
+
 pub fn malformed_object_name(name: &str) -> String {
     format!("malformed object name {name}")
 }
