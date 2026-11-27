@@ -755,7 +755,7 @@ pub(crate) fn remove_branch_state(
     hash: rgit_hash::HashKind,
 ) -> Option<&'static str> {
     let holds_oid = |name: &str| {
-        std::fs::read_to_string(git_dir.join(name))
+        rgit_refs::read_root_ref_text(git_dir, name)
             .ok()
             .is_some_and(|s| ObjectId::from_hex(hash, s.trim_end().as_bytes()).is_ok())
     };
@@ -763,7 +763,7 @@ pub(crate) fn remove_branch_state(
     for (name, what) in [("CHERRY_PICK_HEAD", "cherry picking"), ("REVERT_HEAD", "revert")] {
         if holds_oid(name) {
             cancelled = cancelled.or(Some(what));
-            let _ = std::fs::remove_file(git_dir.join(name));
+            let _ = rgit_refs::remove_root_ref_file(git_dir, name);
         }
     }
     // The sequence ends with its last commit (sequencer.adoc: a reset
@@ -775,7 +775,7 @@ pub(crate) fn remove_branch_state(
         let _ = std::fs::remove_file(git_dir.join(name));
     }
     if holds_oid("AUTO_MERGE") {
-        let _ = std::fs::remove_file(git_dir.join("AUTO_MERGE"));
+        let _ = rgit_refs::remove_root_ref_file(git_dir, "AUTO_MERGE");
     }
     cancelled
 }

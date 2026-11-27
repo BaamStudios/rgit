@@ -206,7 +206,7 @@ pub fn sequencing(repo: &Repo) -> Option<Sequencing> {
         return None;
     }
     let pseudo = |name: &str| {
-        crate::rebase::read_text(dir.join(name))
+        rgit_refs::read_root_ref_text(&dir, name)
             .ok()
             .and_then(|s| ObjectId::from_hex(repo.hash, s.trim_end().as_bytes()).ok())
     };

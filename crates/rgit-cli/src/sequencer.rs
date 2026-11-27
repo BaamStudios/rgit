@@ -386,7 +386,7 @@ impl<'c> Sequencer<'c> {
 
     /// Whether `CHERRY_PICK_HEAD` or `REVERT_HEAD` names a commit.
     fn pseudo_head(&self, action: Action) -> Option<ObjectId> {
-        let data = std::fs::read_to_string(self.path(action.head_file())).ok()?;
+        let data = rgit_refs::read_root_ref_text(&self.git_dir, action.head_file()).ok()?;
         let hex = data.trim_end();
         ObjectId::from_hex(
             if hex.len() == 64 {
@@ -399,12 +399,15 @@ impl<'c> Sequencer<'c> {
         .ok()
     }
 
+    /// Writes the state file `name`; a root reference (`CHERRY_PICK_HEAD`,
+    /// `AUTO_MERGE`, ...) goes into the stack of a reftable repository.
     fn write_file(&self, name: &str, data: &[u8]) -> Result<(), Die> {
-        std::fs::write(self.path(name), data).map_err(|e| Die::Fatal(e.to_string()))
+        rgit_refs::write_root_ref_file(&self.git_dir, name, data)
+            .map_err(|e| Die::Fatal(e.to_string()))
     }
 
     fn remove(&self, name: &str) {
-        let _ = std::fs::remove_file(self.path(name));
+        let _ = rgit_refs::remove_root_ref_file(&self.git_dir, name);
     }
 
     // ------------------------------------------------------------------
@@ -1771,9 +1774,9 @@ pub fn at_last_pick(git_dir: &Path) -> bool {
 pub fn post_commit_cleanup(git_dir: &Path) {
     let had = ["CHERRY_PICK_HEAD", "REVERT_HEAD"]
         .iter()
-        .any(|f| git_dir.join(f).exists());
+        .any(|f| rgit_refs::root_ref_exists(git_dir, f));
     for f in ["CHERRY_PICK_HEAD", "REVERT_HEAD"] {
-        let _ = std::fs::remove_file(git_dir.join(f));
+        let _ = rgit_refs::remove_root_ref_file(git_dir, f);
     }
     if had && at_last_pick(git_dir) {
         let _ = std::fs::remove_dir_all(git_dir.join("sequencer"));

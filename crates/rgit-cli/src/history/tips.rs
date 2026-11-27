@@ -697,7 +697,7 @@ fn merge_other(repo: &Repo<'_>) -> Result<&'static str, Die> {
         "REBASE_HEAD",
     ]
     .into_iter()
-    .find(|name| repo.setup.git_dir.join(name).is_file())
+    .find(|name| rgit_refs::root_ref_exists(&repo.setup.git_dir, name))
     .ok_or_else(|| Die::Fatal(msg::MERGE_PSEUDOREFS.to_owned()))
 }
 

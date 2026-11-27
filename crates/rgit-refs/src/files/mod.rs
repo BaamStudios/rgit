@@ -265,15 +265,6 @@ impl FilesStore {
         read_loose_path(&self.ref_path(name), self.kind)
     }
 
-    /// The value of the loose file of `name`, `None` when there is no
-    /// such file or it holds no reference.
-    pub(crate) fn loose_value(&self, name: &str) -> Option<Target> {
-        match self.read_loose(name) {
-            Ok(LooseRead::Value(t)) => Some(t),
-            _ => None,
-        }
-    }
-
     /// Reads only the loose file of `name` (no packed fallback).
     pub fn read_loose_ref(&self, name: &str) -> Result<Option<Target>, Error> {
         if self.reftable && !crate::name::is_pseudo_ref(name) {

@@ -1694,6 +1694,13 @@ pub(crate) fn read_text(path: impl AsRef<Path>) -> std::io::Result<String> {
     std::fs::read(path).map(rgit_bstr::from_vec)
 }
 
+/// Writes the root reference `name` (`REBASE_HEAD`, `AUTO_MERGE`, ...) of
+/// the git directory `git_dir`: a file, or in a reftable repository a
+/// record in the stack.
+fn write_root_ref(git_dir: &Path, name: &str, data: impl AsRef<[u8]>) -> Result<(), Die> {
+    rgit_refs::write_root_ref_file(git_dir, name, data.as_ref()).map_err(io_die)
+}
+
 /// Creates `.git/rebase-merge` for a new rebase; `help` is appended to
 /// the todo list of an interactive rebase (the user edits it next).
 fn write_state(
@@ -1946,12 +1953,8 @@ impl<'c> Rebase<'c> {
         })
     }
 
-    fn git_path(&self, name: &str) -> Result<PathBuf, Die> {
-        Ok(git_dir(&self.repo()?).join(name))
-    }
-
     fn remove_git_file(&self, name: &str) -> Result<(), Die> {
-        let _ = std::fs::remove_file(self.git_path(name)?);
+        let _ = rgit_refs::remove_root_ref_file(&git_dir(&self.repo()?), name);
         Ok(())
     }
 
@@ -2203,8 +2206,9 @@ impl<'c> Rebase<'c> {
             let _ = o.flush();
         }
         crate::commands::merge_tree::advise_submodules(self.ctx, repo, result)?;
-        write(
-            &git_dir(repo).join("AUTO_MERGE"),
+        write_root_ref(
+            &git_dir(repo),
+            "AUTO_MERGE",
             format!("{}\n", result.tree.to_hex()),
         )?;
         Ok(())
@@ -2499,7 +2503,7 @@ impl<'c> Rebase<'c> {
 
         if last && wants_editor {
             let gd = git_dir(&repo);
-            write(&gd.join("REBASE_HEAD"), format!("{}\n", id.to_hex()))?;
+            write_root_ref(&gd, "REBASE_HEAD", format!("{}\n", id.to_hex()))?;
             write(&gd.join("MERGE_MSG"), &template)?;
             drop(repo);
             let env = vec![(
@@ -3158,9 +3162,9 @@ impl<'c> Rebase<'c> {
         write(&dir.join("author-script"), author_script(author))?;
         let hex = format!("{}\n", id.to_hex());
         write(&dir.join("stopped-sha"), &hex)?;
-        write(&gd.join("REBASE_HEAD"), &hex)?;
+        write_root_ref(&gd, "REBASE_HEAD", &hex)?;
         if empty {
-            write(&gd.join("CHERRY_PICK_HEAD"), &hex)?;
+            write_root_ref(&gd, "CHERRY_PICK_HEAD", &hex)?;
         }
         let parent = match repo.read_object(id) {
             Some(Object::Commit(c)) => c.parents().unwrap_or_default().first().map(|p| p.to_hex()),
@@ -3347,10 +3351,7 @@ impl<'c> Rebase<'c> {
         if let Some(c) = item.commit
             && (item.cmd.picks() || item.cmd == todo::Cmd::Merge)
         {
-            write(
-                &git_dir(&repo).join("REBASE_HEAD"),
-                format!("{}\n", c.to_hex()),
-            )?;
+            write_root_ref(&git_dir(&repo), "REBASE_HEAD", format!("{}\n", c.to_hex()))?;
             if let Some(Object::Commit(cm)) = repo.read_object(&c)
                 && let Some(a) = cm.author().and_then(|a| a.to_owned())
             {
@@ -3455,8 +3456,10 @@ impl<'c> Rebase<'c> {
     }
 
     /// Forgets the stop: the pseudo-refs and the stopped commit's files.
+    /// `REBASE_HEAD` stays until the next pick replaces it, also after the
+    /// last one (as with git; only `--abort` removes it).
     fn clear_stop(&self) -> Result<(), Die> {
-        for f in ["REBASE_HEAD", "MERGE_MSG", "CHERRY_PICK_HEAD", "MERGE_HEAD"] {
+        for f in ["MERGE_MSG", "CHERRY_PICK_HEAD", "MERGE_HEAD"] {
             self.remove_git_file(f)?;
         }
         let dir = self.dir()?;
@@ -3811,6 +3814,8 @@ pub fn skip(ctx: &mut Context) -> CmdResult {
     }
     drop(repo);
     rb.clear_stop()?;
+    // The skipped commit's merge result goes with it.
+    rb.remove_git_file("AUTO_MERGE")?;
     let todo = match rb.read_todo()? {
         Ok(t) => t,
         Err(()) => return Ok(1),
@@ -3850,7 +3855,9 @@ pub fn abort(ctx: &mut Context) -> CmdResult {
     }
     rb.clear_stop()?;
     delete_labels(rb.ctx, &repo)?;
-    let _ = std::fs::remove_file(git_dir(&repo).join("AUTO_MERGE"));
+    for f in ["REBASE_HEAD", "AUTO_MERGE"] {
+        let _ = rgit_refs::remove_root_ref_file(&git_dir(&repo), f);
+    }
     let _ = std::fs::remove_dir_all(dir);
     drop(repo);
     crate::maintenance::run_auto(rb.ctx);

@@ -9,12 +9,11 @@
 //! `refs/rewritten/`); all other references are in the stack of the common
 //! directory.
 //!
-//! Root references other than `HEAD` (`ORIG_HEAD`, `CHERRY_PICK_HEAD`,
-//! ...) are read from the stack first and then from a file of that name
-//! in the git directory: commands that keep the state of a running
-//! operation in such files find them through the reference store as
-//! well. A transaction that writes such a reference stores it in the
-//! stack and removes the file.
+//! Root references other than the pseudo-references `FETCH_HEAD` and
+//! `MERGE_HEAD` (`ORIG_HEAD`, `CHERRY_PICK_HEAD`, `AUTO_MERGE`, ...) live
+//! in the stack only, as in git: a file of that name in the git directory
+//! is not a reference. Commands keep them there through
+//! [`crate::read_root_ref_file`] and its siblings.
 //!
 //! A transaction writes one table per stack with the reference records and
 //! the log records of all its updates, all with the same update index.
@@ -211,12 +210,6 @@ fn capture_delete(name: &str) -> bool {
     })
 }
 
-/// Whether `name` (inside its stack) is a root reference that may still
-/// be kept as a file in the git directory.
-fn may_be_file(name: &str) -> bool {
-    name != "HEAD" && crate::name::is_root_ref_syntax(name)
-}
-
 // --- reading -------------------------------------------------------------
 
 impl FilesStore {
@@ -243,10 +236,7 @@ impl FilesStore {
         if rec.as_ref().is_some_and(broken_symref) {
             return Err(Error::Broken(name.to_owned()));
         }
-        match rec.as_ref().and_then(target_of) {
-            None if may_be_file(rel) => Ok(self.loose_value(name)),
-            found => Ok(found),
-        }
+        Ok(rec.as_ref().and_then(target_of))
     }
 
     fn rt_item(&self, rec: RefRecord) -> Option<IterItem> {
@@ -328,40 +318,6 @@ impl FilesStore {
             if linked {
                 collect(&own, "", true)?;
             }
-            // Root references kept as files.
-            let (dir, _) = self.locate("HEAD");
-            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                let Ok(name) = entry.file_name().into_string() else {
-                    continue;
-                };
-                if !may_be_file(&name)
-                    || !is_root_ref(&name)
-                    || is_pseudo_ref(&name)
-                    || !name.starts_with(prefix)
-                    || items.contains_key(name.as_bytes())
-                {
-                    continue;
-                }
-                if let Some(target) = self.loose_value(&name) {
-                    let (oid, target) = match target {
-                        Target::Object(id) => (Some(id), Target::Object(id)),
-                        Target::Symbolic(t) => (
-                            self.resolve(&name).ok().flatten().and_then(|r| r.oid),
-                            Target::Symbolic(t),
-                        ),
-                    };
-                    items.insert(
-                        name.clone().into_bytes(),
-                        IterItem::Ref(Reference {
-                            name,
-                            target,
-                            oid,
-                            peeled: Peeled::Unknown,
-                            source: Source::Loose,
-                        }),
-                    );
-                }
-            }
         }
         Ok(items.into_values().collect())
     }
@@ -408,8 +364,6 @@ pub(crate) struct Prepared<'s> {
     reflogs: Vec<ReflogUpdate>,
     /// Names whose logs go away with the reference.
     log_deletes: Vec<String>,
-    /// Files of root references that the transaction replaces or deletes.
-    stale_files: Vec<PathBuf>,
     hook_updates: Vec<(String, String, String)>,
 }
 
@@ -453,10 +407,7 @@ impl<'s> Prepared<'s> {
         if rec.as_ref().is_some_and(broken_symref) {
             return Ok(None);
         }
-        match rec.as_ref().and_then(target_of) {
-            None if may_be_file(rel) => Ok(self.store.loose_value(name)),
-            found => Ok(found),
-        }
+        Ok(rec.as_ref().and_then(target_of))
     }
 
     /// Follows symbolic references from `name`: the object at the end,
@@ -632,12 +583,6 @@ impl State<'_, '_> {
         }
         let (stack, rel) = self.store.rt_stack(&final_name);
         let i = self.prepared.stack_index(&stack)?;
-        if may_be_file(rel) {
-            let file = self.store.ref_path(&final_name);
-            if file.is_file() {
-                self.prepared.stale_files.push(file);
-            }
-        }
         self.prepared.writes.push((i, rel.to_owned(), value));
         Ok(())
     }
@@ -759,7 +704,6 @@ pub(crate) fn prepare<'s>(
         writes: Vec::new(),
         reflogs: Vec::new(),
         log_deletes: Vec::new(),
-        stale_files: Vec::new(),
         hook_updates: Vec::new(),
     };
     // Every transaction takes the lock of its worktree's stack, also one
@@ -911,9 +855,6 @@ impl PreparedTransaction for Prepared<'_> {
             }
         }
         self.write(capture)?;
-        for file in &self.stale_files {
-            let _ = std::fs::remove_file(file);
-        }
         let _ = hooks.reference_transaction(HookState::Committed, &self.hook_updates);
         Ok(())
     }
@@ -1391,13 +1332,13 @@ pub(crate) fn root_ref_content(git_dir: &Path, name: &str) -> io::Result<Vec<u8>
             Err(e) => return Err(io_error(e)),
         };
         return match merged::read_ref(&tables, &raw(name)).map_err(io_error)? {
-            Some(rec) => Ok(match rec.value {
-                RefValue::Symbolic(t) => [b"ref: ".as_slice(), &t, b"\n"].concat(),
+            Some(rec) => match rec.value {
+                RefValue::Symbolic(t) => Ok([b"ref: ".as_slice(), &t, b"\n"].concat()),
                 RefValue::Direct(id) | RefValue::Peeled(id, _) => {
-                    format!("{}\n", id.to_hex()).into_bytes()
+                    Ok(format!("{}\n", id.to_hex()).into_bytes())
                 }
-                RefValue::Deletion => Vec::new(),
-            }),
+                RefValue::Deletion => Err(io::Error::from(io::ErrorKind::NotFound)),
+            },
             None => Err(io::Error::from(io::ErrorKind::NotFound)),
         };
     }
