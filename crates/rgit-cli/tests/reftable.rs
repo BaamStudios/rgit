@@ -761,3 +761,172 @@ fn stack_is_compacted_like_gits() {
     p.ok("repo", &[&["pack-refs", "--auto"], &["pack-refs"]]);
     p.same_state("compacted", "repo");
 }
+
+/// A scenario of [`operations_continue_with_the_other_tool`].
+struct Operation {
+    label: &'static str,
+    /// Commands (reference git) after the common setup.
+    before: &'static [&'static [&'static str]],
+    /// The command that stops in the middle of the operation.
+    start: &'static [&'static str],
+    /// Resolve the conflict in `f` before `end`.
+    resolve: bool,
+    /// The command that continues, concludes or aborts the operation.
+    end: &'static [&'static str],
+}
+
+/// An operation that stops (cherry-pick, revert, rebase, merge with
+/// `--autostash`, bisect) keeps its pseudo-references in the stack, as
+/// git does: started by one tool, the other one continues or aborts it.
+/// One side starts with rgit and continues with git, the other the other
+/// way round; both have to see the same root references at every step.
+#[test]
+fn operations_continue_with_the_other_tool() {
+    let Some(p) = Pair::new(false) else { return };
+    let rgit = Path::new(env!("CARGO_BIN_EXE_rgit"));
+    let git = p.fx.reference_git();
+    let env = [("GIT_EDITOR", "true")];
+    let run = |root: &Path, dir: &str, args: &[&str]| {
+        let r = p.exec(git, root, dir, args, "", &env);
+        assert_eq!(r.code, Some(0), "{args:?}: {}", r.stderr);
+    };
+    // `f` differs on `main` and `topic`, so that picking `topic` stops.
+    let setup = |root: &Path| {
+        let _ = std::fs::remove_dir_all(root.join("repo"));
+        run(root, "", INIT);
+        std::fs::write(root.join("repo/f"), "a\n").unwrap();
+        run(root, "repo", &["add", "f"]);
+        run(root, "repo", &["commit", "-q", "-m", "a"]);
+        run(root, "repo", &["checkout", "-q", "-b", "topic"]);
+        std::fs::write(root.join("repo/f"), "b\n").unwrap();
+        run(root, "repo", &["commit", "-q", "-a", "-m", "b"]);
+        run(root, "repo", &["checkout", "-q", "main"]);
+        std::fs::write(root.join("repo/f"), "c\n").unwrap();
+        run(root, "repo", &["commit", "-q", "-a", "-m", "c"]);
+        std::fs::write(root.join("repo/g"), "x\n").unwrap();
+    };
+    const PICK: &[&str] = &["cherry-pick", "topic"];
+    const AUTOSTASH: &[&str] = &["merge", "--autostash", "topic"];
+    const COMMIT: &[&str] = &["commit", "-q", "--no-edit"];
+    let op = |label, before, start, resolve, end| Operation {
+        label,
+        before,
+        start,
+        resolve,
+        end,
+    };
+    let operations = [
+        op("pick, abort", &[], PICK, false, &["cherry-pick", "--abort"]),
+        op(
+            "pick, continue",
+            &[],
+            PICK,
+            true,
+            &["cherry-pick", "--continue"],
+        ),
+        op("pick, commit", &[], PICK, true, COMMIT),
+        op("pick, reset", &[], PICK, false, &["reset", "-q", "--hard"]),
+        op(
+            "revert, abort",
+            &[
+                &["checkout", "-q", "topic"],
+                &["commit", "-q", "--allow-empty", "-m", "d"],
+            ],
+            &["revert", "HEAD~1"],
+            false,
+            &["revert", "--abort"],
+        ),
+        op(
+            "rebase, abort",
+            &[],
+            &["rebase", "topic"],
+            false,
+            &["rebase", "--abort"],
+        ),
+        op(
+            "rebase, skip",
+            &[],
+            &["rebase", "topic"],
+            false,
+            &["rebase", "--skip"],
+        ),
+        op(
+            "autostash, abort",
+            &[&["add", "g"]],
+            AUTOSTASH,
+            false,
+            &["merge", "--abort"],
+        ),
+        op(
+            "autostash, commit",
+            &[&["add", "g"]],
+            AUTOSTASH,
+            true,
+            COMMIT,
+        ),
+        op(
+            "autostash, quit",
+            &[&["add", "g"]],
+            AUTOSTASH,
+            false,
+            &["merge", "--quit"],
+        ),
+        op(
+            "bisect --no-checkout",
+            &[],
+            &["bisect", "start", "--no-checkout", "main", "main~1"],
+            false,
+            &["bisect", "reset"],
+        ),
+        op(
+            "bisect",
+            &[&["commit", "-q", "--allow-empty", "-m", "d"]],
+            &["bisect", "start", "main", "main~2"],
+            false,
+            &["bisect", "good"],
+        ),
+    ];
+    let state = |root: &Path, out: &mut String| {
+        for args in [
+            &["for-each-ref", "--include-root-refs"][..],
+            &["status", "--porcelain"],
+            &["stash", "list"],
+            &["log", "--format=%s", "-3"],
+        ] {
+            out.push_str(&p.inspect(root, "repo", args));
+        }
+    };
+    for o in &operations {
+        let mut sides = Vec::new();
+        for (root, first, second) in [(&p.git, rgit, git), (&p.rgit, git, rgit)] {
+            setup(root);
+            for args in o.before {
+                run(root, "repo", args);
+            }
+            let started = p.exec(first, root, "repo", o.start, "", &env);
+            let mut out = format!("started: exit {:?}\n", started.code);
+            state(root, &mut out);
+            if o.resolve {
+                std::fs::write(root.join("repo/f"), "r\n").unwrap();
+                run(root, "repo", &["add", "f"]);
+            }
+            let ended = p.exec(second, root, "repo", o.end, "", &env);
+            out.push_str(&format!(
+                "ended: exit {:?}\n--- stdout\n{}--- stderr\n{}",
+                ended.code, ended.stdout, ended.stderr
+            ));
+            state(root, &mut out);
+            sides.push(out);
+        }
+        // The operation did stop with a pseudo-reference in the stack.
+        assert!(
+            ["AUTO_MERGE", "BISECT_EXPECTED_REV", "BISECT_HEAD"]
+                .iter()
+                .any(|name| sides[0].contains(name)),
+            "{}: {}",
+            o.label,
+            sides[0]
+        );
+        rgit_difftest::assert_same_text(o.label, &sides[0], &sides[1]);
+    }
+}

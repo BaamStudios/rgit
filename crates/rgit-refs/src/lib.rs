@@ -66,31 +66,52 @@ pub fn read_head_file(git_dir: &std::path::Path) -> std::io::Result<Vec<u8>> {
     reftable::backend::root_ref_content(git_dir, "HEAD")
 }
 
+/// Whether the state file `name` of a git directory is a reference that
+/// a reftable repository keeps in its stack: every root reference except
+/// `HEAD` and the pseudo-references `FETCH_HEAD` and `MERGE_HEAD`
+/// (`ORIG_HEAD`, `CHERRY_PICK_HEAD`, `AUTO_MERGE`, ...). Other names
+/// (`MERGE_MSG`, ...) are plain files in either format.
+pub fn is_stack_root_ref(name: &str) -> bool {
+    name != "HEAD" && name::is_root_ref(name) && !name::is_pseudo_ref(name)
+}
+
 /// The content of the root reference `name` (`ORIG_HEAD`, ...) of the git
 /// directory `git_dir` in the files format: the file of that name, or in
-/// a reftable repository the value stored in the stack (and the file only
-/// when the stack has none).
+/// a reftable repository the value stored in the stack. A name that is
+/// not stored in the stack ([`is_stack_root_ref`]) is read as a file in
+/// either format.
 pub fn read_root_ref_file(git_dir: &std::path::Path, name: &str) -> std::io::Result<Vec<u8>> {
     let git_dir = &location::resolve(git_dir);
-    if reftable::backend::uses_reftable(git_dir) {
-        match reftable::backend::root_ref_content(git_dir, name) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            other => return other,
-        }
+    if is_stack_root_ref(name) && reftable::backend::uses_reftable(git_dir) {
+        return reftable::backend::root_ref_content(git_dir, name);
     }
     std::fs::read(git_dir.join(name))
 }
 
+/// [`read_root_ref_file`] as text (bytes that are not UTF-8 escaped as
+/// [`rgit_bstr`] does).
+pub fn read_root_ref_text(git_dir: &std::path::Path, name: &str) -> std::io::Result<String> {
+    Ok(rgit_bstr::from_vec(read_root_ref_file(git_dir, name)?))
+}
+
+/// Whether the root reference `name` of `git_dir` exists (see
+/// [`read_root_ref_file`]).
+pub fn root_ref_exists(git_dir: &std::path::Path, name: &str) -> bool {
+    read_root_ref_file(git_dir, name).is_ok()
+}
+
 /// Stores `content` (`ref: <name>` or an object id in hex, as the files
 /// format writes it) as the root reference `name` of `git_dir`, without a
-/// reflog entry: as a file, or in a reftable repository in the stack.
+/// reflog entry: as a file, or in a reftable repository in the stack. A
+/// name that is not stored in the stack ([`is_stack_root_ref`]) is
+/// written as a file in either format.
 pub fn write_root_ref_file(
     git_dir: &std::path::Path,
     name: &str,
     content: &[u8],
 ) -> std::io::Result<()> {
     let git_dir = &location::resolve(git_dir);
-    if !reftable::backend::uses_reftable(git_dir) {
+    if !is_stack_root_ref(name) || !reftable::backend::uses_reftable(git_dir) {
         return std::fs::write(git_dir.join(name), content);
     }
     let text = rgit_bstr::from_bytes(content);
@@ -106,13 +127,17 @@ pub fn write_root_ref_file(
     root_ref_transaction(git_dir, update)
 }
 
-/// Removes the root reference `name` of `git_dir` (the file, and in a
-/// reftable repository the value in the stack).
+/// Removes the root reference `name` of `git_dir`: the file, or in a
+/// reftable repository the value in the stack. Removing a reference that
+/// does not exist is not an error.
 pub fn remove_root_ref_file(git_dir: &std::path::Path, name: &str) -> std::io::Result<()> {
     let git_dir = &location::resolve(git_dir);
-    if reftable::backend::uses_reftable(git_dir) {
+    if is_stack_root_ref(name) && reftable::backend::uses_reftable(git_dir) {
+        if reftable::backend::root_ref_content(git_dir, name).is_err() {
+            return Ok(());
+        }
         let kind = reftable::backend::stack_hash(git_dir).unwrap_or(rgit_hash::HashKind::Sha1);
-        root_ref_transaction(git_dir, RefUpdate::delete(name, kind, None))?;
+        return root_ref_transaction(git_dir, RefUpdate::delete(name, kind, None));
     }
     match std::fs::remove_file(git_dir.join(name)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),

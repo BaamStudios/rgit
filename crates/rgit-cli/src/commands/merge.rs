@@ -329,11 +329,10 @@ struct Session<'a> {
 /// The stash of a merge with `--autostash` that is over: `MERGE_AUTOSTASH`
 /// is applied (kept in the stash list on conflicts) and removed.
 pub(crate) fn apply_merge_autostash(ctx: &Context, git_dir: &Path) -> Result<(), Die> {
-    let path = git_dir.join("MERGE_AUTOSTASH");
-    let Ok(data) = std::fs::read_to_string(&path) else {
+    let Ok(data) = rgit_refs::read_root_ref_text(git_dir, "MERGE_AUTOSTASH") else {
         return Ok(());
     };
-    let _ = std::fs::remove_file(&path);
+    let _ = rgit_refs::remove_root_ref_file(git_dir, "MERGE_AUTOSTASH");
     if data.trim().is_empty() {
         return Ok(());
     }
@@ -372,11 +371,10 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     }
     if args.quit {
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "AUTO_MERGE"] {
-            let _ = std::fs::remove_file(git_dir.join(f));
+            let _ = rgit_refs::remove_root_ref_file(&git_dir, f);
         }
-        let stash = git_dir.join("MERGE_AUTOSTASH");
-        if let Ok(data) = std::fs::read_to_string(&stash) {
-            let _ = std::fs::remove_file(&stash);
+        if let Ok(data) = rgit_refs::read_root_ref_text(&git_dir, "MERGE_AUTOSTASH") {
+            let _ = rgit_refs::remove_root_ref_file(&git_dir, "MERGE_AUTOSTASH");
             if !data.trim().is_empty() {
                 crate::rebase::store_autostash(ctx, data.trim())?;
             }
@@ -444,7 +442,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     if git_dir.join("MERGE_HEAD").exists() {
         return Err(fatal(msg::NOT_CONCLUDED));
     }
-    if git_dir.join("CHERRY_PICK_HEAD").exists() {
+    if rgit_refs::root_ref_exists(&git_dir, "CHERRY_PICK_HEAD") {
         return Err(fatal(msg::NOT_CONCLUDED_CHERRY_PICK));
     }
 
@@ -1995,8 +1993,10 @@ impl Session<'_> {
         ))
     }
 
+    /// Writes the state file `name`; a root reference (`AUTO_MERGE`,
+    /// `MERGE_AUTOSTASH`) goes into the stack of a reftable repository.
     fn write_file(&self, name: &str, data: &[u8]) -> Result<(), Die> {
-        std::fs::write(self.git_dir.join(name), data).map_err(|e| fatal(e.to_string()))
+        rgit_refs::write_root_ref_file(&self.git_dir, name, data).map_err(|e| fatal(e.to_string()))
     }
 
     /// `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE`.
@@ -2136,7 +2136,7 @@ impl Session<'_> {
                 apply_merge_autostash(self.ctx, &self.git_dir)?;
                 // Unlike `commit` and `--abort`, a merge that is done
                 // leaves no AUTO_MERGE from applying the stash.
-                let _ = std::fs::remove_file(self.git_dir.join("AUTO_MERGE"));
+                let _ = rgit_refs::remove_root_ref_file(&self.git_dir, "AUTO_MERGE");
             }
         }
         Ok(())
@@ -2160,7 +2160,7 @@ impl Session<'_> {
     /// application's `AUTO_MERGE` stays, as with git).
     fn restore_autostash(&mut self) -> Result<(), Die> {
         if let Some(hex) = self.stash.take() {
-            let _ = std::fs::remove_file(self.git_dir.join("MERGE_AUTOSTASH"));
+            let _ = rgit_refs::remove_root_ref_file(&self.git_dir, "MERGE_AUTOSTASH");
             crate::rebase::apply_autostash(self.ctx, &hex)?;
         }
         Ok(())
@@ -2332,7 +2332,7 @@ impl Session<'_> {
             .unwrap_or_else(|| msg::made_by(&self.strategy));
         self.update_head(oid, Some(head), &made_by)?;
         for f in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"] {
-            let _ = std::fs::remove_file(self.git_dir.join(f));
+            let _ = rgit_refs::remove_root_ref_file(&self.git_dir, f);
         }
         if !self.args.quiet {
             println!("{made_by}");

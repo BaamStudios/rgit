@@ -187,21 +187,28 @@ impl<'c> Bisect<'c> {
         self.git_dir.join(name)
     }
 
+    // `BISECT_HEAD` and `BISECT_EXPECTED_REV` are references, which a
+    // reftable repository keeps in its stack; the other names are files.
     fn read(&self, name: &str) -> Option<String> {
-        std::fs::read_to_string(self.path(name)).ok()
+        rgit_refs::read_root_ref_file(&self.git_dir, name)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
     }
 
     fn exists(&self, name: &str) -> bool {
+        if rgit_refs::is_stack_root_ref(name) {
+            return rgit_refs::root_ref_exists(&self.git_dir, name);
+        }
         self.path(name).exists()
     }
 
     fn write(&self, name: &str, text: &str) -> Result<(), Die> {
-        std::fs::write(self.path(name), text)
+        rgit_refs::write_root_ref_file(&self.git_dir, name, text.as_bytes())
             .map_err(|e| Die::Fatal(msg::could_not_write(&self.path(name).display().to_string(), &e.to_string())))
     }
 
     fn remove(&self, name: &str) {
-        let _ = std::fs::remove_file(self.path(name));
+        let _ = rgit_refs::remove_root_ref_file(&self.git_dir, name);
     }
 
     pub fn is_bisecting(&self) -> bool {
