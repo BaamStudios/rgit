@@ -1147,7 +1147,8 @@ run() {
   "$X" repack --geometric 2 -dbm 2>&1; packs; cd ..
   (cruft_setup c22 && "$X" repack -d --geometric=2 --write-midx -b 2>&1; packs)
   (cruft_setup c22n && "$X" repack -d --geometric=2 --write-midx 2>&1; packs)
-  (cruft_setup c24 && "$GIT" multi-pack-index write --bitmap && tc five &&
+  (cruft_setup c24 && touch -t 200101010000 .git/objects/pack/* &&
+   "$GIT" multi-pack-index write --bitmap && tc five &&
    "$X" repack -d --geometric=2 --write-midx -b 2>&1; packs)
   (cruft_setup c22t && "$X" -c repack.midxMustContainCruft=true repack -d --geometric=2 --write-midx -b 2>&1; packs)
   "$GIT" init -q shared && (cd shared && tc s1 && "$GIT" repack -adq) && "$GIT" clone -q --shared shared member && cd member && tc m1
