@@ -186,6 +186,13 @@ impl CachedWalk<'_> {
                 if node.child(bare).is_some() && !self.all {
                     continue;
                 }
+                // git records a directory that replaced a tracked file
+                // but does not show it.
+                let mut path = dir.to_vec();
+                path.extend_from_slice(bare);
+                if !self.all && self.tracked_file(&path) {
+                    continue;
+                }
             }
             names.push(name.clone());
         }
@@ -197,7 +204,8 @@ impl CachedWalk<'_> {
             path.push(b'/');
             if tracked || self.all {
                 self.visit(child, &path, false);
-            } else if self.visit(child, &path, true) {
+            } else if self.visit(child, &path, true) && !self.tracked_file(&path[..path.len() - 1])
+            {
                 let mut n = child.name.clone();
                 n.push(b'/');
                 names.push(n);
@@ -226,6 +234,12 @@ impl CachedWalk<'_> {
             if is_dir {
                 let (gitlink, tracked) = self.tracked_dir(&path);
                 if gitlink {
+                    continue;
+                }
+                // A directory where the index has a file (the file was
+                // replaced by it) is not shown as untracked, as without
+                // the cache.
+                if !tracked && !self.all && self.tracked_file(&path) {
                     continue;
                 }
                 if !tracked {

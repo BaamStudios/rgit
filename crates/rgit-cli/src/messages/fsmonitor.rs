@@ -4,8 +4,10 @@
 //! verbatim from the `git` binary and collected here).
 
 pub const EMPTY_TOKEN: &str = "Empty last update token.";
-pub const UNSET_WARNING: &str = "core.fsmonitor is unset; set it if you really want to enable fsmonitor";
-pub const SET_WARNING: &str = "core.fsmonitor is set; remove it if you really want to disable fsmonitor";
+pub const UNSET_WARNING: &str =
+    "core.fsmonitor is unset; set it if you really want to enable fsmonitor";
+pub const SET_WARNING: &str =
+    "core.fsmonitor is set; remove it if you really want to disable fsmonitor";
 
 pub fn invalid_hook_version(v: i64) -> String {
     format!("Invalid hook version '{v}' in core.fsmonitorhookversion. Must be 1 or 2.")

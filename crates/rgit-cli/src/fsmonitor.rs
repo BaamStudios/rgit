@@ -112,9 +112,7 @@ pub fn after_read(repo: &Repo, index: &mut Index) {
         return;
     }
     let previous = index.fsmonitor_token().map(<[u8]>::to_vec);
-    let since = previous
-        .clone()
-        .unwrap_or_else(|| now_ns().into_bytes());
+    let since = previous.clone().unwrap_or_else(|| now_ns().into_bytes());
     let answer = match &setting {
         Setting::Hook(cmd) => query_hook(repo, cmd, &since),
         Setting::Builtin => query_daemon(repo, &since),
@@ -203,7 +201,10 @@ fn query_hook(repo: &Repo, cmd: &str, since: &[u8]) -> Answer {
         _ => &[2, 1],
     };
     let _region = rgit_trace::trace2::region("fsm_hook", "query", true);
-    let root = repo.setup.cwd.join(repo.setup.work_tree.as_deref().unwrap_or(Path::new(".")));
+    let root = repo
+        .setup
+        .cwd
+        .join(repo.setup.work_tree.as_deref().unwrap_or(Path::new(".")));
     for &v in versions {
         let version = v.to_string();
         let token_arg = if v == 1 {
@@ -254,7 +255,9 @@ pub fn socket_path(git_dir: &Path) -> PathBuf {
 #[cfg(unix)]
 pub fn ipc_request(socket: &Path, request: &[u8]) -> std::io::Result<Vec<u8>> {
     use std::os::unix::net::UnixStream;
-    let mut s = crate::commands::credential_cache::imp::with_short_path(socket, |p| UnixStream::connect(p))?;
+    let mut s = crate::commands::credential_cache::imp::with_short_path(socket, |p| {
+        UnixStream::connect(p)
+    })?;
     let mut out = Vec::with_capacity(request.len() + 8);
     if !request.is_empty() {
         out.extend_from_slice(format!("{:04x}", request.len() + 4).as_bytes());

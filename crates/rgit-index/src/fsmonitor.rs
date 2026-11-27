@@ -63,7 +63,11 @@ pub(crate) fn write(index: &Index, token: &[u8], out: &mut Vec<u8>) {
         .collect();
     let mut bitmap = Vec::new();
     ewah::encode(&dirty, &mut bitmap);
-    out.extend_from_slice(&u32::try_from(bitmap.len()).unwrap_or(u32::MAX).to_be_bytes());
+    out.extend_from_slice(
+        &u32::try_from(bitmap.len())
+            .unwrap_or(u32::MAX)
+            .to_be_bytes(),
+    );
     out.extend_from_slice(&bitmap);
 }
 
@@ -119,7 +123,11 @@ mod tests {
         let bytes = index.to_bytes(&WriteOptions::default());
         let again = Index::from_bytes(&bytes, kind, &ReadOptions::default()).unwrap();
         assert_eq!(again.fsmonitor_token(), Some(&b"tok"[..]));
-        let valid: Vec<bool> = again.entries().iter().map(|e| e.fsmonitor_valid()).collect();
+        let valid: Vec<bool> = again
+            .entries()
+            .iter()
+            .map(|e| e.fsmonitor_valid())
+            .collect();
         assert_eq!(valid, [false, true, false]);
     }
 
