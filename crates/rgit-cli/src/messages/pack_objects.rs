@@ -128,6 +128,7 @@ pub fn invalid_stdin_packs(mode: &str) -> String {
 }
 
 /// git: `--cruft` with `--stdin-packs`.
+pub const PROMISOR_BEST_EFFORT: &str = "options '--exclude-promisor-objects' and '--exclude-promisor-objects-best-effort' cannot be used together";
 pub const CRUFT_STDIN_PACKS: &str = "options '--stdin-packs' and '--cruft' cannot be used together";
 
 /// git: `--index-version` that does not parse.
@@ -187,3 +188,8 @@ pub fn invalid_name_hash_version(v: i32) -> String {
 
 pub const BITMAP_NEEDS_NAME_HASH_V1: &str =
     "currently, --write-bitmap-index requires --name-hash-version=1";
+
+/// `sparse:oid=<spec>` names no object.
+pub fn unable_to_access_sparse_blob(spec: &str) -> String {
+    format!("unable to access sparse blob in '{spec}'")
+}

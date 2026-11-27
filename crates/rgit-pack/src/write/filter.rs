@@ -193,10 +193,21 @@ impl ObjectFilter {
     }
 
     /// The form the enumeration applies.
+    /// The `sparse:oid=` filters are only counted ([`Compiled::sparse`]):
+    /// the walk needs their patterns as well.
     pub(crate) fn compile(&self) -> Result<Compiled, FilterError> {
         let mut c = Compiled::default();
         self.compile_into(&mut c)?;
         Ok(c)
+    }
+
+    /// The `sparse:oid=` arguments, in order.
+    pub fn sparse_specs(&self) -> Vec<&str> {
+        match self {
+            ObjectFilter::SparseOid(spec) => vec![spec.as_str()],
+            ObjectFilter::Combine(subs) => subs.iter().flat_map(|s| s.sparse_specs()).collect(),
+            _ => Vec::new(),
+        }
     }
 
     fn compile_into(&self, c: &mut Compiled) -> Result<(), FilterError> {
@@ -214,9 +225,7 @@ impl ObjectFilter {
                     Some(ref old) => old.iter().copied().filter(|o| o == k).collect(),
                 });
             }
-            ObjectFilter::SparseOid(_) => {
-                return Err(FilterError::Unsupported(self.to_spec()));
-            }
+            ObjectFilter::SparseOid(_) => c.sparse += 1,
             ObjectFilter::Combine(subs) => {
                 for sub in subs {
                     sub.compile_into(c)?;
@@ -236,6 +245,9 @@ pub(crate) struct Compiled {
     pub tree_depth: Option<u64>,
     /// Only these types are listed.
     pub kinds: Option<Vec<ObjectKind>>,
+    /// How many `sparse:oid=` filters there are: a blob is listed only
+    /// when the patterns of each include its path.
+    pub sparse: usize,
 }
 
 impl Compiled {
@@ -356,11 +368,10 @@ mod tests {
             .unwrap();
         assert!(!c.walks_trees());
         assert!(c.allows(ObjectKind::Commit) && !c.allows(ObjectKind::Tree));
-        assert!(
-            ObjectFilter::parse("sparse:oid=HEAD:x")
-                .unwrap()
-                .compile()
-                .is_err()
-        );
+        let c = ObjectFilter::parse("combine:sparse:oid=HEAD:x+sparse:oid=y")
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(c.sparse, 2);
     }
 }

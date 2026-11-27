@@ -738,9 +738,30 @@ pub enum BlobLookup {
 /// the work tree (`HEAD:./file`); the caller may already have moved to the
 /// top. Nothing is printed: the caller reports problems like git.
 pub fn read_blob(ctx: &crate::Context, name: &str, prefix: &str) -> BlobLookup {
+    with_resolver(ctx, prefix, |resolver, objects| {
+        let Ok(oid) = resolver.resolve(name) else {
+            return BlobLookup::Unresolved;
+        };
+        match objects.read(&oid) {
+            Ok(Some((ObjectKind::Blob, data))) => BlobLookup::Blob(data),
+            Ok(Some(_)) => BlobLookup::NotBlob,
+            _ => BlobLookup::Unresolved,
+        }
+    })
+    .unwrap_or(BlobLookup::Unresolved)
+}
+
+/// Run `f` with a revision parser (no configuration) over the repository
+/// of the current directory; `None` when there is none. `prefix` is as
+/// for [`read_blob`].
+pub fn with_resolver<T>(
+    ctx: &crate::Context,
+    prefix: &str,
+    f: impl FnOnce(&rgit_revwalk::revision::Resolver<'_>, &Objects) -> T,
+) -> Option<T> {
     let env = rgit_config::SystemEnv::default();
     let Ok(mut opts) = rgit_repo::SetupOptions::from_process() else {
-        return BlobLookup::Unresolved;
+        return None;
     };
     if let Some(d) = &ctx.git_dir {
         opts.git_dir = Some(d.into());
@@ -754,7 +775,7 @@ pub fn read_blob(ctx: &crate::Context, name: &str, prefix: &str) -> BlobLookup {
     let mut protected =
         rgit_repo::StandardProtectedConfig::new(&env, crate::repo::command_line(ctx));
     let Ok(setup) = rgit_repo::setup(&opts, &mut protected) else {
-        return BlobLookup::Unresolved;
+        return None;
     };
     let kind = setup.format.object_format;
     let shallow = setup.common_dir.join("shallow");
@@ -782,12 +803,5 @@ pub fn read_blob(ctx: &crate::Context, name: &str, prefix: &str) -> BlobLookup {
         }),
     };
     let resolver = rgit_revwalk::revision::Resolver::new(repo, Options::default());
-    let Ok(oid) = resolver.resolve(name) else {
-        return BlobLookup::Unresolved;
-    };
-    match objects.read(&oid) {
-        Ok(Some((ObjectKind::Blob, data))) => BlobLookup::Blob(data),
-        Ok(Some(_)) => BlobLookup::NotBlob,
-        _ => BlobLookup::Unresolved,
-    }
+    Some(f(&resolver, &objects))
 }
