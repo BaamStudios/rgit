@@ -80,6 +80,11 @@ impl Resolver<'_> {
             return self.search_message(&starts, pattern);
         }
         if let Some(rest) = name.strip_prefix(':') {
+            // A lone `:` names nothing and has no more specific reason
+            // (`git log :` is an ambiguous argument).
+            if rest.is_empty() {
+                return Err(Error::NotFound);
+            }
             let rb = rest.as_bytes();
             let (stage, path) = if rb.len() >= 2 && (b'0'..=b'3').contains(&rb[0]) && rb[1] == b':'
             {
@@ -521,7 +526,8 @@ impl Resolver<'_> {
                 return messages::path_in_index_but_not(&full, path);
             }
         }
-        if self.repo.work_tree.is_some_and(|w| w.exists(path)) {
+        // The empty path (`:0:`) is not a file on disk.
+        if !path.is_empty() && self.repo.work_tree.is_some_and(|w| w.exists(path)) {
             return messages::path_on_disk_not_in_index(path);
         }
         messages::path_not_anywhere(path)

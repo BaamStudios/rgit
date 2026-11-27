@@ -95,6 +95,21 @@ pub fn map_refspecs(
     hash: HashKind,
     errors: &mut Vec<String>,
 ) -> Result<Vec<Entry>> {
+    map_refspecs_skipping(specs, refs, hash, errors, &|_| false)
+}
+
+/// [`map_refspecs`] for the references a fetch updates: a destination
+/// that a pattern refspec produced and that `is_symref` knows as a
+/// symbolic reference here is left out, as git does
+/// (`refs/remotes/*:refs/remotes/*` does not write through
+/// `refs/remotes/origin/HEAD`; a destination named in full is kept).
+pub fn map_refspecs_skipping(
+    specs: &RefspecSet,
+    refs: &[RemoteRef],
+    hash: HashKind,
+    errors: &mut Vec<String>,
+    is_symref: &dyn Fn(&BString) -> bool,
+) -> Result<Vec<Entry>> {
     let names: Vec<&[u8]> = refs
         .iter()
         .filter(|r| r.oid.is_some())
@@ -104,7 +119,11 @@ pub fn map_refspecs(
     errors.extend(map.errors);
     let mut out = Vec::new();
     for m in map.mappings {
-        out.push(entry_for(&m, refs, hash)?);
+        let entry = entry_for(&m, refs, hash)?;
+        if m.from_pattern && entry.local.as_ref().is_some_and(is_symref) {
+            continue;
+        }
+        out.push(entry);
     }
     Ok(out)
 }

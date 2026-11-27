@@ -101,3 +101,56 @@ fn prune_duplicate_worktree() {
         .checks([Check::ExitCode, Check::Stderr])
         .run();
 }
+
+/// `:` alone and the empty index path are no paths on disk: `log :` is
+/// an ambiguous argument (t4208), `:0:` does not exist anywhere.
+#[test]
+fn empty_index_path_arguments() {
+    let Some(mut fx) = fixture() else { return };
+    for args in [
+        &["log", ":"][..],
+        &["rev-list", ":"],
+        &["show", ":"],
+        &["log", ":0:"],
+        &["rev-parse", "--verify", ":"],
+    ] {
+        fx.compare(args).checks(OUTPUT).run();
+    }
+}
+
+/// A pattern refspec does not write through a symbolic reference here:
+/// `refs/remotes/*:refs/remotes/*` updates `origin/main` once and leaves
+/// `origin/HEAD` out (t5535), with and without `--atomic`.
+#[test]
+fn pattern_refspec_skips_symbolic_destinations() {
+    let Some(fx) = fixture() else { return };
+    let mut fx = fx
+        .git(["clone", "-q", ".", "src"])
+        .git(["clone", "-q", "src", "dst"])
+        .git(["clone", "-q", "src", "dst2"])
+        .tick()
+        .git(["commit", "-q", "--allow-empty", "-m", "b"])
+        .git(["-C", "src", "fetch", "-q"]);
+    let state = [
+        Check::ExitCode,
+        Check::Stdout,
+        Check::Stderr,
+        Check::Refs,
+        Check::Reflogs,
+    ];
+    fx.compare(["fetch", "../src", "refs/remotes/*:refs/remotes/*"])
+        .in_dir("dst")
+        .repo("dst")
+        .checks(state)
+        .run();
+    fx.compare([
+        "fetch",
+        "--atomic",
+        "../src",
+        "refs/remotes/*:refs/remotes/*",
+    ])
+    .in_dir("dst2")
+    .repo("dst2")
+    .checks(state)
+    .run();
+}
