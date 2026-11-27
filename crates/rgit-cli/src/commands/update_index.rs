@@ -42,7 +42,7 @@ enum Event {
     UntrackedCache(bool),
     SplitIndex(bool),
     TestUntrackedCache,
-    Unsupported(&'static str),
+    Fsmonitor(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +66,7 @@ enum Flag {
 enum MarkBit {
     AssumeUnchanged,
     SkipWorktree,
+    FsmonitorValid,
 }
 
 /// Why processing stopped.
@@ -98,7 +99,7 @@ struct State<'a> {
     has_errors: bool,
     flags: HashMap<FlagKey, bool>,
     chmod: Option<char>,
-    mark: [Option<bool>; 2],
+    mark: [Option<bool>; 3],
     index_version: Option<i64>,
     /// `--[no-|force-]untracked-cache`.
     untracked_cache: Option<bool>,
@@ -106,6 +107,8 @@ struct State<'a> {
     test_untracked_cache: bool,
     /// `--[no-]split-index`.
     split_index: Option<bool>,
+    /// `--[no-]fsmonitor`.
+    fsmonitor: Option<bool>,
     out: Vec<u8>,
     /// A fatal conversion problem met while processing a path.
     pending: Option<Die>,
@@ -182,6 +185,9 @@ impl State<'_> {
         if let Some(set) = self.mark[1] {
             return self.mark_path(path, MarkBit::SkipWorktree, set);
         }
+        if let Some(set) = self.mark[2] {
+            return self.mark_path(path, MarkBit::FsmonitorValid, set);
+        }
         if self.flag(Flag::ForceRemove) {
             if !self.index.remove_path(path).is_empty() {
                 self.changed = true;
@@ -213,6 +219,13 @@ impl State<'_> {
         let flag = match bit {
             MarkBit::AssumeUnchanged => &mut e.flags.assume_valid,
             MarkBit::SkipWorktree => &mut e.flags.skip_worktree,
+            MarkBit::FsmonitorValid => {
+                if e.fsmonitor_valid() != set {
+                    e.set_fsmonitor_valid(set);
+                    self.changed = true;
+                }
+                return Ok(());
+            }
         };
         if *flag != set {
             *flag = set;
@@ -462,6 +475,9 @@ impl State<'_> {
             if e.flags.skip_worktree || (e.flags.assume_valid && !really) {
                 continue;
             }
+            if !really && checker.fsmonitor_valid(&e) {
+                continue;
+            }
             if e.flags.assume_valid {
                 // --really-refresh drops the assume-unchanged bit.
                 self.index.entry_mut(pos).expect("valid").flags.assume_valid = false;
@@ -494,10 +510,16 @@ impl State<'_> {
                     if checker.is_racy(&e) {
                         self.changed = true;
                     }
+                    if checker.options().fsmonitor && !e.fsmonitor_valid() {
+                        let entry = self.index.entry_mut(pos).expect("valid");
+                        entry.set_fsmonitor_valid(true);
+                        self.changed = true;
+                    }
                 }
                 Ok(Status::StatOnly) => {
                     let entry = self.index.entry_mut(pos).expect("valid");
                     checker.refresh(entry, &meta);
+                    entry.set_fsmonitor_valid(true);
                     self.changed = true;
                 }
                 _ => lines.push(msg::needs_update(&lossy(e.path()))),
@@ -1008,9 +1030,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         )
         .noarg(),
         Opt::callback(None, "fsmonitor", None, msg::HELP_FSMONITOR, |_, neg| {
-            if !neg {
-                push(Event::Unsupported("--fsmonitor"));
-            }
+            push(Event::Fsmonitor(!neg));
             Ok(())
         })
         .noarg(),
@@ -1020,7 +1040,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             None,
             msg::HELP_FSMONITOR_VALID,
             |_, _| {
-                push(Event::Unsupported("--fsmonitor-valid"));
+                push(Event::Mark(MarkBit::FsmonitorValid, true));
                 Ok(())
             },
         )
@@ -1032,7 +1052,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             None,
             msg::HELP_NO_FSMONITOR_VALID,
             |_, _| {
-                push(Event::Unsupported("--no-fsmonitor-valid"));
+                push(Event::Mark(MarkBit::FsmonitorValid, false));
                 Ok(())
             },
         )
@@ -1083,11 +1103,12 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         has_errors: false,
         flags: HashMap::new(),
         chmod: None,
-        mark: [None, None],
+        mark: [None, None, None],
         index_version: None,
         untracked_cache: None,
         test_untracked_cache: false,
         split_index: None,
+        fsmonitor: None,
         out: Vec::new(),
         pending: None,
     };
@@ -1154,6 +1175,32 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         if !on && setting == Some(true) {
             eprintln!("warning: {}", msg::SPLIT_INDEX_SET_TRUE);
         }
+        st.changed = true;
+    }
+    if let Some(on) = st.fsmonitor {
+        if on {
+            if let Some(m) = crate::fsmonitor::incompatible(&repo) {
+                st.flush();
+                return Err(Die::Fatal(m));
+            }
+            if crate::fsmonitor::configured(&repo.config) == crate::fsmonitor::Setting::Off {
+                eprintln!("warning: {}", crate::messages::fsmonitor::UNSET_WARNING);
+            }
+            if st.index.fsmonitor_token().is_none() {
+                crate::fsmonitor::add(&mut st.index);
+                st.changed = true;
+            }
+        } else {
+            if crate::fsmonitor::enabled(&repo) {
+                eprintln!("warning: {}", crate::messages::fsmonitor::SET_WARNING);
+            }
+            if st.index.fsmonitor_token().is_some() {
+                st.index.set_fsmonitor_token(None);
+                st.changed = true;
+            }
+        }
+    }
+    if repo.fsmonitor_changed.get() {
         st.changed = true;
     }
     if let Some(v) = st.index_version {
@@ -1224,6 +1271,7 @@ impl State<'_> {
                 let idx = match bit {
                     MarkBit::AssumeUnchanged => 0,
                     MarkBit::SkipWorktree => 1,
+                    MarkBit::FsmonitorValid => 2,
                 };
                 self.mark[idx] = Some(set);
             }
@@ -1287,7 +1335,7 @@ impl State<'_> {
                     self.changed = true;
                 }
             }
-            Event::Unsupported(what) => return Err(fatal(msg::not_supported(what))),
+            Event::Fsmonitor(on) => self.fsmonitor = Some(on),
         }
         Ok(())
     }

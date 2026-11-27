@@ -47,6 +47,12 @@ pub struct Index {
     /// A sparse index (`sdir` extension), possibly without sparse
     /// directory entries.
     pub(crate) sparse: bool,
+    /// The `FSMN` token, when the index has the extension.
+    pub(crate) fsmonitor: Option<Vec<u8>>,
+    /// The dirty bitmap of `FSMN` until it is applied to the entries.
+    pub(crate) fsmonitor_dirty: Option<Vec<usize>>,
+    /// See [`Index::fsmonitor_has_run`].
+    pub(crate) fsmonitor_run: bool,
 }
 
 impl Index {
@@ -66,6 +72,9 @@ impl Index {
             checksum: None,
             sparse_origin: None,
             sparse: false,
+            fsmonitor: None,
+            fsmonitor_dirty: None,
+            fsmonitor_run: false,
         }
     }
 

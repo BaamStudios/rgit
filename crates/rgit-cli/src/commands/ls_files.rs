@@ -73,6 +73,8 @@ struct Show {
     no_empty_directory: bool,
     tags: bool,
     lower_assume: bool,
+    /// `-f`, with a file system monitor in use.
+    lower_fsmonitor: bool,
     nul: bool,
     full_name: bool,
     error_unmatch: bool,
@@ -265,7 +267,9 @@ impl Lister<'_> {
         }
         if self.show.tags {
             let mut t = tag.to_string();
-            if self.show.lower_assume && e.flags.assume_valid {
+            if (self.show.lower_assume && e.flags.assume_valid)
+                || (self.show.lower_fsmonitor && e.fsmonitor_valid())
+            {
                 t = t.to_lowercase();
             }
             self.out.extend_from_slice(t.as_bytes());
@@ -771,6 +775,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         no_empty_directory: !empty_directory.get(),
         tags: show_tags,
         lower_assume: lower_assume.get(),
+        lower_fsmonitor: lower_fsmonitor.get() && crate::fsmonitor::enabled(&repo),
         nul: nul.get(),
         full_name: full_name.get(),
         error_unmatch: error_unmatch.get(),

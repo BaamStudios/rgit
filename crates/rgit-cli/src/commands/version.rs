@@ -39,6 +39,9 @@ pub fn build_options_text() -> String {
     s += &format!("sizeof-long: {}\n", size_of::<std::ffi::c_long>());
     s += &format!("sizeof-size_t: {}\n", size_of::<usize>());
     s += "shell-path: /bin/sh\n";
+    if cfg!(target_os = "linux") {
+        s += "feature: fsmonitor--daemon\n";
+    }
     s += &format!("rgit: {}\n", rgit_version::RGIT_VERSION);
     s += "zlib: zlib-rs\n";
     s += "default-ref-format: files\n";

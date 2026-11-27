@@ -61,6 +61,7 @@ mod diff;
 mod external;
 mod fetch_submodules;
 mod format;
+mod fsmonitor;
 mod global;
 mod grafts;
 mod grep;
