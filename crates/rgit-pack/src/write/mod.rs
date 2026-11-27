@@ -48,6 +48,6 @@ pub use pack::{
 };
 pub use source::{ObjectSource, PackSetSource, ShallowSource, SourceStream};
 pub use walk::{
-    EnumerateOptions, ListedObject, Tip, describe, enumerate, enumerate_with, enumerate_with_edges,
-    enumerate_with_edges_aggressive, name_hash, pack_order,
+    EnumerateOptions, LeaveOut, ListedObject, Tip, describe, enumerate, enumerate_with,
+    enumerate_with_edges, enumerate_with_edges_aggressive, name_hash, pack_order,
 };

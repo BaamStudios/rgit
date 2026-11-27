@@ -69,8 +69,14 @@ fn check_pack(fx: Fixture, pack: &[u8], name: &str) -> (Fixture, Vec<String>) {
 /// Run `pack-objects` with `args` and `input` on both sides; check that
 /// rgit's pack is valid and holds the same objects as git's.
 fn same_objects(fx: Fixture, args: &[&str], input: &str) -> Fixture {
+    same_objects_in(fx, &[], args, input)
+}
+
+/// [`same_objects`] with global options (`-C <dir>`) before the command.
+fn same_objects_in(fx: Fixture, global: &[&str], args: &[&str], input: &str) -> Fixture {
     let mut fx = fx;
-    let mut argv = vec!["pack-objects"];
+    let mut argv = global.to_vec();
+    argv.push("pack-objects");
     argv.extend_from_slice(args);
     let Some(outcome) = fx
         .compare(&argv)
@@ -931,6 +937,111 @@ fn name_hash_version_checks_match_git() {
         "--write-bitmap-index",
     ])
     .stdin("")
+    .checks([Check::ExitCode, Check::Stderr])
+    .run();
+}
+
+/// `--filter=sparse:oid=<blob-ish>` (alone and combined), and trees named
+/// as `<rev>:<path>` with `tree:<depth>` and `sparse:oid` (#639).
+#[test]
+fn sparse_and_tree_filters() {
+    let fx = repo()
+        .write("pat", "/*\n!/*/\n/d/\n!/d/e1/\n")
+        .git(["add", "pat"])
+        .git(["commit", "-q", "-m", "pattern"])
+        .tick();
+    if fx.is_skipped() {
+        return;
+    }
+    let sparse = "--filter=sparse:oid=HEAD:pat";
+    let mut fx = fx;
+    for (args, input) in [
+        (&["--revs", "--stdout", sparse][..], "HEAD\n"),
+        (&["--revs", "--stdout", sparse][..], "HEAD\n^HEAD~2\n"),
+        (
+            &[
+                "--revs",
+                "--stdout",
+                "--filter=combine:sparse:oid=HEAD:pat+blob:limit=200",
+            ][..],
+            "HEAD\n",
+        ),
+        (&["--revs", "--stdout", sparse][..], "HEAD:d\n"),
+        (&["--revs", "--stdout", "--filter=tree:0"][..], "HEAD:\n"),
+        (&["--revs", "--stdout", "--filter=tree:1"][..], "HEAD:d\n"),
+        (&["--revs", "--stdout"][..], "HEAD:d\n^HEAD:d/e0\n"),
+        (&["--revs", "--stdout"][..], "HEAD~1:a.txt\n"),
+    ] {
+        fx = same_objects(fx, args, input);
+    }
+    for (args, input) in [
+        (
+            &["--revs", "--stdout", "--filter=sparse:oid=HEAD:nope"][..],
+            "HEAD\n",
+        ),
+        (
+            &["--revs", "--stdout", "--filter=sparse:oid=HEAD"][..],
+            "HEAD\n",
+        ),
+        (&["--revs", "--stdout"][..], "HEAD:nope\n"),
+    ] {
+        let mut argv = vec!["pack-objects"];
+        argv.extend_from_slice(args);
+        fx.compare(&argv)
+            .stdin(input)
+            .checks([Check::ExitCode, Check::Stderr])
+            .run();
+    }
+}
+
+/// `--exclude-promisor-objects` (with `--revs` or not) and
+/// `--exclude-promisor-objects-best-effort` in a partial clone (#639).
+#[test]
+fn exclude_promisor_objects() {
+    let fx = repo().git(["config", "uploadpack.allowfilter", "1"]).git([
+        "config",
+        "uploadpack.allowanysha1inwant",
+        "1",
+    ]);
+    if fx.is_skipped() {
+        return;
+    }
+    let url = format!("file://{}", fx.work_dir().display());
+    let mut fx = fx
+        .git(["clone", "-q", "--filter=blob:none", &url, "pc"])
+        .git(["-C", "pc", "config", "maintenance.auto", "false"])
+        .write("pc/new.txt", "new\n")
+        .git(["-C", "pc", "add", "new.txt"])
+        .git(["-C", "pc", "commit", "-q", "-m", "local"])
+        .tick();
+    for (args, input) in [
+        (
+            &["--revs", "--stdout", "--exclude-promisor-objects"][..],
+            "HEAD\n",
+        ),
+        (&["--stdout", "--exclude-promisor-objects", "--all"][..], ""),
+        (&["--stdout", "--exclude-promisor-objects"][..], "HEAD\n"),
+        (
+            &[
+                "--revs",
+                "--stdout",
+                "--exclude-promisor-objects-best-effort",
+            ][..],
+            "HEAD\n",
+        ),
+    ] {
+        fx = same_objects_in(fx, &["-C", "pc"], args, input);
+    }
+    fx.compare([
+        "-C",
+        "pc",
+        "pack-objects",
+        "--revs",
+        "--stdout",
+        "--exclude-promisor-objects",
+        "--exclude-promisor-objects-best-effort",
+    ])
+    .stdin("HEAD\n")
     .checks([Check::ExitCode, Check::Stderr])
     .run();
 }

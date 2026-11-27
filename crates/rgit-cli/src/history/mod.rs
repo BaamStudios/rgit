@@ -15,6 +15,7 @@ pub mod layout;
 mod line_log;
 pub mod mailmap;
 mod missing;
+pub use missing::Patterns as SparseBlob;
 mod options;
 mod paths;
 pub mod pretty;

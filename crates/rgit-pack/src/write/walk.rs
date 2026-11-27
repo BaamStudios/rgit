@@ -20,7 +20,7 @@ use rgit_hash::{HashKind, ObjectId};
 use rgit_object::{Commit, Tag, TreeIter};
 
 use super::filter::Compiled;
-use super::{ObjectFilter, ObjectSource, WriteError};
+use super::{FilterError, ObjectFilter, ObjectSource, SparsePatterns, WriteError};
 use crate::ObjectKind;
 
 /// One tip of a walk.
@@ -427,7 +427,7 @@ pub fn enumerate_with_edges_aggressive<S: ObjectSource + ?Sized>(
 }
 
 /// How [`enumerate_with`] walks.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct EnumerateOptions<'a> {
     /// See [`enumerate_with_edges`].
     pub sparse: bool,
@@ -443,6 +443,43 @@ pub struct EnumerateOptions<'a> {
     /// blobs among them and behind their tags, as it does not to the
     /// tips given one by one.
     pub unnamed_tips: &'a [ObjectId],
+    /// The patterns of the `sparse:oid=` filters of `filter`, in order
+    /// ([`ObjectFilter::sparse_specs`]); a filter with such a filter is
+    /// refused without them.
+    pub sparse_patterns: &'a [&'a dyn SparsePatterns],
+    /// The names trees were named by as tips (`<rev>:<path>`): the paths
+    /// in them that the sparse patterns see start with it.
+    pub tip_names: Option<&'a HashMap<ObjectId, Vec<u8>>>,
+    /// Objects to leave out (`--exclude-promisor-objects[-best-effort]`).
+    pub leave_out: LeaveOut<'a>,
+}
+
+/// Objects [`enumerate_with`] leaves out.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum LeaveOut<'a> {
+    /// Nothing.
+    #[default]
+    Nothing,
+    /// These objects: they are neither listed nor walked past
+    /// (`--exclude-promisor-objects`, with the promisor objects).
+    Objects(&'a HashSet<ObjectId>),
+    /// The trees and blobs among these objects, which are not walked past
+    /// either; a commit among them is listed, but neither its tree nor its
+    /// parents are walked (`--exclude-promisor-objects-best-effort`, with
+    /// the objects in promisor packs, as observed).
+    BestEffort(&'a HashSet<ObjectId>),
+}
+
+impl std::fmt::Debug for EnumerateOptions<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnumerateOptions")
+            .field("sparse", &self.sparse)
+            .field("aggressive", &self.aggressive)
+            .field("filter", &self.filter)
+            .field("unnamed_tips", &self.unnamed_tips.len())
+            .field("sparse_patterns", &self.sparse_patterns.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// [`enumerate_with_edges`] with all options: the listed objects and the
@@ -454,8 +491,19 @@ pub fn enumerate_with<S: ObjectSource + ?Sized>(
     opts: &EnumerateOptions<'_>,
 ) -> Result<(Vec<ListedObject>, Vec<ListedObject>), WriteError> {
     let filter = match opts.filter {
-        Some(f) => Some(f.compile().map_err(WriteError::Filter)?),
+        Some(f) => {
+            let c = f.compile().map_err(WriteError::Filter)?;
+            if c.sparse != opts.sparse_patterns.len() || c.sparse > 64 {
+                return Err(WriteError::Filter(FilterError::Unsupported(f.to_spec())));
+            }
+            Some(c)
+        }
         None => None,
+    };
+    let no_names = HashMap::new();
+    let names = Filtered {
+        sparse: opts.sparse_patterns,
+        tip_names: opts.tip_names.unwrap_or(&no_names),
     };
     let mut edges = Vec::new();
     let listed = walk_objects_filtered(
@@ -465,8 +513,9 @@ pub fn enumerate_with<S: ObjectSource + ?Sized>(
         opts.sparse,
         opts.aggressive,
         Some(&mut edges),
-        filter.as_ref(),
+        filter.as_ref().map(|f| (f, &names)),
         opts.unnamed_tips,
+        opts.leave_out,
     )?;
     if let Some(f) = &filter {
         let trees = f.keeps_all_trees();
@@ -492,7 +541,16 @@ fn walk_objects<S: ObjectSource + ?Sized>(
         edge_objects,
         None,
         &[],
+        LeaveOut::Nothing,
     )
+}
+
+/// What a filtered walk knows besides the compiled filter.
+struct Filtered<'a> {
+    /// The patterns of the `sparse:oid=` filters.
+    sparse: &'a [&'a dyn SparsePatterns],
+    /// See [`EnumerateOptions::tip_names`].
+    tip_names: &'a HashMap<ObjectId, Vec<u8>>,
 }
 
 /// What the filtered tree walk has done so far.
@@ -503,8 +561,11 @@ struct FilterState {
     /// Blobs the filter left out. A blob named as a tip after a tree
     /// that holds it is not listed either (as `rev-list` behaves).
     omitted: HashSet<ObjectId>,
-    /// The smallest depth each tree was expanded at.
-    expanded: HashMap<ObjectId, u64>,
+    /// The smallest depth each tree was expanded at, per set of sparse
+    /// decisions it was expanded under (bit `i`: the patterns of the
+    /// `i`th `sparse:oid=` filter include the tree): a tree found again
+    /// under other decisions is walked again.
+    expanded: HashMap<(ObjectId, u64), u64>,
 }
 
 impl<S: ObjectSource + ?Sized> Walker<'_, S> {
@@ -515,11 +576,13 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
     /// A `provided` root (a tree named as a tip) is listed whatever the
     /// filter says, and for `tree:<depth>` its entries have depth 0, like
     /// the root tree of a commit.
+    #[allow(clippy::too_many_arguments)]
     fn walk_tree_filtered(
         &self,
         root: ObjectId,
         provided: bool,
         filter: &Compiled,
+        extra: &Filtered<'_>,
         seen: &HashSet<ObjectId>,
         state: &mut FilterState,
         out: &mut Vec<ListedObject>,
@@ -555,31 +618,60 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
                      id: ObjectId,
                      name: &[u8],
                      depth: u64,
+                     mask: u64,
                      provided: bool|
          -> bool {
             if seen.contains(&id) || too_deep(depth) || !(provided || descends) {
                 return false;
             }
-            match state.expanded.get(&id) {
+            match state.expanded.get(&(id, mask)) {
                 Some(&prev) if prev <= depth => return false,
-                _ => state.expanded.insert(id, depth),
+                _ => state.expanded.insert((id, mask), depth),
             };
             if provided || filter.allows(ObjectKind::Tree) {
                 push(state, out, id, ObjectKind::Tree, name);
             }
             limit == Some(0) || !too_deep(depth + 1)
         };
+        // `sparse:oid=`: the patterns see the path of an entry (below a
+        // tree named as a tip, the path starts with its name); one no
+        // pattern matches has the decision of its directory, and the root
+        // is excluded.
+        let sparse = extra.sparse;
+        let decide = |path: &[u8], is_dir: bool, parent: u64| -> u64 {
+            let mut mask = 0;
+            for (i, p) in sparse.iter().enumerate() {
+                let inherited = parent & (1 << i) != 0;
+                if p.decide(path, is_dir).unwrap_or(inherited) {
+                    mask |= 1 << i;
+                }
+            }
+            mask
+        };
+        let all = if sparse.is_empty() {
+            0
+        } else {
+            u64::MAX >> (64 - sparse.len())
+        };
+        let root_path = if provided {
+            extra.tip_names.get(&root).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let root_depth = if provided { 0 } else { step };
-        if !enter(state, out, root, b"", root_depth, provided) {
+        if !enter(state, out, root, b"", root_depth, 0, provided) {
             return Ok(());
         }
-        let mut stack: Vec<(ObjectId, Vec<u8>, usize, u64)> = vec![(
+        type Frame = (ObjectId, Vec<u8>, usize, u64, Vec<u8>, u64);
+        let mut stack: Vec<Frame> = vec![(
             root,
             self.read_kind(&root, ObjectKind::Tree)?,
             0,
             root_depth,
+            root_path,
+            0,
         )];
-        while let Some((tree_id, data, pos, depth)) = stack.last_mut() {
+        while let Some((tree_id, data, pos, depth, dir, mask)) = stack.last_mut() {
             let entry = match TreeIter::new(self.hash, &data[*pos..]).next() {
                 None => {
                     stack.pop();
@@ -596,20 +688,39 @@ impl<S: ObjectSource + ?Sized> Walker<'_, S> {
             *pos += entry.mode_digits.len() + entry.name.len() + 2 + self.hash.byte_len();
             let id = entry.oid;
             let child_depth = *depth + step;
+            let mask = *mask;
+            let path = || {
+                let mut p = dir.clone();
+                if !p.is_empty() {
+                    p.push(b'/');
+                }
+                p.extend_from_slice(entry.name);
+                p
+            };
             match entry.mode_bits & 0o170000 {
                 0o160000 => {}
                 0o040000 => {
                     let name = entry.name.to_vec();
-                    if enter(state, out, id, &name, child_depth, false) {
+                    let (sub_path, sub_mask) = if sparse.is_empty() {
+                        (Vec::new(), 0)
+                    } else {
+                        let p = path();
+                        let m = decide(&p, true, mask);
+                        (p, m)
+                    };
+                    if enter(state, out, id, &name, child_depth, sub_mask, false) {
                         let sub = self.read_kind(&id, ObjectKind::Tree)?;
-                        stack.push((id, sub, 0, child_depth));
+                        stack.push((id, sub, 0, child_depth, sub_path, sub_mask));
                     }
                 }
                 _ => {
                     if seen.contains(&id) || state.listed.contains(&id) {
                         continue;
                     }
-                    if !wants_blobs || too_deep(child_depth) {
+                    if !wants_blobs
+                        || too_deep(child_depth)
+                        || (!sparse.is_empty() && decide(&path(), false, mask) != all)
+                    {
                         state.omitted.insert(id);
                         continue;
                     }
@@ -641,9 +752,16 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
     sparse: bool,
     aggressive: bool,
     mut edge_objects: Option<&mut Vec<ListedObject>>,
-    filter: Option<&Compiled>,
+    filter: Option<(&Compiled, &Filtered<'_>)>,
     unnamed_tips: &[ObjectId],
+    leave_out: LeaveOut<'_>,
 ) -> Result<Vec<ListedObject>, WriteError> {
+    let (omit, stop) = match leave_out {
+        LeaveOut::Nothing => (None, None),
+        LeaveOut::Objects(s) => (Some(s), None),
+        LeaveOut::BestEffort(s) => (None, Some(s)),
+    };
+    let stops = |id: &ObjectId| stop.is_some_and(|s| s.contains(id));
     let mut w = Walker {
         source,
         hash,
@@ -685,7 +803,9 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
     // spreads from excluded commits to their parents; the walk ends as
     // soon as only excluded commits are left in the queue.
     let mut excluded: HashSet<ObjectId> = HashSet::new();
-    let mut seen: HashSet<ObjectId> = HashSet::new();
+    // Objects to leave out count as seen from the start: the walk neither
+    // lists them nor goes past them.
+    let mut seen: HashSet<ObjectId> = omit.cloned().unwrap_or_default();
     let mut in_queue: HashSet<ObjectId> = HashSet::new();
     let mut queue = BinaryHeap::new();
     let mut seq = 0u64;
@@ -721,7 +841,11 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
             included_in_queue -= 1;
             popped.push(id);
         }
-        let parents = w.commit(&id)?.parents.clone();
+        let parents = if stops(&id) {
+            Vec::new()
+        } else {
+            w.commit(&id)?.parents.clone()
+        };
         for p in parents {
             if is_excluded {
                 mark_excluded(&w, p, &mut excluded, &in_queue, &mut included_in_queue);
@@ -764,7 +888,7 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
 
     // Objects the other side has: everything in the trees of the excluded
     // parents of the listed commits (the edge of the excluded history).
-    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut seen: HashSet<ObjectId> = omit.or(stop).cloned().unwrap_or_default();
     let mut edges = HashSet::new();
     let mut edge_trees = Vec::new();
     for id in &commits {
@@ -811,7 +935,7 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
 
     let mut out: Vec<ListedObject> = Vec::with_capacity(commits.len() * 4);
     let mut listed: HashSet<ObjectId> = HashSet::new();
-    if let Some(filter) = filter {
+    if let Some((filter, extra)) = filter {
         // The tips are listed whatever the filter says.
         let provided: HashSet<ObjectId> = include_commits.iter().copied().collect();
         let all_commits = filter.allows(ObjectKind::Commit);
@@ -828,7 +952,7 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
             let named = !unnamed.contains(&o.id);
             match o.kind {
                 ObjectKind::Tree => {
-                    w.walk_tree_filtered(o.id, named, filter, &seen, &mut state, &mut out)?;
+                    w.walk_tree_filtered(o.id, named, filter, extra, &seen, &mut state, &mut out)?;
                 }
                 ObjectKind::Blob if !named => {
                     let mut wanted = filter.allows(ObjectKind::Blob)
@@ -856,9 +980,9 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
             }
         }
         if filter.walks_trees() {
-            for id in &commits {
+            for id in commits.iter().filter(|id| !stops(id)) {
                 let tree = w.commit(id)?.tree;
-                w.walk_tree_filtered(tree, false, filter, &seen, &mut state, &mut out)?;
+                w.walk_tree_filtered(tree, false, filter, extra, &seen, &mut state, &mut out)?;
             }
         }
         return Ok(out);
@@ -880,7 +1004,7 @@ fn walk_objects_filtered<S: ObjectSource + ?Sized>(
     for t in trees_from_tips {
         w.walk_tree(t, &mut seen, Some(&mut out))?;
     }
-    for id in &commits {
+    for id in commits.iter().filter(|id| !stops(id)) {
         let tree = w.commit(id)?.tree;
         w.walk_tree(tree, &mut seen, Some(&mut out))?;
     }
