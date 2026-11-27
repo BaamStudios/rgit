@@ -153,7 +153,7 @@ pub use checkout::{
     CheckoutError, Filter, Identity, create_leading_dirs, remove_empty_parents, remove_entry,
     stream_entry, write_entry,
 };
-pub use objects::{Objects, read_blob, tree_entries};
+pub use objects::{Objects, read_blob, tree_entries, tree_entries_skipping, tree_lookup};
 pub use parallel::{Conversion, Outcome, ParallelCheckout, ParallelConfig};
 pub use path::{PathOptions, verify_checkout_path};
 pub use submodule::Submodules;

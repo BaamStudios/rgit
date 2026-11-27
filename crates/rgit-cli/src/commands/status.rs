@@ -696,7 +696,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     } else {
         None
     };
-    let (mut index, index_mtime) = repo.read_index()?;
+    let (mut index, index_mtime) = repo.read_index_sparse()?;
+    // Sparse directory entries stay when they hold what HEAD has there:
+    // nothing below them is staged, and their files are not in the work
+    // tree.
+    if verbose.get() > 0 || info.head.is_none() {
+        crate::sparse_index::expand(&repo, &mut index)?;
+    } else {
+        crate::sparse_index::expand_unless_same(&repo, &mut index, Some(base_tree))?;
+    }
     let checker = repo.checker(index_mtime)?;
     let ignored_mode = match ignored.borrow().as_deref() {
         None | Some("no") => Ok(IgnoredMode::No),
@@ -1154,6 +1162,15 @@ fn head_changes(
     }
     // A tree with duplicate names: like a map from path to entry, the
     // last entry for a path counts.
+    let expanded;
+    let index = if index.is_sparse() {
+        let mut copy = index.clone();
+        crate::sparse_index::expand(repo, &mut copy)?;
+        expanded = copy;
+        &expanded
+    } else {
+        index
+    };
     let mut head = BTreeMap::new();
     collect_tree(repo, tree, b"", &mut head)?;
     let entries = index.entries();
@@ -1223,6 +1240,15 @@ fn head_walk(
         if n.id() == Some(tree) && count == Some(entries.len()) {
             return Ok(true);
         }
+    }
+    // A sparse directory entry holding this tree (the caller expanded
+    // those holding another one).
+    if let [e] = entries
+        && e.mode.is_dir()
+        && e.path() == prefix
+        && e.id == *tree
+    {
+        return Ok(true);
     }
     let Some(Object::Tree(t)) = repo.read_object(tree) else {
         return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(

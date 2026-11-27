@@ -595,7 +595,18 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
     // in the work tree, falling back to the index).
     let attr_tree = PathspecAttrs::prepare(ctx, &mut repo, &pathspec)?;
     let repo = repo;
-    let (mut index, index_mtime) = repo.read_index()?;
+    let (mut index, index_mtime) = repo.read_index_sparse()?;
+    // Sparse directory entries are skip-worktree and outside the cone:
+    // left alone unless a path inside one is named, or --sparse or
+    // case-folding look at their files.
+    if refresh_only.get()
+        || sparse.get()
+        || attr_tree.is_some()
+        || repo.ignore_case()
+        || crate::sparse_index::pathspec_reaches_inside(&index, &pathspec)
+    {
+        crate::sparse_index::expand(&repo, &mut index)?;
+    }
     if refresh_only.get() {
         return refresh(&repo, &advisor, &mut index, index_mtime, &pathspec, sparse.get());
     }

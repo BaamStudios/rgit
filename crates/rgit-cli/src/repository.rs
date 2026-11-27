@@ -352,25 +352,48 @@ impl Repo {
     /// Read the index; also returns the index file's mtime for the racy-git
     /// check.
     pub fn read_index(&self) -> Result<(Index, Option<Time>), Die> {
+        self.read_index_with(false)
+    }
+
+    /// [`Repo::read_index`] for the commands that work on a sparse index
+    /// (Documentation/technical/sparse-index.adoc): while the index is
+    /// sparse in git's sense its sparse directory entries stay in memory
+    /// (mode `040000`, path with trailing `/`) instead of being expanded
+    /// into the files of their trees. Callers expand with
+    /// [`crate::sparse_index::expand`] (in memory only; git's notion of
+    /// a sparse index stays) before work that needs every file entry.
+    pub fn read_index_sparse(&self) -> Result<(Index, Option<Time>), Die> {
+        self.read_index_with(true)
+    }
+
+    /// The error for reading the index file failing with `e`: git's lines,
+    /// the last one ends the command.
+    pub(crate) fn index_error(&self, e: &rgit_index::Error) -> Die {
+        let path = self.index_path();
+        let mut lines = e.report(&path.display().to_string());
+        let last = lines.pop().unwrap_or_default();
+        for l in lines {
+            eprintln!("{l}");
+        }
+        match last.strip_prefix("fatal: ") {
+            Some(m) => Die::Fatal(m.to_owned()),
+            None => Die::Error(
+                last.strip_prefix("error: ").unwrap_or(&last).to_owned(),
+                128,
+            ),
+        }
+    }
+
+    fn read_index_with(&self, keep_sparse: bool) -> Result<(Index, Option<Time>), Die> {
         let path = self.index_path();
         let mtime = index_mtime(&path).ok().flatten();
-        let opts = crate::index_config::read_options(&self.config);
+        let mut opts = crate::index_config::read_options(&self.config);
+        opts.keep_sparse = keep_sparse;
         let mut index = Index::read_file_in(&path, self.hash, &opts, Some(&self.setup.git_dir))
-            .map_err(|e| {
-                // git's lines; the last one ends the command.
-                let mut lines = e.report(&path.display().to_string());
-                let last = lines.pop().unwrap_or_default();
-                for l in lines {
-                    eprintln!("{l}");
-                }
-                match last.strip_prefix("fatal: ") {
-                    Some(m) => Die::Fatal(m.to_owned()),
-                    None => Die::Error(
-                        last.strip_prefix("error: ").unwrap_or(&last).to_owned(),
-                        128,
-                    ),
-                }
-            })?;
+            .map_err(|e| self.index_error(&e))?;
+        if keep_sparse {
+            crate::sparse_index::before_sparse_read(&mut index);
+        }
         if crate::index_config::apply_untracked_setting(
             &self.config,
             self.setup.work_tree.as_deref(),
@@ -387,6 +410,9 @@ impl Repo {
                 let root = self.setup.cwd.join(wt);
                 crate::sparse::clear_present(&self.config, &root, &mut index);
             }
+        }
+        if keep_sparse {
+            crate::sparse_index::after_sparse_read(self, &mut index)?;
         }
         Ok((index, mtime))
     }

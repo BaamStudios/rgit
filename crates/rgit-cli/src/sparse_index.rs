@@ -4,20 +4,31 @@
 //! `index.sparse`, git-sparse-checkout(1) `--sparse-index`).
 //!
 //! On disk, a directory outside a cone-mode sparse checkout is stored as
-//! one sparse directory entry. In memory rgit always works on the full list
-//! of files: reading expands sparse directory entries from their trees
-//! (rgit-index, with the tree reader registered by [`install`]), writing
-//! the repository's index collapses directories again (the write transform
-//! registered by [`install`]).
+//! one sparse directory entry. [`Repo::read_index`] expands sparse
+//! directory entries from their trees (rgit-index, with the tree reader
+//! registered by [`install`]); writing the repository's index collapses
+//! directories again (the write transform registered by [`install`]).
+//!
+//! The commands git keeps sparse in memory on their hot paths (`status`,
+//! `diff`, `add`, `commit`, `reset`, `checkout`/`switch` through
+//! rgit-unpack) read with [`Repo::read_index_sparse`] instead: the sparse
+//! directory entries stay in the in-memory index (mode `040000`, path
+//! with trailing `/`, the tree, skip-worktree), so their work is
+//! O(populated). Their comparisons skip a tree's directory where the index
+//! has a sparse directory entry holding the same tree ([`expand_unless_same`]
+//! checks that first); everything else falls back to [`expand`], which
+//! expands the index in memory exactly as `read_index` would have, without
+//! changing git's notion below. Writing a physically sparse index needs no
+//! expansion: the cache tree is computed with the sparse directory
+//! entries as leaves.
 //!
 //! git distinguishes a "sparse" from an "expanded" in-memory index, and
 //! that difference is visible: which directories a written index keeps
 //! file by file, `status` saying "You are in a sparse checkout." without a
 //! percentage, `ls-files --sparse`, and the trace2 regions
 //! `index/ensure_full_index` and `index/convert_to_sparse`. This module
-//! keeps that state for the repository's index (rgit itself always holds
-//! every file entry, so the regions say where git would expand or convert,
-//! not what rgit's work costs):
+//! keeps that state for the repository's index (independent of the
+//! in-memory form above: the regions say where git expands or converts):
 //!
 //! - An index read from a sparse file stays logically sparse; directories
 //!   the file listed file by file stay so when it is written again, new
@@ -42,6 +53,7 @@ use rgit_object::{EntryMode, ObjectKind, Tree, TreeEntry};
 use rgit_odb::ObjectDatabase;
 use rgit_worktree::sparse::{DirMatch, Sparse};
 
+use crate::Die;
 use crate::repository::Repo;
 
 /// The sparse-index settings of the repository.
@@ -288,6 +300,87 @@ pub fn after_read(index: &mut Index) -> bool {
     })
 }
 
+/// Called by [`Repo::read_index_sparse`] with the index as the file holds
+/// it (sparse directory entries kept). Sets up the state like
+/// [`after_read`]; the sparse directory entries stay in memory only while
+/// the index is sparse in git's sense and none of their directories is
+/// present in the work tree, otherwise the index is expanded (see
+/// [`expand`]).
+pub fn after_sparse_read(repo: &Repo, index: &mut Index) -> Result<(), Die> {
+    if !index.is_sparse_index() {
+        return Ok(());
+    }
+    let present = || {
+        STATE.with(|s| {
+            let s = s.borrow();
+            let Some(wt) = s.settings.as_ref().and_then(|st| st.work_tree.as_ref()) else {
+                return false;
+            };
+            index.entries().iter().filter(|e| e.mode.is_dir()).any(|e| {
+                let d = e.path().strip_suffix(b"/").unwrap_or(e.path());
+                std::fs::symlink_metadata(os_path(wt, d)).is_ok()
+            })
+        })
+    };
+    if !index.is_sparse() || !is_sparse() || present() {
+        expand(repo, index)?;
+        // What `read_index` does with the expanded files.
+        if let Some(wt) = &repo.setup.work_tree {
+            let root = repo.setup.cwd.join(wt);
+            crate::sparse::clear_present(&repo.config, &root, index);
+        }
+    }
+    Ok(())
+}
+
+/// Called by [`Repo::read_index_sparse`] right after reading: records the
+/// layout of a sparse index file as [`after_read`] expects it.
+pub fn before_sparse_read(index: &mut Index) {
+    if index.is_sparse_index() {
+        index.set_sparse_origin(Some(SparseOrigin::of(index)));
+    }
+}
+
+/// Replaces the sparse directory entries of `index` (read with
+/// [`Repo::read_index_sparse`]) by the files of their trees, as
+/// [`Repo::read_index`] would have read them. Unlike [`ensure_full`]
+/// this is invisible: whether the index is sparse in git's sense does not
+/// change (rgit's own fallback for work not done on sparse directory
+/// entries).
+pub fn expand(repo: &Repo, index: &mut Index) -> Result<(), Die> {
+    if !index.is_sparse_index() {
+        return Ok(());
+    }
+    let mut read = |id: &ObjectId| repo.read_tree_data(id).map(|d| d.to_vec());
+    // A missing tree fails as the expanding read does.
+    index
+        .expand_sparse(&mut read)
+        .map_err(|e| repo.index_error(&e))?;
+    index.set_sparse_origin(None);
+    Ok(())
+}
+
+/// [`expand`] unless every sparse directory entry of `index` names the
+/// tree `tree` (`None`: the empty tree) has at its path: then comparing
+/// `index` with `tree` can skip those directories.
+pub fn expand_unless_same(
+    repo: &Repo,
+    index: &mut Index,
+    tree: Option<ObjectId>,
+) -> Result<(), Die> {
+    if !index.is_sparse() {
+        return Ok(());
+    }
+    let differs = index.entries().iter().filter(|e| e.mode.is_dir()).any(|e| {
+        let dir = e.path().strip_suffix(b"/").unwrap_or(e.path());
+        tree.and_then(|t| tree_entry(repo, t, dir)) != Some(e.id)
+    });
+    if differs {
+        expand(repo, index)?;
+    }
+    Ok(())
+}
+
 /// git's `ensure_full_index()`: the in-memory index stops being sparse;
 /// it is converted completely when written.
 pub fn ensure_full() {
@@ -335,7 +428,42 @@ pub fn expand_for_pathspec(pathspec: &rgit_pathspec::Pathspec) {
         ensure_full();
         return;
     }
-    let needs = items.iter().any(|item| {
+    if reaches_inside(&dirs, pathspec) {
+        ensure_full();
+    }
+}
+
+/// Whether `pathspec` may match paths inside a sparse directory entry of
+/// `index` without matching the whole directory (see
+/// [`expand_for_pathspec`]; an empty pathspec matches whole directories).
+pub fn pathspec_reaches_inside(index: &Index, pathspec: &rgit_pathspec::Pathspec) -> bool {
+    if !index.is_sparse() {
+        return false;
+    }
+    // Excluded paths and case-folded literals: decided file by file.
+    if pathspec
+        .items()
+        .iter()
+        .any(|i| i.is_exclude() || i.magic().contains(rgit_pathspec::Magic::ICASE))
+    {
+        return true;
+    }
+    let dirs: Vec<Vec<u8>> = index
+        .entries()
+        .iter()
+        .filter(|e| e.mode.is_dir())
+        .map(|e| e.path().to_vec())
+        .collect();
+    reaches_inside(&dirs, pathspec)
+}
+
+fn reaches_inside(dirs: &[Vec<u8>], pathspec: &rgit_pathspec::Pathspec) -> bool {
+    let items: Vec<_> = pathspec
+        .items()
+        .iter()
+        .filter(|i| !i.is_exclude())
+        .collect();
+    items.iter().any(|item| {
         let pat = item.pattern();
         let fixed = &pat[..item.nowildcard_len().min(pat.len())];
         let wild = fixed.len() < pat.len();
@@ -358,10 +486,7 @@ pub fn expand_for_pathspec(pathspec: &rgit_pathspec::Pathspec) {
             !(rgit_pathspec::wildmatch::wildmatch(pat, d, flags)
                 || rgit_pathspec::wildmatch::wildmatch(pat, dir, flags))
         })
-    });
-    if needs {
-        ensure_full();
-    }
+    })
 }
 
 /// For a lookup of `path` in an index read with [`Index::read_file`]
@@ -433,16 +558,34 @@ fn transform(path: &Path, index: &Index) -> Option<Index> {
     STATE.with(|s| {
         let s = s.borrow();
         let settings = s.settings.as_ref()?;
+        // Sparse directory entries kept in memory (`read_index_sparse`)
+        // are expanded where an expanded index would be written as it is.
+        let expanded = || index.is_sparse().then(|| expanded_copy(settings, index))?;
         if absolute(path) != settings.index {
-            return None;
+            return expanded();
         }
-        let cone = settings.cone.as_ref()?;
+        let Some(cone) = settings.cone.as_ref() else {
+            return expanded();
+        };
         if !s.sparse {
             region("convert_to_sparse");
         }
         let origin = if s.sparse { s.origin.as_ref() } else { None };
-        collapse(settings, cone, index, origin)
+        collapse(settings, cone, index, origin).or_else(expanded)
     })
+}
+
+/// `index` with its sparse directory entries expanded (`None` when a tree
+/// is missing).
+fn expanded_copy(settings: &Settings, index: &Index) -> Option<Index> {
+    let mut copy = index.clone();
+    let mut read = |id: &ObjectId| match settings.odb.read(id) {
+        Ok(Some(raw)) if raw.kind == ObjectKind::Tree => Some(raw.data.to_vec()),
+        _ => None,
+    };
+    copy.expand_sparse(&mut read).ok()?;
+    copy.set_sparse_origin(None);
+    Some(copy)
 }
 
 /// `index` with the cache tree brought up to date and directories outside
@@ -471,6 +614,10 @@ fn collapse(
         }
         let dir = e.path().strip_suffix(b"/").unwrap_or(e.path());
         let below: Vec<&rgit_index::Entry> = index.entries()[index.dir_range(dir)].iter().collect();
+        if matches!(below.as_slice(), [d] if d.mode.is_dir()) {
+            // Kept from the index as read: its tree is not ours to write.
+            continue;
+        }
         let name = dir.rsplit(|&b| b == b'/').next().unwrap_or(dir);
         build(&settings.odb, &below, e.path().len(), name, true)?;
     }
@@ -532,7 +679,11 @@ fn build(
                     ita = true;
                 } else {
                     let (name, mode) = if e.mode.is_dir() {
-                        (rest.strip_suffix(b"/").unwrap_or(rest), b"40000".to_vec())
+                        // A sparse directory entry: a cache tree leaf
+                        // covering this one entry.
+                        let dir = rest.strip_suffix(b"/").unwrap_or(rest);
+                        children.push(TreeNode::new_valid(dir.to_vec(), 1, e.id));
+                        (dir, b"40000".to_vec())
                     } else {
                         (rest, format!("{:o}", e.mode.0).into_bytes())
                     };

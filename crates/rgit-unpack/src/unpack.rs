@@ -17,7 +17,7 @@ use crate::Error;
 use crate::cache_tree::repair_cache_tree;
 use crate::checkout::{self, Filter, join, lossy};
 use crate::messages as msg;
-use crate::objects::{Objects, read_blob, tree_entries};
+use crate::objects::{Objects, read_blob, tree_entries, tree_entries_skipping};
 use crate::parallel::ParallelCheckout;
 use crate::path::{PathOptions, verify_checkout_path};
 use crate::submodule::{Move, Submodules};
@@ -639,6 +639,11 @@ pub fn plan(
     if !opts.reset && !opts.discard_unmerged && index.has_conflicts() {
         return Err(Error::Unmerged);
     }
+    // Sparse directory entries (gitformat-index(5)) that every tree has
+    // as they are stay as they are; otherwise their files are merged one
+    // by one.
+    let (whole, rest) = split_sparse(odb, index, merge, opts.sparse)?;
+    let index = rest.as_ref().unwrap_or(index);
     if let Merge::ThreeWay {
         bases,
         head,
@@ -647,9 +652,13 @@ pub fn plan(
     {
         return three_way(odb, index, bases, head, remote, wt, opts);
     }
+    let skip = |dir: &[u8]| whole.binary_search_by(|e| e.path().cmp(dir)).is_ok();
     let (old, new) = match merge {
-        Merge::OneWay(t) => (None, tree_entries(odb, t)?),
-        Merge::TwoWay { old, new } => (Some(tree_entries(odb, old)?), tree_entries(odb, new)?),
+        Merge::OneWay(t) => (None, tree_entries_skipping(odb, t, &skip)?),
+        Merge::TwoWay { old, new } => (
+            Some(tree_entries_skipping(odb, old, &skip)?),
+            tree_entries_skipping(odb, new, &skip)?,
+        ),
         Merge::ThreeWay { .. } => unreachable!("handled above"),
     };
     let wt = if opts.index_only { None } else { wt };
@@ -734,6 +743,7 @@ pub fn plan(
         return Err(Error::Rejected(u.rejection));
     }
     u.apply_sparse()?;
+    u.result.extend(whole);
     let mut out = index.clone();
     out.clear_entries();
     // Like git, a result of unpacking trees has no resolve undo records.
@@ -761,6 +771,59 @@ pub fn plan(
         warnings: u.warnings,
         collisions: false,
     })
+}
+
+/// The sparse directory entries of `index` that stay whole while
+/// unpacking `merge`, and the index to unpack instead of `index`
+/// (`None`: `index` itself). The entries stay whole when each lies
+/// outside the cone of `sparse` and every tree of a one- or two-way
+/// merge has the same tree at its path: then each of their files would
+/// stay as it is. Otherwise the index is expanded.
+fn split_sparse(
+    odb: &dyn Objects,
+    index: &Index,
+    merge: &Merge,
+    sparse: Option<&Sparse>,
+) -> Result<(Vec<Entry>, Option<Index>), Error> {
+    if !index.is_sparse() {
+        return Ok((Vec::new(), None));
+    }
+    let trees: Vec<&ObjectId> = match merge {
+        Merge::OneWay(t) => vec![t],
+        Merge::TwoWay { old, new } => vec![old, new],
+        Merge::ThreeWay { .. } => Vec::new(),
+    };
+    let dirs: Vec<&Entry> = index.entries().iter().filter(|e| e.mode.is_dir()).collect();
+    let whole = !trees.is_empty()
+        && dirs.iter().all(|e| {
+            let dir = e.path().strip_suffix(b"/").unwrap_or(e.path());
+            e.stage() == Stage::MERGED
+                && e.flags.skip_worktree
+                && sparse.is_some_and(|s| {
+                    s.dir_match(dir) == Some(rgit_worktree::sparse::DirMatch::Excluded)
+                })
+                && trees
+                    .iter()
+                    .all(|t| crate::objects::tree_lookup(odb, t, dir) == Some(e.id))
+        });
+    let mut rest = index.clone();
+    if !whole {
+        let mut read = |id: &ObjectId| match odb.read_raw(id) {
+            Ok(Some(raw)) if raw.kind == rgit_object::ObjectKind::Tree => Some(raw.data.to_vec()),
+            _ => None,
+        };
+        rest.expand_sparse(&mut read)
+            .map_err(|e| Error::Io(e.to_string()))?;
+        rest.set_sparse_origin(None);
+        return Ok((Vec::new(), Some(rest)));
+    }
+    let kept: Vec<Entry> = dirs.into_iter().cloned().collect();
+    for pos in (0..rest.len()).rev() {
+        if rest.entries()[pos].mode.is_dir() {
+            rest.remove_at(pos);
+        }
+    }
+    Ok((kept, Some(rest)))
 }
 
 /// Brings the skip-worktree bits of `index` and the work tree in line
