@@ -167,13 +167,14 @@ pub fn total_reused(
     reused: u32,
     reused_deltas: u32,
     pack_reused: usize,
+    packs_reused: usize,
 ) -> String {
     if pack_reused == 0 {
         return total(objects, deltas, reused, reused_deltas);
     }
     format!(
         "Total {objects} (delta {deltas}), reused {reused} (delta {reused_deltas}), \
-         pack-reused {pack_reused} (from 1)"
+         pack-reused {pack_reused} (from {packs_reused})"
     )
 }
 
