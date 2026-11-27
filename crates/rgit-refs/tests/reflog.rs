@@ -90,7 +90,7 @@ fn setup() -> Option<Fixture> {
 #[test]
 fn appended_lines_and_created_files_match_git() {
     let Some(mut fx) = setup() else { return };
-    let git_dir = fx.work_dir().join(".git");
+    let git_dir = rgit_fs::path::join(fx.work_dir(), ".git");
     let shadow = tempfile::tempdir().unwrap();
     copy_dir(&git_dir.join("logs"), &shadow.path().join("logs"));
     let ours = FilesReflog::new(shadow.path(), shadow.path(), K);
@@ -186,7 +186,7 @@ fn appended_lines_and_created_files_match_git() {
 #[test]
 fn directories_in_the_way() {
     let Some(fx) = setup() else { return };
-    let git_dir = fx.work_dir().join(".git");
+    let git_dir = rgit_fs::path::join(fx.work_dir(), ".git");
     // An empty directory tree where the log goes is replaced.
     fs::create_dir_all(git_dir.join("logs/refs/heads/yy/sub/deeper")).unwrap();
     let shadow = tempfile::tempdir().unwrap();
@@ -252,7 +252,7 @@ fn directories_in_the_way() {
 #[test]
 fn rename_matches_git() {
     let Some(fx) = setup() else { return };
-    let git_dir = fx.work_dir().join(".git");
+    let git_dir = rgit_fs::path::join(fx.work_dir(), ".git");
     fx.git_stdout(["branch", "q/r", "main"]);
     fx.git_stdout(["branch", "a", "main"]);
     let shadow = tempfile::tempdir().unwrap();
@@ -279,7 +279,7 @@ fn rename_matches_git() {
 #[test]
 fn list_matches_git() {
     let Some(fx) = setup() else { return };
-    let git_dir = fx.work_dir().join(".git");
+    let git_dir = rgit_fs::path::join(fx.work_dir(), ".git");
     fx.git_stdout([
         "-c",
         "core.logAllRefUpdates=always",
@@ -319,7 +319,7 @@ fn list_matches_git() {
 #[test]
 fn list_with_worktrees_matches_git() {
     let Some(fx) = setup() else { return };
-    let git_dir = fx.work_dir().join(".git");
+    let git_dir = rgit_fs::path::join(fx.work_dir(), ".git");
     fx.git_stdout(["worktree", "add", "-q", "wt"]);
     let always = ["-c", "core.logAllRefUpdates=always"];
     let run = |dir: Option<&str>, args: &[&str]| {
@@ -400,7 +400,7 @@ fn lookups_match_git() {
             .git(["commit", "-q", "--allow-empty", "-m", &format!("c{i}")]);
         ids.push(oid(&fx, "HEAD").unwrap());
     }
-    let git_dir = fx.work_dir().join(".git");
+    let git_dir = rgit_fs::path::join(fx.work_dir(), ".git");
     let logs = FilesReflog::new(&git_dir, &git_dir, K);
     let z = K.null();
     let line = |o: ObjectId, n: ObjectId, t: u64, tz: &str, m: &str| {
@@ -504,7 +504,7 @@ fn prior_checkouts_match_git() {
     ] {
         fx.git_stdout(args);
     }
-    let git_dir: PathBuf = fx.work_dir().join(".git");
+    let git_dir: PathBuf = rgit_fs::path::join(fx.work_dir(), ".git");
     let logs = FilesReflog::new(&git_dir, &git_dir, K);
     let head = logs.read("HEAD").unwrap().unwrap();
     for n in 1..=6 {

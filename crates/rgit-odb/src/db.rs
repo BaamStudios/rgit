@@ -29,7 +29,7 @@ pub const OBJECT_DIRECTORY_ENV: &str = "GIT_OBJECT_DIRECTORY";
 pub fn objects_dir(git_dir: &Path) -> PathBuf {
     match std::env::var_os(OBJECT_DIRECTORY_ENV) {
         Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => git_dir.join("objects"),
+        _ => rgit_fs::path::join(git_dir, "objects"),
     }
 }
 
@@ -205,12 +205,15 @@ impl ObjectDatabase {
     ) -> ObjectDatabase {
         let objects_dir = objects_dir.into();
         let mut db = ObjectDatabase::open(&objects_dir, hash, options.clone());
-        let packs = Arc::new(PackStore::open(objects_dir.join("pack"), hash));
+        let packs = Arc::new(PackStore::open(
+            rgit_fs::path::join(&objects_dir, "pack"),
+            hash,
+        ));
         db.push_store(packs.clone());
         db.packs = Some(packs);
         for alt in alternates::resolve(&objects_dir) {
             db.push_store(Arc::new(LooseStore::new(&alt, hash, options.clone())));
-            let packs = Arc::new(PackStore::open(alt.join("pack"), hash));
+            let packs = Arc::new(PackStore::open(rgit_fs::path::join(&alt, "pack"), hash));
             db.alternate_packs.push(packs.clone());
             db.push_store(packs);
         }
@@ -231,7 +234,7 @@ impl ObjectDatabase {
         let result = (|| {
             let mut db = ObjectDatabase::open(&objects_dir, hash, options.clone());
             let packs = Arc::new(PackStore::open_with_midx(
-                objects_dir.join("pack"),
+                rgit_fs::path::join(&objects_dir, "pack"),
                 hash,
                 &mut errors,
             )?);
@@ -240,7 +243,7 @@ impl ObjectDatabase {
             for alt in alternates::resolve(&objects_dir) {
                 db.push_store(Arc::new(LooseStore::new(&alt, hash, options.clone())));
                 db.push_store(Arc::new(PackStore::open_with_midx(
-                    alt.join("pack"),
+                    rgit_fs::path::join(&alt, "pack"),
                     hash,
                     &mut errors,
                 )?));

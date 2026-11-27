@@ -110,7 +110,7 @@ pub(crate) fn read_pathspec_file(repo: &Repo, name: &str, nul: bool) -> Result<V
         std::io::stdin().read_to_end(&mut data).map(|_| ())
     } else {
         let full = match &repo.setup.prefix {
-            Some(p) if !Path::new(name).is_absolute() => Path::new(p).join(name),
+            Some(p) if !rgit_fs::path::is_absolute(Path::new(name)) => Path::new(p).join(name),
             _ => PathBuf::from(name),
         };
         std::fs::File::open(full).and_then(|mut f| f.read_to_end(&mut data).map(|_| ()))

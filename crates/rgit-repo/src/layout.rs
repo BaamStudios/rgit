@@ -28,24 +28,28 @@ pub fn is_git_directory(dir: &Path, cwd: &Path, ov: &LayoutOverrides) -> bool {
     };
     let objects = match &ov.object_dir {
         Some(o) => path::absolute(o, cwd),
-        None => common.join("objects"),
+        None => rgit_fs::path::join(&common, "objects"),
     };
-    if !objects.exists() || !common.join("refs").exists() {
+    if !objects.exists() || !rgit_fs::path::join(&common, "refs").exists() {
         return false;
     }
-    valid_head(&dir.join("HEAD"))
+    valid_head(&rgit_fs::path::join(dir, "HEAD"))
 }
 
 /// The common directory named by `<dir>/commondir`, resolved against
 /// `dir` when relative. `None` without such a file.
 pub fn common_dir_of(dir: &Path) -> Option<PathBuf> {
-    let data = std::fs::read(dir.join("commondir")).ok()?;
+    let data = std::fs::read(rgit_fs::path::join(dir, "commondir")).ok()?;
     let text = trim_end(&data);
     if text.is_empty() {
         return None;
     }
     let p = bytes_to_path(text);
-    Some(if p.is_absolute() { p } else { dir.join(p) })
+    Some(if rgit_fs::path::is_absolute(&p) {
+        p
+    } else {
+        rgit_fs::path::join(dir, p)
+    })
 }
 
 /// `HEAD` is a symbolic link into `refs/`, a `ref: refs/...` file, or a

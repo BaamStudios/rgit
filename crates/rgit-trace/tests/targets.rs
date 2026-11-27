@@ -164,6 +164,8 @@ fn file_target_appends() {
     assert_eq!(got, format!("existing\n{SETUP_EXPECTED}{SETUP_EXPECTED}"));
 }
 
+// A descriptor above 2 reaches the child on Unix only.
+#[cfg(unix)]
 #[test]
 fn fd_target() {
     let path = scratch("fd");

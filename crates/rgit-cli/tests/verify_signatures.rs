@@ -539,8 +539,9 @@ fn ssh_real_keys() {
     );
 }
 
-/// Kills the gpg-agent of a throwaway `GNUPGHOME` when dropped.
-struct Agent(std::path::PathBuf);
+/// Kills the gpg-agent of a throwaway `GNUPGHOME` when dropped, and removes
+/// the directory when it is not part of a fixture.
+struct Agent(std::path::PathBuf, bool);
 
 impl Drop for Agent {
     fn drop(&mut self) {
@@ -548,7 +549,26 @@ impl Drop for Agent {
             .args(["--kill", "all"])
             .env("GNUPGHOME", &self.0)
             .output();
+        if self.1 {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
+}
+
+/// A directory for a throwaway `GNUPGHOME`, and whether it lies outside the
+/// fixture. gpg-agent listens on a socket inside it, and a socket path is
+/// limited to about a hundred bytes: where the fixture's directory is too
+/// deep for that (macOS: `/private/var/folders/...`), a directory in `/tmp`
+/// is used.
+fn gnupg_home(fx: &Fixture) -> (std::path::PathBuf, bool) {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let inside = fx.home_dir().join("gnupg");
+    if inside.as_os_str().len() <= 70 || !cfg!(unix) {
+        return (inside, false);
+    }
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let short = format!("/tmp/rgit-gnupg-{}-{n}", std::process::id());
+    (std::path::PathBuf::from(short), true)
 }
 
 /// Real OpenPGP signatures with a key generated in a throwaway
@@ -563,14 +583,14 @@ fn openpgp_real_keys() {
     if fx.is_skipped() {
         return;
     }
-    let home = fx.home_dir().join("gnupg");
+    let (home, outside) = gnupg_home(&fx);
     std::fs::create_dir_all(&home).expect("gnupg home");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700));
     }
-    let _agent = Agent(home.clone());
+    let _agent = Agent(home.clone(), outside);
     let env = [("GNUPGHOME", home.as_path())];
     let args = [
         "--batch",

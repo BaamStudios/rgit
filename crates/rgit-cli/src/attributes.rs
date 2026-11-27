@@ -152,9 +152,8 @@ pub fn object_mode(
     }
     let full = root.join(path_from_bytes(path));
     let meta = std::fs::symlink_metadata(&full).map_err(|e| {
-        let err = e.to_string();
-        let err = err.split(" (os error").next().unwrap_or_default();
-        Die::Fatal(msg::unable_to_stat(&String::from_utf8_lossy(path), err))
+        let err = rgit_fs::messages::strerror(&e);
+        Die::Fatal(msg::unable_to_stat(&String::from_utf8_lossy(path), &err))
     })?;
     let ft = meta.file_type();
     let mode = if ft.is_symlink() {

@@ -110,13 +110,13 @@ fn target(ctx: &Context, common: &Common) -> Result<(rgit_repo::Setup, Target), 
     };
     let path = {
         let p = Path::new(&given);
-        if p.is_absolute() {
+        if rgit_fs::path::is_absolute(p) {
             p.to_path_buf()
         } else {
             setup.original_cwd.join(p)
         }
     };
-    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let canon = |p: &Path| rgit_fs::path::canonicalize(p).ok();
     let want = canon(&path);
     let mut candidates = vec![own.clone()];
     candidates.extend(rgit_odb::resolve_alternates(&own));

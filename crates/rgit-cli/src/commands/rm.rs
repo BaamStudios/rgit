@@ -378,7 +378,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
         // index records them in the resolve undo extension).
         index.remove_path(p);
     }
-    let cwd = std::fs::canonicalize(os_path(&root, &repo.prefix())).ok();
+    let cwd = rgit_fs::path::canonicalize(os_path(&root, &repo.prefix())).ok();
     // `.gitmodules` removed in the same call stays removed: its sections are
     // not edited and it is not staged again.
     let gitmodules_removed = chosen
@@ -426,7 +426,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
                 // Remove now-empty leading directories.
                 let mut dir = full.parent().map(Path::to_path_buf);
                 while let Some(d) = dir {
-                    if d == root || std::fs::canonicalize(&d).ok() == cwd || std::fs::remove_dir(&d).is_err() {
+                    if d == root || rgit_fs::path::canonicalize(&d).ok() == cwd || std::fs::remove_dir(&d).is_err() {
                         break;
                     }
                     dir = d.parent().map(Path::to_path_buf);

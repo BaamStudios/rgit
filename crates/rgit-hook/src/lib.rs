@@ -480,7 +480,11 @@ impl Hooks {
             Source::HookDir { shown, path } => {
                 // A relative name is relative to the directory the hook
                 // runs in; scripts see it as `$0`.
-                let mut c = Command::new(if shown.is_absolute() { path } else { shown });
+                let mut c = Command::new(if rgit_fs::path::is_absolute(shown) {
+                    path
+                } else {
+                    shown
+                });
                 c.args(&opts.args);
                 (c, shown.to_string_lossy().into_owned())
             }
@@ -644,11 +648,7 @@ fn stderr_stdio() -> Stdio {
 /// The system's description of an I/O error, without Rust's
 /// " (os error N)" suffix.
 fn strerror(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error ") {
-        Some(i) => s[..i].to_owned(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 #[cfg(unix)]

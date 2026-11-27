@@ -83,12 +83,14 @@ pub(crate) fn write_fd(fd: i32, mut buf: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Outside Unix a program inherits the three standard handles only, so a
+/// descriptor above 2 is never open: the write fails as on a closed
+/// descriptor ("Bad file descriptor").
 #[cfg(not(unix))]
 pub(crate) fn write_fd(_fd: i32, _buf: &[u8]) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "file descriptor targets are not supported on this platform",
-    ))
+    /// `ERROR_INVALID_HANDLE`, the system's code for `EBADF`.
+    const INVALID_HANDLE: i32 = 6;
+    Err(io::Error::from_raw_os_error(INVALID_HANDLE))
 }
 
 struct State {

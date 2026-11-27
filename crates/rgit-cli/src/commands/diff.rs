@@ -622,7 +622,7 @@ fn run_no_index(ctx: &Context, repo: Option<&Repo>, opts: &DiffOpts, args: &[Str
     let pathspec = if specs.is_empty() {
         None
     } else {
-        if specs.iter().any(|s| Path::new(s).is_absolute()) {
+        if specs.iter().any(|s| rgit_fs::path::is_absolute(Path::new(s))) {
             return Err(usage_exit(msg::NO_INDEX_USAGE.to_string()));
         }
         let parsed = rgit_pathspec::Pathspec::parse(specs, &rgit_pathspec::ParseOptions::default())

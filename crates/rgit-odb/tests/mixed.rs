@@ -172,17 +172,21 @@ fn corrupt_copies_are_reported_like_git() {
     set_writable(&pack);
     std::fs::write(&pack, &bytes).unwrap();
 
-    let mut odb =
-        ObjectDatabase::open_with_packs(g.objects(), HashKind::Sha1, LooseOptions::default());
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let s = seen.clone();
-    odb.set_error_sink(move |e| {
-        let lines = e
-            .skipped_copy_lines()
-            .into_iter()
-            .map(|l| format!("error: {l}"));
-        s.lock().unwrap().extend(lines)
-    });
+    let open = || {
+        let mut odb =
+            ObjectDatabase::open_with_packs(g.objects(), HashKind::Sha1, LooseOptions::default());
+        let s = seen.clone();
+        odb.set_error_sink(move |e| {
+            let lines = e
+                .skipped_copy_lines()
+                .into_iter()
+                .map(|l| format!("error: {l}"));
+            s.lock().unwrap().extend(lines)
+        });
+        odb
+    };
+    let odb = open();
     let take = || std::mem::take(&mut *seen.lock().unwrap());
 
     // 1. Only a corrupt packed copy.
@@ -201,8 +205,12 @@ fn corrupt_copies_are_reported_like_git() {
     assert_eq!(take(), git_errors(&out));
 
     // 3. A corrupt loose copy and an intact packed one: the loose copy is
-    // reported, the packed one used. Header lookups stay silent.
+    // reported, the packed one used. Header lookups stay silent. (The pack
+    // is put back while no database has it mapped: a mapped file cannot be
+    // rewritten on Windows.)
+    drop(odb);
     std::fs::write(&pack, &good_pack).unwrap();
+    let odb = open();
     let path = loose.path_of(&oid);
     set_writable(&path);
     std::fs::write(&path, b"garbage").unwrap();

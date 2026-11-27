@@ -282,11 +282,7 @@ pub fn launch_with_term(
 
 /// `strerror`-style text of an I/O error ("No such file or directory").
 fn strerror(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error") {
-        Some(i) => s[..i].to_owned(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 #[cfg(test)]

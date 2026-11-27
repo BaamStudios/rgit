@@ -600,7 +600,7 @@ fn repo_path(repo: &Repo) -> String {
         Some(wt) => repo.setup.cwd.join(wt),
         None => repo.setup.absolute_git_dir(),
     };
-    let p = std::fs::canonicalize(&p).unwrap_or_else(|_| rgit_repo::path::normalize(&p));
+    let p = rgit_fs::path::canonicalize(&p).unwrap_or_else(|_| rgit_repo::path::normalize(&p));
     p.to_string_lossy().into_owned()
 }
 

@@ -64,7 +64,7 @@ impl LooseStore {
     /// The path of `oid`'s file (whether it exists or not).
     pub fn path_of(&self, oid: &ObjectId) -> PathBuf {
         let hex = oid.to_hex();
-        self.dir.join(&hex[..2]).join(&hex[2..])
+        rgit_fs::path::join(rgit_fs::path::join(&self.dir, &hex[..2]), &hex[2..])
     }
 
     /// Whether the file for `oid` exists.
@@ -284,7 +284,7 @@ impl LooseStore {
 
     /// List `objects/<fan>/`; entries that are not object names are skipped.
     fn scan_dir(&self, fan: &str, f: &mut dyn FnMut(ObjectId)) -> Result<(), Error> {
-        let dir = self.dir.join(fan);
+        let dir = rgit_fs::path::join(&self.dir, fan);
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e)
@@ -318,15 +318,13 @@ impl LooseStore {
     /// Update the modification time of `oid`'s file, if it exists.
     pub fn freshen(&self, oid: &ObjectId) -> bool {
         let path = self.path_of(oid);
-        match File::open(&path) {
-            Ok(f) => {
-                // Like git, a failure to update the time is not fatal; the
-                // object is there.
-                let _ = f.set_modified(std::time::SystemTime::now());
-                true
-            }
-            Err(_) => false,
+        if !path.is_file() {
+            return false;
         }
+        // Like git, a failure to update the time is not fatal; the object
+        // is there.
+        let _ = rgit_fs::set_modified(&path, std::time::SystemTime::now());
+        true
     }
 
     /// Write an object unless its file exists already (then only its

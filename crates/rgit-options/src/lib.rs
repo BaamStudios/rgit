@@ -757,7 +757,9 @@ impl<'a> Parser<'a> {
                     None
                 } else {
                     value.map(|v| match &prefix {
-                        Some(p) if !std::path::Path::new(v).is_absolute() && v != "-" => {
+                        Some(p)
+                            if !rgit_fs::path::is_absolute(std::path::Path::new(v)) && v != "-" =>
+                        {
                             format!("{p}{v}")
                         }
                         _ => v.to_string(),

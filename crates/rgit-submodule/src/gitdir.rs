@@ -46,7 +46,7 @@ pub fn git_dir_of(worktree: &Path) -> Option<PathBuf> {
         return None;
     }
     let target = bytes_to_path(target);
-    Some(if target.is_absolute() {
+    Some(if rgit_fs::path::is_absolute(&target) {
         target
     } else {
         worktree.join(target)

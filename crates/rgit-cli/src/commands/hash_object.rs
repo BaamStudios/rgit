@@ -196,7 +196,7 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
 /// A path given on the command line, relative to where the command was
 /// started.
 fn prefixed(prefix: &str, path: &str) -> String {
-    if prefix.is_empty() || std::path::Path::new(path).is_absolute() {
+    if prefix.is_empty() || rgit_fs::path::is_absolute(std::path::Path::new(path)) {
         path.to_string()
     } else {
         format!("{prefix}{path}")

@@ -219,9 +219,7 @@ pub fn expand_user_path(v: &[u8], env: &dyn Environment) -> Result<PathBuf, Path
         None => (after, &b""[..]),
     };
     let home = if user.is_empty() {
-        env.var_bytes("HOME")
-            .filter(|h| !h.is_empty())
-            .ok_or_else(fail)?
+        env.home().ok_or_else(fail)?
     } else {
         let user = std::str::from_utf8(user).map_err(|_| fail())?;
         path_bytes(&env.user_home(user).ok_or_else(fail)?)

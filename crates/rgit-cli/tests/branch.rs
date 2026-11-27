@@ -606,7 +606,11 @@ fn delete_branch_under_rebase_or_bisect() {
     let fx = fixture()
         .git(["checkout", "-q", "-b", "topic"])
         .git(["commit", "-q", "--allow-empty", "-m", "two"])
-        .write_executable(".git/seq.sh", "#!/bin/sh\nsed -i 's/^pick/edit/' \"$1\"\n")
+        // Not `sed -i`: BSD sed takes the next argument as a suffix.
+        .write_executable(
+            ".git/seq.sh",
+            "#!/bin/sh\nsed 's/^pick/edit/' \"$1\" >\"$1.new\" && mv \"$1.new\" \"$1\"\n",
+        )
         .env("GIT_SEQUENCE_EDITOR", ".git/seq.sh")
         .git(["rebase", "-q", "-i", "HEAD~1"]);
     if fx.is_skipped() {

@@ -115,11 +115,7 @@ pub const RESET: &str = "\x1b[m";
 /// e.g. `No such file or directory`.
 #[must_use]
 pub fn strerror(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error ") {
-        Some(i) => s[..i].to_owned(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 /// `<msg>: <strerror>`, the form of messages about a failed system call.

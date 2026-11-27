@@ -193,7 +193,7 @@ pub(crate) fn config_style(config: &rgit_config::ConfigSet) -> Result<ConflictSt
 }
 
 fn prefixed(prefix: &str, path: &str) -> String {
-    if prefix.is_empty() || std::path::Path::new(path).is_absolute() {
+    if prefix.is_empty() || rgit_fs::path::is_absolute(std::path::Path::new(path)) {
         path.to_string()
     } else {
         format!("{prefix}{path}")

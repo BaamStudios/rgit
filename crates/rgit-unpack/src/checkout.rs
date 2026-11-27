@@ -152,11 +152,7 @@ pub(crate) fn lossy(p: &[u8]) -> String {
 
 /// The text of an I/O error as `strerror` prints it.
 pub(crate) fn strerror(e: &io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 /// Makes every leading directory of `rel` (relative to `root`) a real

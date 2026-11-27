@@ -206,7 +206,9 @@ impl Prompter for FakePrompter {
     }
 
     fn terminal(&mut self, _prompt: &str, _echo: bool) -> io::Result<BString> {
-        Err(io::Error::from_raw_os_error(6))
+        // Not an error code: the C library's text for one differs between
+        // platforms.
+        Err(io::Error::other("no terminal"))
     }
 }
 
@@ -261,7 +263,7 @@ fn fill_without_askpass() {
     let mut c = read("protocol=https\nhost=example.com\n");
     assert_eq!(
         c.fill(&mut ctx).unwrap_err().to_string(),
-        "could not read Username for 'https://example.com': No such device or address"
+        "could not read Username for 'https://example.com': no terminal"
     );
     assert!(p.asked.is_empty());
 }

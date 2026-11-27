@@ -1024,7 +1024,7 @@ fn read_message(pieces: &[Piece], cwd: &Path) -> Result<Vec<u8>, Die> {
                         .map_err(|e| fatal(msg::could_not_read_file(f, &crate::global::strerror(&e))))?;
                 } else {
                     let path = Path::new(f);
-                    let path: PathBuf = if path.is_absolute() {
+                    let path: PathBuf = if rgit_fs::path::is_absolute(path) {
                         path.to_path_buf()
                     } else {
                         cwd.join(path)

@@ -18,7 +18,7 @@ fn init_repo(s: &Scratch) -> Option<()> {
         .output()
         .unwrap();
     assert!(out.status.success());
-    std::fs::write(s.path().join("f"), "content\n").unwrap();
+    std::fs::write(rgit_fs::path::join(s.path(), "f"), "content\n").unwrap();
     Some(())
 }
 
@@ -44,7 +44,7 @@ fn expected_stderr(err: &LockError) -> String {
 fn git_fails_on_our_lock_with_same_message() {
     let s = Scratch::new("git-vs-us");
     let Some(()) = init_repo(&s) else { return };
-    let index = s.path().join(".git/index");
+    let index = rgit_fs::path::join(s.path(), ".git/index");
     for pid_file in [false, true] {
         let lock = LockFile::acquire(&index, &LockOptions::new().pid_file(pid_file)).unwrap();
         let ours = LockFile::acquire(&index, &LockOptions::new()).unwrap_err();
@@ -68,7 +68,7 @@ fn git_fails_on_our_lock_with_same_message() {
     let mut cmd = git(s.path()).unwrap();
     cmd.args(["add", "f"]);
     assert_eq!(run(cmd).0, 0);
-    assert!(!s.path().join(".git/index.lock").exists());
+    assert!(!rgit_fs::path::join(s.path(), ".git/index.lock").exists());
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn ref_lock_message_matches() {
         "x",
     ]);
     assert_eq!(run(cmd).0, 0);
-    let refpath = s.path().join(".git/refs/heads/main");
+    let refpath = rgit_fs::path::join(s.path(), ".git/refs/heads/main");
     let _lock = LockFile::acquire(&refpath, &LockOptions::new()).unwrap();
     let ours = LockFile::acquire(&refpath, &LockOptions::new()).unwrap_err();
     let mut cmd = git(s.path()).unwrap();
@@ -107,7 +107,7 @@ fn ref_lock_message_matches() {
 fn pid_file_variants_match_git() {
     let s = Scratch::new("pidvariants");
     let Some(()) = init_repo(&s) else { return };
-    let git_dir = s.path().join(".git");
+    let git_dir = rgit_fs::path::join(s.path(), ".git");
     std::fs::write(git_dir.join("index.lock"), "").unwrap();
     let alive = format!("pid {}\n", std::process::id());
     let cases: Vec<&[u8]> = vec![
@@ -149,8 +149,12 @@ fn pid_file_variants_match_git() {
 fn we_fail_while_git_holds_the_lock() {
     let s = Scratch::new("us-vs-git");
     let Some(()) = init_repo(&s) else { return };
-    std::fs::write(s.path().join(".gitattributes"), "*.slow filter=slow\n").unwrap();
-    std::fs::write(s.path().join("a.slow"), "x\n").unwrap();
+    std::fs::write(
+        rgit_fs::path::join(s.path(), ".gitattributes"),
+        "*.slow filter=slow\n",
+    )
+    .unwrap();
+    std::fs::write(rgit_fs::path::join(s.path(), "a.slow"), "x\n").unwrap();
     let mut cmd = git(s.path()).unwrap();
     // The clean filter runs while git holds index.lock.
     cmd.args([
@@ -164,7 +168,7 @@ fn we_fail_while_git_holds_the_lock() {
     .stdout(Stdio::null())
     .stderr(Stdio::null());
     let mut child = cmd.spawn().unwrap();
-    let lock_path = s.path().join(".git/index.lock");
+    let lock_path = rgit_fs::path::join(s.path(), ".git/index.lock");
     let start = Instant::now();
     while !lock_path.exists() {
         assert!(
@@ -173,7 +177,11 @@ fn we_fail_while_git_holds_the_lock() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    let err = LockFile::acquire(s.path().join(".git/index"), &LockOptions::new()).unwrap_err();
+    let err = LockFile::acquire(
+        rgit_fs::path::join(s.path(), ".git/index"),
+        &LockOptions::new(),
+    )
+    .unwrap_err();
     match &err {
         LockError::Exists {
             holder: LockHolder::Alive { pid },
@@ -187,8 +195,12 @@ fn we_fail_while_git_holds_the_lock() {
     );
     assert!(child.wait().unwrap().success());
     // git is done: we get the lock, and the commit is visible to git.
-    let mut lock = LockFile::acquire(s.path().join(".git/config"), &LockOptions::new()).unwrap();
-    let mut config = std::fs::read(s.path().join(".git/config")).unwrap();
+    let mut lock = LockFile::acquire(
+        rgit_fs::path::join(s.path(), ".git/config"),
+        &LockOptions::new(),
+    )
+    .unwrap();
+    let mut config = std::fs::read(rgit_fs::path::join(s.path(), ".git/config")).unwrap();
     config.extend_from_slice(b"[rgit]\n\tprobe = yes\n");
     lock.write_all(&config).unwrap();
     lock.commit().unwrap();
@@ -202,9 +214,13 @@ fn we_fail_while_git_holds_the_lock() {
 fn git_pid_file_format_matches_ours() {
     let s = Scratch::new("pidformat");
     let Some(()) = init_repo(&s) else { return };
-    std::fs::write(s.path().join(".gitattributes"), "*.slow filter=slow\n").unwrap();
-    std::fs::write(s.path().join("a.slow"), "x\n").unwrap();
-    let copy = s.path().join("pid-copy");
+    std::fs::write(
+        rgit_fs::path::join(s.path(), ".gitattributes"),
+        "*.slow filter=slow\n",
+    )
+    .unwrap();
+    std::fs::write(rgit_fs::path::join(s.path(), "a.slow"), "x\n").unwrap();
+    let copy = rgit_fs::path::join(s.path(), "pid-copy");
     let mut cmd = git(s.path()).unwrap();
     cmd.args([
         "-c",
@@ -222,5 +238,5 @@ fn git_pid_file_format_matches_ours() {
     assert!(child.wait_with_output().unwrap().status.success());
     let theirs = std::fs::read_to_string(&copy).unwrap();
     assert_eq!(theirs, format!("pid {pid}\n"));
-    assert!(!Path::new(&s.path().join(".git/index~pid.lock")).exists());
+    assert!(!Path::new(&rgit_fs::path::join(s.path(), ".git/index~pid.lock")).exists());
 }

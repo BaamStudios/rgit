@@ -118,7 +118,9 @@ pub(crate) fn parse_condition(cond: &BStr) -> Condition<'_> {
 }
 
 fn realpath(p: &Path) -> Option<PathBuf> {
-    std::fs::canonicalize(p).ok()
+    rgit_fs::path::canonicalize(p)
+        .ok()
+        .map(rgit_fs::path::to_slash)
 }
 
 fn join_bytes(prefix: &Path, rest: &[u8]) -> BString {
@@ -151,18 +153,15 @@ pub(crate) fn prepare_path_pattern(
             variants.push(join_bytes(&real, &[b"/", rest].concat()));
         }
     } else if let Some(rest) = pattern.strip_prefix(b"~/") {
-        let home = env
-            .var_bytes("HOME")
-            .filter(|h| !h.is_empty())
-            .ok_or_else(|| Error::ExpandIncludePath {
-                path: pattern.into(),
-            })?;
+        let home = env.home().ok_or_else(|| Error::ExpandIncludePath {
+            path: pattern.into(),
+        })?;
         let home = crate::value::bytes_to_path(&home);
         variants.push(join_bytes(&home, &[b"/", rest].concat()));
         if let Some(real) = realpath(&home) {
             variants.push(join_bytes(&real, &[b"/", rest].concat()));
         }
-    } else if pattern.starts_with(b"/") {
+    } else if rgit_fs::path::is_absolute_bytes(pattern) {
         variants.push(pattern.into());
     } else {
         variants.push([b"**/", pattern].concat().into());
@@ -182,7 +181,7 @@ pub(crate) fn prepare_path_pattern(
 /// directory, so a path reached through a symbolic link keeps the spelling
 /// the user typed (`includeIf "gitdir:<link>/"` matches).
 pub fn absolute(p: &Path) -> PathBuf {
-    if p.is_absolute() {
+    if rgit_fs::path::is_absolute(p) {
         return p.to_path_buf();
     }
     match logical_cwd() {
@@ -202,9 +201,9 @@ pub fn absolute(p: &Path) -> PathBuf {
 
 /// The current directory, spelled as `$PWD` if that is the same directory.
 fn logical_cwd() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
+    let cwd = rgit_fs::path::current_dir().ok()?;
     if let Some(pwd) = std::env::var_os("PWD").map(PathBuf::from) {
-        if pwd.is_absolute() && pwd != cwd && same_dir(&pwd, &cwd) {
+        if rgit_fs::path::is_absolute(&pwd) && pwd != cwd && same_dir(&pwd, &cwd) {
             return Some(pwd);
         }
     }
@@ -227,7 +226,8 @@ fn same_dir(_: &Path, _: &Path) -> bool {
 
 /// Does `path` (as given and with links resolved) match one of the patterns?
 pub(crate) fn path_matches(patterns: &[BString], path: &Path, icase: bool) -> bool {
-    let abs = absolute(path);
+    // Patterns are written with `/`; so is the text they are matched with.
+    let abs = rgit_fs::path::to_slash(absolute(path));
     let mut texts = vec![path_bytes(&abs)];
     if let Some(real) = realpath(&abs) {
         texts.push(path_bytes(&real));

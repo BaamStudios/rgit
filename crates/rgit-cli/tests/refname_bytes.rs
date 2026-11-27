@@ -32,6 +32,12 @@ fn fixture(packed: bool) -> Option<Fixture> {
 }
 
 fn fixture_in(format: &str, packed: bool) -> Option<Fixture> {
+    // A loose reference is a file named like the reference. The file
+    // systems of macOS refuse names that are not UTF-8 ("Illegal byte
+    // sequence"), for git as well: only the reftable cases run there.
+    if cfg!(target_os = "macos") && format == "files" {
+        return None;
+    }
     let mut fx = Fixture::new()
         .rgit(env!("CARGO_BIN_EXE_rgit"))
         .git([

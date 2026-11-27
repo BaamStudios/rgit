@@ -47,7 +47,7 @@ impl Target {
         if let [d @ b'3'..=b'9'] = bytes {
             return Target::Fd(i32::from(d - b'0'));
         }
-        if bytes.first() == Some(&b'/') {
+        if rgit_fs::path::is_absolute_bytes(bytes) {
             return Target::File(PathBuf::from(value));
         }
         Target::Unknown(value.to_string_lossy().into_owned())

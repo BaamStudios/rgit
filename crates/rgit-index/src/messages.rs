@@ -74,11 +74,7 @@ pub fn invalid_path(path: &str) -> String {
 /// rgit: a split index (`link` extension) cannot be read yet (#116).
 /// An I/O error as `strerror` words it (without Rust's `(os error N)`).
 pub fn os_error(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.find(" (os error ") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 pub const SPLIT_INDEX_UNSUPPORTED: &str =

@@ -529,8 +529,10 @@ fn full_stack_matches_git() {
     assert!(g.ok, "{}", g.stderr);
 
     let env = MapEnv::new(vars);
+    // Joined with `/` on every platform, as git joins paths.
+    let git_dir = PathBuf::from(format!("{}/.git", repo.display()));
     let facts = StaticRepoFacts {
-        git_dir: Some(repo.join(".git")),
+        git_dir: Some(git_dir.clone()),
         worktree: Some(repo.clone()),
         branch: Some("topic/x".into()),
     };
@@ -546,7 +548,7 @@ fn full_stack_matches_git() {
             repo: Some(&facts),
             includes: true,
         },
-        Some(&sources::RepoConfig::new(repo.join(".git"))),
+        Some(&sources::RepoConfig::new(git_dir)),
         &cl,
         sources::ScopeFilter::default(),
         &mut set,

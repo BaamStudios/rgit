@@ -393,11 +393,7 @@ fn run_child(cmd: &[String], trace: Option<(&str, &String)>) -> i32 {
 
 /// The system's text for an I/O error, without Rust's ` (os error N)`.
 fn strerror(e: &std::io::Error) -> String {
-    let s = e.to_string();
-    match s.rfind(" (os error ") {
-        Some(i) => s[..i].to_string(),
-        None => s,
-    }
+    rgit_fs::messages::strerror(e)
 }
 
 /// `005exec`: replace this process by `git <args>`.

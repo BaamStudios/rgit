@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+rgit-fs = { path = "../rgit-fs" }
 bstr = { version = "1.13", default-features = false, features = ["std"] }
 jiff = "0.2.35"
 rgit-config = { path = "../rgit-config" }

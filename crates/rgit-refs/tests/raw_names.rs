@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT
 //! Reference names that are not UTF-8 (#214): the stores keep the raw bytes
 //! on disk and hand out names escaped as `rgit_bstr` does.
-#![cfg(unix)]
+//!
+//! Not on macOS: a loose reference is a file named like the reference, and
+//! the file systems of macOS refuse names that are not UTF-8 ("Illegal byte
+//! sequence"), for git as well.
+#![cfg(all(unix, not(target_os = "macos")))]
 
 use std::os::unix::ffi::OsStrExt;
 

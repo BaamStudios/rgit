@@ -503,7 +503,7 @@ pub fn relative_path(target: &Path, base: &Path) -> PathBuf {
 
 /// The real path of `p` when it exists, else `p` made absolute.
 pub fn real(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| absolute(p))
+    rgit_fs::path::canonicalize(p).unwrap_or_else(|_| absolute(p))
 }
 
 /// The git directory of the submodule work tree `dir`: its `.git`

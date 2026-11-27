@@ -67,7 +67,13 @@ pub fn invalid_line_number(n: &str) -> String {
 }
 
 pub fn no_match(re: &str, line: usize) -> String {
-    format!("-L parameter '{re}' starting at line {line}: No match")
+    // `regerror` for `REG_NOMATCH`: the words of the C library.
+    let no_match = if cfg!(target_os = "macos") {
+        "regexec() failed to match"
+    } else {
+        "No match"
+    };
+    format!("-L parameter '{re}' starting at line {line}: {no_match}")
 }
 
 pub fn no_funcname_match(re: &str, line: usize) -> String {

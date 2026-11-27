@@ -88,7 +88,7 @@ pub(super) fn copy(
 /// A template whose `config` declares a repository format rgit (like git)
 /// would not understand is not copied at all; the reason is returned.
 fn refuse_template(dir: &Path) -> Result<Option<String>, InitError> {
-    let path = dir.join("config");
+    let path = rgit_fs::path::join(dir, "config");
     let Ok(data) = fs::read(&path) else {
         return Ok(None);
     };
@@ -103,9 +103,9 @@ fn refuse_template(dir: &Path) -> Result<Option<String>, InitError> {
 fn copy_builtin(dest: &Path, shared: SharedRepository) -> Result<(), InitError> {
     for (name, content) in BUILTIN {
         if let Some(dir) = name.strip_suffix('/') {
-            make_dir(&dest.join(dir), shared)?;
+            make_dir(&rgit_fs::path::join(dest, dir), shared)?;
         } else {
-            let target = dest.join(name);
+            let target = rgit_fs::path::join(dest, name);
             if fs::symlink_metadata(&target).is_ok() {
                 continue;
             }
@@ -133,7 +133,7 @@ fn copy_dir(src: &Path, dest: &Path, shared: SharedRepository) -> Result<(), Ini
             continue;
         }
         let from = entry.path();
-        let to = dest.join(&name);
+        let to = rgit_fs::path::join(dest, &name);
         let fail = |e: io::Error| {
             InitError::Fatal(messages::cannot_copy_template(
                 from.display(),
