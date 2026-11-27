@@ -449,3 +449,78 @@ fn pack_reuse_counts_like_git() {
     let fx = fx.git(["multi-pack-index", "write", "--bitmap", &preferred]);
     queries(&fx);
 }
+
+/// The `num_selected_commits` and `num_maximal_commits` trace2 values of
+/// `repack -adb` run by `bin` on a copy of the work tree.
+fn bitmap_commit_counts(fx: &Fixture, bin: &Path) -> (String, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    copy_dir(&fx.work_dir(), &repo);
+    let trace = tmp.path().join("trace2.json");
+    let out = Command::new(bin)
+        .current_dir(&repo)
+        .args(["repack", "-adbq"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", fx.home_dir())
+        .env("XDG_CONFIG_HOME", fx.home_dir())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TRACE2_EVENT", &trace)
+        .env("GIT_TRACE2_EVENT_NESTING", "100")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let events = std::fs::read_to_string(&trace).unwrap();
+    let value = |key: &str| {
+        let pat = format!("\"key\":\"{key}\",\"value\":\"");
+        let at = events.find(&pat).map(|i| i + pat.len());
+        at.map(|i| events[i..].split('"').next().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    (value("num_selected_commits"), value("num_maximal_commits"))
+}
+
+/// Maximal commits of the bitmap writer: only first-parent edges carry
+/// the selected commits that reach a commit. Here an old merge `d` (first
+/// parent `a`) and a new branch `U` on its second parent `b` meet at `o`,
+/// below a long history of which only some commits are selected.
+#[test]
+fn maximal_commits_follow_first_parents() {
+    let mut fx = fixture()
+        .git(["init", "-q", "-b", "main"])
+        .git(["config", "maintenance.auto", "false"])
+        .write("o", "o\n")
+        .git(["add", "o"])
+        .git(["commit", "-q", "-m", "o"])
+        .tick()
+        .git(["checkout", "-q", "-b", "side"])
+        .write("b", "b\n")
+        .git(["add", "b"])
+        .git(["commit", "-q", "-m", "b"])
+        .tick()
+        .git(["checkout", "-q", "main"])
+        .write("a", "a\n")
+        .git(["add", "a"])
+        .git(["commit", "-q", "-m", "a"])
+        .tick()
+        .git(["merge", "-q", "--no-edit", "side"])
+        .tick();
+    if fx.is_skipped() {
+        return;
+    }
+    for c in 0..130 {
+        fx = fx
+            .write("n", format!("{c}\n"))
+            .git(["add", "n"])
+            .git(["commit", "-q", "-m", &format!("n{c}")])
+            .tick();
+    }
+    let fx = fx
+        .git(["checkout", "-q", "-b", "U", "side"])
+        .write("u", "u\n")
+        .git(["add", "u"])
+        .git(["commit", "-q", "-m", "U"]);
+    let want = bitmap_commit_counts(&fx, fx.reference_git());
+    let got = bitmap_commit_counts(&fx, Path::new(env!("CARGO_BIN_EXE_rgit")));
+    assert_eq!(want, got);
+}

@@ -542,15 +542,17 @@ pub struct Written {
     pub bytes: Vec<u8>,
     /// Number of selected commits.
     pub selected: usize,
-    /// Number of maximal commits: the selected ones plus those below
-    /// which the nearest selected (or maximal) descendants differ.
+    /// Number of maximal commits: the selected ones plus those whose
+    /// first-parent children are reached by different selected commits.
     pub maximal: usize,
 }
 
-/// Count the maximal commits of `selected`: walking from the selected
-/// commits towards the roots (children first), a commit is maximal when
-/// it is selected or when its children lead to different maximal
-/// commits.
+/// Count the maximal commits of `selected`. Walking from the selected
+/// commits towards the roots (children first), every commit carries the
+/// set of selected commits that reach it along first-parent edges. A
+/// commit is maximal when it is selected or when its first-parent
+/// children carry different sets (observed with git 2.56: the second
+/// parents of merges do not take part).
 pub fn count_maximal<S: ObjectSource + ?Sized>(
     graph: &mut Graph<'_, S>,
     selected: &[ObjectId],
@@ -572,8 +574,16 @@ pub fn count_maximal<S: ObjectSource + ?Sized>(
             *children_left.get_mut(p).expect("walked") += 1;
         }
     }
-    let is_selected: HashSet<ObjectId> = selected.iter().copied().collect();
-    let mut incoming: HashMap<ObjectId, HashSet<ObjectId>> = HashMap::new();
+    let bit: HashMap<ObjectId, u32> = selected
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (*c, i as u32))
+        .collect();
+    // Interned sets of selected commits (sorted bit numbers).
+    let mut sets = MaskSets::default();
+    // The set arriving at a commit from its first-parent children, and
+    // whether two of them differed.
+    let mut incoming: HashMap<ObjectId, (usize, bool)> = HashMap::new();
     let mut ready: Vec<ObjectId> = children_left
         .iter()
         .filter(|(_, n)| **n == 0)
@@ -582,17 +592,32 @@ pub fn count_maximal<S: ObjectSource + ?Sized>(
     ready.sort();
     let mut count = 0;
     while let Some(c) = ready.pop() {
-        let got = incoming.remove(&c).unwrap_or_default();
-        let ident = if is_selected.contains(&c) || got.len() > 1 {
+        let got = incoming.remove(&c);
+        let mut mask = got.map(|(m, _)| m);
+        if let Some(&b) = bit.get(&c) {
             count += 1;
-            Some(c)
-        } else {
-            got.into_iter().next()
-        };
-        for p in &parents[&c] {
-            if let Some(i) = ident {
-                incoming.entry(*p).or_default().insert(i);
+            let single = sets.intern(vec![b]);
+            mask = Some(match mask {
+                Some(m) => sets.union(m, single),
+                None => single,
+            });
+        } else if got.is_some_and(|(_, differ)| differ) {
+            count += 1;
+        }
+        let ps = &parents[&c];
+        if let (Some(m), Some(fp)) = (mask, ps.first()) {
+            match incoming.get(fp).copied() {
+                None => {
+                    incoming.insert(*fp, (m, false));
+                }
+                Some((old, _)) if old == m => {}
+                Some((old, _)) => {
+                    let u = sets.union(old, m);
+                    incoming.insert(*fp, (u, true));
+                }
             }
+        }
+        for p in ps {
             let n = children_left.get_mut(p).expect("walked");
             *n -= 1;
             if *n == 0 {
@@ -601,6 +626,35 @@ pub fn count_maximal<S: ObjectSource + ?Sized>(
         }
     }
     Ok(count)
+}
+
+/// Interned sets of selected commits for [`count_maximal`]: equal sets
+/// get the same number.
+#[derive(Default)]
+struct MaskSets {
+    sets: Vec<Vec<u32>>,
+    ids: HashMap<Vec<u32>, usize>,
+}
+
+impl MaskSets {
+    fn intern(&mut self, v: Vec<u32>) -> usize {
+        if let Some(&i) = self.ids.get(&v) {
+            return i;
+        }
+        self.sets.push(v.clone());
+        self.ids.insert(v, self.sets.len() - 1);
+        self.sets.len() - 1
+    }
+
+    fn union(&mut self, a: usize, b: usize) -> usize {
+        if a == b {
+            return a;
+        }
+        let mut v: Vec<u32> = self.sets[a].iter().chain(&self.sets[b]).copied().collect();
+        v.sort_unstable();
+        v.dedup();
+        self.intern(v)
+    }
 }
 
 /// Build a complete `.bitmap` file. `candidates` are the commits that may
