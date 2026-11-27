@@ -44,7 +44,39 @@ impl Pair {
 
 /// The blobs of `tree` (recursively) into `out`.
 pub fn flatten_tree(repo: &Repo, tree: &ObjectId, out: &mut Flat) -> Result<(), Die> {
-    fn walk(repo: &Repo, tree: &ObjectId, base: &[u8], out: &mut Flat) -> Result<(), Die> {
+    flatten_tree_with(repo, tree, &|_| false, out)
+}
+
+/// [`flatten_tree`] keeping the directories `index` holds as sparse
+/// directory entries whole: `dir/` with mode `040000` and the tree, as
+/// [`crate::wt_status::index_flat`] lists such an entry.
+pub fn flatten_tree_sparse(
+    repo: &Repo,
+    tree: &ObjectId,
+    index: &rgit_index::Index,
+    out: &mut Flat,
+) -> Result<(), Die> {
+    let sparse = |dir: &[u8]| {
+        index
+            .get(dir, rgit_index::Stage::MERGED)
+            .is_some_and(|e| e.mode.is_dir())
+    };
+    flatten_tree_with(repo, tree, &sparse, out)
+}
+
+fn flatten_tree_with(
+    repo: &Repo,
+    tree: &ObjectId,
+    whole: &dyn Fn(&[u8]) -> bool,
+    out: &mut Flat,
+) -> Result<(), Die> {
+    fn walk(
+        repo: &Repo,
+        tree: &ObjectId,
+        base: &[u8],
+        whole: &dyn Fn(&[u8]) -> bool,
+        out: &mut Flat,
+    ) -> Result<(), Die> {
         let Some(Object::Tree(t)) = repo.read_object(tree) else {
             return Err(Die::Fatal(crate::messages::ls_tree::could_not_read(
                 &tree.to_hex(),
@@ -56,7 +88,17 @@ pub fn flatten_tree(repo: &Repo, tree: &ObjectId, out: &mut Flat) -> Result<(), 
             let mode = e.mode.canonical();
             if mode.is_tree() {
                 path.push(b'/');
-                walk(repo, &e.oid, &path, out)?;
+                if whole(&path) {
+                    out.insert(
+                        path,
+                        Side {
+                            mode: 0o040000,
+                            oid: e.oid,
+                        },
+                    );
+                } else {
+                    walk(repo, &e.oid, &path, whole, out)?;
+                }
             } else {
                 out.insert(
                     path,
@@ -69,7 +111,7 @@ pub fn flatten_tree(repo: &Repo, tree: &ObjectId, out: &mut Flat) -> Result<(), 
         }
         Ok(())
     }
-    walk(repo, tree, b"", out)
+    walk(repo, tree, b"", whole, out)
 }
 
 /// The changes from `old` to `new`, sorted by (new) path. With `renames`,

@@ -137,3 +137,72 @@ fn files_present_outside_the_cone() {
     step(&mut fx, &["sparse-checkout", "reapply"]);
     step(&mut fx, &["ls-files", "--sparse", "--stage"]);
 }
+
+#[test]
+fn hot_paths_inside_the_cone() {
+    let mut fx = fixture();
+    sparse_index(&mut fx, &["deep"]);
+    fx = fx.write("deep/a", "changed\n").write("deep/new", "new\n");
+    step(&mut fx, &["status", "--porcelain=v2"]);
+    step(&mut fx, &["diff"]);
+    step(&mut fx, &["add", "-A"]);
+    step(&mut fx, &["diff", "--cached", "--name-status"]);
+    step(&mut fx, &["diff", "HEAD", "--stat"]);
+    step(&mut fx, &["commit", "-q", "-m", "in cone"]);
+    step(&mut fx, &["ls-files", "--sparse", "--stage"]);
+    fx = fx.write("deep/deeper1/a", "more\n");
+    step(&mut fx, &["commit", "-q", "-a", "-m", "all"]);
+    step(&mut fx, &["reset", "-q", "HEAD~1"]);
+    step(&mut fx, &["status", "--porcelain=v2"]);
+    step(&mut fx, &["ls-files", "--sparse", "--stage"]);
+    // Trees outside the cone that differ: expanded file by file.
+    step(&mut fx, &["reset", "-q", "side"]);
+    step(&mut fx, &["status", "--porcelain=v2"]);
+    step(&mut fx, &["ls-files", "--sparse", "--stage"]);
+}
+
+/// The commands working on sparse directory entries do not read the
+/// trees below them: they succeed with such a tree missing.
+#[test]
+fn sparse_directories_are_not_read() {
+    let fx = fixture();
+    if fx.is_skipped() {
+        return;
+    }
+    let fx = fx
+        .git(["sparse-checkout", "init", "--cone", "--sparse-index"])
+        .git(["sparse-checkout", "set", "deep"]);
+    let tree = String::from_utf8(fx.git_stdout(["rev-parse", "HEAD:folder1/0"])).unwrap();
+    let tree = tree.trim();
+    let fx = fx.remove(format!(".git/objects/{}/{}", &tree[..2], &tree[2..]));
+    let home = fx.home_dir();
+    let rgit = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rgit"))
+            .args(args)
+            .current_dir(fx.work_dir())
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "A")
+            .env("GIT_AUTHOR_EMAIL", "a@example.com")
+            .env("GIT_COMMITTER_NAME", "C")
+            .env("GIT_COMMITTER_EMAIL", "c@example.com")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "rgit {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    std::fs::write(fx.work_dir().join("deep/a"), "changed\n").unwrap();
+    rgit(&["status"]);
+    rgit(&["diff"]);
+    rgit(&["add", "deep/a"]);
+    rgit(&["diff", "--cached"]);
+    rgit(&["commit", "-q", "-m", "deep"]);
+    rgit(&["reset", "-q", "HEAD~1"]);
+    rgit(&["reset", "-q", "--hard", "HEAD"]);
+    rgit(&["switch", "-q", "-c", "topic"]);
+    rgit(&["switch", "-q", "main"]);
+}

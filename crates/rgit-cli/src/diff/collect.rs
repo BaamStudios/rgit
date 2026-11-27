@@ -458,11 +458,23 @@ pub fn tree_files(
     tree: &ObjectId,
     pathspec: &Pathspec,
 ) -> Result<Vec<(Vec<u8>, u32, ObjectId)>, Die> {
+    tree_files_skipping(repo, tree, pathspec, &|_| false)
+}
+
+/// [`tree_files`] leaving out the directories (paths with trailing `/`)
+/// for which `skip` is true.
+fn tree_files_skipping(
+    repo: &Repo,
+    tree: &ObjectId,
+    pathspec: &Pathspec,
+    skip: &dyn Fn(&[u8]) -> bool,
+) -> Result<Vec<(Vec<u8>, u32, ObjectId)>, Die> {
     fn walk(
         repo: &Repo,
         tree: &ObjectId,
         base: &[u8],
         ps: &Pathspec,
+        skip: &dyn Fn(&[u8]) -> bool,
         out: &mut Vec<(Vec<u8>, u32, ObjectId)>,
     ) -> Result<(), Die> {
         for e in read_tree(repo, tree)? {
@@ -474,7 +486,10 @@ pub fn tree_files(
                 }
                 let mut b = path;
                 b.push(b'/');
-                walk(repo, &e.oid, &b, ps, out)?;
+                if skip(&b) {
+                    continue;
+                }
+                walk(repo, &e.oid, &b, ps, skip, out)?;
             } else if ps.is_empty() || ps.match_path(&path).is_some() {
                 out.push((path, mode.bits(), e.oid));
             }
@@ -482,7 +497,7 @@ pub fn tree_files(
         Ok(())
     }
     let mut out = Vec::new();
-    walk(repo, tree, b"", pathspec, &mut out)?;
+    walk(repo, tree, b"", pathspec, skip, &mut out)?;
     // Tree order equals path order for files except around names that
     // sort between `name` and `name/`; sort to be safe.
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -761,7 +776,19 @@ pub fn index(
     wt: Option<&WorkTree<'_>>,
     ita_invisible: bool,
 ) -> Result<Vec<Pair>, Die> {
-    let files = tree_files(repo, tree, ps)?;
+    // Sparse directory entries of an index read with `read_index_sparse`
+    // hold what `tree` has there (the caller made sure): both sides skip
+    // them.
+    let sparse_dir = |dir: &[u8]| {
+        index
+            .get(dir, rgit_index::Stage::MERGED)
+            .is_some_and(|e| e.mode.is_dir())
+    };
+    let files = if index.is_sparse() {
+        tree_files_skipping(repo, tree, ps, &sparse_dir)?
+    } else {
+        tree_files(repo, tree, ps)?
+    };
     // A tree with duplicate entries cannot match the index (observed:
     // t4058 "git diff HEAD does not segfault").
     if wt.is_some() && files.windows(2).any(|w| w[0].0 == w[1].0) {
@@ -770,7 +797,8 @@ pub fn index(
             128,
         ));
     }
-    let paths = index_paths(index, ps);
+    let mut paths = index_paths(index, ps);
+    paths.retain(|p| p.stage0.is_none_or(|e| !e.mode.is_dir()));
     let mut pairs = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < files.len() || j < paths.len() {

@@ -110,6 +110,7 @@ fn flatten(
     repo: &Repo,
     tree: &ObjectId,
     base: &[u8],
+    whole: &[Vec<u8>],
     out: &mut Vec<(Vec<u8>, u32, ObjectId)>,
 ) -> Result<(), Die> {
     let Some(Object::Tree(t)) = repo.read_object(tree) else {
@@ -121,7 +122,12 @@ fn flatten(
         let mode = e.mode.canonical();
         if mode.is_tree() {
             path.push(b'/');
-            flatten(repo, &e.oid, &path, out)?;
+            if whole.binary_search(&path).is_ok() {
+                // As the sparse directory entry of the index has it.
+                out.push((path, 0o040000, e.oid));
+                continue;
+            }
+            flatten(repo, &e.oid, &path, whole, out)?;
         } else {
             out.push((path, mode.bits(), e.oid));
         }
@@ -140,9 +146,18 @@ fn reset_index(
     wanted: &dyn Fn(&[u8]) -> bool,
     intent_to_add: bool,
 ) -> Result<(), Die> {
+    // The sparse directory entries of an index read with
+    // `read_index_sparse` hold what `tree` has there (the callers made
+    // sure): they are compared whole.
+    let whole: Vec<Vec<u8>> = index
+        .entries()
+        .iter()
+        .filter(|e| e.mode.is_dir())
+        .map(|e| e.path().to_vec())
+        .collect();
     let mut target = Vec::new();
     if let Some(tree) = tree {
-        flatten(repo, tree, b"", &mut target)?;
+        flatten(repo, tree, b"", &whole, &mut target)?;
     }
     target.retain(|(p, _, _)| wanted(p));
     target.sort_by(|a, b| a.0.cmp(&b.0));
@@ -595,10 +610,15 @@ pub fn run(ctx: &mut Context, argv: &[String]) -> CmdResult {
             Some(ps) => !ps.is_empty() && ps.match_path(p).is_some(),
             None => true,
         };
-        let (mut index, index_mtime) = repo.read_index()?;
+        let (mut index, index_mtime) = repo.read_index_sparse()?;
         if let Some(ps) = &pathspec {
             crate::sparse_index::expand_for_pathspec(ps);
+            if crate::sparse_index::pathspec_reaches_inside(&index, ps) {
+                crate::sparse_index::expand(&repo, &mut index)?;
+            }
         }
+        // Sparse directory entries stay when the tree has them as they are.
+        crate::sparse_index::expand_unless_same(&repo, &mut index, tree)?;
         reset_index(&repo, &mut index, tree.as_ref(), &wanted, intent_to_add.get())?;
         let work_tree = repo.work_tree()?;
         let checker = repo.checker(index_mtime)?;
@@ -676,7 +696,8 @@ fn reset_worktree(
     let work_tree = repo.work_tree()?;
     let index_path = repo.setup.cwd.join(repo.index_path());
     let lock = LockFile::acquire(&index_path, &LockOptions::default()).map_err(lock_failed)?;
-    let (index, mtime) = repo.read_index()?;
+    // Unpacking keeps sparse directory entries the trees agree with.
+    let (index, mtime) = repo.read_index_sparse()?;
     let checker = repo.checker(mtime)?;
     // No refresh: like git, a touched file counts as not up to date.
     let mut excludes = crate::commands::add::build_excludes(repo, &work_tree);

@@ -49,6 +49,14 @@ fn build(
                 }
                 i += 1;
             }
+            // A sparse directory entry: its tree, a leaf covering it.
+            Some(slash) if slash + 1 == rest.len() && entries[i].mode.is_dir() => {
+                let e = &entries[i];
+                let name = &rest[..slash];
+                children.push(TreeNode::new_valid(name.to_vec(), 1, e.id));
+                items.push((name.to_vec(), true, "40000".into(), e.id));
+                i += 1;
+            }
             Some(slash) => {
                 let dir = &rest[..=slash];
                 let mut j = i + 1;

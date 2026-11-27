@@ -98,7 +98,7 @@ pub fn clear_present_files(root: &Path, index: &mut Index) -> bool {
     let mut missing_dir: Option<Vec<u8>> = None;
     for pos in 0..index.len() {
         let e = &index.entries()[pos];
-        if !e.flags.skip_worktree {
+        if !e.flags.skip_worktree || e.mode.is_dir() {
             continue;
         }
         let path = e.path();

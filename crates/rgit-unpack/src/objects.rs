@@ -91,16 +91,43 @@ pub fn read_blob(odb: &dyn Objects, id: &ObjectId) -> Result<Vec<u8>, Error> {
 /// [`Error::MissingSubtree`] for one of its subtrees,
 /// [`Error::CorruptTree`] for one that cannot be parsed.
 pub fn tree_entries(odb: &dyn Objects, id: &ObjectId) -> Result<Vec<Entry>, Error> {
+    tree_entries_skipping(odb, id, &|_| false)
+}
+
+/// [`tree_entries`] without the files below the directories (paths with
+/// trailing `/`) for which `skip` is true: those trees are not read.
+pub fn tree_entries_skipping(
+    odb: &dyn Objects,
+    id: &ObjectId,
+    skip: &dyn Fn(&[u8]) -> bool,
+) -> Result<Vec<Entry>, Error> {
     let mut out = Vec::new();
-    walk(odb, id, &mut Vec::new(), &mut out)?;
+    walk(odb, id, &mut Vec::new(), skip, &mut out)?;
     out.sort_by(|a, b| a.path().cmp(b.path()));
     Ok(out)
+}
+
+/// The object at `path` (no trailing slash) below tree `id`, if any.
+pub fn tree_lookup(odb: &dyn Objects, id: &ObjectId, path: &[u8]) -> Option<ObjectId> {
+    let mut cur = *id;
+    for name in path.split(|&b| b == b'/') {
+        let raw = match odb.read_raw(&cur) {
+            Ok(Some(raw)) if raw.kind == ObjectKind::Tree => raw,
+            _ => return None,
+        };
+        cur = TreeIter::new(odb.hash_kind(), &raw.data)
+            .filter_map(Result::ok)
+            .find(|e| e.name == name)?
+            .oid;
+    }
+    Some(cur)
 }
 
 fn walk(
     odb: &dyn Objects,
     id: &ObjectId,
     base: &mut Vec<u8>,
+    skip: &dyn Fn(&[u8]) -> bool,
     out: &mut Vec<Entry>,
 ) -> Result<(), Error> {
     let raw = match odb.read_raw(id) {
@@ -122,7 +149,11 @@ fn walk(
         let mode = rgit_object::EntryMode::from_bits(e.mode_bits).canonical();
         if mode.is_tree() {
             base.push(b'/');
-            walk(odb, &e.oid, base, out).map_err(|err| match err {
+            if skip(base) {
+                base.truncate(len);
+                continue;
+            }
+            walk(odb, &e.oid, base, skip, out).map_err(|err| match err {
                 Error::MissingTree(id) => Error::MissingSubtree(id),
                 other => other,
             })?;
