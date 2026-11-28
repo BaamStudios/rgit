@@ -3,27 +3,27 @@
  "reference": "v2.56.1",
  "source": {
   "kind": "ci",
-  "run": 45854715200,
-  "url": "https://github.com/BaamStudios/rgit/actions/runs/45854715200",
-  "commit": "cdae865b28257cbca10a116398b75021e81d0488",
-  "date": "2026-11-26T16:00:58Z"
+  "run": 45951775469,
+  "url": "https://github.com/BaamStudios/rgit/actions/runs/45951775469",
+  "commit": "c4732c3fd7eec6aee40c0be9d86fef8a1c1575dd",
+  "date": "2026-11-27T06:25:33Z"
  },
  "totals": {
   "commands": 161,
-  "native": 135,
-  "handoff": 0,
-  "missing": 26,
-  "full": 52,
-  "scripts": 852,
-  "valid": 31230,
-  "strict": 30026
+  "native": 143,
+  "handoff": 10,
+  "missing": 8,
+  "full": 73,
+  "scripts": 864,
+  "valid": 31825,
+  "strict": 31002
  },
  "no_command": [
   {
    "family": "t0xxx",
    "description": "the absolute basics and global stuff",
-   "valid": 2369,
-   "strict": 2269,
+   "valid": 2363,
+   "strict": 2344,
    "scripts": [
     "t0000-basic.sh",
     "t0003-attributes.sh",
@@ -51,8 +51,8 @@
   {
    "family": "t1xxx",
    "description": "the basic commands concerning database",
-   "valid": 27,
-   "strict": 22,
+   "valid": 19,
+   "strict": 14,
    "scripts": [
     "t1060-object-corruption.sh",
     "t1306-xdg-files.sh",
@@ -95,7 +95,7 @@
   {
    "family": "t5xxx",
    "description": "the pull and exporting commands",
-   "valid": 74,
+   "valid": 75,
    "strict": 73,
    "scripts": [
     "t5000-tar-tree.sh",
@@ -103,6 +103,7 @@
     "t5303-pack-corruption-resilience.sh",
     "t5308-pack-detect-duplicates.sh",
     "t5324-split-commit-graph.sh",
+    "t5333-pseudo-merge-bitmaps.sh",
     "t5351-unpack-large-objects.sh",
     "t5401-update-hooks.sh",
     "t5406-remote-rejects.sh",
@@ -176,7 +177,7 @@
     "t5000-tar-tree.sh",
     "t6134-pathspec-in-submodule.sh"
    ],
-   "cases_exercising": 4570,
+   "cases_exercising": 4715,
    "scripts_not_imported": [
     "t2205-add-worktree-config.sh",
     "t2207-add-resolved.sh"
@@ -187,8 +188,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 195,
-   "strict": 195,
+   "valid": 196,
+   "strict": 196,
    "scripts": [
     "t0023-crlf-am.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -208,7 +209,7 @@
     "t4257-am-interactive.sh",
     "t4258-am-quoted-cr.sh"
    ],
-   "cases_exercising": 203,
+   "cases_exercising": 204,
    "scripts_not_imported": []
   },
   {
@@ -288,8 +289,8 @@
   {
    "name": "archimport",
    "category": "foreignscminterface",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "handoff",
+   "issue": 710,
    "valid": 0,
    "strict": 0,
    "scripts": [],
@@ -301,12 +302,13 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 208,
-   "strict": 206,
+   "valid": 211,
+   "strict": 209,
    "scripts": [
     "t0021-conversion.sh",
     "t0024-crlf-archive.sh",
     "t0450-txt-doc-vs-help.sh",
+    "t1050-large.sh",
     "t1517-outside-repo.sh",
     "t5000-tar-tree.sh",
     "t5001-archive-attr.sh",
@@ -316,16 +318,16 @@
     "t5702-protocol-v2.sh",
     "t6132-pathspec-exclude.sh"
    ],
-   "cases_exercising": 210,
+   "cases_exercising": 213,
    "scripts_not_imported": []
   },
   {
    "name": "backfill",
    "category": "mainporcelain",
-   "rgit": "missing",
-   "issue": 640,
+   "rgit": "native",
+   "issue": null,
    "valid": 29,
-   "strict": 6,
+   "strict": 27,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -384,13 +386,14 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 326,
-   "strict": 304,
+   "valid": 336,
+   "strict": 314,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t0600-reffiles-backend.sh",
     "t0601-reffiles-pack-refs.sh",
     "t0610-reftable-basics.sh",
+    "t1430-bad-ref-name.sh",
     "t1508-at-combinations.sh",
     "t1517-outside-repo.sh",
     "t2030-unresolve-info.sh",
@@ -408,7 +411,7 @@
     "t7503-pre-commit-and-pre-merge-commit-hooks.sh",
     "t7517-per-repo-email.sh"
    ],
-   "cases_exercising": 1642,
+   "cases_exercising": 1683,
    "scripts_not_imported": []
   },
   {
@@ -439,7 +442,7 @@
     "t5750-bundle-uri-parse.sh",
     "t6020-bundle-misc.sh"
    ],
-   "cases_exercising": 78,
+   "cases_exercising": 81,
    "scripts_not_imported": []
   },
   {
@@ -447,8 +450,8 @@
    "category": "plumbinginterrogators",
    "rgit": "native",
    "issue": null,
-   "valid": 405,
-   "strict": 349,
+   "valid": 406,
+   "strict": 372,
    "scripts": [
     "t0002-gitfile.sh",
     "t0021-conversion.sh",
@@ -469,12 +472,13 @@
     "t5334-incremental-multi-pack-index.sh",
     "t5615-alternate-env.sh",
     "t5616-partial-clone.sh",
+    "t5702-protocol-v2.sh",
     "t7510-signed-commit.sh",
     "t7528-signed-commit-ssh.sh",
     "t8007-cat-file-textconv.sh",
     "t8010-cat-file-filters.sh"
    ],
-   "cases_exercising": 1065,
+   "cases_exercising": 1082,
    "scripts_not_imported": []
   },
   {
@@ -546,8 +550,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 1257,
-   "strict": 1256,
+   "valid": 1259,
+   "strict": 1258,
    "scripts": [
     "t0020-crlf.sh",
     "t0021-conversion.sh",
@@ -591,7 +595,7 @@
     "t7503-pre-commit-and-pre-merge-commit-hooks.sh",
     "t7505-prepare-commit-msg-hook.sh"
    ],
-   "cases_exercising": 4158,
+   "cases_exercising": 4198,
    "scripts_not_imported": []
   },
   {
@@ -621,14 +625,14 @@
    "category": "plumbinginterrogators",
    "rgit": "native",
    "issue": null,
-   "valid": 7,
-   "strict": 7,
+   "valid": 8,
+   "strict": 8,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
     "t3500-cherry.sh"
    ],
-   "cases_exercising": 8,
+   "cases_exercising": 9,
    "scripts_not_imported": []
   },
   {
@@ -657,14 +661,14 @@
     "t3514-cherry-pick-revert-gpg.sh",
     "t7505-prepare-commit-msg-hook.sh"
    ],
-   "cases_exercising": 304,
+   "cases_exercising": 305,
    "scripts_not_imported": []
   },
   {
    "name": "citool",
    "category": "mainporcelain",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "handoff",
+   "issue": 710,
    "valid": 0,
    "strict": 0,
    "scripts": [],
@@ -676,8 +680,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 286,
-   "strict": 286,
+   "valid": 313,
+   "strict": 313,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1015-read-index-unmerged.sh",
@@ -689,9 +693,10 @@
     "t7201-co.sh",
     "t7300-clean.sh",
     "t7301-clean-interactive.sh",
-    "t7521-ignored-mode.sh"
+    "t7521-ignored-mode.sh",
+    "t7527-builtin-fsmonitor.sh"
    ],
-   "cases_exercising": 564,
+   "cases_exercising": 609,
    "scripts_not_imported": []
   },
   {
@@ -699,8 +704,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 588,
-   "strict": 531,
+   "valid": 583,
+   "strict": 537,
    "scripts": [
     "t0003-attributes.sh",
     "t0021-conversion.sh",
@@ -712,7 +717,6 @@
     "t0450-txt-doc-vs-help.sh",
     "t0610-reftable-basics.sh",
     "t1060-object-corruption.sh",
-    "t1423-ref-backend.sh",
     "t1517-outside-repo.sh",
     "t1600-index.sh",
     "t3040-subprojects-basic.sh",
@@ -753,7 +757,6 @@
     "t5700-protocol-v1.sh",
     "t5702-protocol-v2.sh",
     "t5705-session-id-in-capabilities.sh",
-    "t5710-promisor-remote-capability.sh",
     "t5730-protocol-v2-bundle-uri-file.sh",
     "t5731-protocol-v2-bundle-uri-git.sh",
     "t5732-protocol-v2-bundle-uri-http.sh",
@@ -769,7 +772,7 @@
     "t7450-bad-git-dotfiles.sh",
     "t7517-per-repo-email.sh"
    ],
-   "cases_exercising": 1687,
+   "cases_exercising": 1715,
    "scripts_not_imported": []
   },
   {
@@ -792,8 +795,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 377,
-   "strict": 377,
+   "valid": 378,
+   "strict": 378,
    "scripts": [
     "t0004-unwritable.sh",
     "t0020-crlf.sh",
@@ -830,9 +833,10 @@
     "t7520-ignored-hook-warning.sh",
     "t7524-commit-summary.sh",
     "t7526-commit-pathspec-file.sh",
+    "t7527-builtin-fsmonitor.sh",
     "t7528-signed-commit-ssh.sh"
    ],
-   "cases_exercising": 4165,
+   "cases_exercising": 4302,
    "scripts_not_imported": []
   },
   {
@@ -872,7 +876,7 @@
     "t7510-signed-commit.sh",
     "t7528-signed-commit-ssh.sh"
    ],
-   "cases_exercising": 168,
+   "cases_exercising": 176,
    "scripts_not_imported": []
   },
   {
@@ -880,8 +884,8 @@
    "category": "ancillarymanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 945,
-   "strict": 925,
+   "valid": 946,
+   "strict": 931,
    "scripts": [
     "t0005-signals.sh",
     "t0014-alias.sh",
@@ -912,16 +916,17 @@
     "t4026-color.sh",
     "t5000-tar-tree.sh",
     "t5310-pack-bitmaps.sh",
+    "t5332-multi-pack-reuse.sh",
     "t5411-proc-receive-hook.sh",
     "t5546-receive-limits.sh",
     "t5705-session-id-in-capabilities.sh",
-    "t5710-promisor-remote-capability.sh",
     "t5730-protocol-v2-bundle-uri-file.sh",
     "t5731-protocol-v2-bundle-uri-git.sh",
     "t5732-protocol-v2-bundle-uri-http.sh",
-    "t7006-pager.sh"
+    "t7006-pager.sh",
+    "t7527-builtin-fsmonitor.sh"
    ],
-   "cases_exercising": 5079,
+   "cases_exercising": 5276,
    "scripts_not_imported": []
   },
   {
@@ -950,7 +955,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 81,
-   "strict": 79,
+   "strict": 81,
    "scripts": [
     "t0300-credentials.sh",
     "t0303-credential-external.sh",
@@ -993,8 +998,8 @@
   {
    "name": "cvsexportcommit",
    "category": "foreignscminterface",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "handoff",
+   "issue": 710,
    "valid": 0,
    "strict": 0,
    "scripts": [],
@@ -1006,8 +1011,8 @@
   {
    "name": "cvsimport",
    "category": "foreignscminterface",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "handoff",
+   "issue": 710,
    "valid": 0,
    "strict": 0,
    "scripts": [],
@@ -1023,8 +1028,8 @@
   {
    "name": "cvsserver",
    "category": "foreignscminterface",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "handoff",
+   "issue": 710,
    "valid": 0,
    "strict": 0,
    "scripts": [],
@@ -1058,7 +1063,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 133,
-   "strict": 133,
+   "strict": 131,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -1087,8 +1092,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 1845,
-   "strict": 1822,
+   "valid": 1849,
+   "strict": 1844,
    "scripts": [
     "t0005-signals.sh",
     "t0020-crlf.sh",
@@ -1172,7 +1177,7 @@
     "t7060-wtstatus.sh",
     "t7615-diff-algo-with-mergy-operations.sh"
    ],
-   "cases_exercising": 2637,
+   "cases_exercising": 2642,
    "scripts_not_imported": []
   },
   {
@@ -1219,7 +1224,7 @@
     "t7012-skip-worktree-writing.sh",
     "t7060-wtstatus.sh"
    ],
-   "cases_exercising": 625,
+   "cases_exercising": 626,
    "scripts_not_imported": []
   },
   {
@@ -1262,7 +1267,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 98,
-   "strict": 96,
+   "strict": 98,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -1277,7 +1282,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 90,
-   "strict": 87,
+   "strict": 89,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -1292,15 +1297,17 @@
    "category": "ancillarymanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 383,
-   "strict": 381,
+   "valid": 386,
+   "strict": 382,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
+    "t1430-bad-ref-name.sh",
     "t1517-outside-repo.sh",
     "t4211-line-log.sh",
     "t5310-pack-bitmaps.sh",
     "t5326-multi-pack-bitmaps.sh",
     "t5327-multi-pack-bitmaps-rev.sh",
+    "t5333-pseudo-merge-bitmaps.sh",
     "t5702-protocol-v2.sh",
     "t9300-fast-import.sh",
     "t9301-fast-import-notes.sh",
@@ -1310,7 +1317,7 @@
     "t9305-fast-import-signatures.sh",
     "t9306-fast-import-signed-tags.sh"
    ],
-   "cases_exercising": 498,
+   "cases_exercising": 514,
    "scripts_not_imported": []
   },
   {
@@ -1318,8 +1325,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 919,
-   "strict": 789,
+   "valid": 921,
+   "strict": 805,
    "scripts": [
     "t0410-partial-clone.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -1369,7 +1376,7 @@
     "t5813-proto-disable-ssh.sh",
     "t5814-proto-disable-ext.sh"
    ],
-   "cases_exercising": 1182,
+   "cases_exercising": 1245,
    "scripts_not_imported": []
   },
   {
@@ -1394,7 +1401,7 @@
    "rgit": "missing",
    "issue": 186,
    "valid": 2,
-   "strict": 2,
+   "strict": 1,
    "scripts": [
     "t1517-outside-repo.sh"
    ],
@@ -1410,7 +1417,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 41,
-   "strict": 10,
+   "strict": 40,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -1424,13 +1431,15 @@
    "category": "plumbinginterrogators",
    "rgit": "native",
    "issue": null,
-   "valid": 537,
-   "strict": 537,
+   "valid": 539,
+   "strict": 539,
    "scripts": [
     "t0033-safe-directory.sh",
     "t0450-txt-doc-vs-help.sh",
     "t0601-reffiles-pack-refs.sh",
     "t0610-reftable-basics.sh",
+    "t1423-ref-backend.sh",
+    "t1430-bad-ref-name.sh",
     "t1517-outside-repo.sh",
     "t5326-multi-pack-bitmaps.sh",
     "t5802-connect-helper.sh",
@@ -1439,7 +1448,7 @@
     "t6302-for-each-ref-filter.sh",
     "t6600-test-reach.sh"
    ],
-   "cases_exercising": 841,
+   "cases_exercising": 851,
    "scripts_not_imported": []
   },
   {
@@ -1463,7 +1472,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 279,
-   "strict": 274,
+   "strict": 279,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -1474,7 +1483,7 @@
     "t4036-format-patch-signer-mime.sh",
     "t4052-stat-output.sh"
    ],
-   "cases_exercising": 388,
+   "cases_exercising": 430,
    "scripts_not_imported": []
   },
   {
@@ -1495,8 +1504,8 @@
    "category": "ancillaryinterrogators",
    "rgit": "native",
    "issue": null,
-   "valid": 216,
-   "strict": 212,
+   "valid": 218,
+   "strict": 217,
    "scripts": [
     "t0090-cache-tree.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -1512,13 +1521,14 @@
     "t5305-include-tag.sh",
     "t5307-pack-missing-commit.sh",
     "t5325-reverse-index.sh",
+    "t5326-multi-pack-bitmaps.sh",
     "t5613-info-alternate.sh",
     "t5616-partial-clone.sh",
     "t5702-protocol-v2.sh",
     "t6501-freshen-objects.sh",
     "t7450-bad-git-dotfiles.sh"
    ],
-   "cases_exercising": 446,
+   "cases_exercising": 451,
    "scripts_not_imported": []
   },
   {
@@ -1526,8 +1536,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 42,
-   "strict": 41,
+   "valid": 51,
+   "strict": 49,
    "scripts": [
     "t0410-partial-clone.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -1539,7 +1549,7 @@
     "t6500-gc.sh",
     "t6501-freshen-objects.sh"
    ],
-   "cases_exercising": 69,
+   "cases_exercising": 78,
    "scripts_not_imported": []
   },
   {
@@ -1562,7 +1572,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 375,
-   "strict": 320,
+   "strict": 321,
    "scripts": [
     "t0003-attributes.sh",
     "t0410-partial-clone.sh",
@@ -1584,8 +1594,8 @@
   {
    "name": "gui",
    "category": "mainporcelain",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "handoff",
+   "issue": 710,
    "valid": 0,
    "strict": 0,
    "scripts": [],
@@ -1597,8 +1607,8 @@
    "category": "plumbingmanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 91,
-   "strict": 89,
+   "valid": 92,
+   "strict": 91,
    "scripts": [
     "t0002-gitfile.sh",
     "t0021-conversion.sh",
@@ -1617,7 +1627,7 @@
     "t7113-post-index-change-hook.sh",
     "t7201-co.sh"
    ],
-   "cases_exercising": 723,
+   "cases_exercising": 729,
    "scripts_not_imported": []
   },
   {
@@ -1626,7 +1636,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 197,
-   "strict": 187,
+   "strict": 197,
    "scripts": [
     "t0012-help.sh",
     "t0014-alias.sh",
@@ -1718,10 +1728,10 @@
   {
    "name": "imap-send",
    "category": "foreignscminterface",
-   "rgit": "missing",
-   "issue": 715,
+   "rgit": "native",
+   "issue": null,
    "valid": 3,
-   "strict": 1,
+   "strict": 3,
    "scripts": [
     "t1517-outside-repo.sh"
    ],
@@ -1733,10 +1743,11 @@
    "category": "plumbingmanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 46,
-   "strict": 46,
+   "valid": 56,
+   "strict": 56,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
+    "t1050-large.sh",
     "t1517-outside-repo.sh",
     "t5302-pack-index.sh",
     "t5308-pack-detect-duplicates.sh",
@@ -1746,9 +1757,10 @@
     "t5316-pack-delta-depth.sh",
     "t5321-pack-large-objects.sh",
     "t5325-reverse-index.sh",
+    "t5332-multi-pack-reuse.sh",
     "t7450-bad-git-dotfiles.sh"
    ],
-   "cases_exercising": 141,
+   "cases_exercising": 156,
    "scripts_not_imported": []
   },
   {
@@ -1757,7 +1769,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 304,
-   "strict": 298,
+   "strict": 300,
    "scripts": [
     "t0000-basic.sh",
     "t0001-init.sh",
@@ -1803,7 +1815,6 @@
     "t1309-early-config.sh",
     "t1409-avoid-packing-refs.sh",
     "t1420-lost-found.sh",
-    "t1423-ref-backend.sh",
     "t1504-ceiling-dirs.sh",
     "t1510-repo-setup.sh",
     "t1517-outside-repo.sh",
@@ -1844,18 +1855,19 @@
     "t7450-bad-git-dotfiles.sh",
     "t7518-ident-corner-cases.sh",
     "t7520-ignored-hook-warning.sh",
-    "t7521-ignored-mode.sh"
+    "t7521-ignored-mode.sh",
+    "t7527-builtin-fsmonitor.sh"
    ],
-   "cases_exercising": 3301,
+   "cases_exercising": 3441,
    "scripts_not_imported": []
   },
   {
    "name": "instaweb",
    "category": "ancillaryinterrogators",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "handoff",
+   "issue": 710,
    "valid": 4,
-   "strict": 4,
+   "strict": 2,
    "scripts": [
     "t1517-outside-repo.sh"
    ],
@@ -1868,7 +1880,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 103,
-   "strict": 102,
+   "strict": 103,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -1883,7 +1895,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 31,
-   "strict": 29,
+   "strict": 31,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -1898,7 +1910,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 835,
-   "strict": 809,
+   "strict": 812,
    "scripts": [
     "t0056-git-C.sh",
     "t0100-previous.sh",
@@ -1939,7 +1951,7 @@
     "t7518-ident-corner-cases.sh",
     "t7528-signed-commit-ssh.sh"
    ],
-   "cases_exercising": 1988,
+   "cases_exercising": 2030,
    "scripts_not_imported": [
     "t4212-log-corrupt.sh",
     "t4213-log-tabexpand.sh"
@@ -1988,7 +2000,7 @@
     "t6137-pathspec-wildcards-literal.sh",
     "t6404-recursive-merge.sh"
    ],
-   "cases_exercising": 1824,
+   "cases_exercising": 1833,
    "scripts_not_imported": [
     "t3008-ls-files-lazy-init-name-hash.sh"
    ]
@@ -1999,7 +2011,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 142,
-   "strict": 115,
+   "strict": 114,
    "scripts": [
     "t0002-gitfile.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -2041,7 +2053,7 @@
     "t3902-quoted.sh",
     "t6137-pathspec-wildcards-literal.sh"
    ],
-   "cases_exercising": 269,
+   "cases_exercising": 270,
    "scripts_not_imported": []
   },
   {
@@ -2065,7 +2077,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 3,
-   "strict": 3,
+   "strict": 2,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh"
@@ -2079,7 +2091,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 83,
-   "strict": 82,
+   "strict": 81,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t0610-reftable-basics.sh",
@@ -2095,7 +2107,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 618,
-   "strict": 598,
+   "strict": 615,
    "scripts": [
     "t0050-filesystem.sh",
     "t0100-previous.sh",
@@ -2147,7 +2159,7 @@
     "t7612-merge-verify-signatures.sh",
     "t7614-merge-signoff.sh"
    ],
-   "cases_exercising": 1042,
+   "cases_exercising": 1063,
    "scripts_not_imported": [
     "t6421-merge-partial-clone.sh",
     "t6431-merge-criscross.sh"
@@ -2159,7 +2171,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 38,
-   "strict": 32,
+   "strict": 35,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -2168,7 +2180,7 @@
     "t6099-merge-base-side-exhaustion.sh",
     "t6600-test-reach.sh"
    ],
-   "cases_exercising": 74,
+   "cases_exercising": 78,
    "scripts_not_imported": []
   },
   {
@@ -2237,7 +2249,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 34,
-   "strict": 33,
+   "strict": 34,
    "scripts": [
     "t1517-outside-repo.sh",
     "t7609-mergetool--lib.sh",
@@ -2266,8 +2278,8 @@
    "category": "plumbingmanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 33,
-   "strict": 33,
+   "valid": 35,
+   "strict": 35,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1010-mktree.sh",
@@ -2277,10 +2289,11 @@
     "t4052-stat-output.sh",
     "t5302-pack-index.sh",
     "t5310-pack-bitmaps.sh",
+    "t5320-delta-islands.sh",
     "t6600-test-reach.sh",
     "t7450-bad-git-dotfiles.sh"
    ],
-   "cases_exercising": 107,
+   "cases_exercising": 109,
    "scripts_not_imported": []
   },
   {
@@ -2288,18 +2301,19 @@
    "category": "plumbingmanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 167,
-   "strict": 165,
+   "valid": 168,
+   "strict": 167,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
     "t5319-multi-pack-index.sh",
     "t5326-multi-pack-bitmaps.sh",
     "t5327-multi-pack-bitmaps-rev.sh",
+    "t5333-pseudo-merge-bitmaps.sh",
     "t5334-incremental-multi-pack-index.sh",
     "t5335-compact-multi-pack-index.sh"
    ],
-   "cases_exercising": 198,
+   "cases_exercising": 211,
    "scripts_not_imported": []
   },
   {
@@ -2364,7 +2378,7 @@
     "t3320-notes-merge-worktrees.sh",
     "t3321-notes-stripspace.sh"
    ],
-   "cases_exercising": 365,
+   "cases_exercising": 366,
    "scripts_not_imported": [
     "t3302-notes-index-expensive.sh"
    ]
@@ -2372,7 +2386,7 @@
   {
    "name": "p4",
    "category": "foreignscminterface",
-   "rgit": "missing",
+   "rgit": "handoff",
    "issue": 710,
    "valid": 0,
    "strict": 0,
@@ -2421,8 +2435,8 @@
    "category": "plumbingmanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 229,
-   "strict": 206,
+   "valid": 232,
+   "strict": 219,
    "scripts": [
     "t0410-partial-clone.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -2447,25 +2461,24 @@
     "t6114-keep-packs.sh",
     "t7450-bad-git-dotfiles.sh"
    ],
-   "cases_exercising": 382,
+   "cases_exercising": 408,
    "scripts_not_imported": []
   },
   {
    "name": "pack-redundant",
    "category": "plumbinginterrogators",
-   "rgit": "missing",
-   "issue": 186,
-   "valid": 6,
-   "strict": 6,
+   "rgit": "native",
+   "issue": null,
+   "valid": 24,
+   "strict": 24,
    "scripts": [
     "t0014-alias.sh",
     "t0450-txt-doc-vs-help.sh",
-    "t1517-outside-repo.sh"
-   ],
-   "cases_exercising": 7,
-   "scripts_not_imported": [
+    "t1517-outside-repo.sh",
     "t5323-pack-redundant.sh"
-   ]
+   ],
+   "cases_exercising": 25,
+   "scripts_not_imported": []
   },
   {
    "name": "pack-refs",
@@ -2473,7 +2486,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 88,
-   "strict": 85,
+   "strict": 87,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t0600-reffiles-backend.sh",
@@ -2538,7 +2551,7 @@
     "t5327-multi-pack-bitmaps-rev.sh",
     "t5335-compact-multi-pack-index.sh"
    ],
-   "cases_exercising": 57,
+   "cases_exercising": 60,
    "scripts_not_imported": []
   },
   {
@@ -2546,8 +2559,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 203,
-   "strict": 197,
+   "valid": 204,
+   "strict": 203,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -2563,9 +2576,10 @@
     "t5705-session-id-in-capabilities.sh",
     "t5710-promisor-remote-capability.sh",
     "t5801-remote-helpers.sh",
-    "t5802-connect-helper.sh"
+    "t5802-connect-helper.sh",
+    "t7527-builtin-fsmonitor.sh"
    ],
-   "cases_exercising": 322,
+   "cases_exercising": 325,
    "scripts_not_imported": [
     "t5573-pull-verify-signatures.sh"
    ]
@@ -2575,12 +2589,13 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 437,
-   "strict": 330,
+   "valid": 439,
+   "strict": 356,
    "scripts": [
     "t0410-partial-clone.sh",
     "t0450-txt-doc-vs-help.sh",
     "t1416-ref-transaction-hooks.sh",
+    "t1430-bad-ref-name.sh",
     "t1517-outside-repo.sh",
     "t5401-update-hooks.sh",
     "t5404-tracking-branches.sh",
@@ -2614,6 +2629,7 @@
     "t5616-partial-clone.sh",
     "t5700-protocol-v1.sh",
     "t5702-protocol-v2.sh",
+    "t5710-promisor-remote-capability.sh",
     "t5801-remote-helpers.sh",
     "t5810-proto-disable-local.sh",
     "t5811-proto-disable-git.sh",
@@ -2623,16 +2639,16 @@
     "t6040-tracking-info.sh",
     "t7450-bad-git-dotfiles.sh"
    ],
-   "cases_exercising": 823,
+   "cases_exercising": 834,
    "scripts_not_imported": []
   },
   {
    "name": "quiltimport",
    "category": "foreignscminterface",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "handoff",
+   "issue": 710,
    "valid": 4,
-   "strict": 3,
+   "strict": 2,
    "scripts": [
     "t1517-outside-repo.sh"
    ],
@@ -2645,7 +2661,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 51,
-   "strict": 45,
+   "strict": 49,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -2699,8 +2715,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 1008,
-   "strict": 1001,
+   "valid": 1009,
+   "strict": 1000,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t0610-reftable-basics.sh",
@@ -2746,7 +2762,7 @@
     "t6427-diff3-conflict-markers.sh",
     "t7517-per-repo-email.sh"
    ],
-   "cases_exercising": 1092,
+   "cases_exercising": 1094,
    "scripts_not_imported": [
     "t3435-rebase-gpg-sign.sh"
    ]
@@ -2774,7 +2790,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 134,
-   "strict": 133,
+   "strict": 134,
    "scripts": [
     "t0100-previous.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -2793,7 +2809,7 @@
     "t1517-outside-repo.sh",
     "t6501-freshen-objects.sh"
    ],
-   "cases_exercising": 483,
+   "cases_exercising": 485,
    "scripts_not_imported": []
   },
   {
@@ -2801,8 +2817,8 @@
    "category": "ancillarymanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 632,
-   "strict": 617,
+   "valid": 633,
+   "strict": 633,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t0602-reffiles-fsck.sh",
@@ -2819,7 +2835,7 @@
     "t1467-refs-rename.sh",
     "t1517-outside-repo.sh"
    ],
-   "cases_exercising": 656,
+   "cases_exercising": 657,
    "scripts_not_imported": []
   },
   {
@@ -2827,8 +2843,8 @@
    "category": "ancillarymanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 178,
-   "strict": 169,
+   "valid": 179,
+   "strict": 179,
    "scripts": [
     "t0410-partial-clone.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -2847,7 +2863,7 @@
     "t5710-promisor-remote-capability.sh",
     "t6040-tracking-info.sh"
    ],
-   "cases_exercising": 428,
+   "cases_exercising": 430,
    "scripts_not_imported": []
   },
   {
@@ -2855,8 +2871,8 @@
    "category": "ancillarymanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 182,
-   "strict": 142,
+   "valid": 234,
+   "strict": 213,
    "scripts": [
     "t0410-partial-clone.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -2868,9 +2884,11 @@
     "t5311-pack-bitmaps-shallow.sh",
     "t5313-pack-bounds-checks.sh",
     "t5314-pack-cycle-detection.sh",
+    "t5320-delta-islands.sh",
     "t5325-reverse-index.sh",
     "t5326-multi-pack-bitmaps.sh",
     "t5327-multi-pack-bitmaps-rev.sh",
+    "t5333-pseudo-merge-bitmaps.sh",
     "t5616-partial-clone.sh",
     "t5710-promisor-remote-capability.sh",
     "t6501-freshen-objects.sh",
@@ -2882,7 +2900,7 @@
     "t7705-repack-incremental-midx.sh",
     "t7706-repack-drop-filtered.sh"
    ],
-   "cases_exercising": 366,
+   "cases_exercising": 427,
    "scripts_not_imported": []
   },
   {
@@ -2898,7 +2916,7 @@
     "t5326-multi-pack-bitmaps.sh",
     "t6050-replace.sh"
    ],
-   "cases_exercising": 51,
+   "cases_exercising": 55,
    "scripts_not_imported": []
   },
   {
@@ -2921,7 +2939,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 56,
-   "strict": 55,
+   "strict": 56,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -2934,17 +2952,16 @@
   {
    "name": "request-pull",
    "category": "foreignscminterface",
-   "rgit": "missing",
-   "issue": 715,
-   "valid": 4,
-   "strict": 4,
+   "rgit": "native",
+   "issue": null,
+   "valid": 14,
+   "strict": 14,
    "scripts": [
-    "t1517-outside-repo.sh"
-   ],
-   "cases_exercising": 4,
-   "scripts_not_imported": [
+    "t1517-outside-repo.sh",
     "t5150-request-pull.sh"
-   ]
+   ],
+   "cases_exercising": 14,
+   "scripts_not_imported": []
   },
   {
    "name": "rerere",
@@ -2952,7 +2969,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 43,
-   "strict": 42,
+   "strict": 43,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -2968,7 +2985,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 106,
-   "strict": 104,
+   "strict": 106,
    "scripts": [
     "t0020-crlf.sh",
     "t0027-auto-crlf.sh",
@@ -2983,7 +3000,7 @@
     "t7113-post-index-change-hook.sh",
     "t7201-co.sh"
    ],
-   "cases_exercising": 2515,
+   "cases_exercising": 2577,
    "scripts_not_imported": [
     "t7101-reset-empty-subdirs.sh",
     "t7102-reset.sh",
@@ -3000,8 +3017,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 49,
-   "strict": 47,
+   "valid": 50,
+   "strict": 50,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -3011,7 +3028,7 @@
     "t5616-partial-clone.sh",
     "t6135-pathspec-with-attrs.sh"
    ],
-   "cases_exercising": 69,
+   "cases_exercising": 71,
    "scripts_not_imported": []
   },
   {
@@ -3019,8 +3036,8 @@
    "category": "plumbinginterrogators",
    "rgit": "native",
    "issue": null,
-   "valid": 1430,
-   "strict": 1357,
+   "valid": 1441,
+   "strict": 1388,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -3029,6 +3046,7 @@
     "t5310-pack-bitmaps.sh",
     "t5326-multi-pack-bitmaps.sh",
     "t5327-multi-pack-bitmaps-rev.sh",
+    "t5333-pseudo-merge-bitmaps.sh",
     "t5334-incremental-multi-pack-index.sh",
     "t5616-partial-clone.sh",
     "t5618-alternate-refs.sh",
@@ -3060,7 +3078,7 @@
     "t6115-rev-list-du.sh",
     "t6600-test-reach.sh"
    ],
-   "cases_exercising": 1860,
+   "cases_exercising": 1911,
    "scripts_not_imported": [
     "t6008-rev-list-submodule.sh",
     "t6110-rev-list-sparse.sh"
@@ -3072,7 +3090,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 634,
-   "strict": 612,
+   "strict": 613,
    "scripts": [
     "t0002-gitfile.sh",
     "t0006-date.sh",
@@ -3107,7 +3125,7 @@
     "t6600-test-reach.sh",
     "t7505-prepare-commit-msg-hook.sh"
    ],
-   "cases_exercising": 4618,
+   "cases_exercising": 4714,
    "scripts_not_imported": []
   },
   {
@@ -3133,7 +3151,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 126,
-   "strict": 124,
+   "strict": 126,
    "scripts": [
     "t0020-crlf.sh",
     "t0410-partial-clone.sh",
@@ -3155,21 +3173,21 @@
     "t7064-wtstatus-pv2.sh",
     "t7201-co.sh"
    ],
-   "cases_exercising": 404,
+   "cases_exercising": 406,
    "scripts_not_imported": []
   },
   {
    "name": "send-email",
    "category": "foreignscminterface",
-   "rgit": "missing",
-   "issue": 715,
-   "valid": 0,
-   "strict": 0,
-   "scripts": [],
-   "cases_exercising": 0,
-   "scripts_not_imported": [
+   "rgit": "native",
+   "issue": null,
+   "valid": 215,
+   "strict": 215,
+   "scripts": [
     "t9001-send-email.sh"
-   ]
+   ],
+   "cases_exercising": 215,
+   "scripts_not_imported": []
   },
   {
    "name": "send-pack",
@@ -3177,7 +3195,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 34,
-   "strict": 32,
+   "strict": 34,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -3262,32 +3280,31 @@
     "t7510-signed-commit.sh",
     "t7528-signed-commit-ssh.sh"
    ],
-   "cases_exercising": 425,
+   "cases_exercising": 426,
    "scripts_not_imported": []
   },
   {
    "name": "show-branch",
    "category": "ancillaryinterrogators",
-   "rgit": "missing",
-   "issue": 186,
-   "valid": 3,
-   "strict": 1,
+   "rgit": "native",
+   "issue": null,
+   "valid": 30,
+   "strict": 30,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
-    "t1517-outside-repo.sh"
-   ],
-   "cases_exercising": 19,
-   "scripts_not_imported": [
+    "t1517-outside-repo.sh",
     "t3202-show-branch.sh"
-   ]
+   ],
+   "cases_exercising": 46,
+   "scripts_not_imported": []
   },
   {
    "name": "show-index",
    "category": "plumbinginterrogators",
    "rgit": "native",
    "issue": null,
-   "valid": 43,
-   "strict": 40,
+   "valid": 46,
+   "strict": 44,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1050-large.sh",
@@ -3296,9 +3313,10 @@
     "t5303-pack-corruption-resilience.sh",
     "t5310-pack-bitmaps.sh",
     "t5313-pack-bounds-checks.sh",
+    "t5332-multi-pack-reuse.sh",
     "t6114-keep-packs.sh"
    ],
-   "cases_exercising": 95,
+   "cases_exercising": 99,
    "scripts_not_imported": []
   },
   {
@@ -3306,19 +3324,20 @@
    "category": "plumbinginterrogators",
    "rgit": "native",
    "issue": null,
-   "valid": 165,
-   "strict": 92,
+   "valid": 181,
+   "strict": 111,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t0600-reffiles-backend.sh",
     "t0601-reffiles-pack-refs.sh",
     "t0610-reftable-basics.sh",
     "t1403-show-ref.sh",
+    "t1430-bad-ref-name.sh",
     "t1517-outside-repo.sh",
     "t5411-proc-receive-hook.sh",
     "t7201-co.sh"
    ],
-   "cases_exercising": 467,
+   "cases_exercising": 483,
    "scripts_not_imported": [
     "t1422-show-ref-exists.sh"
    ]
@@ -3338,14 +3357,14 @@
     "t1517-outside-repo.sh",
     "t7012-skip-worktree-writing.sh"
    ],
-   "cases_exercising": 247,
+   "cases_exercising": 248,
    "scripts_not_imported": []
   },
   {
    "name": "stage",
    "category": "alias",
-   "rgit": "missing",
-   "issue": 686,
+   "rgit": "native",
+   "issue": null,
    "valid": 1,
    "strict": 1,
    "scripts": [
@@ -3385,8 +3404,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 399,
-   "strict": 397,
+   "valid": 432,
+   "strict": 430,
    "scripts": [
     "t0008-ignores.sh",
     "t0018-advice.sh",
@@ -3411,12 +3430,11 @@
     "t7511-status-index.sh",
     "t7512-status-help.sh",
     "t7515-status-symlinks.sh",
+    "t7519-status-fsmonitor.sh",
     "t7525-status-rename.sh"
    ],
-   "cases_exercising": 1089,
-   "scripts_not_imported": [
-    "t7519-status-fsmonitor.sh"
-   ]
+   "cases_exercising": 1153,
+   "scripts_not_imported": []
   },
   {
    "name": "stripspace",
@@ -3438,8 +3456,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 494,
-   "strict": 473,
+   "valid": 499,
+   "strict": 477,
    "scripts": [
     "t1517-outside-repo.sh",
     "t2080-parallel-checkout-basics.sh",
@@ -3469,9 +3487,10 @@
     "t7423-submodule-symlinks.sh",
     "t7424-submodule-mixed-ref-formats.sh",
     "t7426-submodule-get-default-remote.sh",
-    "t7450-bad-git-dotfiles.sh"
+    "t7450-bad-git-dotfiles.sh",
+    "t7527-builtin-fsmonitor.sh"
    ],
-   "cases_exercising": 943,
+   "cases_exercising": 951,
    "scripts_not_imported": [
     "t7418-submodule-sparse-gitmodules.sh",
     "t7425-submodule-gitdir-path-extension.sh"
@@ -3480,7 +3499,7 @@
   {
    "name": "svn",
    "category": "foreignscminterface",
-   "rgit": "missing",
+   "rgit": "handoff",
    "issue": 710,
    "valid": 0,
    "strict": 0,
@@ -3573,7 +3592,7 @@
     "t4052-stat-output.sh",
     "t4069-remerge-diff.sh"
    ],
-   "cases_exercising": 182,
+   "cases_exercising": 186,
    "scripts_not_imported": []
   },
   {
@@ -3607,8 +3626,8 @@
    "category": "mainporcelain",
    "rgit": "native",
    "issue": null,
-   "valid": 278,
-   "strict": 276,
+   "valid": 279,
+   "strict": 277,
    "scripts": [
     "t0003-attributes.sh",
     "t0009-git-dir-validation.sh",
@@ -3619,6 +3638,7 @@
     "t1060-object-corruption.sh",
     "t1405-main-ref-store.sh",
     "t1416-ref-transaction-hooks.sh",
+    "t1430-bad-ref-name.sh",
     "t1517-outside-repo.sh",
     "t2080-parallel-checkout-basics.sh",
     "t3011-common-prefixes-and-directory-traversal.sh",
@@ -3652,7 +3672,7 @@
     "t7517-per-repo-email.sh",
     "t7528-signed-commit-ssh.sh"
    ],
-   "cases_exercising": 2478,
+   "cases_exercising": 2539,
    "scripts_not_imported": []
   },
   {
@@ -3675,7 +3695,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 16,
-   "strict": 13,
+   "strict": 14,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1050-large.sh",
@@ -3694,8 +3714,8 @@
    "category": "plumbingmanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 116,
-   "strict": 114,
+   "valid": 118,
+   "strict": 116,
    "scripts": [
     "t0000-basic.sh",
     "t0002-gitfile.sh",
@@ -3726,9 +3746,10 @@
     "t7011-skip-worktree-reading.sh",
     "t7012-skip-worktree-writing.sh",
     "t7113-post-index-change-hook.sh",
-    "t7201-co.sh"
+    "t7201-co.sh",
+    "t7527-builtin-fsmonitor.sh"
    ],
-   "cases_exercising": 800,
+   "cases_exercising": 826,
    "scripts_not_imported": [
     "t2105-update-index-gitfile.sh"
    ]
@@ -3738,8 +3759,8 @@
    "category": "plumbingmanipulators",
    "rgit": "native",
    "issue": null,
-   "valid": 424,
-   "strict": 394,
+   "valid": 434,
+   "strict": 403,
    "scripts": [
     "t0002-gitfile.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -3751,15 +3772,17 @@
     "t1404-update-ref-errors.sh",
     "t1409-avoid-packing-refs.sh",
     "t1416-ref-transaction-hooks.sh",
+    "t1430-bad-ref-name.sh",
     "t1517-outside-repo.sh",
     "t5403-post-checkout-hook.sh",
     "t5411-proc-receive-hook.sh",
     "t5563-simple-http-auth.sh",
     "t5571-pre-push-hook.sh",
+    "t5702-protocol-v2.sh",
     "t6040-tracking-info.sh",
     "t7064-wtstatus-pv2.sh"
    ],
-   "cases_exercising": 946,
+   "cases_exercising": 983,
    "scripts_not_imported": []
   },
   {
@@ -3798,7 +3821,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 80,
-   "strict": 67,
+   "strict": 73,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t5530-upload-pack-error.sh",
@@ -3810,7 +3833,7 @@
     "t5704-protocol-violations.sh",
     "t5730-protocol-v2-bundle-uri-file.sh"
    ],
-   "cases_exercising": 84,
+   "cases_exercising": 90,
    "scripts_not_imported": []
   },
   {
@@ -3819,7 +3842,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 56,
-   "strict": 53,
+   "strict": 54,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -3834,7 +3857,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 90,
-   "strict": 87,
+   "strict": 88,
    "scripts": [
     "t0006-date.sh",
     "t0007-git-var.sh",
@@ -3852,14 +3875,14 @@
    "rgit": "native",
    "issue": null,
    "valid": 33,
-   "strict": 30,
+   "strict": 31,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
     "t7510-signed-commit.sh",
     "t7528-signed-commit-ssh.sh"
    ],
-   "cases_exercising": 79,
+   "cases_exercising": 86,
    "scripts_not_imported": []
   },
   {
@@ -3867,8 +3890,8 @@
    "category": "plumbinginterrogators",
    "rgit": "native",
    "issue": null,
-   "valid": 32,
-   "strict": 27,
+   "valid": 33,
+   "strict": 28,
    "scripts": [
     "t0410-partial-clone.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -3876,12 +3899,13 @@
     "t5301-sliding-window.sh",
     "t5302-pack-index.sh",
     "t5310-pack-bitmaps.sh",
+    "t5320-delta-islands.sh",
     "t5326-multi-pack-bitmaps.sh",
     "t5327-multi-pack-bitmaps-rev.sh",
     "t5351-unpack-large-objects.sh",
     "t5702-protocol-v2.sh"
    ],
-   "cases_exercising": 115,
+   "cases_exercising": 118,
    "scripts_not_imported": []
   },
   {
@@ -3890,7 +3914,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 33,
-   "strict": 30,
+   "strict": 31,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -3908,16 +3932,16 @@
    "valid": 0,
    "strict": 0,
    "scripts": [],
-   "cases_exercising": 898,
+   "cases_exercising": 910,
    "scripts_not_imported": []
   },
   {
    "name": "whatchanged",
    "category": "ancillaryinterrogators",
-   "rgit": "missing",
-   "issue": 186,
+   "rgit": "native",
+   "issue": null,
    "valid": 1,
-   "strict": 0,
+   "strict": 1,
    "scripts": [
     "t0450-txt-doc-vs-help.sh"
    ],
@@ -3930,7 +3954,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 402,
-   "strict": 396,
+   "strict": 400,
    "scripts": [
     "t0035-safe-bare-repository.sh",
     "t0450-txt-doc-vs-help.sh",
@@ -3950,7 +3974,7 @@
     "t2406-worktree-repair.sh",
     "t2407-worktree-heads.sh"
    ],
-   "cases_exercising": 479,
+   "cases_exercising": 481,
    "scripts_not_imported": []
   },
   {
@@ -3959,7 +3983,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 32,
-   "strict": 29,
+   "strict": 30,
    "scripts": [
     "t0000-basic.sh",
     "t0002-gitfile.sh",
@@ -3978,7 +4002,7 @@
     "t5401-update-hooks.sh",
     "t6501-freshen-objects.sh"
    ],
-   "cases_exercising": 156,
+   "cases_exercising": 158,
    "scripts_not_imported": []
   },
   {
@@ -4022,12 +4046,26 @@
    ]
   },
   {
-   "name": "credential-cache--daemon",
+   "name": "checkout--worker",
    "category": "extra",
    "rgit": "native",
    "issue": null,
    "valid": 3,
    "strict": 3,
+   "scripts": [
+    "t0450-txt-doc-vs-help.sh",
+    "t1517-outside-repo.sh"
+   ],
+   "cases_exercising": 4,
+   "scripts_not_imported": []
+  },
+  {
+   "name": "credential-cache--daemon",
+   "category": "extra",
+   "rgit": "native",
+   "issue": null,
+   "valid": 3,
+   "strict": 1,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh"
@@ -4044,6 +4082,34 @@
    "strict": 0,
    "scripts": [],
    "cases_exercising": 0,
+   "scripts_not_imported": []
+  },
+  {
+   "name": "fsck-objects",
+   "category": "extra",
+   "rgit": "native",
+   "issue": null,
+   "valid": 1,
+   "strict": 1,
+   "scripts": [
+    "t0450-txt-doc-vs-help.sh"
+   ],
+   "cases_exercising": 2,
+   "scripts_not_imported": []
+  },
+  {
+   "name": "fsmonitor--daemon",
+   "category": "extra",
+   "rgit": "native",
+   "issue": null,
+   "valid": 32,
+   "strict": 32,
+   "scripts": [
+    "t0450-txt-doc-vs-help.sh",
+    "t1517-outside-repo.sh",
+    "t7527-builtin-fsmonitor.sh"
+   ],
+   "cases_exercising": 34,
    "scripts_not_imported": []
   },
   {
@@ -4096,7 +4162,7 @@
    "rgit": "native",
    "issue": null,
    "valid": 77,
-   "strict": 76,
+   "strict": 75,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh",
@@ -4105,6 +4171,34 @@
     "t6434-merge-recursive-rename-options.sh"
    ],
    "cases_exercising": 81,
+   "scripts_not_imported": []
+  },
+  {
+   "name": "merge-recursive-ours",
+   "category": "extra",
+   "rgit": "native",
+   "issue": null,
+   "valid": 3,
+   "strict": 3,
+   "scripts": [
+    "t0450-txt-doc-vs-help.sh",
+    "t1517-outside-repo.sh"
+   ],
+   "cases_exercising": 4,
+   "scripts_not_imported": []
+  },
+  {
+   "name": "merge-recursive-theirs",
+   "category": "extra",
+   "rgit": "native",
+   "issue": null,
+   "valid": 3,
+   "strict": 3,
+   "scripts": [
+    "t0450-txt-doc-vs-help.sh",
+    "t1517-outside-repo.sh"
+   ],
+   "cases_exercising": 4,
    "scripts_not_imported": []
   },
   {
@@ -4137,12 +4231,25 @@
    "scripts_not_imported": []
   },
   {
+   "name": "pickaxe",
+   "category": "extra",
+   "rgit": "native",
+   "issue": null,
+   "valid": 1,
+   "strict": 1,
+   "scripts": [
+    "t0450-txt-doc-vs-help.sh"
+   ],
+   "cases_exercising": 2,
+   "scripts_not_imported": []
+  },
+  {
    "name": "remote-ext",
    "category": "extra",
    "rgit": "native",
    "issue": null,
    "valid": 3,
-   "strict": 3,
+   "strict": 1,
    "scripts": [
     "t0450-txt-doc-vs-help.sh",
     "t1517-outside-repo.sh"
@@ -4179,6 +4286,19 @@
    "scripts_not_imported": []
   },
   {
+   "name": "subtree",
+   "category": "extra",
+   "rgit": "native",
+   "issue": null,
+   "valid": 73,
+   "strict": 73,
+   "scripts": [
+    "t7999-subtree.sh"
+   ],
+   "cases_exercising": 73,
+   "scripts_not_imported": []
+  },
+  {
    "name": "upload-archive--writer",
    "category": "extra",
    "rgit": "native",
@@ -4191,5 +4311,1064 @@
    "cases_exercising": 2,
    "scripts_not_imported": []
   }
- ]
+ ],
+ "previous": {
+  "source": {
+   "kind": "ci",
+   "run": 45854715200,
+   "url": "https://github.com/BaamStudios/rgit/actions/runs/45854715200",
+   "commit": "cdae865b28257cbca10a116398b75021e81d0488",
+   "date": "2026-11-26T16:00:58Z"
+  },
+  "totals": {
+   "commands": 161,
+   "native": 135,
+   "handoff": 0,
+   "missing": 26,
+   "full": 52,
+   "scripts": 852,
+   "valid": 31230,
+   "strict": 30026
+  },
+  "commands": [
+   {
+    "name": "add",
+    "rgit": "native",
+    "valid": 587,
+    "strict": 583
+   },
+   {
+    "name": "am",
+    "rgit": "native",
+    "valid": 195,
+    "strict": 195
+   },
+   {
+    "name": "annotate",
+    "rgit": "native",
+    "valid": 120,
+    "strict": 120
+   },
+   {
+    "name": "apply",
+    "rgit": "native",
+    "valid": 476,
+    "strict": 476
+   },
+   {
+    "name": "archimport",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "archive",
+    "rgit": "native",
+    "valid": 208,
+    "strict": 206
+   },
+   {
+    "name": "backfill",
+    "rgit": "missing",
+    "valid": 29,
+    "strict": 6
+   },
+   {
+    "name": "bisect",
+    "rgit": "native",
+    "valid": 120,
+    "strict": 120
+   },
+   {
+    "name": "blame",
+    "rgit": "native",
+    "valid": 376,
+    "strict": 376
+   },
+   {
+    "name": "branch",
+    "rgit": "native",
+    "valid": 326,
+    "strict": 304
+   },
+   {
+    "name": "bugreport",
+    "rgit": "native",
+    "valid": 16,
+    "strict": 16
+   },
+   {
+    "name": "bundle",
+    "rgit": "native",
+    "valid": 52,
+    "strict": 48
+   },
+   {
+    "name": "cat-file",
+    "rgit": "native",
+    "valid": 405,
+    "strict": 349
+   },
+   {
+    "name": "check-attr",
+    "rgit": "native",
+    "valid": 52,
+    "strict": 52
+   },
+   {
+    "name": "check-ignore",
+    "rgit": "native",
+    "valid": 395,
+    "strict": 395
+   },
+   {
+    "name": "check-mailmap",
+    "rgit": "native",
+    "valid": 13,
+    "strict": 13
+   },
+   {
+    "name": "check-ref-format",
+    "rgit": "native",
+    "valid": 5,
+    "strict": 5
+   },
+   {
+    "name": "checkout",
+    "rgit": "native",
+    "valid": 1257,
+    "strict": 1256
+   },
+   {
+    "name": "checkout-index",
+    "rgit": "native",
+    "valid": 57,
+    "strict": 57
+   },
+   {
+    "name": "cherry",
+    "rgit": "native",
+    "valid": 7,
+    "strict": 7
+   },
+   {
+    "name": "cherry-pick",
+    "rgit": "native",
+    "valid": 253,
+    "strict": 252
+   },
+   {
+    "name": "citool",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "clean",
+    "rgit": "native",
+    "valid": 286,
+    "strict": 286
+   },
+   {
+    "name": "clone",
+    "rgit": "native",
+    "valid": 588,
+    "strict": 531
+   },
+   {
+    "name": "column",
+    "rgit": "native",
+    "valid": 19,
+    "strict": 19
+   },
+   {
+    "name": "commit",
+    "rgit": "native",
+    "valid": 377,
+    "strict": 377
+   },
+   {
+    "name": "commit-graph",
+    "rgit": "native",
+    "valid": 154,
+    "strict": 154
+   },
+   {
+    "name": "commit-tree",
+    "rgit": "native",
+    "valid": 27,
+    "strict": 27
+   },
+   {
+    "name": "config",
+    "rgit": "native",
+    "valid": 945,
+    "strict": 925
+   },
+   {
+    "name": "count-objects",
+    "rgit": "native",
+    "valid": 16,
+    "strict": 15
+   },
+   {
+    "name": "credential",
+    "rgit": "native",
+    "valid": 81,
+    "strict": 79
+   },
+   {
+    "name": "credential-cache",
+    "rgit": "native",
+    "valid": 55,
+    "strict": 55
+   },
+   {
+    "name": "credential-store",
+    "rgit": "native",
+    "valid": 68,
+    "strict": 68
+   },
+   {
+    "name": "cvsexportcommit",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "cvsimport",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "cvsserver",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "daemon",
+    "rgit": "native",
+    "valid": 29,
+    "strict": 29
+   },
+   {
+    "name": "describe",
+    "rgit": "native",
+    "valid": 133,
+    "strict": 133
+   },
+   {
+    "name": "diagnose",
+    "rgit": "native",
+    "valid": 7,
+    "strict": 7
+   },
+   {
+    "name": "diff",
+    "rgit": "native",
+    "valid": 1845,
+    "strict": 1822
+   },
+   {
+    "name": "diff-files",
+    "rgit": "native",
+    "valid": 25,
+    "strict": 25
+   },
+   {
+    "name": "diff-index",
+    "rgit": "native",
+    "valid": 54,
+    "strict": 54
+   },
+   {
+    "name": "diff-pairs",
+    "rgit": "native",
+    "valid": 10,
+    "strict": 10
+   },
+   {
+    "name": "diff-tree",
+    "rgit": "native",
+    "valid": 12,
+    "strict": 12
+   },
+   {
+    "name": "difftool",
+    "rgit": "native",
+    "valid": 98,
+    "strict": 96
+   },
+   {
+    "name": "fast-export",
+    "rgit": "native",
+    "valid": 90,
+    "strict": 87
+   },
+   {
+    "name": "fast-import",
+    "rgit": "native",
+    "valid": 383,
+    "strict": 381
+   },
+   {
+    "name": "fetch",
+    "rgit": "native",
+    "valid": 919,
+    "strict": 789
+   },
+   {
+    "name": "fetch-pack",
+    "rgit": "native",
+    "valid": 371,
+    "strict": 370
+   },
+   {
+    "name": "filter-branch",
+    "rgit": "missing",
+    "valid": 2,
+    "strict": 2
+   },
+   {
+    "name": "fmt-merge-msg",
+    "rgit": "native",
+    "valid": 41,
+    "strict": 10
+   },
+   {
+    "name": "for-each-ref",
+    "rgit": "native",
+    "valid": 537,
+    "strict": 537
+   },
+   {
+    "name": "for-each-repo",
+    "rgit": "native",
+    "valid": 8,
+    "strict": 8
+   },
+   {
+    "name": "format-patch",
+    "rgit": "native",
+    "valid": 279,
+    "strict": 274
+   },
+   {
+    "name": "format-rev",
+    "rgit": "native",
+    "valid": 1,
+    "strict": 1
+   },
+   {
+    "name": "fsck",
+    "rgit": "native",
+    "valid": 216,
+    "strict": 212
+   },
+   {
+    "name": "gc",
+    "rgit": "native",
+    "valid": 42,
+    "strict": 41
+   },
+   {
+    "name": "get-tar-commit-id",
+    "rgit": "native",
+    "valid": 2,
+    "strict": 2
+   },
+   {
+    "name": "grep",
+    "rgit": "native",
+    "valid": 375,
+    "strict": 320
+   },
+   {
+    "name": "gui",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "hash-object",
+    "rgit": "native",
+    "valid": 91,
+    "strict": 89
+   },
+   {
+    "name": "help",
+    "rgit": "native",
+    "valid": 197,
+    "strict": 187
+   },
+   {
+    "name": "history",
+    "rgit": "native",
+    "valid": 99,
+    "strict": 99
+   },
+   {
+    "name": "hook",
+    "rgit": "native",
+    "valid": 92,
+    "strict": 92
+   },
+   {
+    "name": "http-backend",
+    "rgit": "native",
+    "valid": 44,
+    "strict": 33
+   },
+   {
+    "name": "http-fetch",
+    "rgit": "missing",
+    "valid": 1,
+    "strict": 0
+   },
+   {
+    "name": "http-push",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "imap-send",
+    "rgit": "missing",
+    "valid": 3,
+    "strict": 1
+   },
+   {
+    "name": "index-pack",
+    "rgit": "native",
+    "valid": 46,
+    "strict": 46
+   },
+   {
+    "name": "init",
+    "rgit": "native",
+    "valid": 304,
+    "strict": 298
+   },
+   {
+    "name": "instaweb",
+    "rgit": "missing",
+    "valid": 4,
+    "strict": 4
+   },
+   {
+    "name": "interpret-trailers",
+    "rgit": "native",
+    "valid": 103,
+    "strict": 102
+   },
+   {
+    "name": "last-modified",
+    "rgit": "native",
+    "valid": 31,
+    "strict": 29
+   },
+   {
+    "name": "log",
+    "rgit": "native",
+    "valid": 835,
+    "strict": 809
+   },
+   {
+    "name": "ls-files",
+    "rgit": "native",
+    "valid": 1130,
+    "strict": 1129
+   },
+   {
+    "name": "ls-remote",
+    "rgit": "native",
+    "valid": 142,
+    "strict": 115
+   },
+   {
+    "name": "ls-tree",
+    "rgit": "native",
+    "valid": 158,
+    "strict": 158
+   },
+   {
+    "name": "mailinfo",
+    "rgit": "native",
+    "valid": 55,
+    "strict": 55
+   },
+   {
+    "name": "mailsplit",
+    "rgit": "native",
+    "valid": 3,
+    "strict": 3
+   },
+   {
+    "name": "maintenance",
+    "rgit": "native",
+    "valid": 83,
+    "strict": 82
+   },
+   {
+    "name": "merge",
+    "rgit": "native",
+    "valid": 618,
+    "strict": 598
+   },
+   {
+    "name": "merge-base",
+    "rgit": "native",
+    "valid": 38,
+    "strict": 32
+   },
+   {
+    "name": "merge-file",
+    "rgit": "native",
+    "valid": 44,
+    "strict": 44
+   },
+   {
+    "name": "merge-index",
+    "rgit": "native",
+    "valid": 10,
+    "strict": 10
+   },
+   {
+    "name": "merge-one-file",
+    "rgit": "native",
+    "valid": 2,
+    "strict": 2
+   },
+   {
+    "name": "merge-tree",
+    "rgit": "native",
+    "valid": 69,
+    "strict": 69
+   },
+   {
+    "name": "mergetool",
+    "rgit": "native",
+    "valid": 34,
+    "strict": 33
+   },
+   {
+    "name": "mktag",
+    "rgit": "native",
+    "valid": 153,
+    "strict": 153
+   },
+   {
+    "name": "mktree",
+    "rgit": "native",
+    "valid": 33,
+    "strict": 33
+   },
+   {
+    "name": "multi-pack-index",
+    "rgit": "native",
+    "valid": 167,
+    "strict": 165
+   },
+   {
+    "name": "mv",
+    "rgit": "native",
+    "valid": 107,
+    "strict": 105
+   },
+   {
+    "name": "name-rev",
+    "rgit": "native",
+    "valid": 3,
+    "strict": 3
+   },
+   {
+    "name": "notes",
+    "rgit": "native",
+    "valid": 340,
+    "strict": 340
+   },
+   {
+    "name": "p4",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "pack-objects",
+    "rgit": "native",
+    "valid": 229,
+    "strict": 206
+   },
+   {
+    "name": "pack-redundant",
+    "rgit": "missing",
+    "valid": 6,
+    "strict": 6
+   },
+   {
+    "name": "pack-refs",
+    "rgit": "native",
+    "valid": 88,
+    "strict": 85
+   },
+   {
+    "name": "patch-id",
+    "rgit": "native",
+    "valid": 29,
+    "strict": 29
+   },
+   {
+    "name": "prune",
+    "rgit": "native",
+    "valid": 54,
+    "strict": 54
+   },
+   {
+    "name": "prune-packed",
+    "rgit": "native",
+    "valid": 37,
+    "strict": 36
+   },
+   {
+    "name": "pull",
+    "rgit": "native",
+    "valid": 203,
+    "strict": 197
+   },
+   {
+    "name": "push",
+    "rgit": "native",
+    "valid": 437,
+    "strict": 330
+   },
+   {
+    "name": "quiltimport",
+    "rgit": "missing",
+    "valid": 4,
+    "strict": 3
+   },
+   {
+    "name": "range-diff",
+    "rgit": "native",
+    "valid": 51,
+    "strict": 45
+   },
+   {
+    "name": "read-tree",
+    "rgit": "native",
+    "valid": 324,
+    "strict": 324
+   },
+   {
+    "name": "rebase",
+    "rgit": "native",
+    "valid": 1008,
+    "strict": 1001
+   },
+   {
+    "name": "receive-pack",
+    "rgit": "native",
+    "valid": 13,
+    "strict": 13
+   },
+   {
+    "name": "reflog",
+    "rgit": "native",
+    "valid": 134,
+    "strict": 133
+   },
+   {
+    "name": "refs",
+    "rgit": "native",
+    "valid": 632,
+    "strict": 617
+   },
+   {
+    "name": "remote",
+    "rgit": "native",
+    "valid": 178,
+    "strict": 169
+   },
+   {
+    "name": "repack",
+    "rgit": "native",
+    "valid": 182,
+    "strict": 142
+   },
+   {
+    "name": "replace",
+    "rgit": "native",
+    "valid": 41,
+    "strict": 41
+   },
+   {
+    "name": "replay",
+    "rgit": "native",
+    "valid": 58,
+    "strict": 58
+   },
+   {
+    "name": "repo",
+    "rgit": "native",
+    "valid": 56,
+    "strict": 55
+   },
+   {
+    "name": "request-pull",
+    "rgit": "missing",
+    "valid": 4,
+    "strict": 4
+   },
+   {
+    "name": "rerere",
+    "rgit": "native",
+    "valid": 43,
+    "strict": 42
+   },
+   {
+    "name": "reset",
+    "rgit": "native",
+    "valid": 106,
+    "strict": 104
+   },
+   {
+    "name": "restore",
+    "rgit": "native",
+    "valid": 49,
+    "strict": 47
+   },
+   {
+    "name": "rev-list",
+    "rgit": "native",
+    "valid": 1430,
+    "strict": 1357
+   },
+   {
+    "name": "rev-parse",
+    "rgit": "native",
+    "valid": 634,
+    "strict": 612
+   },
+   {
+    "name": "revert",
+    "rgit": "native",
+    "valid": 40,
+    "strict": 38
+   },
+   {
+    "name": "rm",
+    "rgit": "native",
+    "valid": 126,
+    "strict": 124
+   },
+   {
+    "name": "send-email",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "send-pack",
+    "rgit": "native",
+    "valid": 34,
+    "strict": 32
+   },
+   {
+    "name": "sh-i18n",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "sh-setup",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "shell",
+    "rgit": "native",
+    "valid": 5,
+    "strict": 5
+   },
+   {
+    "name": "shortlog",
+    "rgit": "native",
+    "valid": 58,
+    "strict": 56
+   },
+   {
+    "name": "show",
+    "rgit": "native",
+    "valid": 79,
+    "strict": 79
+   },
+   {
+    "name": "show-branch",
+    "rgit": "missing",
+    "valid": 3,
+    "strict": 1
+   },
+   {
+    "name": "show-index",
+    "rgit": "native",
+    "valid": 43,
+    "strict": 40
+   },
+   {
+    "name": "show-ref",
+    "rgit": "native",
+    "valid": 165,
+    "strict": 92
+   },
+   {
+    "name": "sparse-checkout",
+    "rgit": "native",
+    "valid": 200,
+    "strict": 198
+   },
+   {
+    "name": "stage",
+    "rgit": "missing",
+    "valid": 1,
+    "strict": 1
+   },
+   {
+    "name": "stash",
+    "rgit": "native",
+    "valid": 220,
+    "strict": 218
+   },
+   {
+    "name": "status",
+    "rgit": "native",
+    "valid": 399,
+    "strict": 397
+   },
+   {
+    "name": "stripspace",
+    "rgit": "native",
+    "valid": 34,
+    "strict": 32
+   },
+   {
+    "name": "submodule",
+    "rgit": "native",
+    "valid": 494,
+    "strict": 473
+   },
+   {
+    "name": "svn",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "switch",
+    "rgit": "native",
+    "valid": 25,
+    "strict": 23
+   },
+   {
+    "name": "symbolic-ref",
+    "rgit": "native",
+    "valid": 152,
+    "strict": 148
+   },
+   {
+    "name": "tag",
+    "rgit": "native",
+    "valid": 278,
+    "strict": 276
+   },
+   {
+    "name": "unpack-file",
+    "rgit": "native",
+    "valid": 3,
+    "strict": 1
+   },
+   {
+    "name": "unpack-objects",
+    "rgit": "native",
+    "valid": 16,
+    "strict": 13
+   },
+   {
+    "name": "update-index",
+    "rgit": "native",
+    "valid": 116,
+    "strict": 114
+   },
+   {
+    "name": "update-ref",
+    "rgit": "native",
+    "valid": 424,
+    "strict": 394
+   },
+   {
+    "name": "update-server-info",
+    "rgit": "native",
+    "valid": 23,
+    "strict": 21
+   },
+   {
+    "name": "upload-archive",
+    "rgit": "native",
+    "valid": 3,
+    "strict": 1
+   },
+   {
+    "name": "upload-pack",
+    "rgit": "native",
+    "valid": 80,
+    "strict": 67
+   },
+   {
+    "name": "url-parse",
+    "rgit": "native",
+    "valid": 56,
+    "strict": 53
+   },
+   {
+    "name": "var",
+    "rgit": "native",
+    "valid": 90,
+    "strict": 87
+   },
+   {
+    "name": "verify-commit",
+    "rgit": "native",
+    "valid": 33,
+    "strict": 30
+   },
+   {
+    "name": "verify-pack",
+    "rgit": "native",
+    "valid": 32,
+    "strict": 27
+   },
+   {
+    "name": "verify-tag",
+    "rgit": "native",
+    "valid": 33,
+    "strict": 30
+   },
+   {
+    "name": "version",
+    "rgit": "native",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "whatchanged",
+    "rgit": "missing",
+    "valid": 1,
+    "strict": 0
+   },
+   {
+    "name": "worktree",
+    "rgit": "native",
+    "valid": 402,
+    "strict": 396
+   },
+   {
+    "name": "write-tree",
+    "rgit": "native",
+    "valid": 32,
+    "strict": 29
+   },
+   {
+    "name": "gitk",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "gitweb",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "scalar",
+    "rgit": "missing",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "credential-cache--daemon",
+    "rgit": "native",
+    "valid": 3,
+    "strict": 3
+   },
+   {
+    "name": "difftool--helper",
+    "rgit": "native",
+    "valid": 0,
+    "strict": 0
+   },
+   {
+    "name": "init-db",
+    "rgit": "native",
+    "valid": 4,
+    "strict": 4
+   },
+   {
+    "name": "merge-octopus",
+    "rgit": "native",
+    "valid": 7,
+    "strict": 7
+   },
+   {
+    "name": "merge-ours",
+    "rgit": "native",
+    "valid": 10,
+    "strict": 10
+   },
+   {
+    "name": "merge-recursive",
+    "rgit": "native",
+    "valid": 77,
+    "strict": 76
+   },
+   {
+    "name": "merge-resolve",
+    "rgit": "native",
+    "valid": 6,
+    "strict": 6
+   },
+   {
+    "name": "merge-subtree",
+    "rgit": "native",
+    "valid": 15,
+    "strict": 15
+   },
+   {
+    "name": "remote-ext",
+    "rgit": "native",
+    "valid": 3,
+    "strict": 3
+   },
+   {
+    "name": "remote-fd",
+    "rgit": "native",
+    "valid": 3,
+    "strict": 3
+   },
+   {
+    "name": "submodule--helper",
+    "rgit": "native",
+    "valid": 3,
+    "strict": 1
+   },
+   {
+    "name": "upload-archive--writer",
+    "rgit": "native",
+    "valid": 1,
+    "strict": 1
+   }
+  ]
+ }
 }
